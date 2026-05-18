@@ -391,6 +391,26 @@ class PageSignals:
     continue_button_enabled: bool = False
 
 
+@dataclass
+class FormDescriptorRecord:
+    """The structured slot value at state.data[_STATE_KEY_FORM_DESCRIPTORS].
+
+    Carries everything fill_form needs for the freshness check: step_id so
+    fill_form can validate the descriptors match the current step,
+    ts_read so fill_form can detect stale reads, page_signals snapshot at
+    read time so fill_form can compare against fresh signals, and the
+    descriptors list itself.
+
+    step_id derivation (cycle 2): f"step_{page_signals.step_index}" when
+    step_index is non-None, else "step_0". Full derivation (URL hash vs
+    heading hash vs hybrid) stays deferred per browser-Claude design
+    review 2026-05-18 — pick blind costs nothing to defer."""
+    step_id: str
+    ts_read: str          # ISO 8601 UTC microsecond
+    page_signals: PageSignals
+    descriptors: list     # List[dict] of FieldDescriptor-shaped entries
+
+
 _STEP_PROGRESS_PATTERNS = [
     # Common copy: "Step 2 of 5", "Question 3 / 8", "Page 1 of 4"
     re.compile(r"\b(?:step|question|page)\s+(\d+)\s*(?:of|/)\s*(\d+)\b", re.IGNORECASE),
@@ -516,6 +536,178 @@ def page_signals_from_context(
         # without structured DOM is too unreliable to populate.
 
     return signals
+
+
+# ─── read_form_current_step / fill_form_current_step phases ──────────
+#
+# Step-scoped phase functions per browser-Claude design review 2026-05-18.
+# read_form_current_step owns the page read, retry logic, and descriptor
+# extraction; fill_form_current_step (cycle-3 work) does the gate-check +
+# match-then-dispatch; cycle 2 ships read_form full + fill_form stub.
+#
+# state.data slot contract (locked in same design review):
+#   _form_descriptors_current_step  — the FormDescriptorRecord
+#   _read_form_retry_count          — int, hydration-retry counter
+#   _read_form_previous_context     — PageContext for stability checks
+#   _initial_read_dispatched        — bool, true after first BROWSER_READ_PAGE
+#                                     emitted on this step (added per BC's
+#                                     refinement to keep the first-call/no-
+#                                     read-yet branch from burning a retry slot)
+
+_STATE_KEY_FORM_DESCRIPTORS = "_form_descriptors_current_step"
+_STATE_KEY_READ_RETRY = "_read_form_retry_count"
+_STATE_KEY_PREV_CONTEXT = "_read_form_previous_context"
+_STATE_KEY_INITIAL_READ_DISPATCHED = "_initial_read_dispatched"
+
+_READ_FORM_MAX_RETRIES = 3
+
+
+def _read_form_step_id(page_signals: PageSignals) -> str:
+    """Cycle-2 step_id derivation: f"step_{step_index}" when non-None,
+    "step_0" fallback. Full derivation (URL hash / heading hash / hybrid)
+    stays deferred — committing to a derivation now without knowing what
+    fill_form (cycle 3) actually needs is picking blind."""
+    if page_signals.step_index is not None:
+        return f"step_{page_signals.step_index}"
+    return "step_0"
+
+
+def read_form_current_step(state) -> dict:
+    """Phase function: read the current step's form, build FormDescriptorRecord,
+    write to state.data. Three branches at entry per browser-Claude refinement:
+
+      1. _initial_read_dispatched is False — emit BROWSER_READ_PAGE, interrupt
+         with `awaiting_initial_read`. Re-enters next round to consume result.
+         Keeps the first-call/no-read-yet case from burning a hydration retry.
+
+      2. _initial_read_dispatched is True but no _last_directive_results —
+         directive execution failure (the read didn't fire). Interrupt with
+         `read_directive_failed`. NOT a retry-slot burn; that's reserved for
+         hydration failures specifically.
+
+      3. _last_directive_results present — run page_signals_from_context.
+         is_hydrated True → write FormDescriptorRecord, transition to
+         fill_form_current_step. is_hydrated False → increment retry count,
+         emit BROWSER_WAIT + BROWSER_READ_PAGE if budget remains, else
+         interrupt with `hydration_failed_after_3_attempts`.
+
+    Returns {outcome, details} with the same shape as adapter_* phase
+    functions. Side-effect-only on state.data (writes to the slots above)."""
+    import datetime
+
+    initial_read_dispatched = state.data.get(_STATE_KEY_INITIAL_READ_DISPATCHED, False)
+    last_results = state.data.get("_last_directive_results")
+
+    # Branch 1: first invocation on this step — dispatch the read.
+    if not initial_read_dispatched:
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "_pending_directives": ["BROWSER_READ_PAGE: form"],
+                "reason": "awaiting_initial_read",
+                "_state_update": {_STATE_KEY_INITIAL_READ_DISPATCHED: True},
+            },
+        }
+
+    # Branch 2: read dispatched but no result — directive failure.
+    if not last_results:
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "reason": "read_directive_failed",
+            },
+        }
+
+    # Branch 3: read result present — build context and check hydration.
+    ctx = _pagecontext_from_directive_results(last_results)
+    prev_ctx = state.data.get(_STATE_KEY_PREV_CONTEXT)
+    signals = page_signals_from_context(ctx, previous_context=prev_ctx)
+
+    if signals.is_hydrated:
+        # Build the record and transition to fill_form_current_step.
+        ts_iso = (
+            datetime.datetime.now(datetime.timezone.utc)
+            .isoformat(timespec="microseconds")
+        )
+        # Synthetic descriptor (cycle-3 replacement marker); real DOM
+        # extraction lands when smartapply / Workday / LinkedIn selectors
+        # arrive. Shape matches FIELD_ROLE_TO_SENSITIVITY consumers.
+        synthetic_descriptor = {
+            "field_role": "name_first",
+            "label_visible": "First Name",
+            "css_selector": "input[name='firstName']",
+            "html_input_type": "text",
+            "required": True,
+            "step_index": signals.step_index,
+            "_cycle3_replacement_pending": True,
+        }
+        record = FormDescriptorRecord(
+            step_id=_read_form_step_id(signals),
+            ts_read=ts_iso,
+            page_signals=signals,
+            descriptors=[synthetic_descriptor],
+        )
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "reason": "form_read_complete_transition_to_fill",
+                "_state_update": {
+                    _STATE_KEY_FORM_DESCRIPTORS: record,
+                    _STATE_KEY_READ_RETRY: 0,  # reset on success
+                },
+            },
+        }
+
+    # Not hydrated — retry budget logic.
+    retry_count = int(state.data.get(_STATE_KEY_READ_RETRY, 0))
+    if retry_count >= _READ_FORM_MAX_RETRIES:
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "reason": f"hydration_failed_after_{_READ_FORM_MAX_RETRIES}_attempts",
+            },
+        }
+
+    return {
+        "outcome": "interrupt",
+        "details": {
+            "_pending_directives": [
+                "BROWSER_WAIT: 500",
+                "BROWSER_READ_PAGE: form",
+            ],
+            "reason": "hydration_retry",
+            "_state_update": {
+                _STATE_KEY_READ_RETRY: retry_count + 1,
+                _STATE_KEY_PREV_CONTEXT: ctx,
+            },
+        },
+    }
+
+
+def fill_form_current_step(state) -> dict:
+    """Cycle-2 stub. Presence check on _form_descriptors_current_step;
+    interrupts with descriptors_missing on absence or fill_form_not_implemented
+    on presence. Writes nothing to state.data, no phase advancement — the
+    real fill_form/interrupt-to-resume contract lives in cycle 3 and the
+    stub creates no precedent the cycle-3 implementation has to honor.
+
+    Per browser-Claude design review 2026-05-18: cycle 2 lands the read-side
+    plumbing + state.data contract + retry logic + this stub. Cycle 3 wires
+    the match loop, gate logic, and the full test matrix."""
+    record = state.data.get(_STATE_KEY_FORM_DESCRIPTORS)
+    if record is None:
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "reason": "descriptors_missing",
+            },
+        }
+    return {
+        "outcome": "interrupt",
+        "details": {
+            "reason": "fill_form_not_implemented",
+        },
+    }
 
 
 # ─── Precondition hook (called by skill_runtime.check_preconditions) ─

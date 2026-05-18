@@ -472,5 +472,157 @@ class PageSignalsProducerCycle1ShapeTests(unittest.TestCase):
         self.assertFalse(sig.is_hydrated)
 
 
+class ReadFormCurrentStepTests(unittest.TestCase):
+    """Cycle-2 regression tests for read_form_current_step + the fill_form
+    stub. Two locked invariants:
+
+      - read_form populates _form_descriptors_current_step with the right
+        FormDescriptorRecord shape when page_signals.is_hydrated is True
+        (happy path).
+      - read_form returns interrupt with hydration_failed_after_3_attempts
+        when retry budget is exhausted. REGRESSION TEST — a future
+        contributor who "fixes" the unbounded-retry behavior by removing
+        the cap gets caught here. Same pattern as
+        SensitivityGateTests.test_above_personal_never_auto_fills_even_at_full_confidence
+        locking the sensitivity tier.
+
+    Per browser-Claude design review 2026-05-18 — cycle 2 lands read_form
+    full + fill_form stub + these two tests; cycle 3 wires the match loop.
+    """
+
+    def setUp(self):
+        recipe._reset_framework_state_for_tests()
+
+    def tearDown(self):
+        recipe._reset_framework_state_for_tests()
+
+    def _make_state(self, **data):
+        """Minimal state stand-in for tests. SkillState requires more
+        plumbing than these unit tests need; this stub exposes the only
+        attribute the phase functions read (state.data)."""
+        class _S:
+            def __init__(self, d):
+                self.data = dict(d)
+        return _S(data)
+
+    def test_read_form_emits_initial_read_on_first_invocation(self):
+        """Branch 1: _initial_read_dispatched is False → emit
+        BROWSER_READ_PAGE + interrupt + set the dispatched flag in
+        _state_update. Keeps the first-call/no-read-yet branch from
+        burning a hydration retry slot."""
+        state = self._make_state()
+        out = recipe.read_form_current_step(state)
+        self.assertEqual(out["outcome"], "interrupt")
+        self.assertEqual(out["details"]["reason"], "awaiting_initial_read")
+        directives = out["details"]["_pending_directives"]
+        self.assertTrue(any("BROWSER_READ_PAGE" in d for d in directives))
+        self.assertTrue(
+            out["details"]["_state_update"][recipe._STATE_KEY_INITIAL_READ_DISPATCHED]
+        )
+
+    def test_read_form_flags_directive_failure_when_read_didnt_produce(self):
+        """Branch 2: read was dispatched but _last_directive_results is
+        missing/empty. That's directive-execution failure, NOT hydration
+        failure — must escalate to its own interrupt reason so the retry
+        budget isn't consumed on a read that never happened."""
+        state = self._make_state(**{
+            recipe._STATE_KEY_INITIAL_READ_DISPATCHED: True,
+            "_last_directive_results": "",
+        })
+        out = recipe.read_form_current_step(state)
+        self.assertEqual(out["outcome"], "interrupt")
+        self.assertEqual(out["details"]["reason"], "read_directive_failed")
+
+    def test_read_form_populates_descriptors_with_correct_shape_when_hydrated(self):
+        """Locked invariant #1: hydrated read produces a FormDescriptorRecord
+        with step_id / ts_read (ISO 8601) / page_signals / descriptors slots,
+        written to _form_descriptors_current_step. step_id derives from
+        page_signals.step_index when present."""
+        # Synthetic page text that page_signals_from_context will deem hydrated:
+        # has form content, no loading-phrase markers, has Continue button.
+        hydrated_text = (
+            "<form>Step 2 of 5 "
+            "<input name='firstName'/><input name='email'/>"
+            "<button>Continue</button>"
+            "</form>"
+        )
+        state = self._make_state(**{
+            recipe._STATE_KEY_INITIAL_READ_DISPATCHED: True,
+            "_last_directive_results": hydrated_text,
+        })
+        out = recipe.read_form_current_step(state)
+        self.assertEqual(out["outcome"], "interrupt")
+        self.assertEqual(
+            out["details"]["reason"],
+            "form_read_complete_transition_to_fill",
+        )
+        record = out["details"]["_state_update"][recipe._STATE_KEY_FORM_DESCRIPTORS]
+        self.assertIsInstance(record, recipe.FormDescriptorRecord)
+        # step_id derived from step_index=2 → "step_2"
+        self.assertEqual(record.step_id, "step_2")
+        # ts_read is ISO 8601 (T separator + UTC suffix + subsecond '.')
+        self.assertIn("T", record.ts_read)
+        self.assertTrue(
+            record.ts_read.endswith("+00:00") or record.ts_read.endswith("Z"),
+            f"ts_read must be UTC: {record.ts_read}",
+        )
+        self.assertIn(".", record.ts_read)
+        # page_signals carried through
+        self.assertIsInstance(record.page_signals, recipe.PageSignals)
+        self.assertTrue(record.page_signals.is_hydrated)
+        self.assertEqual(record.page_signals.step_index, 2)
+        # one synthetic descriptor pending cycle-3 replacement
+        self.assertEqual(len(record.descriptors), 1)
+        self.assertTrue(record.descriptors[0].get("_cycle3_replacement_pending"))
+
+    def test_read_form_returns_hydration_failed_when_retry_budget_exhausted(self):
+        """LOCKED INVARIANT #2 — REGRESSION TEST. Retry budget for
+        hydration is hard-capped at _READ_FORM_MAX_RETRIES (3 per cycle-2
+        spec). A future contributor who "fixes" unbounded-retry behavior
+        by removing the cap, by raising it to a huge number, or by
+        decrementing instead of incrementing, gets caught here. The
+        bounded-retry property is non-negotiable — unbounded retry on a
+        stuck page burns the session indefinitely.
+
+        Same regression-test pattern as the sensitivity-gate invariant
+        test in SensitivityGateTests.
+        """
+        # Not-hydrated content + retry_count already at the cap.
+        state = self._make_state(**{
+            recipe._STATE_KEY_INITIAL_READ_DISPATCHED: True,
+            "_last_directive_results": "loading... please wait",
+            recipe._STATE_KEY_READ_RETRY: recipe._READ_FORM_MAX_RETRIES,
+        })
+        out = recipe.read_form_current_step(state)
+        self.assertEqual(out["outcome"], "interrupt")
+        self.assertEqual(
+            out["details"]["reason"],
+            f"hydration_failed_after_{recipe._READ_FORM_MAX_RETRIES}_attempts",
+        )
+
+    def test_fill_form_stub_descriptors_missing_when_slot_empty(self):
+        """Cycle-2 stub: presence check fires on empty slot."""
+        state = self._make_state()
+        out = recipe.fill_form_current_step(state)
+        self.assertEqual(out["outcome"], "interrupt")
+        self.assertEqual(out["details"]["reason"], "descriptors_missing")
+
+    def test_fill_form_stub_not_implemented_when_slot_present(self):
+        """Cycle-2 stub: when descriptors are present, interrupt with
+        fill_form_not_implemented (cycle-3 placeholder). No state
+        mutation, no phase advancement — the stub creates no precedent
+        the cycle-3 implementation has to honor."""
+        record = recipe.FormDescriptorRecord(
+            step_id="step_1",
+            ts_read="2026-05-18T06:13:00.000000+00:00",
+            page_signals=recipe.PageSignals(step_index=1, is_hydrated=True),
+            descriptors=[{"field_role": "name_first"}],
+        )
+        state = self._make_state(**{recipe._STATE_KEY_FORM_DESCRIPTORS: record})
+        out = recipe.fill_form_current_step(state)
+        self.assertEqual(out["outcome"], "interrupt")
+        self.assertEqual(out["details"]["reason"], "fill_form_not_implemented")
+
+
 if __name__ == "__main__":
     unittest.main()
