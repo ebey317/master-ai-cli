@@ -373,18 +373,22 @@ class PageSignals:
     """Producer output consumed by fill_form. Each slot answers a
     distinct question for the consumer; collapsing them loses info.
     Most-False/None on an empty PageContext is the correct degraded
-    state — fill_form should treat that as 'wait, still loading.'"""
+    state — fill_form should treat that as 'wait, still loading.'
+
+    Eight slots. The dropped trio (step_progress_source / page_url /
+    page_title) were degenerate in cycle 1 — nothing in fill_form would
+    couple to them, and Optional[X] = None fields can be added in a
+    later cycle without breaking callers. Browser-Claude conceded the
+    refactor 2026-05-18 — schema-shape stability matters when consumers
+    couple to the shape, and nothing couples to these three."""
     step_index: Optional[int] = None         # this step is N of total
     total_steps: Optional[int] = None
-    step_progress_source: Optional[str] = None   # how step_index was derived
     is_submit_step: bool = False             # last step before final submit
     is_hydrated: bool = False                # form is stable, safe to read
     has_blocking_errors: bool = False        # validation failed somewhere
     validation_errors: List[dict] = field(default_factory=list)
     continue_button_present: bool = False
     continue_button_enabled: bool = False
-    page_url: Optional[str] = None
-    page_title: Optional[str] = None
 
 
 _STEP_PROGRESS_PATTERNS = [
@@ -449,7 +453,7 @@ def page_signals_from_context(
     raw = ctx.raw
     raw_lower = raw.lower()
 
-    signals = PageSignals(page_url=ctx.url, page_title=ctx.title)
+    signals = PageSignals()
 
     # step_index / total_steps from "Step N of M" text patterns
     for pat in _STEP_PROGRESS_PATTERNS:
@@ -458,7 +462,6 @@ def page_signals_from_context(
             try:
                 signals.step_index = int(m.group(1))
                 signals.total_steps = int(m.group(2))
-                signals.step_progress_source = "explicit_step_label"
                 break
             except (ValueError, IndexError):
                 continue

@@ -385,15 +385,13 @@ class PageSignalsProducerCycle1ShapeTests(unittest.TestCase):
         self.assertFalse(sig.continue_button_enabled)
 
     def test_explicit_step_label_is_parsed(self):
-        """'Step 2 of 5' in page text populates step_index/total_steps
-        and step_progress_source is named accordingly."""
+        """'Step 2 of 5' in page text populates step_index/total_steps."""
         ctx = recipe._pagecontext_from_directive_results(
             "<form>Step 2 of 5 — please fill out your information</form>"
         )
         sig = recipe.page_signals_from_context(ctx)
         self.assertEqual(sig.step_index, 2)
         self.assertEqual(sig.total_steps, 5)
-        self.assertEqual(sig.step_progress_source, "explicit_step_label")
 
     def test_continue_button_text_detected(self):
         """Button copy 'Continue' present → continue_button_present True."""
