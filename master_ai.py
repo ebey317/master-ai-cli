@@ -63,7 +63,7 @@ import base64, re, time, shutil, hashlib, platform, atexit, signal, threading, q
 from datetime import datetime
 from pathlib import Path
 from url_grounding import resolve_open_target_url
-from output_contract import OUTPUT_CONTRACT_TEXT
+from output_contract import OUTPUT_CONTRACT_TEXT, ACTION_CHAINING_RULE_TEXT
 
 try:
     import harvest  # local cache + few-shot injection; ~/scripts/harvest.py
@@ -11249,6 +11249,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "emit DONE with the partial result, never trickle one more action "
         "hoping it lands.\n\n"
         f"{OUTPUT_CONTRACT_TEXT}"
+        f"{ACTION_CHAINING_RULE_TEXT}"
         "JOB APPLICATION INTENT — when the user asks to apply for jobs, fill "
         "out job applications, submit resumes, or run a job-search-and-apply "
         "workflow (natural-language patterns: \"apply to N jobs,\" \"find "

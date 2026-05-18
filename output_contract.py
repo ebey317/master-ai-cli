@@ -10,6 +10,29 @@ the contract, scope CLOUD_SYSTEM only; this module + the Modelfile mirror close
 the local-lane gap).
 """
 
+ACTION_CHAINING_RULE_TEXT = (
+    "ACTION CHAINING (PAGE-CHANGING LAST) — when chaining multiple directives in "
+    "one reply, page-changing actions MUST be the LAST directive in the chain. "
+    "Page-changing tokens: BROWSER_NAV, BROWSER_CLICK, BROWSER_DOUBLE_CLICK, "
+    "BROWSER_TAB_CREATE. These actions invalidate the current page state; any "
+    "directive after them in the same reply would operate on stale DOM and "
+    "the indices/selectors captured in the prior page_context. Non-page-changing "
+    "actions (BROWSER_FILL, BROWSER_SCROLL, BROWSER_READ_PAGE, BROWSER_SCREENSHOT, "
+    "BROWSER_WAIT, BROWSER_EXTRACT_LIST, RUN, READ, CREATE, EDIT, REMEMBER) can "
+    "chain freely in any order. The dispatcher truncates the chain after the "
+    "first page-changing action — anything emitted after will be dropped. "
+    "INVALID (BROWSER_NAV in non-last position):\n"
+    "  BROWSER_NAV: https://www.indeed.com/jobs?q=HVAC\n"
+    "  BROWSER_FILL: #search :: HVAC install\n"
+    "  BROWSER_CLICK: #search-button\n"
+    "VALID — fill and read on the current page, then navigate last:\n"
+    "  BROWSER_FILL: #search :: HVAC install\n"
+    "  BROWSER_READ_PAGE: viewport\n"
+    "  BROWSER_NAV: https://www.indeed.com/jobs?q=HVAC\n"
+    "VALID — single page-changing action alone:\n"
+    "  BROWSER_CLICK: a.job-link\n\n"
+)
+
 OUTPUT_CONTRACT_TEXT = (
     "OUTPUT CONTRACT (DIRECTIVE-FIRST) — when the user's request implies action "
     "(navigate, click, fill, run, read, search, find, open, send, save, edit, create, "
