@@ -1135,5 +1135,306 @@ class SideEffectsAndRedirectPromoteTests(unittest.TestCase):
         )
 
 
+class PersistenceV0Tests(unittest.TestCase):
+    """V0 persistence tests. Per browser-Claude design 2026-05-18 —
+    manual save centralized in dispatcher, multi-file storage with
+    append-only index, atomic write, best-effort load with no silent
+    recovery (warnings block advance until acknowledged)."""
+
+    def setUp(self):
+        recipe._reset_framework_state_for_tests()
+        import task_model
+        import persistence
+        self.tm = task_model
+        self.pers = persistence
+
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+        recipe._reset_framework_state_for_tests()
+
+    # ── Roundtrip ────────────────────────────────────────────────
+
+    def test_save_and_load_roundtrip_simple_task(self):
+        """A vanilla task saves to <base>/<task_id>.json and loads back
+        with identical scalar fields."""
+        task = self.tm.Task(
+            task_id="t_round_1",
+            task_type="apply_one_job",
+            params={"jk": "abc123"},
+        )
+        path = self.pers.save_task(task, base_path=self.base)
+        self.assertTrue(path.exists())
+        self.assertEqual(path, self.base / "t_round_1.json")
+
+        loaded = self.pers.load_task("t_round_1", base_path=self.base)
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded.task_id, "t_round_1")
+        self.assertEqual(loaded.task_type, "apply_one_job")
+        self.assertEqual(loaded.params, {"jk": "abc123"})
+        self.assertEqual(loaded.state, self.tm.TASK_STATE_SPAWNED)
+        self.assertEqual(loaded.persistence_warnings, [])
+
+    def test_save_and_load_preserves_tab_bindings(self):
+        """Nested TaskTabBinding objects survive the JSON round-trip."""
+        task = self.tm.Task(task_id="t_bind", task_type="apply_one_job")
+        task.tab_bindings.append(
+            self.tm.TaskTabBinding(
+                task_id="t_bind",
+                tab_id=42,
+                role=self.tm.BINDING_ROLE_PRIMARY,
+                binding_source=self.tm.BINDING_SOURCE_OPERATOR_ADDED,
+                last_observed_url="https://example.com/x",
+            )
+        )
+        self.pers.save_task(task, base_path=self.base)
+        loaded = self.pers.load_task("t_bind", base_path=self.base)
+
+        self.assertEqual(len(loaded.tab_bindings), 1)
+        b = loaded.tab_bindings[0]
+        self.assertIsInstance(b, self.tm.TaskTabBinding)
+        self.assertEqual(b.tab_id, 42)
+        self.assertEqual(b.role, self.tm.BINDING_ROLE_PRIMARY)
+        self.assertEqual(
+            b.binding_source, self.tm.BINDING_SOURCE_OPERATOR_ADDED
+        )
+        self.assertEqual(b.last_observed_url, "https://example.com/x")
+
+    def test_save_preserves_terminated_state(self):
+        """A terminated task round-trips its state + reason cleanly."""
+        task = self.tm.Task(task_id="t_term", task_type="apply_one_job")
+        task.state = self.tm.TASK_STATE_TERMINATED
+        task.terminated_reason = self.tm.TASK_TERMINATED_APPLIED
+        self.pers.save_task(task, base_path=self.base)
+        loaded = self.pers.load_task("t_term", base_path=self.base)
+        self.assertEqual(loaded.state, self.tm.TASK_STATE_TERMINATED)
+        self.assertEqual(
+            loaded.terminated_reason, self.tm.TASK_TERMINATED_APPLIED
+        )
+
+    # ── Missing file / malformed JSON ────────────────────────────
+
+    def test_load_returns_none_when_file_missing(self):
+        """Loading a nonexistent task_id returns None, not a partial
+        Task and not a raise."""
+        result = self.pers.load_task("never_saved", base_path=self.base)
+        self.assertIsNone(result)
+
+    def test_load_raises_on_malformed_json(self):
+        """Corrupted JSON file fails loudly — no partial Task returned."""
+        (self.base / "broken.json").write_text("{not valid json")
+        with self.assertRaises(self.pers.TaskLoadError):
+            self.pers.load_task("broken", base_path=self.base)
+
+    # ── Best-effort load: warnings populated ─────────────────────
+
+    def test_load_unknown_field_produces_warning(self):
+        """Unknown top-level fields → persistence_warnings entry, but
+        the task still loads."""
+        import json as _json
+        path = self.base / "u.json"
+        path.write_text(_json.dumps({
+            "_schema": "task_v0",
+            "task_id": "u",
+            "task_type": "apply_one_job",
+            "future_field": 42,
+        }))
+        loaded = self.pers.load_task("u", base_path=self.base)
+        self.assertIsNotNone(loaded)
+        self.assertIn("unknown_field:future_field", loaded.persistence_warnings)
+
+    def test_load_missing_optional_field_warns_and_defaults(self):
+        """Missing optional field with default → warning + default value
+        applied. Operator must confirm_recovered() before dispatching."""
+        import json as _json
+        path = self.base / "m.json"
+        path.write_text(_json.dumps({
+            "_schema": "task_v0",
+            "task_id": "m",
+            "task_type": "apply_one_job",
+        }))
+        loaded = self.pers.load_task("m", base_path=self.base)
+        self.assertIsNotNone(loaded)
+        # state was missing — got defaulted, with a warning
+        self.assertEqual(loaded.state, self.tm.TASK_STATE_SPAWNED)
+        self.assertIn(
+            "missing_field_defaulted:state", loaded.persistence_warnings
+        )
+
+    def test_load_missing_required_field_raises(self):
+        """Missing task_id or task_type → TaskLoadError, no partial Task."""
+        import json as _json
+        path = self.base / "r.json"
+        path.write_text(_json.dumps({"_schema": "task_v0", "task_id": "r"}))
+        with self.assertRaises(self.pers.TaskLoadError):
+            self.pers.load_task("r", base_path=self.base)
+
+    def test_load_type_mismatch_raises(self):
+        """Type mismatch on required field → TaskLoadError, fail loud."""
+        import json as _json
+        path = self.base / "tm.json"
+        path.write_text(_json.dumps({
+            "_schema": "task_v0",
+            "task_id": "tm",
+            "task_type": "apply_one_job",
+            "params": "should_be_a_dict",
+        }))
+        with self.assertRaises(self.pers.TaskLoadError):
+            self.pers.load_task("tm", base_path=self.base)
+
+    def test_load_invalid_binding_role_raises(self):
+        """Enum violation in nested binding → TaskLoadError."""
+        import json as _json
+        path = self.base / "ib.json"
+        path.write_text(_json.dumps({
+            "_schema": "task_v0",
+            "task_id": "ib",
+            "task_type": "apply_one_job",
+            "tab_bindings": [{
+                "task_id": "ib",
+                "tab_id": 1,
+                "role": "nonsense_role",
+                "binding_source": self.tm.BINDING_SOURCE_OPERATOR_ADDED,
+            }],
+        }))
+        with self.assertRaises(self.pers.TaskLoadError):
+            self.pers.load_task("ib", base_path=self.base)
+
+    # ── Atomic write ─────────────────────────────────────────────
+
+    def test_atomic_write_leaves_no_tmp_files_on_success(self):
+        """After a clean save, no .tmp debris remains in the dir."""
+        task = self.tm.Task(task_id="atom", task_type="apply_one_job")
+        self.pers.save_task(task, base_path=self.base)
+        tmp_files = list(self.base.glob("*.tmp"))
+        self.assertEqual(tmp_files, [])
+        tmp_dot = list(self.base.glob("*.tmp*"))
+        self.assertEqual(tmp_dot, [])
+
+    # ── Index file ───────────────────────────────────────────────
+
+    def test_save_appends_index_line(self):
+        """Each save appends one JSON line to _index.jsonl with task_id,
+        state, terminated_reason, and ts."""
+        import json as _json
+        task = self.tm.Task(task_id="idx", task_type="apply_one_job")
+        self.pers.save_task(task, base_path=self.base)
+        self.pers.save_task(task, base_path=self.base)
+
+        index = (self.base / self.pers.INDEX_FILENAME).read_text().splitlines()
+        self.assertEqual(len(index), 2)
+        for line in index:
+            entry = _json.loads(line)
+            self.assertEqual(entry["task_id"], "idx")
+            self.assertIn("ts", entry)
+            self.assertIn("state", entry)
+            self.assertIn("terminated_reason", entry)
+
+    # ── Dispatcher integration ───────────────────────────────────
+
+    def test_dispatcher_saves_when_persist_to_disk_on(self):
+        """Dispatcher calls save_task when task.persist_to_disk is True."""
+        task = self.tm.Task(
+            task_id="t_disp",
+            task_type="apply_one_job",
+            persist_to_disk=True,
+        )
+
+        def phase(t):
+            return {"outcome": "applied", "details": {}}
+
+        outcome = self.tm.task_dispatch(
+            task, phase, persistence_base_path=self.base
+        )
+        self.assertEqual(outcome.get("details", {}).get("_persisted_to"),
+                         str(self.base / "t_disp.json"))
+        self.assertTrue((self.base / "t_disp.json").exists())
+
+        # Roundtrip the terminated state
+        loaded = self.pers.load_task("t_disp", base_path=self.base)
+        self.assertEqual(loaded.state, self.tm.TASK_STATE_TERMINATED)
+        self.assertEqual(
+            loaded.terminated_reason, self.tm.TASK_TERMINATED_APPLIED
+        )
+
+    def test_dispatcher_skips_save_when_persist_to_disk_off(self):
+        """Default persist_to_disk=False → no file written."""
+        task = self.tm.Task(task_id="t_off", task_type="apply_one_job")
+
+        def phase(t):
+            return {"outcome": "applied", "details": {}}
+
+        self.tm.task_dispatch(task, phase, persistence_base_path=self.base)
+        self.assertFalse((self.base / "t_off.json").exists())
+
+    def test_dispatcher_blocks_advance_on_persistence_warnings(self):
+        """Loaded task with non-empty persistence_warnings cannot be
+        dispatched until confirm_recovered() clears them."""
+        task = self.tm.Task(task_id="t_warn", task_type="apply_one_job")
+        task.persistence_warnings = ["unknown_field:legacy"]
+
+        def phase(t):
+            self.fail("phase function should not run when warnings present")
+
+        with self.assertRaises(self.tm.TaskPersistenceBlockedError):
+            self.tm.task_dispatch(task, phase, persistence_base_path=self.base)
+
+    # ── confirm_recovered ────────────────────────────────────────
+
+    def test_confirm_recovered_clears_matching_warnings(self):
+        """Exact-match acknowledgement clears the matched warnings;
+        others remain."""
+        task = self.tm.Task(
+            task_id="cr",
+            task_type="apply_one_job",
+            persistence_warnings=["a", "b", "c"],
+        )
+        remaining = self.pers.confirm_recovered(
+            task, ["a", "c"], base_path=self.base
+        )
+        self.assertEqual(remaining, ["b"])
+        self.assertEqual(task.persistence_warnings, ["b"])
+
+    def test_confirm_recovered_resaves_when_persist_to_disk_on(self):
+        """If persist_to_disk is on and any warning was cleared, the task
+        is re-saved with the trimmed warning list."""
+        task = self.tm.Task(
+            task_id="cr2",
+            task_type="apply_one_job",
+            persist_to_disk=True,
+            persistence_warnings=["unknown_field:x"],
+        )
+        # Initial save with the warning
+        self.pers.save_task(task, base_path=self.base)
+        # Acknowledge
+        self.pers.confirm_recovered(
+            task, ["unknown_field:x"], base_path=self.base
+        )
+        loaded = self.pers.load_task("cr2", base_path=self.base)
+        self.assertEqual(loaded.persistence_warnings, [])
+
+    def test_confirm_recovered_unblocks_dispatcher(self):
+        """After confirm_recovered clears warnings, dispatcher proceeds."""
+        task = self.tm.Task(
+            task_id="unb",
+            task_type="apply_one_job",
+            persistence_warnings=["unknown_field:x"],
+        )
+        self.pers.confirm_recovered(task, ["unknown_field:x"])
+        self.assertEqual(task.persistence_warnings, [])
+
+        ran = []
+
+        def phase(t):
+            ran.append(t.task_id)
+            return {"outcome": "applied", "details": {}}
+
+        self.tm.task_dispatch(task, phase, persistence_base_path=self.base)
+        self.assertEqual(ran, ["unb"])
+
+
 if __name__ == "__main__":
     unittest.main()

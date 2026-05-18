@@ -189,6 +189,16 @@ class Task:
     terminated_reason: Optional[str] = None  # set when state == TERMINATED
     spawned_at: str = ""                 # ISO 8601 UTC (matches audit-log
                                          # timestamp shape)
+    persist_to_disk: bool = False        # persistence v0 — when true, the
+                                         # dispatcher saves this task after
+                                         # each dispatch via persistence.save_task
+    persistence_warnings: List[str] = field(default_factory=list)
+                                         # persistence v0 — surfaced on load
+                                         # when the on-disk JSON had unknown
+                                         # fields or required-but-defaulted
+                                         # optional fields. Non-empty blocks
+                                         # dispatcher.advance until cleared
+                                         # via persistence.confirm_recovered
 
     def __post_init__(self):
         if not self.spawned_at:
@@ -205,7 +215,19 @@ class Task:
 
 # ─── Dispatcher ──────────────────────────────────────────────────────
 
-def task_dispatch(task: Task, phase_fn: Callable[[Task], dict]) -> dict:
+class TaskPersistenceBlockedError(RuntimeError):
+    """Raised by task_dispatch when a task with non-empty
+    persistence_warnings is fed back through the dispatcher without an
+    explicit confirm_recovered() call. Per persistence v0 design — a
+    loaded task that lost data on the round-trip cannot silently advance;
+    the operator must acknowledge the loss first."""
+
+
+def task_dispatch(
+    task: Task,
+    phase_fn: Callable[[Task], dict],
+    persistence_base_path=None,
+) -> dict:
     """Advance the task by one phase call. Updates task.state based on the
     outcome dict the phase function returns, then returns that same outcome
     so the caller can act on _pending_directives / reasons / state_updates.
@@ -219,12 +241,29 @@ def task_dispatch(task: Task, phase_fn: Callable[[Task], dict]) -> dict:
 
     Phase functions match the existing executor-framework shape — they
     return {outcome, details}. The dispatcher reads `outcome` only;
-    everything else passes through untouched."""
+    everything else passes through untouched.
+
+    Persistence v0 hooks:
+      - Before phase call: if task.persistence_warnings is non-empty,
+        refuses to advance (raises TaskPersistenceBlockedError). The
+        operator must call persistence.confirm_recovered() to clear the
+        warnings before re-entering the dispatcher.
+      - After phase call: if task.persist_to_disk is on, calls
+        persistence.save_task() with persistence_base_path (None = use
+        the module default). Save errors propagate — better to surface
+        a write failure loudly than to silently lose the new state."""
     if task.state == TASK_STATE_TERMINATED:
         raise RuntimeError(
             f"task_dispatch called on terminated task {task.task_id} "
             f"(reason={task.terminated_reason}); re-entry on terminated "
             "tasks would create a state-machine violation"
+        )
+
+    if task.persistence_warnings:
+        raise TaskPersistenceBlockedError(
+            f"task {task.task_id} has unacknowledged persistence_warnings "
+            f"({len(task.persistence_warnings)} item(s)); call "
+            "persistence.confirm_recovered() before re-dispatching"
         )
 
     # If task hasn't started running yet, this dispatch transitions it.
@@ -261,6 +300,14 @@ def task_dispatch(task: Task, phase_fn: Callable[[Task], dict]) -> dict:
         outcome_dict.setdefault("details", {})[
             "_dispatcher_note"
         ] = f"unknown outcome {outcome!r}, terminated as failed"
+
+    if task.persist_to_disk:
+        # Import locally to avoid an import cycle between task_model and
+        # persistence — persistence imports Task / TaskTabBinding from
+        # this module.
+        from persistence import save_task
+        saved_path = save_task(task, base_path=persistence_base_path)
+        outcome_dict.setdefault("details", {})["_persisted_to"] = str(saved_path)
 
     return outcome_dict
 
@@ -503,6 +550,7 @@ def route_for_task(
 __all__ = [
     "Task",
     "TaskTabBinding",
+    "TaskPersistenceBlockedError",
     "task_dispatch",
     "route_for_task",
     "apply_side_effects",
