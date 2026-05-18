@@ -790,5 +790,151 @@ class TaskModelV0Tests(unittest.TestCase):
         self.assertEqual(task.terminated_reason, self.tm.TASK_TERMINATED_SKIPPED)
 
 
+class CrossTabRoutingV0Tests(unittest.TestCase):
+    """Cross-tab routing v0 tests — TaskTabBinding + route_for_task with
+    the four-branch routing (OK / AMBIGUOUS / NO_PRIMARY / STALE_PRIMARY).
+    Per browser-Claude design lock 2026-05-18.
+
+    Stale-primary is the fourth branch (BC's refinement to operator's
+    original three) — when a primary binding exists but the tab closed
+    or the tab navigated away from the bound URL. Surfaced as its own
+    interrupt rather than silent fallback to NO_PRIMARY — preserves the
+    information so operator can recover (closed-by-accident tab, intentional
+    navigation, etc.).
+    """
+
+    def setUp(self):
+        recipe._reset_framework_state_for_tests()
+        import task_model
+        self.tm = task_model
+
+    def tearDown(self):
+        recipe._reset_framework_state_for_tests()
+
+    def _binding(self, **kwargs):
+        defaults = dict(
+            task_id="t1",
+            tab_id=100,
+            role=self.tm.BINDING_ROLE_PRIMARY,
+            binding_source=self.tm.BINDING_SOURCE_OPERATOR_ADDED,
+            last_observed_url="https://example.com/page",
+        )
+        defaults.update(kwargs)
+        return self.tm.TaskTabBinding(**defaults)
+
+    def _task_with_bindings(self, bindings):
+        return self.tm.Task(
+            task_id="t1",
+            task_type="apply_one_job",
+            tab_bindings=list(bindings),
+        )
+
+    def test_binding_rejects_invalid_role(self):
+        with self.assertRaises(ValueError):
+            self.tm.TaskTabBinding(
+                task_id="t1",
+                tab_id=100,
+                role="nonsense_role",
+                binding_source=self.tm.BINDING_SOURCE_OPERATOR_ADDED,
+            )
+
+    def test_binding_rejects_invalid_source(self):
+        with self.assertRaises(ValueError):
+            self.tm.TaskTabBinding(
+                task_id="t1",
+                tab_id=100,
+                role=self.tm.BINDING_ROLE_PRIMARY,
+                binding_source="invalid_source",
+            )
+
+    def test_binding_added_ts_is_iso8601(self):
+        b = self._binding()
+        self.assertIn("T", b.added_ts)
+        self.assertTrue(
+            b.added_ts.endswith("+00:00") or b.added_ts.endswith("Z")
+        )
+        self.assertIn(".", b.added_ts)
+
+    def test_routing_ok_with_single_live_primary(self):
+        """Branch 1: exactly one primary, on its bound URL → OK."""
+        task = self._task_with_bindings([
+            self._binding(tab_id=100, last_observed_url="https://example.com/page"),
+        ])
+        out = self.tm.route_for_task(task, {100: "https://example.com/page"})
+        self.assertEqual(out["outcome"], self.tm.ROUTING_OK)
+        self.assertEqual(out["details"]["tab_id"], 100)
+        self.assertEqual(
+            out["details"]["binding_source"],
+            self.tm.BINDING_SOURCE_OPERATOR_ADDED,
+        )
+
+    def test_routing_no_primary_with_zero_primary_bindings(self):
+        """Branch 2: no primary bindings at all."""
+        task = self._task_with_bindings([])
+        out = self.tm.route_for_task(task, {})
+        self.assertEqual(out["outcome"], self.tm.ROUTING_NO_PRIMARY)
+
+    def test_routing_no_primary_when_only_reference_bindings_exist(self):
+        """Reference/monitor bindings don't count for routing."""
+        task = self._task_with_bindings([
+            self._binding(tab_id=200, role=self.tm.BINDING_ROLE_REFERENCE),
+            self._binding(tab_id=300, role=self.tm.BINDING_ROLE_MONITOR),
+        ])
+        out = self.tm.route_for_task(task, {200: "https://drive.google.com",
+                                           300: "https://gmail.com"})
+        self.assertEqual(out["outcome"], self.tm.ROUTING_NO_PRIMARY)
+
+    def test_routing_ambiguous_with_multiple_live_primaries(self):
+        """Branch 3: two primary bindings, both live → operator picks."""
+        task = self._task_with_bindings([
+            self._binding(tab_id=100, last_observed_url="https://a.com"),
+            self._binding(tab_id=200, last_observed_url="https://b.com"),
+        ])
+        out = self.tm.route_for_task(task, {
+            100: "https://a.com",
+            200: "https://b.com",
+        })
+        self.assertEqual(out["outcome"], self.tm.ROUTING_AMBIGUOUS)
+        self.assertEqual(len(out["details"]["candidates"]), 2)
+
+    def test_routing_stale_when_tab_closed(self):
+        """Branch 4a: primary binding exists, tab is gone from current_tab_urls.
+        Distinct from NO_PRIMARY — the binding STILL EXISTS, so the operator
+        gets a recovery interrupt, not a silent re-bind prompt."""
+        task = self._task_with_bindings([
+            self._binding(tab_id=100, last_observed_url="https://a.com"),
+        ])
+        out = self.tm.route_for_task(task, {})  # tab 100 not in current
+        self.assertEqual(out["outcome"], self.tm.ROUTING_STALE_PRIMARY)
+        self.assertEqual(out["details"]["stale"][0]["reason"], "tab_closed")
+
+    def test_routing_stale_when_tab_url_drifted(self):
+        """Branch 4b: primary binding's tab is still open, but its URL drifted
+        from the bound last_observed_url. Same surfacing as tab-closed —
+        the operator decides whether to drop or re-confirm."""
+        task = self._task_with_bindings([
+            self._binding(tab_id=100, last_observed_url="https://a.com/apply"),
+        ])
+        out = self.tm.route_for_task(task, {100: "https://a.com/feed"})
+        self.assertEqual(out["outcome"], self.tm.ROUTING_STALE_PRIMARY)
+        self.assertEqual(out["details"]["stale"][0]["reason"], "tab_url_drifted")
+        self.assertEqual(
+            out["details"]["stale"][0]["current_url"],
+            "https://a.com/feed",
+        )
+
+    def test_routing_mixed_live_and_stale_returns_ok_on_live(self):
+        """When some primaries are stale and exactly one is live, the live
+        one wins — the stale ones don't block. (If TWO are live, that's
+        ambiguous; if ZERO are live, that's stale_primary.)"""
+        task = self._task_with_bindings([
+            self._binding(tab_id=100, last_observed_url="https://a.com"),  # stale
+            self._binding(tab_id=200, last_observed_url="https://b.com"),  # live
+        ])
+        out = self.tm.route_for_task(task, {200: "https://b.com"})
+        self.assertEqual(out["outcome"], self.tm.ROUTING_OK)
+        self.assertEqual(out["details"]["tab_id"], 200)
+
+
 if __name__ == "__main__":
     unittest.main()
