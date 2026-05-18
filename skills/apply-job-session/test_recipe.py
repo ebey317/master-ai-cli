@@ -624,5 +624,139 @@ class ReadFormCurrentStepTests(unittest.TestCase):
         self.assertEqual(out["details"]["reason"], "fill_form_not_implemented")
 
 
+class TaskModelV0Tests(unittest.TestCase):
+    """V0 task abstraction tests. Grounded in the apply-job-session use case
+    per browser-Claude design 2026-05-18 — task HAS-A state, dispatches to
+    phase functions, no persistence / multi-task / cross-task deps in v0."""
+
+    def setUp(self):
+        recipe._reset_framework_state_for_tests()
+        import task_model
+        self.tm = task_model
+
+    def tearDown(self):
+        recipe._reset_framework_state_for_tests()
+
+    def test_task_initializes_with_spawned_state_and_iso8601_timestamp(self):
+        """Default state is SPAWNED; spawned_at is ISO 8601 UTC microsecond."""
+        task = self.tm.Task(task_id="t1", task_type="apply_one_job")
+        self.assertEqual(task.state, self.tm.TASK_STATE_SPAWNED)
+        self.assertIsNone(task.terminated_reason)
+        self.assertIn("T", task.spawned_at)
+        self.assertTrue(
+            task.spawned_at.endswith("+00:00") or task.spawned_at.endswith("Z")
+        )
+        self.assertIn(".", task.spawned_at)
+
+    def test_task_rejects_invalid_state(self):
+        with self.assertRaises(ValueError):
+            self.tm.Task(task_id="t1", task_type="apply", state="nonsense")
+
+    def test_dispatch_applied_transitions_to_terminated_applied(self):
+        task = self.tm.Task(task_id="t1", task_type="apply_one_job")
+
+        def phase_returns_applied(t):
+            return {"outcome": "applied", "details": {"ref_number": "ABC123"}}
+
+        out = self.tm.task_dispatch(task, phase_returns_applied)
+        self.assertEqual(out["outcome"], "applied")
+        self.assertEqual(task.state, self.tm.TASK_STATE_TERMINATED)
+        self.assertEqual(task.terminated_reason, self.tm.TASK_TERMINATED_APPLIED)
+
+    def test_dispatch_skipped_transitions_to_terminated_skipped(self):
+        task = self.tm.Task(task_id="t1", task_type="apply_one_job")
+
+        def phase_returns_skipped(t):
+            return {"outcome": "skipped", "details": {"reason": "external_apply_only"}}
+
+        out = self.tm.task_dispatch(task, phase_returns_skipped)
+        self.assertEqual(task.state, self.tm.TASK_STATE_TERMINATED)
+        self.assertEqual(task.terminated_reason, self.tm.TASK_TERMINATED_SKIPPED)
+
+    def test_dispatch_interrupt_stays_running_not_terminated(self):
+        """Interrupt is operator-pause, not termination. Task stays RUNNING
+        so the next dispatcher call re-enters the phase function."""
+        task = self.tm.Task(task_id="t1", task_type="apply_one_job")
+
+        def phase_returns_interrupt(t):
+            return {"outcome": "interrupt", "details": {"reason": "captcha_present"}}
+
+        out = self.tm.task_dispatch(task, phase_returns_interrupt)
+        self.assertEqual(task.state, self.tm.TASK_STATE_RUNNING)
+        self.assertIsNone(task.terminated_reason)
+
+    def test_dispatch_failed_transitions_to_terminated_failed(self):
+        task = self.tm.Task(task_id="t1", task_type="apply_one_job")
+
+        def phase_returns_failed(t):
+            return {"outcome": "failed", "details": {"reason": "timeout"}}
+
+        out = self.tm.task_dispatch(task, phase_returns_failed)
+        self.assertEqual(task.state, self.tm.TASK_STATE_TERMINATED)
+        self.assertEqual(task.terminated_reason, self.tm.TASK_TERMINATED_FAILED)
+
+    def test_dispatch_unknown_outcome_terminates_as_failed_with_note(self):
+        """Unknown outcome → fail loud, not silently advance. State-machine
+        violation if we let drift go."""
+        task = self.tm.Task(task_id="t1", task_type="apply_one_job")
+
+        def phase_returns_garbage(t):
+            return {"outcome": "tornado", "details": {}}
+
+        out = self.tm.task_dispatch(task, phase_returns_garbage)
+        self.assertEqual(task.state, self.tm.TASK_STATE_TERMINATED)
+        self.assertEqual(task.terminated_reason, self.tm.TASK_TERMINATED_FAILED)
+        self.assertIn("_dispatcher_note", out["details"])
+
+    def test_dispatch_on_terminated_task_raises(self):
+        """REGRESSION: re-entering a terminated task is a state-machine
+        violation; dispatcher refuses rather than silently restarts it."""
+        task = self.tm.Task(task_id="t1", task_type="apply_one_job")
+
+        def applied(t):
+            return {"outcome": "applied", "details": {}}
+
+        self.tm.task_dispatch(task, applied)
+        self.assertEqual(task.state, self.tm.TASK_STATE_TERMINATED)
+        with self.assertRaises(RuntimeError):
+            self.tm.task_dispatch(task, applied)
+
+    def test_grounded_apply_flow_round_trip(self):
+        """Compose a fake apply-one-job flow end-to-end through the
+        dispatcher: spawned → running (find_apply skipping) → terminated
+        SKIPPED. Proves the v0 model works against the existing phase shape."""
+        task = self.tm.Task(
+            task_id="apply_001",
+            task_type="apply_one_job",
+            target={"url": "https://www.indeed.com/viewjob?jk=fake", "jk": "fake"},
+            params={"resume_path": "/tmp/resume.pdf"},
+        )
+
+        # Phase 1: hand off — produces an interrupt (paused for operator).
+        def find_apply_phase(t):
+            return {
+                "outcome": "interrupt",
+                "details": {
+                    "_pending_directives": ["BROWSER_FIND: Apply"],
+                    "reason": "adapter_indeed: locating Apply button",
+                },
+            }
+
+        out = self.tm.task_dispatch(task, find_apply_phase)
+        self.assertEqual(task.state, self.tm.TASK_STATE_RUNNING)
+        self.assertEqual(out["outcome"], "interrupt")
+
+        # Phase 2: skip-companies filter hit on re-entry.
+        def skip_filter(t):
+            return {
+                "outcome": "skipped",
+                "details": {"reason": "skip_company:All Trades Staffing"},
+            }
+
+        out = self.tm.task_dispatch(task, skip_filter)
+        self.assertEqual(task.state, self.tm.TASK_STATE_TERMINATED)
+        self.assertEqual(task.terminated_reason, self.tm.TASK_TERMINATED_SKIPPED)
+
+
 if __name__ == "__main__":
     unittest.main()
