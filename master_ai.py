@@ -63,7 +63,11 @@ import base64, re, time, shutil, hashlib, platform, atexit, signal, threading, q
 from datetime import datetime
 from pathlib import Path
 from url_grounding import resolve_open_target_url
-from output_contract import OUTPUT_CONTRACT_TEXT, ACTION_CHAINING_RULE_TEXT
+from output_contract import (
+    OUTPUT_CONTRACT_TEXT,
+    ACTION_CHAINING_RULE_TEXT,
+    JSON_ENVELOPE_TEXT,
+)
 
 try:
     import harvest  # local cache + few-shot injection; ~/scripts/harvest.py
@@ -9092,9 +9096,90 @@ def _resume_skill_reply_from_turn(user_text, history):
 
 
 # ── REPLY PROCESSOR ──────────────────────────────────────────
+def _try_parse_json_envelope(reply):
+    """Try to parse `reply` as a Browser-Use 6-field JSON envelope.
+
+    On success, return (column_0_lines, None) where column_0_lines is the
+    envelope's action list converted to one directive per line. On failure,
+    return (None, error_str). Failure modes are NOT errors — they mean the
+    reply isn't an envelope and should fall through to the legacy regex
+    parser.
+
+    Envelope shape per parity rebuild pattern (c). Only `action` is
+    load-bearing; other fields are read for observability but don't gate
+    parsing. Each action item is either:
+      - A 1-key dict {"<TOKEN>": "<target>"} → "<TOKEN>: <target>"
+      - A 1-key dict with nested selector+value
+        {"<TOKEN>": {"selector": "<s>", "value": "<v>"}}
+        → "<TOKEN>: <s> :: <v>"
+      - A 2-key dict {"kind": "<TOKEN>", "target": "<target>"} → same line
+    """
+    import json as _json
+    s = (reply or "").strip()
+    if not s:
+        return None, "empty reply"
+    if s.startswith("```"):
+        # Strip a code-fence wrapper (```json ... ```)
+        nl = s.find("\n")
+        if nl == -1:
+            return None, "fence without body"
+        s = s[nl + 1:]
+        if s.endswith("```"):
+            s = s[:-3].rstrip()
+    if not s.startswith("{"):
+        return None, "not a json object"
+    try:
+        envelope = _json.loads(s)
+    except _json.JSONDecodeError as e:
+        return None, f"json parse error: {e.msg}"
+    if not isinstance(envelope, dict):
+        return None, "envelope is not a dict"
+    action = envelope.get("action")
+    if action is None:
+        return None, "no action field"
+    if not isinstance(action, list):
+        return None, "action is not a list"
+    lines = []
+    for item in action:
+        if not isinstance(item, dict):
+            continue
+        if "kind" in item and ("target" in item or "url" in item):
+            tok = str(item["kind"]).strip().rstrip(":")
+            tgt = str(item.get("target") or item.get("url") or "").strip()
+            if tok:
+                lines.append(f"{tok}: {tgt}")
+            continue
+        if len(item) != 1:
+            continue
+        k, v = next(iter(item.items()))
+        tok = str(k).strip().rstrip(":")
+        if not tok:
+            continue
+        if isinstance(v, dict):
+            sel = v.get("selector") or v.get("target") or v.get("url") or ""
+            val = v.get("value")
+            if val is not None:
+                lines.append(f"{tok}: {sel} :: {val}")
+            else:
+                lines.append(f"{tok}: {sel}")
+        else:
+            lines.append(f"{tok}: {v}")
+    if not lines:
+        return None, "no recognizable actions in envelope"
+    return "\n".join(lines), None
+
+
 def process_reply(reply, history, streamed=False, continue_after_tools=False):
     """Parse RUN: / READ: / CREATE: directives from AI reply and execute."""
     globals()["_CHAIN_SUDO_ACKS"] = 0
+    # Pattern (c): try the Browser-Use 6-field JSON envelope first.
+    # If the reply IS an envelope, replace it with column-0 lines so the
+    # rest of the parser (regex, shell-continuation joiner, dispatcher)
+    # sees the same shape it always has. If the reply isn't an envelope,
+    # fall through unchanged. See output_contract.JSON_ENVELOPE_TEXT.
+    _envelope_lines, _envelope_err = _try_parse_json_envelope(reply)
+    if _envelope_lines is not None:
+        reply = _envelope_lines
     raw_lines = reply.splitlines()
 
     def _join_shell_continuations(src_lines):
@@ -11250,6 +11335,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "hoping it lands.\n\n"
         f"{OUTPUT_CONTRACT_TEXT}"
         f"{ACTION_CHAINING_RULE_TEXT}"
+        f"{JSON_ENVELOPE_TEXT}"
         "JOB APPLICATION INTENT — when the user asks to apply for jobs, fill "
         "out job applications, submit resumes, or run a job-search-and-apply "
         "workflow (natural-language patterns: \"apply to N jobs,\" \"find "
