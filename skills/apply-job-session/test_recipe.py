@@ -223,6 +223,23 @@ class AuditLogPerDecisionTests(unittest.TestCase):
         self.assertEqual(entry["value_recorded"], "...5309")
         self.assertEqual(entry["value_redacted_reason"], "sensitivity:personal")
 
+    def test_audit_log_ts_is_iso_8601_with_subsecond_precision(self):
+        """Locks audit-log `ts` format: ISO 8601 UTC with microsecond
+        precision. Same format as audit_log_health.first_failure_since so
+        consumers can rely on a single timestamp shape across slots. Catches
+        a future regression that drops the format back to unix float."""
+        entry, _ = self._decide_and_get_audit_entry(
+            {"sensitivity": "none", "ref": "fname", "field_type": "text"},
+            {"confidence": 0.95, "value": "John", "source": "label_match"},
+        )
+        self.assertIsInstance(entry["ts"], str, f"ts must be string, got {type(entry['ts'])}")
+        self.assertIn("T", entry["ts"], f"ts missing date/time separator: {entry['ts']}")
+        self.assertTrue(
+            entry["ts"].endswith("+00:00") or entry["ts"].endswith("Z"),
+            f"ts must be UTC (suffix +00:00 or Z), got {entry['ts']}",
+        )
+        self.assertIn(".", entry["ts"], f"ts missing subsecond precision: {entry['ts']}")
+
 
 class AuditLogHealthSurfaceTests(unittest.TestCase):
     """Locks the surfacing invariant: when the audit log write fails,

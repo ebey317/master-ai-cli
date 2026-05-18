@@ -175,9 +175,13 @@ def _audit_log(entry: dict, path=None) -> None:
     are caught and surfaced via `audit_log_health`. The function does NOT
     raise — the executor must stay functional under degraded conditions —
     and does NOT retry. Surface the state, move on."""
-    import time
+    import datetime
     log_path = Path(path) if path else AUDIT_LOG_PATH
-    entry_full = {"ts": time.time(), **entry}
+    ts_iso = (
+        datetime.datetime.now(datetime.timezone.utc)
+        .isoformat(timespec="microseconds")
+    )
+    entry_full = {"ts": ts_iso, **entry}
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with open(log_path, "a") as f:
