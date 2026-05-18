@@ -1590,6 +1590,14 @@ def _api_parse_actions(reply, *, mode="plan", model="", source="", session_id=""
     page_url = None
     if isinstance(page_context, dict):
         page_url = page_context.get("url")
+    # `chrome_extension` is closed over by the nested add() to gate the
+    # _5wh card synthesis. Without this assignment add() raised NameError
+    # on every action; the try/except around the typed_actions parse loop
+    # (lines ~1670-1679) silently swallowed each NameError, causing every
+    # extension-sourced reply to return actions=[] even when the model
+    # emitted a clean directive chain. Diagnosed 2026-05-18 against an
+    # 11-field BROWSER_FILL chain that produced actions_count=0.
+    chrome_extension = (source or "").lower() == "chrome_extension"
 
     def add(action):
         if not isinstance(action, dict):
@@ -1673,10 +1681,21 @@ def _api_parse_actions(reply, *, mode="plan", model="", source="", session_id=""
         for parsed in _ta.parse_reply(reply or "", model=model or "", cwd=os.getcwd()):
             try:
                 add(parsed.to_dict())
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as _add_err:
+                # Was silently swallowed before 2026-05-18 — that hid a
+                # NameError on `chrome_extension` that dropped every action
+                # on chrome_extension-sourced replies. Log loudly now so the
+                # next swallowed bug screams instead of hiding.
+                print(
+                    f"WARN typed_action add failed: {type(_add_err).__name__}: {_add_err} "
+                    f"kind={getattr(parsed, 'kind', '?')} target={(getattr(parsed, 'target', '') or '')[:80]!r}",
+                    file=sys.stderr, flush=True,
+                )
+    except Exception as _outer_err:
+        print(
+            f"WARN typed_action parse failed: {type(_outer_err).__name__}: {_outer_err}",
+            file=sys.stderr, flush=True,
+        )
 
     for raw in (reply or "").splitlines():
         m = _ACTION_LINE_RE.match(raw)
