@@ -1436,5 +1436,202 @@ class PersistenceV0Tests(unittest.TestCase):
         self.assertEqual(ran, ["unb"])
 
 
+class AdapterWiringV0Tests(unittest.TestCase):
+    """Adapter-wiring v0 tests. Per browser-Claude design 2026-05-18 —
+    redirect_check_at_phase_entry runs BEFORE any DOM read so a redirect
+    to Paycom mid-flow doesn't cause Indeed selectors to be applied to a
+    Paycom DOM. Four required branches: proceed, observe (same-host),
+    promote (cross-host known), unsupported_host (cross-host unknown).
+    Plus redirect_chain cap enforcement."""
+
+    def setUp(self):
+        recipe._reset_framework_state_for_tests()
+        import task_model
+        self.tm = task_model
+
+    def tearDown(self):
+        recipe._reset_framework_state_for_tests()
+
+    def _task_with_primary(self, tab_id: int, url: str):
+        task = self.tm.Task(task_id="t_aw", task_type="apply_one_job")
+        task.tab_bindings.append(
+            self.tm.TaskTabBinding(
+                task_id="t_aw",
+                tab_id=tab_id,
+                role=self.tm.BINDING_ROLE_PRIMARY,
+                binding_source=self.tm.BINDING_SOURCE_OPERATOR_ADDED,
+                last_observed_url=url,
+            )
+        )
+        return task
+
+    # ── REQUIRED BRANCH 1: proceed ───────────────────────────────
+
+    def test_phase_entry_no_drift_returns_proceed(self):
+        """When the primary tab is still on the bound URL, adapter
+        proceeds with DOM read directly. No side effects."""
+        task = self._task_with_primary(100, "https://indeed.com/viewjob?jk=abc")
+        result = recipe.redirect_check_at_phase_entry(
+            task,
+            current_tab_urls={100: "https://indeed.com/viewjob?jk=abc"},
+        )
+        self.assertEqual(result["action"], "proceed")
+        self.assertNotIn("_side_effects", result)
+
+    # ── REQUIRED BRANCH 2: observe (same-host transition) ────────
+
+    def test_phase_entry_same_host_transition_uses_observe_not_promote(self):
+        """Workday step1 → step2 on the SAME myworkdayjobs.com host:
+        emits tab_binding_observe to refresh URL, does NOT trigger
+        promote, does NOT burn a redirect_chain slot. (This is the
+        same-host non-event from BC's adapter-wiring spec.)"""
+        task = self._task_with_primary(
+            200, "https://wd1.myworkdayjobs.com/Acme/apply/step1"
+        )
+        result = recipe.redirect_check_at_phase_entry(
+            task,
+            current_tab_urls={200: "https://wd1.myworkdayjobs.com/Acme/apply/step2"},
+        )
+        self.assertEqual(result["action"], "observe")
+        effects = result["_side_effects"]
+        self.assertEqual(len(effects), 1)
+        self.assertEqual(effects[0]["kind"], self.tm.SIDE_EFFECT_TAB_BINDING_OBSERVE)
+        self.assertEqual(effects[0]["tab_id"], 200)
+        self.assertEqual(
+            effects[0]["new_last_observed_url"],
+            "https://wd1.myworkdayjobs.com/Acme/apply/step2",
+        )
+
+        # Apply the observe — last_observed_url refreshed, chain untouched.
+        self.tm.apply_side_effects(task, effects)
+        self.assertEqual(
+            task.tab_bindings[0].last_observed_url,
+            "https://wd1.myworkdayjobs.com/Acme/apply/step2",
+        )
+        self.assertEqual(task.redirect_chain, [])
+
+    # ── REQUIRED BRANCH 3: promote (cross-host known) ────────────
+
+    def test_phase_entry_cross_host_to_known_host_emits_promote(self):
+        """indeed.com → smartapply.indeed.com is a cross-host redirect
+        to a KNOWN host. Emits promote side-effects (demote old primary,
+        add new primary) and appends host to redirect_chain on apply."""
+        task = self._task_with_primary(300, "https://indeed.com/viewjob?jk=abc")
+        result = recipe.redirect_check_at_phase_entry(
+            task,
+            current_tab_urls={
+                300: "https://indeed.com/viewjob?jk=abc",  # old still open
+                301: "https://smartapply.indeed.com/beta/apply/abc",
+            },
+        )
+        self.assertEqual(result["action"], "promote")
+        # detect_redirect_and_promote builds: demote old + add new
+        kinds = [e["kind"] for e in result["_side_effects"]]
+        self.assertIn(self.tm.SIDE_EFFECT_TAB_BINDING_DEMOTE, kinds)
+        self.assertIn(self.tm.SIDE_EFFECT_TAB_BINDING_ADD, kinds)
+
+        # Apply — redirect_chain gets the new host
+        self.tm.apply_side_effects(task, result["_side_effects"])
+        self.assertEqual(task.redirect_chain, ["smartapply.indeed.com"])
+
+    # ── REQUIRED BRANCH 4: unsupported_host (cross-host unknown) ─
+
+    def test_phase_entry_cross_host_to_unsupported_host_signals_unsupported(self):
+        """indeed.com → paycom.com is a cross-host redirect to an
+        UNKNOWN host. No promote (we can't drive Paycom yet). Adapter
+        surfaces as unsupported_host so the dispatcher marks the task
+        attention=needs_operator. (Per BC's A-refinement — no new
+        adapter_unknown registry; use existing INTERRUPTED + reason.)"""
+        task = self._task_with_primary(400, "https://indeed.com/viewjob?jk=abc")
+        result = recipe.redirect_check_at_phase_entry(
+            task,
+            current_tab_urls={400: "https://paycom.com/candidates/apply/abc"},
+        )
+        self.assertEqual(result["action"], "unsupported_host")
+        self.assertEqual(result["host"], "paycom.com")
+        self.assertEqual(result["from_host"], "indeed.com")
+        self.assertNotIn("_side_effects", result)
+
+    # ── REDIRECT-CHAIN CAP enforcement ───────────────────────────
+
+    def test_redirect_chain_at_cap_raises_taskredirectlooperror(self):
+        """When applying tab_binding_add would push redirect_chain past
+        MAX_REDIRECT_CHAIN, apply_side_effects raises before any
+        mutation. The new binding is NOT added; redirect_chain is NOT
+        appended. Operator decides how to recover."""
+        task = self._task_with_primary(500, "https://indeed.com/viewjob?jk=z")
+        # Pre-load chain to one below the cap so the next add would
+        # exceed it.
+        task.redirect_chain = ["a.com", "b.com", "c.com"]
+
+        from task_model import (
+            TaskTabBinding,
+            BINDING_ROLE_PRIMARY,
+            BINDING_SOURCE_ADAPTER_PROMOTED,
+            SIDE_EFFECT_TAB_BINDING_ADD,
+        )
+        new_binding = TaskTabBinding(
+            task_id="t_aw",
+            tab_id=501,
+            role=BINDING_ROLE_PRIMARY,
+            binding_source=BINDING_SOURCE_ADAPTER_PROMOTED,
+            last_observed_url="https://d.com/x",
+        )
+        bindings_before = len(task.tab_bindings)
+        chain_before = list(task.redirect_chain)
+
+        with self.assertRaises(self.tm.TaskRedirectLoopError):
+            self.tm.apply_side_effects(task, [{
+                "kind": SIDE_EFFECT_TAB_BINDING_ADD,
+                "binding": new_binding,
+            }])
+
+        # Pre-raise: nothing mutated
+        self.assertEqual(len(task.tab_bindings), bindings_before)
+        self.assertEqual(task.redirect_chain, chain_before)
+
+    # ── No-primary edge ──────────────────────────────────────────
+
+    def test_phase_entry_no_primary_returns_no_primary_action(self):
+        """Task with no primary binding can't be redirect-checked.
+        Surfaces as no_primary so caller raises an interrupt for the
+        operator to designate one."""
+        task = self.tm.Task(task_id="t_np", task_type="apply_one_job")
+        result = recipe.redirect_check_at_phase_entry(
+            task,
+            current_tab_urls={1: "https://anything.com/"},
+        )
+        self.assertEqual(result["action"], "no_primary")
+
+
+class AdapterWiringPersistenceRoundtripTest(unittest.TestCase):
+    """Confirms redirect_chain roundtrips through persistence cleanly.
+    Belongs alongside adapter-wiring v0 because the cap field is what
+    needs to survive a crash — losing it would re-enable a loop."""
+
+    def setUp(self):
+        recipe._reset_framework_state_for_tests()
+        import task_model, persistence, tempfile
+        self.tm = task_model
+        self.pers = persistence
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+        recipe._reset_framework_state_for_tests()
+
+    def test_redirect_chain_survives_save_load_roundtrip(self):
+        task = self.tm.Task(task_id="rc", task_type="apply_one_job")
+        task.redirect_chain = ["indeed.com", "smartapply.indeed.com"]
+        self.pers.save_task(task, base_path=self.base)
+        loaded = self.pers.load_task("rc", base_path=self.base)
+        self.assertEqual(
+            loaded.redirect_chain,
+            ["indeed.com", "smartapply.indeed.com"],
+        )
+        self.assertEqual(loaded.persistence_warnings, [])
+
+
 if __name__ == "__main__":
     unittest.main()

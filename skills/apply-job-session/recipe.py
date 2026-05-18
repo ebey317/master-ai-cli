@@ -584,6 +584,169 @@ def _read_form_step_id(page_signals: PageSignals) -> str:
     return "step_0"
 
 
+def redirect_check_at_phase_entry(
+    task,
+    current_tab_urls: dict,
+    host_adapters: dict = None,
+) -> dict:
+    """Adapter-wiring v0 entry hook — adapters call this BEFORE any DOM
+    read, per browser-Claude design 2026-05-18.
+
+    Compares the task's current primary binding (last_observed_url) against
+    the live tab URL. Returns a decision the adapter applies via the phase
+    outcome's _side_effects channel:
+
+      {"action": "proceed"}
+          Primary binding's tab is still on the bound URL. Caller can
+          read the DOM with the expected selectors.
+
+      {"action": "observe", "_side_effects": [...]}
+          Primary tab navigated within the SAME host (e.g., Workday
+          step1 → step2). Refresh last_observed_url but DON'T burn a
+          redirect_chain slot or fire promote. Caller proceeds to DOM
+          read after applying the side effect.
+
+      {"action": "promote", "_side_effects": [...]}
+          Primary tab navigated to a DIFFERENT but KNOWN host (e.g.,
+          indeed.com → smartapply.indeed.com, or → myworkdayjobs.com).
+          Returns demote-old-primary + add-new-primary side effects
+          (via detect_redirect_and_promote). Caller MUST NOT proceed
+          with the current step on the old binding — re-enter phase
+          dispatcher.
+
+      {"action": "unsupported_host", "host": "..."}
+          Primary tab navigated to a host NOT in host_adapters. Caller
+          returns an interrupt with details.reason='unsupported_host'
+          so the dispatcher can set attention to operator. Per BC's
+          A-refinement — no adapter_unknown registration system in v0;
+          we use the existing INTERRUPTED state with a structured
+          reason code.
+
+      {"action": "no_primary"}
+          Task has no primary binding yet. Adapter should not be
+          running at this point; caller surfaces as interrupt for
+          operator to designate the primary tab.
+
+    Why pure: caller is responsible for applying the side effects via the
+    phase outcome → dispatcher path. Keeps redirect-checking testable in
+    isolation and lets the same logic work for read_form_current_step,
+    fill_form_current_step, submit_gate, and verify phases."""
+    from task_model import (
+        TaskTabBinding,
+        BINDING_ROLE_PRIMARY,
+        BINDING_SOURCE_ADAPTER_PROMOTED,
+        SIDE_EFFECT_TAB_BINDING_OBSERVE,
+        detect_redirect_and_promote,
+    )
+
+    if host_adapters is None:
+        host_adapters = HOST_ADAPTERS
+
+    def _find_adapter(host: str):
+        for suffix, fn_name in host_adapters.items():
+            if host.endswith(suffix) or suffix in host:
+                return fn_name
+        return None
+
+    primary = None
+    for b in task.tab_bindings:
+        if b.role == BINDING_ROLE_PRIMARY:
+            primary = b
+            break
+
+    if primary is None:
+        return {"action": "no_primary"}
+
+    primary_current_url = current_tab_urls.get(primary.tab_id)
+    if primary_current_url is None:
+        # Tab closed — route_for_task will surface this as STALE_PRIMARY
+        # next dispatch. Adapter shouldn't try to recover here.
+        return {
+            "action": "stale_primary",
+            "reason": "primary_tab_closed",
+            "tab_id": primary.tab_id,
+        }
+
+    bound_host = (urlparse(primary.last_observed_url or "").hostname or "").lower()
+    primary_current_host = (urlparse(primary_current_url).hostname or "").lower()
+
+    # Case 2 check first: did a NEW tab open on a known ATS host? This
+    # covers the click-Apply pattern where Indeed opens smartapply in a
+    # new tab while the listing tab stays put. Has priority over
+    # primary-drift because if a new tab opened, that's where we should
+    # be acting now, regardless of whether the listing tab also moved.
+    bound_tab_ids = {b.tab_id for b in task.tab_bindings}
+    new_tab_promotes = []
+    for tab_id in sorted(set(current_tab_urls) - bound_tab_ids):
+        url = current_tab_urls[tab_id]
+        host = (urlparse(url).hostname or "").lower()
+        adapter = _find_adapter(host)
+        if adapter is not None:
+            new_tab_promotes.append((tab_id, host, adapter))
+
+    if new_tab_promotes:
+        tab_id, host, adapter = new_tab_promotes[0]
+        previous_urls = {primary.tab_id: primary.last_observed_url or ""}
+        side_effects = detect_redirect_and_promote(
+            task=task,
+            previous_tab_urls=previous_urls,
+            current_tab_urls=current_tab_urls,
+            redirect_host_substring=host,
+        )
+        return {
+            "action": "promote",
+            "to_host": host,
+            "to_adapter": adapter,
+            "_side_effects": side_effects,
+        }
+
+    # Case 1: primary tab drift in-place.
+    if not bound_host or primary_current_url == primary.last_observed_url:
+        # No drift — either we never recorded a URL (first read), or the
+        # tab is still on the same URL we read last time.
+        return {"action": "proceed"}
+
+    if bound_host == primary_current_host:
+        # Same-host page transition. Refresh last_observed_url via
+        # observe side-effect; don't append to redirect_chain. Per BC's
+        # B-with-host-change-append refinement — multi-step Workday forms
+        # walk through several URLs on the same host and shouldn't burn
+        # the cap.
+        return {
+            "action": "observe",
+            "_side_effects": [{
+                "kind": SIDE_EFFECT_TAB_BINDING_OBSERVE,
+                "tab_id": primary.tab_id,
+                "new_last_observed_url": primary_current_url,
+            }],
+        }
+
+    # Cross-host drift in primary tab. Is the new host known?
+    adapter_name = _find_adapter(primary_current_host)
+    if adapter_name is None:
+        return {
+            "action": "unsupported_host",
+            "host": primary_current_host,
+            "tab_id": primary.tab_id,
+            "from_host": bound_host,
+        }
+
+    # Known host, in-tab redirect — build the promote side effects.
+    previous_urls = {primary.tab_id: primary.last_observed_url or ""}
+    side_effects = detect_redirect_and_promote(
+        task=task,
+        previous_tab_urls=previous_urls,
+        current_tab_urls=current_tab_urls,
+        redirect_host_substring=primary_current_host,
+    )
+    return {
+        "action": "promote",
+        "to_host": primary_current_host,
+        "to_adapter": adapter_name,
+        "_side_effects": side_effects,
+    }
+
+
 def read_form_current_step(state) -> dict:
     """Phase function: read the current step's form, build FormDescriptorRecord,
     write to state.data. Three branches at entry per browser-Claude refinement:

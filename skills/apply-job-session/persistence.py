@@ -93,6 +93,7 @@ def _task_to_dict(task: Task) -> dict:
         "spawned_at": task.spawned_at,
         "persist_to_disk": task.persist_to_disk,
         "persistence_warnings": list(task.persistence_warnings),
+        "redirect_chain": list(task.redirect_chain),
     }
 
 
@@ -265,6 +266,18 @@ def _dict_to_task(raw: dict) -> Task:
     # carry forward. They join any new ones from this load.
     warnings = list(raw_warnings) + warnings
 
+    raw_chain = raw.get("redirect_chain", [])
+    if not isinstance(raw_chain, list):
+        raise TaskLoadError(
+            f"redirect_chain is {type(raw_chain).__name__}, expected list"
+        )
+    for entry in raw_chain:
+        if not isinstance(entry, str):
+            raise TaskLoadError(
+                "redirect_chain entries must be str (host strings); "
+                f"found {type(entry).__name__}"
+            )
+
     # Tab bindings — typed rebuild with their own validation.
     raw_bindings = raw.get("tab_bindings", [])
     if not isinstance(raw_bindings, list):
@@ -281,7 +294,7 @@ def _dict_to_task(raw: dict) -> Task:
     known_top = {
         "_schema", "task_id", "task_type", "state", "target", "params",
         "artifacts", "tab_bindings", "terminated_reason", "spawned_at",
-        "persist_to_disk", "persistence_warnings",
+        "persist_to_disk", "persistence_warnings", "redirect_chain",
     }
     for key in raw:
         if key not in known_top:
@@ -299,6 +312,7 @@ def _dict_to_task(raw: dict) -> Task:
         spawned_at=spawned_at,
         persist_to_disk=persist_to_disk,
         persistence_warnings=warnings,
+        redirect_chain=list(raw_chain),
     )
 
 

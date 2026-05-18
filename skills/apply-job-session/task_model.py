@@ -199,6 +199,12 @@ class Task:
                                          # optional fields. Non-empty blocks
                                          # dispatcher.advance until cleared
                                          # via persistence.confirm_recovered
+    redirect_chain: List[str] = field(default_factory=list)
+                                         # adapter-wiring v0 — appended one
+                                         # host per cross-host promote (NOT
+                                         # per same-host transition). Length
+                                         # > MAX_REDIRECT_CHAIN raises
+                                         # TaskRedirectLoopError on dispatch
 
     def __post_init__(self):
         if not self.spawned_at:
@@ -345,11 +351,46 @@ def task_dispatch(
 
 SIDE_EFFECT_TAB_BINDING_ADD = "tab_binding_add"
 SIDE_EFFECT_TAB_BINDING_DEMOTE = "tab_binding_demote"
+SIDE_EFFECT_TAB_BINDING_OBSERVE = "tab_binding_observe"
 
 _KNOWN_SIDE_EFFECTS = {
     SIDE_EFFECT_TAB_BINDING_ADD,
     SIDE_EFFECT_TAB_BINDING_DEMOTE,
+    SIDE_EFFECT_TAB_BINDING_OBSERVE,
 }
+
+
+# Redirect-loop guard — per browser-Claude adapter-wiring v0 design 2026-05-18.
+# task.redirect_chain appends one entry per cross-host promote (NOT per
+# same-host page transition). When the chain length exceeds this cap, the
+# dispatcher raises TaskRedirectLoopError — operator-recoverable, not a
+# silent termination. Cap=3 was chosen as the tightest value that still
+# admits legitimate flows (indeed → smartapply → after-login form = 2
+# hops); anything more than 3 cross-host hops in a single dispatch round
+# is pathological.
+
+MAX_REDIRECT_CHAIN = 3
+
+
+class TaskRedirectLoopError(RuntimeError):
+    """Raised by task_dispatch when applying a tab_binding_add side-effect
+    would push task.redirect_chain past MAX_REDIRECT_CHAIN. The promote
+    is NOT applied (state stays at the last clean primary); operator
+    must inspect the chain and decide whether to reset or unbind."""
+
+
+def _host_from_url(url: Optional[str]) -> str:
+    """Extract the bare host (no scheme, no port) from a URL. Returns ""
+    for None or unparseable input. Helper for redirect_chain tracking —
+    same-host transitions don't burn the cap, cross-host promotes do."""
+    if not url or not isinstance(url, str):
+        return ""
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        return (parsed.hostname or "").lower()
+    except (ValueError, TypeError):
+        return ""
 
 
 def apply_side_effects(task: Task, side_effects: list) -> list:
@@ -358,19 +399,39 @@ def apply_side_effects(task: Task, side_effects: list) -> list:
     fail-loud-not-silent on the count mismatch).
 
     For tab_binding_add: entry["binding"] is appended to task.tab_bindings.
+        The binding's host (from last_observed_url) is also appended to
+        task.redirect_chain — each new primary represents a cross-host
+        promote. Raises TaskRedirectLoopError if appending would push
+        the chain past MAX_REDIRECT_CHAIN, before any mutation lands.
     For tab_binding_demote: entry["tab_id"] looked up in task.tab_bindings;
         if found, its role and last_observed_url are updated to
         entry["new_role"] and entry["new_last_observed_url"]; if not
         found, recorded as skipped (the tab may have been unbound earlier
-        in the same dispatch — not a hard failure)."""
+        in the same dispatch — not a hard failure).
+    For tab_binding_observe: refreshes only last_observed_url on a binding,
+        without burning a redirect_chain slot. Per BC's adapter-wiring v0
+        refinement — same-host multi-step forms emit observe, not add."""
     applied = []
     for effect in side_effects or []:
         kind = effect.get("kind")
         if kind == SIDE_EFFECT_TAB_BINDING_ADD:
             binding = effect.get("binding")
             if isinstance(binding, TaskTabBinding):
+                # Project the post-append redirect_chain BEFORE mutating.
+                # If the cap would be exceeded, raise — operator decides
+                # whether to reset the chain or unbind. Promote not applied.
+                new_host = _host_from_url(binding.last_observed_url)
+                projected = task.redirect_chain + [new_host]
+                if len(projected) > MAX_REDIRECT_CHAIN:
+                    raise TaskRedirectLoopError(
+                        f"task {task.task_id} redirect_chain would exceed "
+                        f"cap {MAX_REDIRECT_CHAIN} (chain={projected!r}); "
+                        "operator must reset the chain or unbind"
+                    )
                 task.tab_bindings.append(binding)
-                applied.append({"kind": kind, "tab_id": binding.tab_id})
+                task.redirect_chain.append(new_host)
+                applied.append({"kind": kind, "tab_id": binding.tab_id,
+                               "redirect_chain_host": new_host})
             else:
                 applied.append({"kind": kind, "skipped": "invalid_binding_payload"})
         elif kind == SIDE_EFFECT_TAB_BINDING_DEMOTE:
@@ -394,6 +455,29 @@ def apply_side_effects(task: Task, side_effects: list) -> list:
                     matched.last_observed_url = new_url
                 applied.append({"kind": kind, "tab_id": tab_id,
                                "new_role": new_role})
+        elif kind == SIDE_EFFECT_TAB_BINDING_OBSERVE:
+            # Same-host page transition — refresh last_observed_url
+            # without burning a redirect_chain slot. Per BC's
+            # adapter-wiring v0 refinement: multi-step Workday/Paycom
+            # forms walk through several URLs on the same host; treating
+            # each as a redirect would burn the cap on legitimate flows.
+            tab_id = effect.get("tab_id")
+            new_url = effect.get("new_last_observed_url")
+            matched = None
+            for b in task.tab_bindings:
+                if b.tab_id == tab_id:
+                    matched = b
+                    break
+            if matched is None:
+                applied.append({"kind": kind, "tab_id": tab_id,
+                               "skipped": "binding_not_found"})
+            elif new_url is None or not isinstance(new_url, str):
+                applied.append({"kind": kind, "tab_id": tab_id,
+                               "skipped": "missing_new_last_observed_url"})
+            else:
+                matched.last_observed_url = new_url
+                applied.append({"kind": kind, "tab_id": tab_id,
+                               "new_last_observed_url": new_url})
         else:
             # Unknown side-effect kind — fail loud, don't silently drop.
             applied.append({"kind": kind or "<missing>",
@@ -551,12 +635,15 @@ __all__ = [
     "Task",
     "TaskTabBinding",
     "TaskPersistenceBlockedError",
+    "TaskRedirectLoopError",
+    "MAX_REDIRECT_CHAIN",
     "task_dispatch",
     "route_for_task",
     "apply_side_effects",
     "detect_redirect_and_promote",
     "SIDE_EFFECT_TAB_BINDING_ADD",
     "SIDE_EFFECT_TAB_BINDING_DEMOTE",
+    "SIDE_EFFECT_TAB_BINDING_OBSERVE",
     "TASK_STATE_SPAWNED",
     "TASK_STATE_RESOLVING_TARGET",
     "TASK_STATE_RUNNING",
