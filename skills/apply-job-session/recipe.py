@@ -107,12 +107,16 @@ INTERRUPT_TTL_MS_SENSITIVE = 15 * 60 * 1000  # 15 min — operator may walk to g
 AUDIT_LOG_PATH = SKILL_HOME / "audit_log.jsonl"
 
 
-def _audit_log(entry: dict) -> None:
-    """Append-only audit log. One JSON line per executor decision."""
+def _audit_log(entry: dict, path=None) -> None:
+    """Append-only audit log. One JSON line per executor decision. `path`
+    defaults to the module-level AUDIT_LOG_PATH; pass explicitly for test
+    isolation (chosen over monkey-patching per browser-Claude design review
+    2026-05-18)."""
     import time
+    log_path = Path(path) if path else AUDIT_LOG_PATH
     entry_full = {"ts": time.time(), **entry}
-    AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(AUDIT_LOG_PATH, "a") as f:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "a") as f:
         f.write(json.dumps(entry_full) + "\n")
 
 
@@ -139,15 +143,22 @@ def _audit_value(value, sensitivity: str, field_type=None):
     return None  # financial / government_id / freeform → never record
 
 
-def _audit_redact_reason(sensitivity: str, field_type=None):
+def _audit_redact_reason(sensitivity: str, field_type=None, has_value: bool = True):
+    """Reason `value_recorded` is empty/redacted. Sensitivity wins over
+    `no_value` so a refused government_id reads as sensitivity-refusal in the
+    audit trail, not "we had nothing to fill." `no_value` is reserved for
+    none-tier interrupt branches (stop_and_ask, disambiguate) where the
+    executor honestly had no match to suggest."""
     if sensitivity != SENSITIVITY_NONE:
         return f"sensitivity:{sensitivity}"
+    if not has_value:
+        return "no_value"
     if field_type == "textarea":
         return "freeform_field"
     return None
 
 
-def _executor_decide(field_descriptor: dict, match: dict) -> dict:
+def _executor_decide(field_descriptor: dict, match: dict, audit_path=None) -> dict:
     """Apply the executor's two-decision logic to one field. Returns a
     `decision` dict with `branch` and supporting payload. Always emits one
     audit log entry as a side effect (no silent decisions).
@@ -202,6 +213,7 @@ def _executor_decide(field_descriptor: dict, match: dict) -> dict:
         }
 
     # Decision 2 (and decision 1) both emit one audit entry. Every branch.
+    suggested = decision.get("suggested_value")
     _audit_log({
         "field_ref": field_descriptor.get("ref"),
         "field_label_visible": (field_descriptor.get("label") or {}).get("visible"),
@@ -211,11 +223,12 @@ def _executor_decide(field_descriptor: dict, match: dict) -> dict:
         "match_confidence": confidence,
         "match_signal_source": match.get("source"),
         "profile_field_used": match.get("profile_field"),
-        "value_recorded": _audit_value(decision.get("suggested_value"), sensitivity,
+        "value_recorded": _audit_value(suggested, sensitivity,
                                        field_descriptor.get("field_type")),
         "value_redacted_reason": _audit_redact_reason(sensitivity,
-                                                     field_descriptor.get("field_type")),
-    })
+                                                     field_descriptor.get("field_type"),
+                                                     has_value=(suggested is not None)),
+    }, path=audit_path)
 
     return decision
 
