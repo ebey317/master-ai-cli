@@ -67,6 +67,7 @@ from output_contract import (
     OUTPUT_CONTRACT_TEXT,
     ACTION_CHAINING_RULE_TEXT,
     JSON_ENVELOPE_TEXT,
+    ELEMENT_INDEXING_TEXT,
 )
 
 try:
@@ -11336,6 +11337,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
         f"{OUTPUT_CONTRACT_TEXT}"
         f"{ACTION_CHAINING_RULE_TEXT}"
         f"{JSON_ENVELOPE_TEXT}"
+        f"{ELEMENT_INDEXING_TEXT}"
         "JOB APPLICATION INTENT — when the user asks to apply for jobs, fill "
         "out job applications, submit resumes, or run a job-search-and-apply "
         "workflow (natural-language patterns: \"apply to N jobs,\" \"find "

@@ -52,6 +52,25 @@ JSON_ENVELOPE_TEXT = (
     "and plan-continuity. The dispatcher accepts either format.\n\n"
 )
 
+ELEMENT_INDEXING_TEXT = (
+    "ELEMENT INDEXING — when the [BROWSER PAGE CONTEXT] block includes an "
+    "`interactive_elements` field, each interactive element is prefixed with "
+    "an opaque index in square brackets: `[1] role \"name\" selector=X`. The "
+    "index is stable for the current page snapshot only — it changes on every "
+    "page read. Use `[N]` to refer to specific elements unambiguously in your "
+    "thinking and annotation lines (e.g. 'clicking element [3] to submit the "
+    "form'). The directive TARGET field still takes the explicit selector "
+    "from the same line: `BROWSER_CLICK: #search-button` (preferred), not "
+    "`BROWSER_CLICK: [3]`. (Future dispatcher work will also accept `[N]` "
+    "directly as a target and resolve it server-side, but until that lands "
+    "the explicit selector is the only reliable target form.)\n"
+    "Example interactive_elements line:\n"
+    "  [3] button \"Submit application\" selector=button.apply-submit\n"
+    "Correct directive use:\n"
+    "  BROWSER_CLICK: button.apply-submit\n"
+    "  Clicking element [3] to submit the application.\n\n"
+)
+
 ACTION_CHAINING_RULE_TEXT = (
     "ACTION CHAINING (PAGE-CHANGING LAST) — when chaining multiple directives in "
     "one reply, page-changing actions MUST be the LAST directive in the chain. "

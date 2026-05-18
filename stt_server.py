@@ -751,6 +751,20 @@ def _render_page_tree(tree):
     return "\n".join(out)
 
 
+_ELEMENT_INDEX_PREFIX_RE = re.compile(r'(?m)^(\d+)\.\s')
+
+
+def _rewrite_element_indices(elements_text):
+    """Rewrite content_script.js interactiveElements() output from
+    `N. role "name" selector=X` to `[N] role "name" selector=X` per parity
+    rebuild pattern (d). Visual change to the prompt context only — the
+    dispatcher still consumes the explicit selector from each line.
+    """
+    if not elements_text:
+        return elements_text
+    return _ELEMENT_INDEX_PREFIX_RE.sub(r'[\1] ', elements_text)
+
+
 def _format_page_context(page_context):
     """Format browser page_context dict to model-facing text.
 
@@ -785,6 +799,17 @@ def _format_page_context(page_context):
         sanitized = _sanitize_page_context_field(raw, key, fired_acc, fields_acc)
         val = _safe_context_text(sanitized, limit=limit)
         if val:
+            # Pattern (d): when serializing interactive_elements, rewrite the
+            # leading `N. ` index prefix produced by content_script.js
+            # interactiveElements() (line 431) into `[N] ` so the indexing
+            # reads as a directive-target-shaped token rather than as
+            # English-language enumeration. The model can refer to an
+            # element as `[N]` in its thinking; the dispatcher accepts
+            # either the explicit selector or `[N]` as the directive
+            # target (server-side resolution of `[N]` to selector is a
+            # follow-up commit). See output_contract.ELEMENT_INDEXING_TEXT.
+            if key == "interactive_elements":
+                val = _rewrite_element_indices(val)
             fields.append(f"{key}: {val}")
 
     tree = page_context.get("tree")
