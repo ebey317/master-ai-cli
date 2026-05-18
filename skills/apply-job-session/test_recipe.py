@@ -936,5 +936,204 @@ class CrossTabRoutingV0Tests(unittest.TestCase):
         self.assertEqual(out["details"]["tab_id"], 200)
 
 
+class SideEffectsAndRedirectPromoteTests(unittest.TestCase):
+    """Adapter-integration v0 tests — side-effects list applied by
+    dispatcher, plus detect_redirect_and_promote helper for adapters.
+    Per browser-Claude design lock 2026-05-18 (b-plus shape — side
+    effects list, not magic keys in outcome details, not yet TaskPatch
+    dataclass)."""
+
+    def setUp(self):
+        recipe._reset_framework_state_for_tests()
+        import task_model
+        self.tm = task_model
+
+    def tearDown(self):
+        recipe._reset_framework_state_for_tests()
+
+    def test_dispatcher_applies_tab_binding_add_side_effect(self):
+        """Phase emits a tab_binding_add side effect; dispatcher applies it
+        to the task on interrupt outcome."""
+        task = self.tm.Task(task_id="t1", task_type="apply_one_job")
+        binding = self.tm.TaskTabBinding(
+            task_id="t1", tab_id=200,
+            role=self.tm.BINDING_ROLE_PRIMARY,
+            binding_source=self.tm.BINDING_SOURCE_ADAPTER_PROMOTED,
+            last_observed_url="https://smartapply.indeed.com/form",
+        )
+
+        def phase_emits_binding(t):
+            return {
+                "outcome": "interrupt",
+                "details": {
+                    "reason": "redirect_to_smartapply",
+                    "_side_effects": [{
+                        "kind": self.tm.SIDE_EFFECT_TAB_BINDING_ADD,
+                        "binding": binding,
+                    }],
+                },
+            }
+
+        out = self.tm.task_dispatch(task, phase_emits_binding)
+        self.assertEqual(len(task.tab_bindings), 1)
+        self.assertEqual(task.tab_bindings[0].tab_id, 200)
+        # Dispatcher records what got applied for audit/debug
+        self.assertIn("_side_effects_applied", out["details"])
+
+    def test_dispatcher_applies_tab_binding_demote_side_effect(self):
+        """Phase emits a tab_binding_demote; dispatcher mutates the
+        existing binding's role + last_observed_url in place."""
+        existing = self.tm.TaskTabBinding(
+            task_id="t1", tab_id=100,
+            role=self.tm.BINDING_ROLE_PRIMARY,
+            binding_source=self.tm.BINDING_SOURCE_OPERATOR_ADDED,
+            last_observed_url="https://www.indeed.com/viewjob?jk=abc",
+        )
+        task = self.tm.Task(
+            task_id="t1", task_type="apply_one_job",
+            tab_bindings=[existing],
+        )
+
+        def phase_emits_demote(t):
+            return {
+                "outcome": "interrupt",
+                "details": {
+                    "reason": "primary_demoted_to_reference",
+                    "_side_effects": [{
+                        "kind": self.tm.SIDE_EFFECT_TAB_BINDING_DEMOTE,
+                        "tab_id": 100,
+                        "new_role": self.tm.BINDING_ROLE_REFERENCE,
+                        "new_last_observed_url": "https://www.indeed.com/viewjob?jk=abc&seen=true",
+                    }],
+                },
+            }
+
+        self.tm.task_dispatch(task, phase_emits_demote)
+        self.assertEqual(task.tab_bindings[0].role, self.tm.BINDING_ROLE_REFERENCE)
+        self.assertIn("seen=true", task.tab_bindings[0].last_observed_url)
+
+    def test_unknown_side_effect_kind_is_skipped_loudly_not_silently(self):
+        """Unknown side-effect kinds get recorded as skipped — fail loud,
+        don't silently drop and lose information."""
+        task = self.tm.Task(task_id="t1", task_type="apply_one_job")
+
+        def phase_emits_garbage(t):
+            return {
+                "outcome": "interrupt",
+                "details": {
+                    "_side_effects": [{"kind": "tornado", "data": "wat"}],
+                },
+            }
+
+        out = self.tm.task_dispatch(task, phase_emits_garbage)
+        applied = out["details"]["_side_effects_applied"]
+        self.assertEqual(applied[0]["kind"], "tornado")
+        self.assertEqual(applied[0]["skipped"], "unknown_side_effect_kind")
+
+    def test_detect_redirect_and_promote_builds_correct_side_effects(self):
+        """Helper detects new tab on redirect host, builds side-effects list
+        with demote-of-old-primary + add-new-primary. Pure function — does
+        not mutate task."""
+        old_primary = self.tm.TaskTabBinding(
+            task_id="t1", tab_id=100,
+            role=self.tm.BINDING_ROLE_PRIMARY,
+            binding_source=self.tm.BINDING_SOURCE_OPERATOR_ADDED,
+            last_observed_url="https://www.indeed.com/viewjob?jk=xyz",
+        )
+        task = self.tm.Task(
+            task_id="t1", task_type="apply_one_job",
+            tab_bindings=[old_primary],
+        )
+        previous_tab_urls = {100: "https://www.indeed.com/viewjob?jk=xyz"}
+        current_tab_urls = {
+            100: "https://www.indeed.com/viewjob?jk=xyz",
+            201: "https://smartapply.indeed.com/beta/indeedapply/form/start",
+        }
+
+        effects = self.tm.detect_redirect_and_promote(
+            task, previous_tab_urls, current_tab_urls,
+            redirect_host_substring="smartapply.indeed.com",
+        )
+        # One demote, one add
+        kinds = [e["kind"] for e in effects]
+        self.assertEqual(
+            sorted(kinds),
+            sorted([self.tm.SIDE_EFFECT_TAB_BINDING_DEMOTE,
+                    self.tm.SIDE_EFFECT_TAB_BINDING_ADD]),
+        )
+        # Demote targets the existing primary tab_id
+        demote = next(e for e in effects
+                      if e["kind"] == self.tm.SIDE_EFFECT_TAB_BINDING_DEMOTE)
+        self.assertEqual(demote["tab_id"], 100)
+        self.assertEqual(demote["new_role"], self.tm.BINDING_ROLE_REFERENCE)
+        # Add targets the new tab
+        add = next(e for e in effects
+                   if e["kind"] == self.tm.SIDE_EFFECT_TAB_BINDING_ADD)
+        self.assertEqual(add["binding"].tab_id, 201)
+        self.assertEqual(add["binding"].role, self.tm.BINDING_ROLE_PRIMARY)
+        self.assertEqual(
+            add["binding"].binding_source,
+            self.tm.BINDING_SOURCE_ADAPTER_PROMOTED,
+        )
+        # Helper did NOT mutate task
+        self.assertEqual(task.tab_bindings[0].role, self.tm.BINDING_ROLE_PRIMARY)
+
+    def test_detect_redirect_no_new_tab_returns_empty_list(self):
+        """If no new tab opens on the redirect host, no side effects."""
+        task = self.tm.Task(task_id="t1", task_type="apply_one_job")
+        effects = self.tm.detect_redirect_and_promote(
+            task,
+            previous_tab_urls={100: "https://www.indeed.com/viewjob?jk=a"},
+            current_tab_urls={100: "https://www.indeed.com/viewjob?jk=a"},
+            redirect_host_substring="smartapply.indeed.com",
+        )
+        self.assertEqual(effects, [])
+
+    def test_end_to_end_redirect_promote_through_dispatcher(self):
+        """Helper output flows through phase outcome → dispatcher →
+        task mutation. Proves the full integration shape."""
+        old_primary = self.tm.TaskTabBinding(
+            task_id="t1", tab_id=100,
+            role=self.tm.BINDING_ROLE_PRIMARY,
+            binding_source=self.tm.BINDING_SOURCE_OPERATOR_ADDED,
+            last_observed_url="https://www.indeed.com/viewjob?jk=q",
+        )
+        task = self.tm.Task(
+            task_id="t1", task_type="apply_one_job",
+            tab_bindings=[old_primary],
+        )
+        previous = {100: "https://www.indeed.com/viewjob?jk=q"}
+        current = {
+            100: "https://www.indeed.com/viewjob?jk=q",
+            301: "https://smartapply.indeed.com/beta/indeedapply/form",
+        }
+
+        # Phase function that uses the helper to build its side effects
+        def redirect_phase(t):
+            effects = self.tm.detect_redirect_and_promote(
+                t, previous, current, "smartapply.indeed.com",
+            )
+            return {
+                "outcome": "interrupt",
+                "details": {
+                    "reason": "click_apply_redirected_to_smartapply",
+                    "_side_effects": effects,
+                },
+            }
+
+        self.tm.task_dispatch(task, redirect_phase)
+
+        # After dispatch: 2 bindings (old demoted, new added)
+        self.assertEqual(len(task.tab_bindings), 2)
+        old = next(b for b in task.tab_bindings if b.tab_id == 100)
+        new = next(b for b in task.tab_bindings if b.tab_id == 301)
+        self.assertEqual(old.role, self.tm.BINDING_ROLE_REFERENCE)
+        self.assertEqual(new.role, self.tm.BINDING_ROLE_PRIMARY)
+        self.assertEqual(
+            new.binding_source,
+            self.tm.BINDING_SOURCE_ADAPTER_PROMOTED,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

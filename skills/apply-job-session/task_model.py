@@ -247,6 +247,12 @@ def task_dispatch(task: Task, phase_fn: Callable[[Task], dict]) -> dict:
         # Paused for operator action — stay RUNNING. The next dispatch
         # re-enters the phase function (operator-driven resume).
         task.state = TASK_STATE_RUNNING
+        # Apply any side effects the phase emitted (e.g., new tab
+        # bindings from adapter auto-promote on redirect).
+        side_effects = (outcome_dict.get("details") or {}).get("_side_effects")
+        if side_effects:
+            applied = apply_side_effects(task, side_effects)
+            outcome_dict["details"]["_side_effects_applied"] = applied
     else:
         # Unknown outcome — treat as failure rather than silently advance.
         # Better to fail loud than let the state machine drift.
@@ -257,6 +263,155 @@ def task_dispatch(task: Task, phase_fn: Callable[[Task], dict]) -> dict:
         ] = f"unknown outcome {outcome!r}, terminated as failed"
 
     return outcome_dict
+
+
+# ─── Side-effect protocol — phase → task mutations via dispatcher ────
+#
+# Per browser-Claude design lock 2026-05-18 (b-plus shape). Phase
+# functions don't mutate the task directly. Instead, they return outcome
+# dicts with an optional `_side_effects` list in `details`. Each entry is
+# a self-describing dict with a `kind` field plus kind-specific payload.
+# The dispatcher iterates the list and applies each effect to the task.
+#
+# Why a list rather than a TaskPatch dataclass:
+#   - Append-only, ordered, each entry self-describing (matches the
+#     pattern audit logs and event sources use)
+#   - Flexible enough that adding a new side-effect kind doesn't require
+#     a schema migration
+#   - Discoverable enough at v0 scale — at five-plus side-effect types
+#     we'd promote to a typed TaskPatch dataclass (browser-Claude flagged
+#     this as the future shape if the list gets unstructured)
+#
+# Why side-effects rather than magic keys in outcome details:
+#   - Outcome details are currently a free-for-all (debugging info,
+#     directive payloads, anything a phase wants to communicate). Adding
+#     `_tab_binding_update` as a sentinel the dispatcher reads creates
+#     an implicit protocol — the dispatcher has to know which keys
+#     are state mutations vs ordinary debug detail. Side-effects are
+#     EXPLICITLY mutations. Single-purpose surface.
+#
+# v0 side-effect kinds:
+#   tab_binding_add       — append a new TaskTabBinding to task.tab_bindings
+#   tab_binding_demote    — change an existing binding's role and update
+#                           its last_observed_url to the URL the tab was
+#                           on at demotion time
+
+SIDE_EFFECT_TAB_BINDING_ADD = "tab_binding_add"
+SIDE_EFFECT_TAB_BINDING_DEMOTE = "tab_binding_demote"
+
+_KNOWN_SIDE_EFFECTS = {
+    SIDE_EFFECT_TAB_BINDING_ADD,
+    SIDE_EFFECT_TAB_BINDING_DEMOTE,
+}
+
+
+def apply_side_effects(task: Task, side_effects: list) -> list:
+    """Apply each side-effect entry to the task in order. Returns a list
+    of effects actually applied (skipping unknown kinds with a note —
+    fail-loud-not-silent on the count mismatch).
+
+    For tab_binding_add: entry["binding"] is appended to task.tab_bindings.
+    For tab_binding_demote: entry["tab_id"] looked up in task.tab_bindings;
+        if found, its role and last_observed_url are updated to
+        entry["new_role"] and entry["new_last_observed_url"]; if not
+        found, recorded as skipped (the tab may have been unbound earlier
+        in the same dispatch — not a hard failure)."""
+    applied = []
+    for effect in side_effects or []:
+        kind = effect.get("kind")
+        if kind == SIDE_EFFECT_TAB_BINDING_ADD:
+            binding = effect.get("binding")
+            if isinstance(binding, TaskTabBinding):
+                task.tab_bindings.append(binding)
+                applied.append({"kind": kind, "tab_id": binding.tab_id})
+            else:
+                applied.append({"kind": kind, "skipped": "invalid_binding_payload"})
+        elif kind == SIDE_EFFECT_TAB_BINDING_DEMOTE:
+            tab_id = effect.get("tab_id")
+            new_role = effect.get("new_role")
+            new_url = effect.get("new_last_observed_url")
+            matched = None
+            for b in task.tab_bindings:
+                if b.tab_id == tab_id:
+                    matched = b
+                    break
+            if matched is None:
+                applied.append({"kind": kind, "tab_id": tab_id,
+                               "skipped": "binding_not_found"})
+            elif new_role not in _BINDING_ROLES:
+                applied.append({"kind": kind, "tab_id": tab_id,
+                               "skipped": f"invalid_new_role:{new_role}"})
+            else:
+                matched.role = new_role
+                if new_url is not None:
+                    matched.last_observed_url = new_url
+                applied.append({"kind": kind, "tab_id": tab_id,
+                               "new_role": new_role})
+        else:
+            # Unknown side-effect kind — fail loud, don't silently drop.
+            applied.append({"kind": kind or "<missing>",
+                           "skipped": "unknown_side_effect_kind"})
+    return applied
+
+
+def detect_redirect_and_promote(
+    task: Task,
+    previous_tab_urls: Dict[int, str],
+    current_tab_urls: Dict[int, str],
+    redirect_host_substring: str,
+) -> list:
+    """Helper for adapters: detect that a click caused a new tab to open
+    on a redirect target (e.g., adapter_indeed click_apply landing the
+    operator on smartapply.indeed.com in a new tab). Returns a side-effects
+    list ready to attach to a phase outcome.
+
+    What it does:
+      - Identifies new tab IDs present in current_tab_urls but not in
+        previous_tab_urls
+      - For each new tab whose URL contains redirect_host_substring,
+        builds a tab_binding_add side effect (role=primary, source=
+        adapter_promoted)
+      - For each existing primary binding in the task whose tab is still
+        present in current_tab_urls, builds a tab_binding_demote side
+        effect (role=reference, last_observed_url=current_url at the
+        time of demotion)
+
+    Pure function — does not mutate the task. Caller attaches the returned
+    list as `_side_effects` in the phase outcome, and the dispatcher's
+    apply_side_effects does the actual mutation."""
+    side_effects = []
+    new_tab_ids = set(current_tab_urls) - set(previous_tab_urls)
+
+    # Demote existing primaries that are still live — they had been
+    # primary before the redirect; now they're reference.
+    for b in task.tab_bindings:
+        if b.role != BINDING_ROLE_PRIMARY:
+            continue
+        if b.tab_id in current_tab_urls:
+            side_effects.append({
+                "kind": SIDE_EFFECT_TAB_BINDING_DEMOTE,
+                "tab_id": b.tab_id,
+                "new_role": BINDING_ROLE_REFERENCE,
+                "new_last_observed_url": current_tab_urls[b.tab_id],
+            })
+
+    # Promote each new tab on the redirect host as a fresh primary.
+    for tab_id in sorted(new_tab_ids):
+        url = current_tab_urls[tab_id]
+        if redirect_host_substring in url:
+            new_binding = TaskTabBinding(
+                task_id=task.task_id,
+                tab_id=tab_id,
+                role=BINDING_ROLE_PRIMARY,
+                binding_source=BINDING_SOURCE_ADAPTER_PROMOTED,
+                last_observed_url=url,
+            )
+            side_effects.append({
+                "kind": SIDE_EFFECT_TAB_BINDING_ADD,
+                "binding": new_binding,
+            })
+
+    return side_effects
 
 
 # ─── Cross-tab routing function ──────────────────────────────────────
@@ -350,6 +505,10 @@ __all__ = [
     "TaskTabBinding",
     "task_dispatch",
     "route_for_task",
+    "apply_side_effects",
+    "detect_redirect_and_promote",
+    "SIDE_EFFECT_TAB_BINDING_ADD",
+    "SIDE_EFFECT_TAB_BINDING_DEMOTE",
     "TASK_STATE_SPAWNED",
     "TASK_STATE_RESOLVING_TARGET",
     "TASK_STATE_RUNNING",
