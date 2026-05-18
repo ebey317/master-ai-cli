@@ -31,7 +31,8 @@ class LoopState(str, Enum):
     PLANNING = "planning"
     EXECUTING = "executing"
     AWAITING_TOOL_RESULT = "awaiting_tool_result"
-    AWAITING_USER = "awaiting_user"
+    AWAITING_INFO = "awaiting_info"
+    AWAITING_CONFIRM = "awaiting_confirm"
     DONE = "done"
 
 
@@ -41,6 +42,9 @@ class Event(str, Enum):
     MODEL_EMITTED_DIRECTIVE = "model_emitted_directive"
     MODEL_EMITTED_DONE = "model_emitted_done"
     MODEL_EMITTED_QUESTION = "model_emitted_question"
+    MODEL_EMITTED_PROPOSAL = "model_emitted_proposal"
+    USER_APPROVED = "user_approved"
+    USER_DECLINED = "user_declined"
     TOOL_DISPATCHED = "tool_dispatched"
     TOOL_RESULT = "tool_result"
     TERMINAL_RESULT = "terminal_result"
@@ -73,7 +77,8 @@ _TRANSITIONS: dict[tuple[LoopState, Event], LoopState] = {
 
     (LoopState.PLANNING, Event.MODEL_EMITTED_DIRECTIVE): LoopState.EXECUTING,
     (LoopState.PLANNING, Event.MODEL_EMITTED_DONE): LoopState.DONE,
-    (LoopState.PLANNING, Event.MODEL_EMITTED_QUESTION): LoopState.AWAITING_USER,
+    (LoopState.PLANNING, Event.MODEL_EMITTED_QUESTION): LoopState.AWAITING_INFO,
+    (LoopState.PLANNING, Event.MODEL_EMITTED_PROPOSAL): LoopState.AWAITING_CONFIRM,
 
     (LoopState.EXECUTING, Event.TOOL_DISPATCHED): LoopState.AWAITING_TOOL_RESULT,
 
@@ -81,7 +86,17 @@ _TRANSITIONS: dict[tuple[LoopState, Event], LoopState] = {
     (LoopState.AWAITING_TOOL_RESULT, Event.TERMINAL_RESULT): LoopState.DONE,
     (LoopState.AWAITING_TOOL_RESULT, Event.CONTINUE): LoopState.PLANNING,
 
-    (LoopState.AWAITING_USER, Event.USER_INPUT): LoopState.PLANNING,
+    # Hard block: model needs a value from the user. Resume by re-planning on
+    # the next user message; CONTINUE pumps are refused (loop stays paused).
+    (LoopState.AWAITING_INFO, Event.USER_INPUT): LoopState.PLANNING,
+
+    # Soft block: model proposed an action, user confirms or declines.
+    # USER_INPUT (a fresh operator turn, e.g. "wait do this other thing
+    # instead") is also accepted — re-plans against the new ask. CONTINUE
+    # pumps are refused (loop stays paused).
+    (LoopState.AWAITING_CONFIRM, Event.USER_APPROVED): LoopState.EXECUTING,
+    (LoopState.AWAITING_CONFIRM, Event.USER_DECLINED): LoopState.DONE,
+    (LoopState.AWAITING_CONFIRM, Event.USER_INPUT): LoopState.PLANNING,
 
     (LoopState.DONE, Event.USER_INPUT): LoopState.PLANNING,
     (LoopState.DONE, Event.NEW_SESSION): LoopState.IDLE,
@@ -92,6 +107,14 @@ _MODEL_EMIT_EVENTS = {
     Event.MODEL_EMITTED_DIRECTIVE,
     Event.MODEL_EMITTED_DONE,
     Event.MODEL_EMITTED_QUESTION,
+    Event.MODEL_EMITTED_PROPOSAL,
+}
+
+
+_AWAITING_STATES = {
+    LoopState.AWAITING_INFO,
+    LoopState.AWAITING_CONFIRM,
+    LoopState.AWAITING_TOOL_RESULT,
 }
 
 
@@ -137,7 +160,8 @@ class FSM:
         if event in _SESSION_OPENING_EVENTS and prev in (
             LoopState.IDLE,
             LoopState.DONE,
-            LoopState.AWAITING_USER,
+            LoopState.AWAITING_INFO,
+            LoopState.AWAITING_CONFIRM,
         ):
             self.turn_count = 0
             self.terminal_reason = None
@@ -151,6 +175,11 @@ class FSM:
 
         if new_state == LoopState.DONE:
             self.terminal_reason = reason or self._infer_terminal_reason(event)
+
+        # USER_DECLINED out of AWAITING_CONFIRM lands in DONE; record the
+        # operator-abort reason unless caller supplied an explicit one.
+        if event == Event.USER_DECLINED and new_state == LoopState.DONE:
+            self.terminal_reason = reason or TerminalReason.OPERATOR_ABORT
 
         if (
             prev == LoopState.PLANNING
@@ -173,6 +202,8 @@ class FSM:
             return TerminalReason.MODEL_DONE
         if event == Event.TERMINAL_RESULT:
             return TerminalReason.TOOL_TERMINAL
+        if event == Event.USER_DECLINED:
+            return TerminalReason.OPERATOR_ABORT
         return TerminalReason.NO_ACTIONS
 
     def force_terminal(self, reason: TerminalReason) -> None:
@@ -201,12 +232,27 @@ class FSM:
             if (is_done and self.terminal_reason is not None)
             else None
         )
+        # awaiting_kind exposes which kind of pause the loop is in:
+        # "info" = hard block, model asked the user a question and the loop
+        # cannot continue until the user supplies a value;
+        # "confirm" = soft block, model proposed an action and is waiting on
+        # USER_APPROVED / USER_DECLINED (the client-side approval dock).
+        # A well-formed run-prompt that pre-answers clarifying questions
+        # should clear "confirm" gates without round-tripping back through
+        # the operator; "info" gates always halt until the operator responds.
+        if self.state == LoopState.AWAITING_INFO:
+            awaiting_kind = "info"
+        elif self.state == LoopState.AWAITING_CONFIRM:
+            awaiting_kind = "confirm"
+        else:
+            awaiting_kind = None
         return {
             "done": is_done,
             "active": is_active,
             "terminal_reason": terminal_reason_str,
             "terminal_authority": is_done,
             "state": self.state.value,
+            "awaiting_kind": awaiting_kind,
             "turn_id": self.turn_id,
             "parent_turn_id": self.parent_turn_id,
             "turn_count": self.turn_count,
@@ -243,18 +289,107 @@ def replay_17_turn_auto_fire() -> dict:
     }
 
 
+def replay_awaiting_info_holds_against_continue() -> dict:
+    """Hard block: model asks a clarifying question (MODEL_EMITTED_QUESTION),
+    FSM lands in AWAITING_INFO, and 17 loop-pump CONTINUE events are refused
+    until USER_INPUT arrives. Mirrors the 17-turn auto-fire test but for the
+    info gate instead of the DONE gate."""
+    fsm = FSM()
+    fsm.transition(Event.USER_INPUT, turn_id="t1", parent_turn_id=None)
+    fsm.transition(Event.MODEL_EMITTED_QUESTION)
+
+    refused = 0
+    for _ in range(17):
+        try:
+            fsm.transition(Event.CONTINUE)
+        except RefusedTransition:
+            refused += 1
+
+    state_before_user = fsm.state.value
+    awaiting_kind_before = fsm.wire_view()["awaiting_kind"]
+
+    fsm.transition(Event.USER_INPUT)
+    state_after_user = fsm.state.value
+
+    return {
+        "state_before_user": state_before_user,
+        "awaiting_kind_before": awaiting_kind_before,
+        "refused": refused,
+        "state_after_user": state_after_user,
+    }
+
+
+def replay_awaiting_confirm_user_approved() -> dict:
+    """Soft block: model proposes an action (MODEL_EMITTED_PROPOSAL), FSM
+    lands in AWAITING_CONFIRM, user clicks Allow → USER_APPROVED → EXECUTING.
+    CONTINUE pumps during the pause are refused."""
+    fsm = FSM()
+    fsm.transition(Event.USER_INPUT, turn_id="t2", parent_turn_id=None)
+    fsm.transition(Event.MODEL_EMITTED_PROPOSAL)
+
+    awaiting_kind = fsm.wire_view()["awaiting_kind"]
+
+    refused = 0
+    for _ in range(3):
+        try:
+            fsm.transition(Event.CONTINUE)
+        except RefusedTransition:
+            refused += 1
+
+    fsm.transition(Event.USER_APPROVED)
+    return {
+        "awaiting_kind": awaiting_kind,
+        "refused": refused,
+        "final_state": fsm.state.value,
+    }
+
+
+def replay_awaiting_confirm_user_declined() -> dict:
+    """Soft block decline path: AWAITING_CONFIRM → USER_DECLINED → DONE with
+    terminal_reason=OPERATOR_ABORT."""
+    fsm = FSM()
+    fsm.transition(Event.USER_INPUT, turn_id="t3", parent_turn_id=None)
+    fsm.transition(Event.MODEL_EMITTED_PROPOSAL)
+    fsm.transition(Event.USER_DECLINED)
+    return {
+        "final_state": fsm.state.value,
+        "terminal_reason": (
+            fsm.terminal_reason.value if fsm.terminal_reason else None
+        ),
+    }
+
+
 if __name__ == "__main__":
     import json
     import sys
 
-    result = replay_17_turn_auto_fire()
-    print(json.dumps(result, indent=2))
+    auto_fire = replay_17_turn_auto_fire()
+    info_hold = replay_awaiting_info_holds_against_continue()
+    confirm_ok = replay_awaiting_confirm_user_approved()
+    confirm_no = replay_awaiting_confirm_user_declined()
+
+    bundle = {
+        "auto_fire": auto_fire,
+        "info_hold": info_hold,
+        "confirm_ok": confirm_ok,
+        "confirm_no": confirm_no,
+    }
+    print(json.dumps(bundle, indent=2))
 
     ok = (
-        result["fired"] == 1
-        and result["refused"] == 17
-        and result["final_state"] == LoopState.DONE.value
-        and result["terminal_reason"] == TerminalReason.MODEL_DONE.value
+        auto_fire["fired"] == 1
+        and auto_fire["refused"] == 17
+        and auto_fire["final_state"] == LoopState.DONE.value
+        and auto_fire["terminal_reason"] == TerminalReason.MODEL_DONE.value
+        and info_hold["state_before_user"] == LoopState.AWAITING_INFO.value
+        and info_hold["awaiting_kind_before"] == "info"
+        and info_hold["refused"] == 17
+        and info_hold["state_after_user"] == LoopState.PLANNING.value
+        and confirm_ok["awaiting_kind"] == "confirm"
+        and confirm_ok["refused"] == 3
+        and confirm_ok["final_state"] == LoopState.EXECUTING.value
+        and confirm_no["final_state"] == LoopState.DONE.value
+        and confirm_no["terminal_reason"] == TerminalReason.OPERATOR_ABORT.value
     )
     print("PASS" if ok else "FAIL")
     sys.exit(0 if ok else 1)
