@@ -11,6 +11,7 @@ const DEFAULT_CONFIG = {
   ],
   permissionHistory: [],
   resumePath: "",
+  allowedUploadDirs: [],
   shortcuts: [],
   schedules: [],
   mcpServers: []
@@ -116,6 +117,7 @@ async function loadConfig() {
   if (!Array.isArray(state.config.approvedOrigins)) state.config.approvedOrigins = [];
   if (!Array.isArray(state.config.blockedOrigins)) state.config.blockedOrigins = [];
   if (!Array.isArray(state.config.permissionHistory)) state.config.permissionHistory = [];
+  if (!Array.isArray(state.config.allowedUploadDirs)) state.config.allowedUploadDirs = [];
   if (!Array.isArray(state.config.shortcuts)) state.config.shortcuts = [];
   if (!Array.isArray(state.config.schedules)) state.config.schedules = [];
   if (!Array.isArray(state.config.mcpServers)) state.config.mcpServers = [];
@@ -1205,6 +1207,54 @@ function basenameForPath(path) {
   return String(path || "").split(/[\\/]/).filter(Boolean).pop() || "upload.bin";
 }
 
+function parseUploadTarget(rawTarget) {
+  const raw = String(rawTarget || "").trim();
+  const match = raw.match(/^(.+?)\s*(?:::|=>|:=)\s*(.+)$/);
+  if (!match) return { selector: "", path: "" };
+  let path = String(match[2] || "").trim();
+  if ((path.startsWith('"') && path.endsWith('"')) ||
+      (path.startsWith("'") && path.endsWith("'"))) {
+    path = path.slice(1, -1).trim();
+  }
+  return {
+    selector: String(match[1] || "").trim(),
+    path,
+  };
+}
+
+function configuredUploadDirs() {
+  return (Array.isArray(state.config?.allowedUploadDirs) ? state.config.allowedUploadDirs : [])
+    .map((dir) => String(dir || "").trim().replace(/[\\/]+$/, ""))
+    .filter(Boolean);
+}
+
+function uploadAllowlistDirs() {
+  return ["~/Documents", "~/Desktop", "~/Downloads", ...configuredUploadDirs()];
+}
+
+function pathWithinUploadAllowlist(path, allowedDirs = uploadAllowlistDirs()) {
+  const rawPath = String(path || "").trim().replace(/[\\/]+$/, "");
+  if (!rawPath) return false;
+  const normalizedPath = rawPath.replace(/\\/g, "/");
+  if (/^~\/(?:Documents|Desktop|Downloads)(?:\/|$)/.test(normalizedPath)) return true;
+  if (/^\/home\/[^/]+\/(?:Documents|Desktop|Downloads)(?:\/|$)/.test(normalizedPath)) return true;
+  if (/^\/Users\/[^/]+\/(?:Documents|Desktop|Downloads)(?:\/|$)/.test(normalizedPath)) return true;
+  return allowedDirs.some((dir) => {
+    const normalizedDir = String(dir || "").trim().replace(/[\\/]+$/, "").replace(/\\/g, "/");
+    if (!normalizedDir) return false;
+    return normalizedPath === normalizedDir || normalizedPath.startsWith(`${normalizedDir}/`);
+  });
+}
+
+function assertUploadAllowlist(path) {
+  if (pathWithinUploadAllowlist(path)) return { valid: true, allowedDirs: uploadAllowlistDirs() };
+  return {
+    valid: false,
+    reason: "path outside upload allowlist",
+    allowedDirs: uploadAllowlistDirs(),
+  };
+}
+
 function promptNeedsLocalFileHints(prompt) {
   return /\b(resume|résumé|cv|cover\s+letter|ai\s+query|transcript|certificate|certification|pdf|docx?|upload|application)\b/i
     .test(String(prompt || ""));
@@ -1236,6 +1286,10 @@ async function attachLocalFilePayload(action) {
   const parsed = parseFillTargetForBridge(action);
   const path = localPathFromFillValue(parsed.value);
   if (!path) return action;
+  const uploadGate = assertUploadAllowlist(path);
+  if (!uploadGate.valid) {
+    throw new Error(uploadGate.reason);
+  }
 
   const file = await backendFetch("/extension/read_local_file", {
     method: "POST",
@@ -1266,6 +1320,8 @@ async function tryDebuggerFileUpload(tab, action, timings = {}) {
   const parsed = parseFillTargetForBridge(action);
   const requestedPath = localPathFromFillValue(parsed.value);
   if (!requestedPath || !parsed.selector) return null;
+  const uploadGate = assertUploadAllowlist(requestedPath);
+  if (!uploadGate.valid) throw new Error(uploadGate.reason);
 
   const file = await backendFetch("/extension/read_local_file", {
     method: "POST",
@@ -1800,6 +1856,19 @@ function classifyBrowserAction(action, origin = "") {
   const target = String(action?.target || "").toLowerCase();
   if (kind === "REMOTE_MCP") {
     return { safe: false, requires_confirm: true, gated_by: "permission:remote_mcp" };
+  }
+  if (kind === "BROWSER_UPLOAD_FILE") {
+    const upload = parseUploadTarget(action?.target);
+    const uploadGate = assertUploadAllowlist(upload.path);
+    if (!upload.selector || !upload.path || !uploadGate.valid) {
+      return {
+        safe: false,
+        requires_confirm: true,
+        blocked: true,
+        gated_by: "local_upload_allowlist:path_outside_upload_allowlist",
+        reason: uploadGate.reason || "path outside upload allowlist",
+      };
+    }
   }
   const checkUrl = (kind === "BROWSER_NAV" || kind === "BROWSER_TAB_CREATE")
     ? target : origin;

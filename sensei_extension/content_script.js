@@ -1491,6 +1491,31 @@ function setFileInputValue(el, fileUpload) {
   };
 }
 
+function chromeStorageGet(keys) {
+  return new Promise((resolve) => chrome.storage.local.get(keys, resolve));
+}
+
+async function uploadAllowlistVerdict(path) {
+  const normalizedPath = String(path || "").trim().replace(/[\\/]+$/, "").replace(/\\/g, "/");
+  if (!normalizedPath) return { valid: false, reason: "path outside upload allowlist" };
+  if (/^~\/(?:Documents|Desktop|Downloads)(?:\/|$)/.test(normalizedPath)) {
+    return { valid: true };
+  }
+  if (/^\/home\/[^/]+\/(?:Documents|Desktop|Downloads)(?:\/|$)/.test(normalizedPath)) {
+    return { valid: true };
+  }
+  if (/^\/Users\/[^/]+\/(?:Documents|Desktop|Downloads)(?:\/|$)/.test(normalizedPath)) {
+    return { valid: true };
+  }
+  const stored = await chromeStorageGet(["allowedUploadDirs"]);
+  const allowedDirs = Array.isArray(stored?.allowedUploadDirs) ? stored.allowedUploadDirs : [];
+  const ok = allowedDirs
+    .map((dir) => String(dir || "").trim().replace(/[\\/]+$/, "").replace(/\\/g, "/"))
+    .filter(Boolean)
+    .some((dir) => normalizedPath === dir || normalizedPath.startsWith(`${dir}/`));
+  return ok ? { valid: true } : { valid: false, reason: "path outside upload allowlist" };
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -2629,6 +2654,15 @@ async function executeBrowserAction(action) {
       return {
         ok: false,
         error: `BROWSER_UPLOAD_FILE path must be absolute (got '${absolutePath}'). Use $HOME or ~ prefix.`,
+      };
+    }
+    const uploadGate = await uploadAllowlistVerdict(absolutePath);
+    if (!uploadGate.valid) {
+      return {
+        valid: false,
+        reason: "path outside upload allowlist",
+        selector,
+        path: absolutePath,
       };
     }
     // Pre-flight: does the selector resolve to a file input on this page?
