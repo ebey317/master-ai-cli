@@ -323,6 +323,32 @@ class AuditLogHealthSurfaceTests(unittest.TestCase):
                 "last_error must redact the user's home directory path",
             )
 
+    def test_last_failure_ts_overwrites_and_failures_count_increments(self):
+        """last_failure_ts is overwritten on every failure (distinct from
+        first_failure_since which pins). failures_count increments every
+        failure, reset only on explicit clear. Together they give the
+        operator unhealthy-window duration + magnitude."""
+        import tempfile, os, time
+        self._locked_dir = tempfile.mkdtemp(prefix="audit_locked_")
+        os.chmod(self._locked_dir, 0o000)
+        unreachable = os.path.join(self._locked_dir, "nope", "audit.jsonl")
+        descriptor = {"sensitivity": "none", "ref": "x", "field_type": "text"}
+        match = {"confidence": 0.95, "value": "y", "source": "label"}
+
+        recipe._executor_decide(descriptor, match, audit_path=unreachable)
+        self.assertEqual(recipe.audit_log_health["failures_count"], 1)
+        first_last_ts = recipe.audit_log_health["last_failure_ts"]
+        self.assertIsNotNone(first_last_ts)
+
+        time.sleep(1.1)
+        recipe._executor_decide(descriptor, match, audit_path=unreachable)
+        self.assertEqual(recipe.audit_log_health["failures_count"], 2)
+        second_last_ts = recipe.audit_log_health["last_failure_ts"]
+        self.assertNotEqual(
+            first_last_ts, second_last_ts,
+            "last_failure_ts must overwrite on subsequent failures",
+        )
+
     def test_first_failure_since_does_not_overwrite_on_subsequent_failures(self):
         """Once unhealthy, first_failure_since pins to the FIRST failure
         timestamp in the window. Second failure does not overwrite it.
@@ -349,13 +375,19 @@ class AuditLogHealthSurfaceTests(unittest.TestCase):
 
     def test_explicit_reset_clears_unhealthy_state(self):
         """audit_log_health stays unhealthy until explicit reset — a silent
-        self-heal on the next successful write would mask real damage."""
+        self-heal on the next successful write would mask real damage.
+        Reset clears all five slots (healthy, first_failure_since,
+        last_failure_ts, failures_count, last_error)."""
         recipe.audit_log_health["healthy"] = False
         recipe.audit_log_health["first_failure_since"] = "2026-05-18T03:55:00+00:00"
+        recipe.audit_log_health["last_failure_ts"] = "2026-05-18T04:00:00+00:00"
+        recipe.audit_log_health["failures_count"] = 7
         recipe.audit_log_health["last_error"] = "synthetic"
         recipe._reset_framework_state_for_tests()
         self.assertTrue(recipe.audit_log_health["healthy"])
         self.assertIsNone(recipe.audit_log_health["first_failure_since"])
+        self.assertIsNone(recipe.audit_log_health["last_failure_ts"])
+        self.assertEqual(recipe.audit_log_health["failures_count"], 0)
         self.assertIsNone(recipe.audit_log_health["last_error"])
 
 

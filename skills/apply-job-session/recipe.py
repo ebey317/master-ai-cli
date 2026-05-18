@@ -112,26 +112,33 @@ AUDIT_LOG_PATH = SKILL_HOME / "audit_log.jsonl"
 # the UI / operator to act on. Stays False until explicitly reset —
 # a silent self-heal would mask real damage.
 #
-# Slots this round (browser-Claude descope 2026-05-18):
+# Slots:
 #   healthy              — False once any write fails
 #   first_failure_since  — ISO 8601 of the FIRST failure in the unhealthy
 #                          window; not overwritten by later failures
+#   last_failure_ts      — ISO 8601 of the MOST RECENT failure; overwritten
+#                          on every failure for unambiguous semantics
+#   failures_count       — total failures in the current unhealthy window;
+#                          reset only on explicit clear
 #   last_error           — truncated, home-redacted exception string
 #
-# Deferred to follow-up: last_failure_ts (overwritten on every failure),
-# failures_count (magnitude of the gap).
+# first_failure_since + last_failure_ts together give the operator the
+# duration of the unhealthy window. failures_count gives the magnitude.
 audit_log_health = {
     "healthy": True,
     "first_failure_since": None,
+    "last_failure_ts": None,
+    "failures_count": 0,
     "last_error": None,
 }
 
 
 def _audit_log_health_record_failure(exc: Exception) -> None:
-    """Set audit_log_health into unhealthy state on first failure in window.
-    Idempotent — subsequent failures in the same unhealthy window don't
-    overwrite `first_failure_since`. Reset only via explicit clear (see
-    _reset_framework_state_for_tests or operator UI action)."""
+    """Set audit_log_health into unhealthy state. `first_failure_since` is
+    pinned on the first failure in a window; `last_failure_ts` is overwritten
+    on every failure. `failures_count` increments every failure. All three
+    reset only via explicit clear (see _reset_framework_state_for_tests or
+    operator UI action)."""
     import datetime
     msg = str(exc)
     if len(msg) > 500:
@@ -139,13 +146,16 @@ def _audit_log_health_record_failure(exc: Exception) -> None:
     home = os.path.expanduser("~")
     if home and home in msg:
         msg = msg.replace(home, "~")
+    now_iso = (
+        datetime.datetime.now(datetime.timezone.utc)
+        .isoformat(timespec="seconds")
+    )
     audit_log_health["healthy"] = False
     audit_log_health["last_error"] = msg
+    audit_log_health["last_failure_ts"] = now_iso
+    audit_log_health["failures_count"] = audit_log_health.get("failures_count", 0) + 1
     if audit_log_health["first_failure_since"] is None:
-        audit_log_health["first_failure_since"] = (
-            datetime.datetime.now(datetime.timezone.utc)
-            .isoformat(timespec="seconds")
-        )
+        audit_log_health["first_failure_since"] = now_iso
 
 
 def _reset_framework_state_for_tests() -> None:
@@ -159,6 +169,8 @@ def _reset_framework_state_for_tests() -> None:
     helper is the place to look when wiring a new safety test."""
     audit_log_health["healthy"] = True
     audit_log_health["first_failure_since"] = None
+    audit_log_health["last_failure_ts"] = None
+    audit_log_health["failures_count"] = 0
     audit_log_health["last_error"] = None
     # AUDIT_LOG_PATH is a constant (never mutated in production paths).
     # Tests pass audit_path explicitly to _executor_decide / _audit_log
