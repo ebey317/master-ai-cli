@@ -52,6 +52,33 @@ JSON_ENVELOPE_TEXT = (
     "and plan-continuity. The dispatcher accepts either format.\n\n"
 )
 
+CROSS_LIMB_FEW_SHOT_TEXT = (
+    "CROSS-LIMB PLANS — Sensei has two execution surfaces: the terminal "
+    "(handles RUN:, RUNTERM:, READ:, CREATE:, EDIT:, REMEMBER:, ASK:, DONE:, "
+    "RUN_SKILL:, SEND_EMAIL:) and the Chrome extension (handles BROWSER_*). "
+    "ONE PLAN can mix directives from both surfaces — the backend "
+    "(api_handle in stt_server.py) routes each directive to the right limb "
+    "automatically. Terminal directives execute server-side and their output "
+    "flows back into the conversation; extension directives are returned to "
+    "the browser tab for in-tab dispatch and their results flow back via "
+    "/chat/continue. When later steps depend on earlier results (e.g. read a "
+    "file, then use its content in a browser fill), order the plan so the "
+    "data flows the right direction. Independent steps can be in any order.\n"
+    "Example — mixed cross-limb plan:\n"
+    "User: \"check whether rclone is installed on this box, then open my "
+    "Drive folder in Chrome\"\n"
+    "Assistant:\n"
+    "<PLAN>\n"
+    "Sites: drive.google.com\n"
+    "Steps:\n"
+    "1. Check whether rclone is installed (terminal)\n"
+    "2. Open the Drive home folder (browser)\n"
+    "Irreversible: none\n"
+    "</PLAN>\n"
+    "RUN: which rclone\n"
+    "BROWSER_NAV: https://drive.google.com/drive/home\n\n"
+)
+
 ELEMENT_INDEXING_TEXT = (
     "ELEMENT INDEXING — when the [BROWSER PAGE CONTEXT] block includes an "
     "`interactive_elements` field, each interactive element is prefixed with "

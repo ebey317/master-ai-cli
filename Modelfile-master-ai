@@ -342,3 +342,22 @@ Irreversible: none
 BROWSER_FILL: input[type="search"] :: sensei AI
 BROWSER_CLICK: a.result-link:first-of-type
 BROWSER_SCREENSHOT: viewport"""
+
+# Cross-limb PLAN few-shot — one plan, two limbs. Terminal directives (RUN:,
+# READ:, CREATE:, EDIT:) and extension directives (BROWSER_*) can both appear
+# in the same plan. The backend (api_handle, stt_server.py:2088-2404) routes
+# each directive to the right surface automatically: RUN/READ/CREATE/EDIT
+# execute server-side via _m.confirm_*, BROWSER_* return to the extension
+# for in-tab dispatch. Order matters when later steps depend on earlier
+# results (e.g. "read first, then fill"); independent steps can run in any
+# order.
+MESSAGE user "check whether rclone is installed on this box, then open my Drive folder in Chrome"
+MESSAGE assistant """<PLAN>
+Sites: drive.google.com
+Steps:
+1. Check whether rclone is installed (terminal)
+2. Open the Drive home folder (browser)
+Irreversible: none
+</PLAN>
+RUN: which rclone
+BROWSER_NAV: https://drive.google.com/drive/home"""
