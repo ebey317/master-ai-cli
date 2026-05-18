@@ -28,6 +28,12 @@ import recipe  # noqa: E402
 class SensitivityGateTests(unittest.TestCase):
     """Locks: tier >= financial NEVER auto-fills, regardless of confidence."""
 
+    def setUp(self):
+        recipe._reset_framework_state_for_tests()
+
+    def tearDown(self):
+        recipe._reset_framework_state_for_tests()
+
     def test_above_personal_never_auto_fills_even_at_full_confidence(self):
         for tier in ("government_id", "financial"):
             with self.subTest(tier=tier):
@@ -102,15 +108,15 @@ class AuditLogPerDecisionTests(unittest.TestCase):
 
     def setUp(self):
         import tempfile
+        recipe._reset_framework_state_for_tests()
         fd, self._tmp_path = tempfile.mkstemp(prefix="audit_test_", suffix=".jsonl")
-        # Close the file descriptor; _audit_log opens by path.
         import os
         os.close(fd)
-        # Empty it (mkstemp creates empty but we want a known state).
         Path(self._tmp_path).write_text("")
 
     def tearDown(self):
         import os
+        recipe._reset_framework_state_for_tests()
         try:
             os.unlink(self._tmp_path)
         except FileNotFoundError:
@@ -216,6 +222,124 @@ class AuditLogPerDecisionTests(unittest.TestCase):
         self.assertEqual(decision["branch"], recipe.BRANCH_AUTO_FILL_FLAG)
         self.assertEqual(entry["value_recorded"], "...5309")
         self.assertEqual(entry["value_redacted_reason"], "sensitivity:personal")
+
+
+class AuditLogHealthSurfaceTests(unittest.TestCase):
+    """Locks the surfacing invariant: when the audit log write fails,
+    audit_log_health flips unhealthy AND the executor still returns its
+    decision (the executor must stay functional under degraded conditions).
+
+    This is the test the previous round deliberately did NOT write — there
+    the test would have locked the silence; here it locks the surfacing.
+
+    Schema this round (descoped per browser-Claude 2026-05-18):
+      healthy, first_failure_since, last_error.
+    Deferred: last_failure_ts, failures_count.
+    """
+
+    def setUp(self):
+        recipe._reset_framework_state_for_tests()
+
+    def tearDown(self):
+        import shutil, os
+        recipe._reset_framework_state_for_tests()
+        # Best-effort cleanup of any locked tempdir created by the failure test.
+        td = getattr(self, "_locked_dir", None)
+        if td and os.path.exists(td):
+            try:
+                os.chmod(td, 0o755)
+                shutil.rmtree(td)
+            except Exception:
+                pass
+
+    def test_audit_log_health_surfaces_on_write_failure(self):
+        """Force the write to fail by pointing the path at a child of a
+        chmod-000 directory. Decision must still return normally; health
+        flips False with a real `first_failure_since` and a non-empty
+        `last_error`."""
+        import tempfile, os
+        # Build a directory we can't write into.
+        self._locked_dir = tempfile.mkdtemp(prefix="audit_locked_")
+        os.chmod(self._locked_dir, 0o000)
+        # Path includes a nonexistent parent under the locked dir so the
+        # mkdir inside _audit_log will fail.
+        unreachable_path = os.path.join(self._locked_dir, "nope", "audit.jsonl")
+
+        # Sanity: precondition is healthy.
+        self.assertTrue(recipe.audit_log_health["healthy"])
+        self.assertIsNone(recipe.audit_log_health["first_failure_since"])
+
+        decision = recipe._executor_decide(
+            field_descriptor={
+                "sensitivity": "none",
+                "ref": "fname",
+                "field_type": "text",
+            },
+            match={"confidence": 0.95, "value": "John", "source": "label_match"},
+            audit_path=unreachable_path,
+        )
+
+        # Executor returned normally — degraded but functional.
+        self.assertEqual(decision["branch"], recipe.BRANCH_AUTO_FILL_FLAG)
+
+        # Health flipped.
+        self.assertFalse(
+            recipe.audit_log_health["healthy"],
+            "audit_log_health.healthy should be False after write failure",
+        )
+        self.assertIsNotNone(
+            recipe.audit_log_health["first_failure_since"],
+            "first_failure_since should be set on first failure",
+        )
+        # ISO 8601 string, not a unix timestamp.
+        self.assertIsInstance(recipe.audit_log_health["first_failure_since"], str)
+        self.assertIn("T", recipe.audit_log_health["first_failure_since"])
+        # last_error captured something.
+        self.assertIsNotNone(recipe.audit_log_health["last_error"])
+        self.assertGreater(len(recipe.audit_log_health["last_error"]), 0)
+        # last_error must NOT leak the home directory absolute path.
+        home = os.path.expanduser("~")
+        if home:
+            self.assertNotIn(
+                home,
+                recipe.audit_log_health["last_error"],
+                "last_error must redact the user's home directory path",
+            )
+
+    def test_first_failure_since_does_not_overwrite_on_subsequent_failures(self):
+        """Once unhealthy, first_failure_since pins to the FIRST failure
+        timestamp in the window. Second failure does not overwrite it.
+        (When last_failure_ts lands in the follow-up, that's the slot that
+        overwrites; first_failure_since stays put.)"""
+        import tempfile, os, time
+        self._locked_dir = tempfile.mkdtemp(prefix="audit_locked_")
+        os.chmod(self._locked_dir, 0o000)
+        unreachable = os.path.join(self._locked_dir, "nope", "audit.jsonl")
+        descriptor = {"sensitivity": "none", "ref": "x", "field_type": "text"}
+        match = {"confidence": 0.95, "value": "y", "source": "label"}
+
+        recipe._executor_decide(descriptor, match, audit_path=unreachable)
+        first_ts = recipe.audit_log_health["first_failure_since"]
+        self.assertIsNotNone(first_ts)
+        time.sleep(1.1)  # ensure a different ISO 8601 second-resolution stamp
+        recipe._executor_decide(descriptor, match, audit_path=unreachable)
+        second_ts = recipe.audit_log_health["first_failure_since"]
+        self.assertEqual(
+            first_ts,
+            second_ts,
+            "first_failure_since must NOT overwrite on subsequent failures",
+        )
+
+    def test_explicit_reset_clears_unhealthy_state(self):
+        """audit_log_health stays unhealthy until explicit reset — a silent
+        self-heal on the next successful write would mask real damage."""
+        recipe.audit_log_health["healthy"] = False
+        recipe.audit_log_health["first_failure_since"] = "2026-05-18T03:55:00+00:00"
+        recipe.audit_log_health["last_error"] = "synthetic"
+        recipe._reset_framework_state_for_tests()
+        self.assertTrue(recipe.audit_log_health["healthy"])
+        self.assertIsNone(recipe.audit_log_health["first_failure_since"])
+        self.assertIsNone(recipe.audit_log_health["last_error"])
 
 
 if __name__ == "__main__":

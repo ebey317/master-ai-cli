@@ -106,18 +106,84 @@ INTERRUPT_TTL_MS_SENSITIVE = 15 * 60 * 1000  # 15 min — operator may walk to g
 
 AUDIT_LOG_PATH = SKILL_HOME / "audit_log.jsonl"
 
+# Health surface for the audit log write itself. The executor stays
+# functional under degraded conditions (disk full, permission denied,
+# parent-dir unwriteable); the failure is surfaced via this dict for
+# the UI / operator to act on. Stays False until explicitly reset —
+# a silent self-heal would mask real damage.
+#
+# Slots this round (browser-Claude descope 2026-05-18):
+#   healthy              — False once any write fails
+#   first_failure_since  — ISO 8601 of the FIRST failure in the unhealthy
+#                          window; not overwritten by later failures
+#   last_error           — truncated, home-redacted exception string
+#
+# Deferred to follow-up: last_failure_ts (overwritten on every failure),
+# failures_count (magnitude of the gap).
+audit_log_health = {
+    "healthy": True,
+    "first_failure_since": None,
+    "last_error": None,
+}
+
+
+def _audit_log_health_record_failure(exc: Exception) -> None:
+    """Set audit_log_health into unhealthy state on first failure in window.
+    Idempotent — subsequent failures in the same unhealthy window don't
+    overwrite `first_failure_since`. Reset only via explicit clear (see
+    _reset_framework_state_for_tests or operator UI action)."""
+    import datetime
+    msg = str(exc)
+    if len(msg) > 500:
+        msg = msg[:497] + "..."
+    home = os.path.expanduser("~")
+    if home and home in msg:
+        msg = msg.replace(home, "~")
+    audit_log_health["healthy"] = False
+    audit_log_health["last_error"] = msg
+    if audit_log_health["first_failure_since"] is None:
+        audit_log_health["first_failure_since"] = (
+            datetime.datetime.now(datetime.timezone.utc)
+            .isoformat(timespec="seconds")
+        )
+
+
+def _reset_framework_state_for_tests() -> None:
+    """Reset every module-level mutable in the executor framework to a
+    known-good state. Tests MUST call this in setUp AND tearDown so cross-
+    test state bleed (a write-failure test poisoning a happy-path test) is
+    impossible.
+
+    When you add new module-level mutable state, update this function. The
+    convention is enforced by browser-Claude design review 2026-05-18 — the
+    helper is the place to look when wiring a new safety test."""
+    audit_log_health["healthy"] = True
+    audit_log_health["first_failure_since"] = None
+    audit_log_health["last_error"] = None
+    # AUDIT_LOG_PATH is a constant (never mutated in production paths).
+    # Tests pass audit_path explicitly to _executor_decide / _audit_log
+    # rather than monkey-patching the module-level path.
+
 
 def _audit_log(entry: dict, path=None) -> None:
     """Append-only audit log. One JSON line per executor decision. `path`
     defaults to the module-level AUDIT_LOG_PATH; pass explicitly for test
     isolation (chosen over monkey-patching per browser-Claude design review
-    2026-05-18)."""
+    2026-05-18).
+
+    Write failures (disk full, permission denied, parent-dir unwriteable)
+    are caught and surfaced via `audit_log_health`. The function does NOT
+    raise — the executor must stay functional under degraded conditions —
+    and does NOT retry. Surface the state, move on."""
     import time
     log_path = Path(path) if path else AUDIT_LOG_PATH
     entry_full = {"ts": time.time(), **entry}
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(log_path, "a") as f:
-        f.write(json.dumps(entry_full) + "\n")
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a") as f:
+            f.write(json.dumps(entry_full) + "\n")
+    except Exception as e:
+        _audit_log_health_record_failure(e)
 
 
 def _fingerprint(value, field_type=None) -> str:
