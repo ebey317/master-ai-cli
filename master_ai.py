@@ -70,6 +70,7 @@ from output_contract import (
     ELEMENT_INDEXING_TEXT,
     CROSS_LIMB_FEW_SHOT_TEXT,
 )
+from directive_validator import validate_directive, apply_reject
 
 try:
     import harvest  # local cache + few-shot injection; ~/scripts/harvest.py
@@ -9293,12 +9294,48 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
     # \bRUN: deliberately does NOT match RUNTERM: — "RUN" is followed by "T"
     # in "RUNTERM:", not ":", so the regex skips it. RUNTERM: has its own
     # extraction below.
-    read_paths   = [p for p in (_extract_directive(l, "READ")
-                    for l in lines if _real_directive(l, "READ")) if p]
-    run_cmds     = [c for c in (_extract_directive(l, "RUN")
-                    for l in lines if _real_directive(l, "RUN")) if c]
-    runterm_cmds = [c for c in (_extract_directive(l, "RUNTERM")
-                    for l in lines if _real_directive(l, "RUNTERM")) if c]
+    # Parity-rebuild Track 2: strict pre-flight validator. The list-comp
+    # `if c` filter would drop empty targets silently before the validator
+    # could see them, so each kind below is rewritten as an explicit loop
+    # that calls validate_directive BEFORE the empty filter. Invalid
+    # directives get a [VALIDATOR REJECT: KIND — reason] line appended to
+    # history (user role) so the model sees it in the next round's
+    # [PREVIOUS ROUND RESULTS] and can self-correct. Audit row also
+    # written. See ~/scripts/directive_validator.py and
+    # ~/.claude/plans/wise-petting-moth.md.
+    read_paths = []
+    for l in lines:
+        if not _real_directive(l, "READ"):
+            continue
+        p = _extract_directive(l, "READ")
+        valid, reason = validate_directive("READ", p)
+        if not valid:
+            apply_reject(history, "READ", reason)
+            continue
+        if p:
+            read_paths.append(p)
+    run_cmds = []
+    for l in lines:
+        if not _real_directive(l, "RUN"):
+            continue
+        c = _extract_directive(l, "RUN")
+        valid, reason = validate_directive("RUN", c)
+        if not valid:
+            apply_reject(history, "RUN", reason)
+            continue
+        if c:
+            run_cmds.append(c)
+    runterm_cmds = []
+    for l in lines:
+        if not _real_directive(l, "RUNTERM"):
+            continue
+        c = _extract_directive(l, "RUNTERM")
+        valid, reason = validate_directive("RUNTERM", c)
+        if not valid:
+            apply_reject(history, "RUNTERM", reason)
+            continue
+        if c:
+            runterm_cmds.append(c)
 
     # 2026-05-17: SEND_EMAIL: to=<addr> subject="..." body="..." attach=<path>
     # Parses to a dict spec; dispatcher calls confirm_send_email which gates
@@ -9318,8 +9355,21 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         spec.setdefault("body", "")
         spec.setdefault("attach", None)
         return spec
-    send_email_specs = [s for s in (_parse_send_email_spec(l)
-                        for l in lines if _real_directive(l, "SEND_EMAIL")) if s]
+    # Parity-rebuild Track 2: validator runs BEFORE _parse_send_email_spec
+    # so SEND_EMAIL with missing to= / subject= gets a [VALIDATOR REJECT]
+    # line the model sees, instead of silently filtering to nothing.
+    send_email_specs = []
+    for l in lines:
+        if not _real_directive(l, "SEND_EMAIL"):
+            continue
+        _se_payload = _extract_directive(l, "SEND_EMAIL") or ""
+        _se_valid, _se_reason = validate_directive("SEND_EMAIL", _se_payload)
+        if not _se_valid:
+            apply_reject(history, "SEND_EMAIL", _se_reason)
+            continue
+        _se_spec = _parse_send_email_spec(l)
+        if _se_spec:
+            send_email_specs.append(_se_spec)
 
     # 2026-05-11: REMEMBER: <fact> — model-emitted memory write. Same
     # extraction shape as RUN/READ, BUT block-aware: REMEMBER lines that
@@ -9465,6 +9515,21 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                 create_files.append((exp_path, content))
                 created_paths.add(real_path)
 
+    # Parity-rebuild Track 2: validate each parsed (filepath, content)
+    # tuple. The existing `if content` filter at the append site means
+    # empty-content cases shouldn't reach us, but the validator runs
+    # uniformly per the six-site contract. Rejects drop from create_files
+    # before dispatch; the malformed-creates repair below (set-diff against
+    # create_directive_paths) still catches the "no block extracted at all"
+    # case as a separate signal.
+    _validated_creates = []
+    for _cf_path, _cf_content in create_files:
+        _cv_valid, _cv_reason = validate_directive("CREATE", _cf_path, body=_cf_content)
+        if not _cv_valid:
+            apply_reject(history, "CREATE", _cv_reason)
+            continue
+        _validated_creates.append((_cf_path, _cf_content))
+    create_files = _validated_creates
     parsed_create_paths = {os.path.realpath(os.path.expanduser(p)) for p, _ in create_files}
     malformed_creates = [
         p for p in create_directive_paths
@@ -9486,6 +9551,20 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         })
         return None
 
+    # Parity-rebuild Track 2: validate each parsed (filepath, find, replace)
+    # tuple. Same shape as the CREATE validator above. Rejects drop from
+    # edit_ops before dispatch; the malformed-edits repair below still
+    # catches "no block extracted at all" as a separate signal.
+    _validated_edits = []
+    for _ef_path, _ef_find, _ef_replace in edit_ops:
+        _ev_valid, _ev_reason = validate_directive(
+            "EDIT", _ef_path, body={"find": _ef_find, "replace": _ef_replace}
+        )
+        if not _ev_valid:
+            apply_reject(history, "EDIT", _ev_reason)
+            continue
+        _validated_edits.append((_ef_path, _ef_find, _ef_replace))
+    edit_ops = _validated_edits
     parsed_edit_paths = {os.path.realpath(os.path.expanduser(p)) for p, _, _ in edit_ops}
     malformed_edits = [
         p for p in edit_directive_paths

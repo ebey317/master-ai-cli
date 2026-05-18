@@ -75,6 +75,57 @@ class DirectiveParserTests(unittest.TestCase):
         master_ai._LAST_DENIED_ACTION = {}
         master_ai._LAST_BLOCKED_ACTION = {}
 
+    def test_validator_rejects_invalid_send_email_and_keeps_valid(self):
+        # Parity-rebuild Track 2 integration test: a reply with one valid
+        # SEND_EMAIL and one invalid (missing subject) should dispatch only
+        # the valid one and append a [VALIDATOR REJECT: SEND_EMAIL — ...]
+        # line to history so the model sees it in the next round's
+        # [PREVIOUS ROUND RESULTS].
+        sent = []
+        orig_send = master_ai.confirm_send_email
+        master_ai.confirm_send_email = lambda spec: (
+            sent.append(spec) or {"ok": True, "recipient": spec.get("to", "")}
+        )
+        try:
+            history = []
+            master_ai.process_reply(
+                'SEND_EMAIL: to=valid@example.com subject="Hello there" body="hi"\n'
+                'SEND_EMAIL: to=missing-subject@example.com body="oops"\n',
+                history,
+                streamed=False,
+            )
+            valid_dispatched = [s for s in sent if s.get("to") == "valid@example.com"]
+            invalid_dispatched = [
+                s for s in sent if s.get("to") == "missing-subject@example.com"
+            ]
+            self.assertEqual(len(valid_dispatched), 1)
+            self.assertEqual(len(invalid_dispatched), 0)
+            reject_lines = [
+                m for m in history
+                if m.get("role") == "user"
+                and "[VALIDATOR REJECT: SEND_EMAIL" in m.get("content", "")
+            ]
+            self.assertEqual(len(reject_lines), 1)
+            self.assertIn("subject=", reject_lines[0]["content"])
+        finally:
+            master_ai.confirm_send_email = orig_send
+
+    def test_validator_rejects_empty_run_target(self):
+        # Empty RUN target should hit the validator BEFORE the explicit-loop
+        # rewrite's empty filter, producing a [VALIDATOR REJECT: RUN — ...]
+        # history line. Confirms the comprehension→loop rewrite landed.
+        history = []
+        master_ai.process_reply("RUN: \nRUN: echo ok\n", history, streamed=False)
+        run_calls = [c for c in self.calls if c[0] == "run"]
+        self.assertEqual(run_calls, [("run", "echo ok")])
+        reject_lines = [
+            m for m in history
+            if m.get("role") == "user"
+            and "[VALIDATOR REJECT: RUN" in m.get("content", "")
+        ]
+        self.assertEqual(len(reject_lines), 1)
+        self.assertIn("empty", reject_lines[0]["content"].lower())
+
     def test_run_directive_is_case_insensitive(self):
         master_ai.process_reply("run: echo hi", [], streamed=False)
         self.assertEqual(self.calls, [("run", "echo hi")])
