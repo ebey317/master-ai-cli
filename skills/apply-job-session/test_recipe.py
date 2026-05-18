@@ -359,5 +359,120 @@ class AuditLogHealthSurfaceTests(unittest.TestCase):
         self.assertIsNone(recipe.audit_log_health["last_error"])
 
 
+class PageSignalsProducerCycle1ShapeTests(unittest.TestCase):
+    """Cycle-1 smoke test for page_signals_from_context: prove the function
+    returns the right SHAPE on a hand-constructed PageContext. Full test
+    matrix (single-step / multi-step / submit-step / error-present
+    parametrization) is cycle 2/3 work per browser-Claude pacing."""
+
+    def setUp(self):
+        recipe._reset_framework_state_for_tests()
+
+    def tearDown(self):
+        recipe._reset_framework_state_for_tests()
+
+    def test_empty_context_returns_all_degraded(self):
+        """No context → degraded 'wait, not ready' signals. Most slots
+        False/None, validation_errors empty list."""
+        sig = recipe.page_signals_from_context(recipe.PageContext())
+        self.assertIsNone(sig.step_index)
+        self.assertIsNone(sig.total_steps)
+        self.assertFalse(sig.is_hydrated)
+        self.assertFalse(sig.is_submit_step)
+        self.assertFalse(sig.has_blocking_errors)
+        self.assertEqual(sig.validation_errors, [])
+        self.assertFalse(sig.continue_button_present)
+        self.assertFalse(sig.continue_button_enabled)
+
+    def test_explicit_step_label_is_parsed(self):
+        """'Step 2 of 5' in page text populates step_index/total_steps
+        and step_progress_source is named accordingly."""
+        ctx = recipe._pagecontext_from_directive_results(
+            "<form>Step 2 of 5 — please fill out your information</form>"
+        )
+        sig = recipe.page_signals_from_context(ctx)
+        self.assertEqual(sig.step_index, 2)
+        self.assertEqual(sig.total_steps, 5)
+        self.assertEqual(sig.step_progress_source, "explicit_step_label")
+
+    def test_continue_button_text_detected(self):
+        """Button copy 'Continue' present → continue_button_present True."""
+        ctx = recipe._pagecontext_from_directive_results(
+            "<form><input type='text'/><button>Continue</button></form>"
+        )
+        sig = recipe.page_signals_from_context(ctx)
+        self.assertTrue(sig.continue_button_present)
+        self.assertFalse(sig.is_submit_step)  # has continue → not submit
+
+    def test_submit_step_detection_via_button_text(self):
+        """No 'Continue' but 'Submit' button → is_submit_step True
+        (cycle-1 heuristic; documented as best-effort)."""
+        ctx = recipe._pagecontext_from_directive_results(
+            "<form><input/><button>Submit Application</button></form>"
+        )
+        sig = recipe.page_signals_from_context(ctx)
+        self.assertTrue(sig.is_submit_step)
+        self.assertFalse(sig.continue_button_present)
+
+    def test_step_count_overrides_button_text_for_submit_step(self):
+        """When step_index >= total_steps, is_submit_step trusts the
+        progress label over button text."""
+        ctx = recipe._pagecontext_from_directive_results(
+            "<form>Step 5 of 5 — review and submit</form>"
+        )
+        sig = recipe.page_signals_from_context(ctx)
+        self.assertTrue(sig.is_submit_step)
+
+    def test_is_hydrated_with_form_content_and_no_loading(self):
+        """Form content present AND no loading-phrase → is_hydrated True
+        (single-read heuristic)."""
+        ctx = recipe._pagecontext_from_directive_results(
+            "<form><input name='firstName'/><input name='email'/></form>"
+        )
+        sig = recipe.page_signals_from_context(ctx)
+        self.assertTrue(sig.is_hydrated)
+
+    def test_is_hydrated_false_when_loading_phrase_present(self):
+        """Loading-phrase detected → is_hydrated False even with form."""
+        ctx = recipe._pagecontext_from_directive_results(
+            "<form>loading... please wait <input/></form>"
+        )
+        sig = recipe.page_signals_from_context(ctx)
+        self.assertFalse(sig.is_hydrated)
+
+    def test_blocking_errors_marker_detected(self):
+        """'Please fix' / 'required field' / 'invalid' / 'error:' markers
+        flip has_blocking_errors True. Structured validation_errors stays
+        empty in cycle 1."""
+        ctx = recipe._pagecontext_from_directive_results(
+            "<form>Please fix the highlighted fields <input/></form>"
+        )
+        sig = recipe.page_signals_from_context(ctx)
+        self.assertTrue(sig.has_blocking_errors)
+        self.assertEqual(sig.validation_errors, [])
+
+    def test_previous_context_stability_check(self):
+        """When previous_context is provided and raw lengths are close,
+        is_hydrated reflects stability not just single-read heuristic."""
+        prev = recipe._pagecontext_from_directive_results(
+            "<form>same content <input/></form>"
+        )
+        # Same content, no churn → stable AND hydrated
+        curr = recipe._pagecontext_from_directive_results(
+            "<form>same content <input/></form>"
+        )
+        sig = recipe.page_signals_from_context(curr, previous_context=prev)
+        self.assertTrue(sig.is_hydrated)
+
+    def test_previous_context_unstable_yields_not_hydrated(self):
+        """Big raw-length delta between previous and current → not stable."""
+        prev = recipe._pagecontext_from_directive_results("<form>x</form>")
+        curr = recipe._pagecontext_from_directive_results(
+            "<form>" + ("y" * 1000) + "<input/></form>"
+        )
+        sig = recipe.page_signals_from_context(curr, previous_context=prev)
+        self.assertFalse(sig.is_hydrated)
+
+
 if __name__ == "__main__":
     unittest.main()

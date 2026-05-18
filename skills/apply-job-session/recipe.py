@@ -334,6 +334,187 @@ def _build_interrupt_payload(decision: dict, field_descriptor: dict, step_id: st
     }
 
 
+# ─── page_signals — cycle 1: producer's core ─────────────────────────
+#
+# read_form's output → fill_form's input. The producer decides "this step
+# is hydrated and ready to fill" vs "wait, still loading" vs "we hit a
+# validation error after the last fill." Designed in dual-agent dialogue
+# with browser-Claude 2026-05-18.
+#
+# Cycle 1 scope (this commit): dataclasses + pure producer function +
+# shape-only smoke test. Stub adapter from raw page text — partial,
+# many slots default to None / False / empty. Future cycles upgrade
+# the adapter and add the consumer + test matrix.
+#
+# Schema decision rationale: 11 slots over my initial 7. Schema shape
+# is cheap to fix now and expensive to retrofit across cycles 2 and 3.
+
+from dataclasses import dataclass, field
+from typing import List, Optional
+
+
+@dataclass
+class PageContext:
+    """Structured representation of the most recent BROWSER_READ_PAGE
+    return. Cycle 1: mostly populated from the raw text by the stub
+    adapter `_pagecontext_from_directive_results`. Cycle 2+ adds richer
+    DOM-derived fields (input counts, class attributes, aria-busy).
+
+    Future upgrade path: incorporate network-idle signal from the
+    extension's network observation surface when available."""
+    raw: str = ""
+    url: Optional[str] = None
+    title: Optional[str] = None
+    has_form_content: bool = False  # heuristic: form-shaped page detected
+
+
+@dataclass
+class PageSignals:
+    """Producer output consumed by fill_form. Each slot answers a
+    distinct question for the consumer; collapsing them loses info.
+    Most-False/None on an empty PageContext is the correct degraded
+    state — fill_form should treat that as 'wait, still loading.'"""
+    step_index: Optional[int] = None         # this step is N of total
+    total_steps: Optional[int] = None
+    step_progress_source: Optional[str] = None   # how step_index was derived
+    is_submit_step: bool = False             # last step before final submit
+    is_hydrated: bool = False                # form is stable, safe to read
+    has_blocking_errors: bool = False        # validation failed somewhere
+    validation_errors: List[dict] = field(default_factory=list)
+    continue_button_present: bool = False
+    continue_button_enabled: bool = False
+    page_url: Optional[str] = None
+    page_title: Optional[str] = None
+
+
+_STEP_PROGRESS_PATTERNS = [
+    # Common copy: "Step 2 of 5", "Question 3 / 8", "Page 1 of 4"
+    re.compile(r"\b(?:step|question|page)\s+(\d+)\s*(?:of|/)\s*(\d+)\b", re.IGNORECASE),
+]
+
+_SUBMIT_BUTTON_PATTERNS = [
+    # Word-boundary match so the pattern fires when the verb appears in
+    # button copy mid-text. Documented as best-effort: may false-positive
+    # on confirmation pages or non-button text containing these verbs.
+    re.compile(r"\bsubmit\b", re.IGNORECASE),
+    re.compile(r"\bsend\b", re.IGNORECASE),
+    re.compile(r"\bfinish\b", re.IGNORECASE),
+    # "apply" is in <button>Apply</button> AND in form copy like "Apply
+    # the changes" — accepted false-positive risk.
+    re.compile(r"\bapply\b", re.IGNORECASE),
+]
+
+_CONTINUE_BUTTON_PATTERNS = [
+    re.compile(r"\bcontinue\b", re.IGNORECASE),
+    re.compile(r"\bnext\b", re.IGNORECASE),
+]
+
+_LOADING_PHRASES = [
+    "loading...",
+    "please wait",
+    "one moment",
+    "submitting...",
+]
+
+
+def _pagecontext_from_directive_results(raw: str) -> PageContext:
+    """Cycle-1 stub adapter from BROWSER_READ_PAGE raw text to PageContext.
+    Partial — many slots stay None/False until cycle 2 wires in structured
+    DOM data. The stub is intentionally simple so the integration with
+    page_signals_from_context can be wired without depending on richer
+    upstream data."""
+    if not raw:
+        return PageContext(raw="")
+    has_form = "<form" in raw.lower() or "input" in raw.lower()
+    # url and title aren't reliably parseable from the page text alone;
+    # cycle 2 adds them via structured page_context from the extension.
+    return PageContext(raw=raw, has_form_content=has_form)
+
+
+def page_signals_from_context(
+    ctx: PageContext,
+    previous_context: Optional[PageContext] = None,
+) -> PageSignals:
+    """Pure function: PageContext → PageSignals. No state, no side
+    effects. Caller decides whether to do two reads and pass the prior
+    context (stability check); function falls back to single-read
+    heuristics when previous_context is None.
+
+    Cycle 1: heuristics work mostly on raw page text. Cycle 2 fills in
+    URL/title/structured validation errors. Cycle 3 lands the consumer
+    wiring in fill_form + the full test matrix."""
+    if not ctx or not ctx.raw:
+        return PageSignals()  # all defaults — degraded "wait" state
+
+    raw = ctx.raw
+    raw_lower = raw.lower()
+
+    signals = PageSignals(page_url=ctx.url, page_title=ctx.title)
+
+    # step_index / total_steps from "Step N of M" text patterns
+    for pat in _STEP_PROGRESS_PATTERNS:
+        m = pat.search(raw)
+        if m:
+            try:
+                signals.step_index = int(m.group(1))
+                signals.total_steps = int(m.group(2))
+                signals.step_progress_source = "explicit_step_label"
+                break
+            except (ValueError, IndexError):
+                continue
+
+    # continue_button_present: look for forward-action button text
+    signals.continue_button_present = any(
+        p.search(raw) for p in _CONTINUE_BUTTON_PATTERNS
+    )
+    # enabled — without DOM state we can't tell disabled vs enabled;
+    # default = present. Cycle 2 refines.
+    signals.continue_button_enabled = signals.continue_button_present
+
+    # is_submit_step: submit-flavored button present AND no continue/next.
+    # Per browser-Claude design: button-text heuristic, may false-positive
+    # on confirmation pages — documented as best-effort.
+    has_submit_button = any(p.search(raw) for p in _SUBMIT_BUTTON_PATTERNS)
+    signals.is_submit_step = has_submit_button and not signals.continue_button_present
+
+    # If step_index + total_steps known, prefer that signal for is_submit_step
+    if signals.step_index is not None and signals.total_steps is not None:
+        signals.is_submit_step = signals.step_index >= signals.total_steps
+
+    # is_hydrated: cycle-1 single-read heuristic. True if context has
+    # form content AND no loading phrases visible. Caller can do a
+    # two-read stability check by passing previous_context.
+    has_loading_phrase = any(p in raw_lower for p in _LOADING_PHRASES)
+    base_hydrated = ctx.has_form_content and not has_loading_phrase
+
+    if previous_context is not None and previous_context.raw:
+        # Stability check: raw length stable within 2% AND has_form_content
+        # matches AND prev had form content too.
+        prev_len = len(previous_context.raw)
+        curr_len = len(raw)
+        if prev_len > 0:
+            delta_ratio = abs(curr_len - prev_len) / prev_len
+            stable = (delta_ratio < 0.02
+                      and previous_context.has_form_content == ctx.has_form_content
+                      and ctx.has_form_content)
+            signals.is_hydrated = stable and not has_loading_phrase
+        else:
+            signals.is_hydrated = base_hydrated
+    else:
+        signals.is_hydrated = base_hydrated
+
+    # has_blocking_errors / validation_errors — cycle-1 heuristic only
+    # detects presence via common error markers in text. Structured
+    # error extraction is a cycle 2 expansion.
+    error_markers = ["please fix", "required field", "invalid", "error:"]
+    if any(m in raw_lower for m in error_markers):
+        signals.has_blocking_errors = True
+        # Validation_errors stays empty list in cycle 1 — text extraction
+        # without structured DOM is too unreliable to populate.
+
+    return signals
+
+
 # ─── Precondition hook (called by skill_runtime.check_preconditions) ─
 
 def CHECK_PRECONDITIONS() -> None:
