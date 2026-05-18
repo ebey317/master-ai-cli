@@ -544,6 +544,14 @@ def maybe_auto_label(history):
 # Worker thread pops FIFO, runs handle() serially, prints reply.
 _QUERY_QUEUE = queue.Queue(maxsize=3)
 _WORKER_BUSY = threading.Event()
+
+# Cross-limb session bridge — Change 2 of 3 in the dual-limb dispatch arc.
+# When MASTER_AI_SESSION_ID is set in the environment, the terminal TUI passes
+# that ID into handle(), which then bridges its in-process `history` list with
+# stt_server._API_HISTORIES at the same key. The Chrome extension can join the
+# same conversation by sending requests with session_id=<same value>. Default
+# (empty / unset) preserves the existing in-process-only TUI behavior.
+_TUI_SESSION_ID = os.environ.get("MASTER_AI_SESSION_ID", "").strip()
 _WORKER_LOCK = threading.Lock()
 
 # ── Tmux auto-resize state ────────────────────────────────────
@@ -10756,8 +10764,53 @@ def handle_image_status(user_text, arg, history):
     history.append({"role": "user", "content": user_text})
     history.append({"role": "assistant", "content": msg})
 
-def handle(user_text, history, image_path=None, context_policy=None):
+def _bridge_shared_history(history, session_id):
+    """Cross-limb session bridge — Change 2 of 3 in the dual-limb dispatch arc.
+
+    When session_id is provided AND stt_server is loaded in this Python process,
+    sync the caller's `history` list with stt_server._API_HISTORIES at the
+    session_id key. This lets terminal TUI turns and Chrome-extension turns
+    share the same conversation when both use the same session_id (after
+    Change 1, the source prefix on session keys is gone, so a "abc" session_id
+    from the TUI and from the extension hit the same _API_HISTORIES bucket).
+
+    Reference-sharing trick: after this function returns, _API_HISTORIES[key]
+    IS the same list object as `history`. Every subsequent history.append()
+    inside handle() automatically lands in the shared store without any
+    explicit write-back at exit — Python list mutations are visible through
+    every reference to the same object.
+
+    No-op when session_id is empty, stt_server isn't loaded (e.g. TUI running
+    standalone outside master-ai-ui.service), or the bridge can't find the
+    shared dict. Existing behavior (in-process `history` list only) is
+    preserved in those cases.
+    """
+    if not session_id:
+        return
+    import sys as _sys
+    _stt_mod = _sys.modules.get("stt_server")
+    if _stt_mod is None or not hasattr(_stt_mod, "_API_HISTORIES"):
+        return
+    key = (session_id or "").strip()[:160]
+    if not key:
+        return
+    prior = _stt_mod._API_HISTORIES.get(key)
+    if isinstance(prior, list) and prior:
+        # Shared store has content from a prior turn (likely the extension's
+        # last round) — adopt it as our starting history so this TUI turn
+        # sees the full cross-surface conversation.
+        history.clear()
+        history.extend(prior)
+    # Point the shared dict entry at our history list. Future history.append()
+    # in handle() is now visible via _API_HISTORIES[key] too. If this is the
+    # first turn for `key`, this creates the entry pointing at our list.
+    _stt_mod._API_HISTORIES[key] = history
+
+
+def handle(user_text, history, image_path=None, context_policy=None, session_id=None):
     _reset_turn_privacy()
+    if session_id:
+        _bridge_shared_history(history, session_id)
     context_policy = context_policy or {}
     suppress_auto_context = bool(context_policy.get("suppress_auto_context", False))
     memory_mode = (context_policy.get("memory_mode") or "default").strip().lower()
@@ -12065,7 +12118,7 @@ def _query_worker(history_ref):
         _WORKER_BUSY.set()
         try:
             stop_idle_tips()        # don't overlap with reply output
-            reply = handle(user_text, history_ref, image_path=image_path)
+            reply = handle(user_text, history_ref, image_path=image_path, session_id=_TUI_SESSION_ID or None)
             reply = sanitize(reply) if reply else reply
             cache_store(user_text, reply)
             if TTS_ENABLED:
@@ -14014,7 +14067,7 @@ def main():
         # with interactive RUN/CREATE/EDIT confirmation prompts for stdin.
         # Type-ahead is worth less than reliable directive confirmations.)
         try:
-            reply = handle(user_text, history, image_path=image_path, context_policy=context_policy)
+            reply = handle(user_text, history, image_path=image_path, context_policy=context_policy, session_id=_TUI_SESSION_ID or None)
             reply = sanitize(reply) if reply else reply
             cache_store(user_text, reply)
             if TTS_ENABLED:
