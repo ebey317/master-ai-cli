@@ -411,11 +411,18 @@ def _vision_locate_coords(b64_png, description, *, max_dim=1024):
 
 
 def _api_session_key(source, session_id):
+    # Cross-limb unification: drop the source prefix so the chrome extension,
+    # the Pupil web UI, and (after Change 2) the terminal TUI all key into
+    # the same _API_HISTORIES bucket when they share a session_id. The
+    # `source` arg is kept in the signature so callers (stt_server.py:1922
+    # and :1930) don't have to change shape, but it no longer participates
+    # in the key. To re-introduce per-surface isolation later, restore the
+    # `f"{source}:..."` prefix here — both call sites pick it up
+    # automatically.
     session_id = (session_id or "").strip()
     if not session_id:
         return ""
-    source = (source or "pupil").strip()[:80] or "pupil"
-    return f"{source}:{session_id[:160]}"
+    return session_id[:160]
 
 
 def _trim_api_history(history):
