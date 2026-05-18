@@ -58,6 +58,16 @@ class TerminalReason(str, Enum):
     BUDGET_EXCEEDED = "budget_exceeded"
     TOOL_TERMINAL = "tool_terminal"
     OPERATOR_ABORT = "operator_abort"
+    ACTION_LOOP_DETECTED = "action_loop_detected"
+
+
+# Loop-detection window: when the same action signature repeats this many
+# times within the last few EXECUTING transitions, the FSM force-terminates
+# with ACTION_LOOP_DETECTED. Threshold of 3 matches Browser-Use's
+# "if you are on the same URL for 3+ steps without meaningful progress,
+# try a different approach." Adjust by changing FSM.loop_detect_threshold.
+_DEFAULT_LOOP_DETECT_THRESHOLD = 3
+_DEFAULT_LOOP_DETECT_WINDOW = 6
 
 
 class RefusedTransition(Exception):
@@ -139,6 +149,17 @@ class FSM:
     history: list = field(default_factory=list)
     refused: list = field(default_factory=list)
     last_event_ts: float = field(default_factory=time.time)
+    # Loop-detection ring buffer of recent action signatures. record_action()
+    # pushes a signature on every EXECUTING transition; if the same
+    # signature appears loop_detect_threshold times within the last
+    # loop_detect_window entries, the FSM force-terminates with
+    # ACTION_LOOP_DETECTED. Signatures should be the model's directive
+    # text normalized (e.g. "BROWSER_NAV:https://indeed.com") so that
+    # "navigate to indeed three times in a row" trips the detector
+    # regardless of cosmetic whitespace.
+    recent_actions: list = field(default_factory=list)
+    loop_detect_threshold: int = _DEFAULT_LOOP_DETECT_THRESHOLD
+    loop_detect_window: int = _DEFAULT_LOOP_DETECT_WINDOW
 
     def transition(
         self,
@@ -214,6 +235,30 @@ class FSM:
         self.history.append(
             (prev.value, "force_terminal", LoopState.DONE.value, self.turn_count)
         )
+
+    def record_action(self, signature: str) -> Optional[TerminalReason]:
+        """Push a normalized action signature into the ring buffer; if the
+        same signature has appeared loop_detect_threshold times within the
+        last loop_detect_window entries, force-terminate the FSM with
+        ACTION_LOOP_DETECTED and return the reason. Otherwise return None.
+
+        Caller should compute the signature from the model's directive text
+        (e.g. f"{token}:{target}" with whitespace collapsed, lowercased).
+        That keeps "BROWSER_NAV: https://x" and " browser_nav:https://x "
+        from looking like distinct actions on cosmetic differences.
+        """
+        self.recent_actions.append(signature)
+        # Trim ring buffer to the detection window. Older entries cannot
+        # contribute to a fresh loop and just bloat memory on long sessions.
+        if len(self.recent_actions) > self.loop_detect_window:
+            self.recent_actions = self.recent_actions[-self.loop_detect_window:]
+
+        # Count occurrences within the window.
+        recent_count = self.recent_actions.count(signature)
+        if recent_count >= self.loop_detect_threshold:
+            self.force_terminal(TerminalReason.ACTION_LOOP_DETECTED)
+            return TerminalReason.ACTION_LOOP_DETECTED
+        return None
 
     def reset_session(self) -> None:
         self.state = LoopState.IDLE
@@ -344,6 +389,54 @@ def replay_awaiting_confirm_user_approved() -> dict:
     }
 
 
+def replay_action_loop_detected() -> dict:
+    """Loop detection: the same action signature repeated 3 times within
+    the detection window force-terminates with ACTION_LOOP_DETECTED."""
+    fsm = FSM()
+    fsm.transition(Event.USER_INPUT, turn_id="t4", parent_turn_id=None)
+
+    triggered_reason = None
+    for i in range(5):
+        # First two emits don't fire; third should trip the detector.
+        # We invoke record_action manually because in production it would
+        # be called from the directive parser on each EXECUTING transition.
+        fsm.transition(Event.MODEL_EMITTED_DIRECTIVE)
+        triggered_reason = fsm.record_action("browser_nav:https://indeed.com")
+        if triggered_reason is not None:
+            break
+        fsm.transition(Event.TOOL_DISPATCHED)
+        fsm.transition(Event.TOOL_RESULT)
+
+    return {
+        "iterations_until_trip": i + 1,
+        "final_state": fsm.state.value,
+        "terminal_reason": (
+            fsm.terminal_reason.value if fsm.terminal_reason else None
+        ),
+        "triggered_reason": triggered_reason.value if triggered_reason else None,
+    }
+
+
+def replay_action_loop_not_triggered() -> dict:
+    """Three different actions in a row do NOT trigger the loop detector."""
+    fsm = FSM()
+    fsm.transition(Event.USER_INPUT, turn_id="t5", parent_turn_id=None)
+    fsm.transition(Event.MODEL_EMITTED_DIRECTIVE)
+    r1 = fsm.record_action("browser_nav:https://a.com")
+    fsm.transition(Event.TOOL_DISPATCHED)
+    fsm.transition(Event.TOOL_RESULT)
+    fsm.transition(Event.MODEL_EMITTED_DIRECTIVE)
+    r2 = fsm.record_action("browser_nav:https://b.com")
+    fsm.transition(Event.TOOL_DISPATCHED)
+    fsm.transition(Event.TOOL_RESULT)
+    fsm.transition(Event.MODEL_EMITTED_DIRECTIVE)
+    r3 = fsm.record_action("browser_nav:https://c.com")
+    return {
+        "trips": [r1, r2, r3],
+        "final_state": fsm.state.value,
+    }
+
+
 def replay_awaiting_confirm_user_declined() -> dict:
     """Soft block decline path: AWAITING_CONFIRM → USER_DECLINED → DONE with
     terminal_reason=OPERATOR_ABORT."""
@@ -367,12 +460,16 @@ if __name__ == "__main__":
     info_hold = replay_awaiting_info_holds_against_continue()
     confirm_ok = replay_awaiting_confirm_user_approved()
     confirm_no = replay_awaiting_confirm_user_declined()
+    loop_trip = replay_action_loop_detected()
+    loop_safe = replay_action_loop_not_triggered()
 
     bundle = {
         "auto_fire": auto_fire,
         "info_hold": info_hold,
         "confirm_ok": confirm_ok,
         "confirm_no": confirm_no,
+        "loop_trip": loop_trip,
+        "loop_safe": loop_safe,
     }
     print(json.dumps(bundle, indent=2))
 
@@ -390,6 +487,9 @@ if __name__ == "__main__":
         and confirm_ok["final_state"] == LoopState.EXECUTING.value
         and confirm_no["final_state"] == LoopState.DONE.value
         and confirm_no["terminal_reason"] == TerminalReason.OPERATOR_ABORT.value
+        and loop_trip["triggered_reason"] == TerminalReason.ACTION_LOOP_DETECTED.value
+        and loop_trip["final_state"] == LoopState.DONE.value
+        and loop_safe["trips"] == [None, None, None]
     )
     print("PASS" if ok else "FAIL")
     sys.exit(0 if ok else 1)
