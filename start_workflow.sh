@@ -115,41 +115,49 @@ fi
 # sink that has no physical playback. Audio plays "into" the null sink;
 # RustDesk reads its monitor; remote client hears it; physical speakers
 # stay silent.
+#
+# IMPORTANT: this block is GATED on whether RustDesk is actively capturing.
+# Without that gate, every workflow-on flip silences local speakers even
+# when the operator is sitting at the physical machine (root cause of the
+# 2026-05-19 "fix sound drivers" incident).
 echo
 echo "-- audio routing (remote / RustDesk session) --"
 
-# 1. Load the null sink if it doesn't already exist (idempotent)
-if pactl list short sinks 2>/dev/null | grep -q '^[0-9]\+\s\+remote_audio\s'; then
-  ok "null sink 'remote_audio' already loaded"
-else
-  if pactl load-module module-null-sink sink_name=remote_audio \
-       sink_properties='device.description="RemoteAudio"' >/dev/null 2>&1; then
-    ok "null sink 'remote_audio' loaded"
-  else
-    bad "could not load module-null-sink (PulseAudio not running?)"
-  fi
-fi
-
-# 2. Set as default sink so new audio streams route there
-if pactl set-default-sink remote_audio >/dev/null 2>&1; then
-  ok "default sink set to remote_audio"
-else
-  bad "could not set default sink"
-fi
-
-# 3. Move any RustDesk source-output to read from remote_audio.monitor
-#    (RustDesk doesn't follow default-sink changes; it sticks to whatever
-#    monitor it was reading at startup. Force the move.)
 rustdesk_so=$(pactl list source-outputs 2>/dev/null \
   | awk '/^Source Output #/{id=$3; sub("#","",id)} /application.name = "RustDesk"/{print id; exit}')
-if [[ -n "$rustdesk_so" ]]; then
+
+if [[ -z "$rustdesk_so" ]]; then
+  info "no active RustDesk capture — leaving audio routing alone (local speakers preserved)"
+else
+  # RustDesk is actively capturing — set up the null-sink routing.
+
+  # 1. Load the null sink if it doesn't already exist (idempotent)
+  if pactl list short sinks 2>/dev/null | grep -q '^[0-9]\+\s\+remote_audio\s'; then
+    ok "null sink 'remote_audio' already loaded"
+  else
+    if pactl load-module module-null-sink sink_name=remote_audio \
+         sink_properties='device.description="RemoteAudio"' >/dev/null 2>&1; then
+      ok "null sink 'remote_audio' loaded"
+    else
+      bad "could not load module-null-sink (PulseAudio not running?)"
+    fi
+  fi
+
+  # 2. Set as default sink so new audio streams route there
+  if pactl set-default-sink remote_audio >/dev/null 2>&1; then
+    ok "default sink set to remote_audio"
+  else
+    bad "could not set default sink"
+  fi
+
+  # 3. Move the RustDesk source-output to read from remote_audio.monitor
+  #    (RustDesk doesn't follow default-sink changes; it sticks to whatever
+  #    monitor it was reading at startup. Force the move.)
   if pactl move-source-output "$rustdesk_so" remote_audio.monitor >/dev/null 2>&1; then
     ok "moved RustDesk capture (so #$rustdesk_so) to remote_audio.monitor"
   else
     info "RustDesk capture is already on remote_audio.monitor (or move failed)"
   fi
-else
-  info "no active RustDesk source-output yet — will reroute when next session connects"
 fi
 
 # --- Cards -----------------------------------------------------------------

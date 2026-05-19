@@ -1,0 +1,6 @@
+# ACTIVE STEP SANDBOX
+
+This file is rewritten by the orchestrator before each step.
+Do not edit by hand while the harness is running.
+
+Standing by for the first step payload from master_plan.md.

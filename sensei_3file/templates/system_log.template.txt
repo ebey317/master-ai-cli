@@ -1,0 +1,10 @@
+# SYSTEM LOG
+
+Append-only journal of completed steps. The orchestrator writes one block per
+successful step:
+
+  [YYYY-MM-DDTHH:MM:SS] Step N — <title>
+    Impact: <one-line summary the executor produced>
+
+Hand-edits below this line are allowed but rare — the log is meant to be
+machine-written.
