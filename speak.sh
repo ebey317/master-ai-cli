@@ -15,9 +15,19 @@
 
 set -euo pipefail
 
-ENGINE="${SPEAK_ENGINE:-espeak}"
+PIPER_MODEL="${SPEAK_PIPER_MODEL:-$HOME/.local/share/piper/en_US-ryan-medium.onnx}"
+# Default to piper if the model exists (neural, sounds human). Fall back to
+# espeak (instant, robotic) if not. Override with SPEAK_ENGINE=espeak|spd-say.
+if [[ -z "${SPEAK_ENGINE:-}" ]]; then
+  if [[ -f "$PIPER_MODEL" ]]; then
+    ENGINE="piper"
+  else
+    ENGINE="espeak"
+  fi
+else
+  ENGINE="$SPEAK_ENGINE"
+fi
 RATE="${SPEAK_RATE:-175}"
-PIPER_MODEL="${SPEAK_PIPER_MODEL:-$HOME/.local/share/piper/en_US-amy-medium.onnx}"
 
 read_text() {
   if [[ $# -gt 0 ]]; then
@@ -53,8 +63,10 @@ case "$ENGINE" in
       echo "  Download a voice: https://github.com/rhasspy/piper/blob/master/VOICES.md" >&2
       exit 1
     fi
+    # Pipe through paplay (PulseAudio) NOT aplay (raw ALSA) so output flows
+    # through the default sink — needed for remote/RustDesk routing.
     echo "$TEXT" | piper -m "$PIPER_MODEL" --output-raw 2>/dev/null \
-      | aplay -r 22050 -f S16_LE -t raw - 2>/dev/null
+      | paplay --raw --rate=22050 --format=s16le --channels=1
     ;;
   spd-say)
     spd-say -r "$((RATE - 175))" "$TEXT"
