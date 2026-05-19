@@ -9001,6 +9001,125 @@ def _real_directive_line(line, name):
     return False
 
 
+# ---- REMOTE_MCP executor (Sensei → MCP via Anthropic Python SDK) ----
+# Sensei calls configured MCP servers when the model emits a REMOTE_MCP
+# directive. Servers live in ~/.config/master_ai/mcp_servers.json. Each
+# call spawns a stdio-based MCP client, calls tools/list or tools/call,
+# returns a string for history injection. Errors come back as
+# [REMOTE_MCP_ERROR] so the retry path sees them like other failures.
+
+_MCP_SERVERS_PATH = os.path.expanduser("~/.config/master_ai/mcp_servers.json")
+
+
+def _load_mcp_servers():
+    """Read MCP server configs from disk. Resolve $ENV substitutions.
+
+    Returns dict[name → {command, args, env}]. Empty dict if config missing.
+    """
+    try:
+        with open(_MCP_SERVERS_PATH) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    servers = data.get("servers") or {}
+    resolved = {}
+    for name, cfg in servers.items():
+        if not isinstance(cfg, dict):
+            continue
+        env = dict(cfg.get("env") or {})
+        for k, v in list(env.items()):
+            if isinstance(v, str) and v.startswith("$"):
+                env[k] = os.environ.get(v[1:], "")
+        resolved[name] = {
+            "command": str(cfg.get("command") or ""),
+            "args": list(cfg.get("args") or []),
+            "env": env,
+        }
+    return resolved
+
+
+def _remote_mcp_specs_from_reply(reply):
+    """Extract REMOTE_MCP directive payloads from a model reply.
+
+    Returns list of {server, method, params} dicts, or {error} on bad JSON.
+    """
+    specs = []
+    for line in str(reply or "").splitlines():
+        if not _real_directive_line(line, "REMOTE_MCP"):
+            continue
+        payload = re.split(r"\bREMOTE_MCP:", line, maxsplit=1, flags=re.IGNORECASE)[1]
+        try:
+            obj = json.loads(payload.strip())
+            server = str(obj.get("server") or "").strip()
+            method = str(obj.get("method") or "tools/call").strip()
+            params = obj.get("params") or {}
+            if server and method:
+                specs.append({"server": server, "method": method, "params": params})
+            else:
+                specs.append({"error": "REMOTE_MCP missing server or method"})
+        except (json.JSONDecodeError, AttributeError, TypeError) as e:
+            specs.append({"error": f"invalid REMOTE_MCP payload: {e}"})
+    return specs
+
+
+def _execute_remote_mcp(spec):
+    """Call a configured MCP server via the Anthropic Python SDK.
+
+    spec shape: {"server": "filesystem",
+                 "method": "tools/list" | "tools/call",
+                 "params": {"name": "read_file", "arguments": {...}}}
+
+    Returns string for history injection. On error returns "[REMOTE_MCP_ERROR] ..."
+    so retry logic sees it like other directive failures.
+    """
+    if spec.get("error"):
+        return f"[REMOTE_MCP_ERROR] {spec['error']}"
+    server_name = spec.get("server", "")
+    method = spec.get("method", "tools/call")
+    params = spec.get("params") or {}
+
+    servers = _load_mcp_servers()
+    cfg = servers.get(server_name)
+    if not cfg:
+        return f"[REMOTE_MCP_ERROR] unknown server: {server_name!r}"
+
+    try:
+        import asyncio
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+    except ImportError as e:
+        return f"[REMOTE_MCP_ERROR] mcp SDK not installed: {e}"
+
+    async def _do():
+        sp = StdioServerParameters(
+            command=cfg["command"],
+            args=cfg.get("args", []),
+            env={**os.environ, **cfg.get("env", {})},
+        )
+        async with stdio_client(sp) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as sess:
+                await sess.initialize()
+                if method == "tools/list":
+                    res = await sess.list_tools()
+                    return [{"name": t.name, "description": (t.description or "")[:200]} for t in res.tools]
+                elif method == "tools/call":
+                    name = params.get("name")
+                    args = params.get("arguments") or {}
+                    if not name:
+                        return "missing 'name' in params"
+                    res = await sess.call_tool(name, args)
+                    out = [c.text for c in res.content if hasattr(c, "text")]
+                    return out if out else str(res.content)
+                else:
+                    return f"unsupported method: {method!r}"
+
+    try:
+        result = asyncio.run(_do())
+        return f"[REMOTE_MCP_RESULT] {server_name}/{method}: {result}"
+    except Exception as e:
+        return f"[REMOTE_MCP_ERROR] {type(e).__name__}: {e}"
+
+
 def _skill_pending_directives(state):
     pending = (getattr(state, "data", {}) or {}).get("_pending_directives")
     if not isinstance(pending, list):
@@ -9247,6 +9366,17 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
     except Exception as e:
         globals()["_LAST_TYPED_ACTIONS"] = []
         globals()["_LAST_TYPED_ACTIONS_ERROR"] = str(e)
+
+    # REMOTE_MCP — dispatch any REMOTE_MCP directives via the Anthropic SDK,
+    # inject results back into history, and strip the directives from `lines`
+    # so the legacy dispatch loop below doesn't re-process them.
+    _mcp_specs = _remote_mcp_specs_from_reply("\n".join(lines))
+    if _mcp_specs:
+        for _spec in _mcp_specs:
+            _mcp_result = _execute_remote_mcp(_spec)
+            history.append({"role": "user", "content": _mcp_result})
+            log(f"REMOTE_MCP: server={_spec.get('server','?')} method={_spec.get('method','?')} -> {_mcp_result[:80]}")
+        lines = [l for l in lines if not _real_directive_line(l, "REMOTE_MCP")]
 
     # Strip surrounding backticks/quotes from extracted commands — local
     # models sometimes wrap commands in `backticks` or 'quotes'. Shell
