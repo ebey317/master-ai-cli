@@ -338,11 +338,73 @@ async function _ensureNetworkEnabled(tabId) {
   }
 }
 
+const _aiTabAlerted = new Map();
+const AI_WAKE_RELAY = "http://127.0.0.1:8765/wake";
+
+// Narrow watchlist — only fire for AIs in the active work loop.
+// Each entry: { name, urlPrefix, readySignal(title, prevTitle) -> bool }
+// Add new entries here when adding an AI to the work loop; don't widen blindly.
+const AI_WATCHLIST = [
+  {
+    name: "claude",
+    urlPrefix: "https://claude.ai/",
+    readySignal: (title) => title.includes("BC waiting"),
+  },
+  {
+    name: "deepseek",
+    urlPrefix: "https://chat.deepseek.com/",
+    // DeepSeek auto-titles tabs after a reply settles — the title flips from
+    // generic "DeepSeek" to a topic-based name. Treat that transition as the
+    // ready signal. Less precise than claude's explicit marker but works.
+    readySignal: (title, prevTitle) => {
+      if (!title || title === prevTitle) return false;
+      const generic = /^DeepSeek( - Chat)?$/i;
+      return !generic.test(title) && title.length > 4;
+    },
+  },
+];
+
+const _aiTabPrevTitle = new Map();
+
 chrome.tabs.onRemoved.addListener((tabId) => {
   _attachedTabs.delete(tabId);
   _networkBuffers.delete(tabId);
   _networkEnabledTabs.delete(tabId);
   _snapshotRefMaps.delete(tabId);
+  _aiTabAlerted.delete(tabId);
+  _aiTabPrevTitle.delete(tabId);
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (!changeInfo.title && !changeInfo.url) return;
+  const url = tab?.url || "";
+  const entry = AI_WATCHLIST.find((e) => url.startsWith(e.urlPrefix));
+  if (!entry) {
+    _aiTabAlerted.delete(tabId);
+    _aiTabPrevTitle.delete(tabId);
+    return;
+  }
+  const title = tab?.title || changeInfo.title || "";
+  const prevTitle = _aiTabPrevTitle.get(tabId) || "";
+  const isReady = entry.readySignal(title, prevTitle);
+  const wasAlerted = _aiTabAlerted.get(tabId) === true;
+  if (isReady && !wasAlerted) {
+    _aiTabAlerted.set(tabId, true);
+    fetch(AI_WAKE_RELAY, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title,
+        tabId,
+        ai: entry.name,
+        ts: new Date().toISOString(),
+      }),
+      keepalive: true,
+    }).catch(() => {});
+  } else if (!isReady && wasAlerted) {
+    _aiTabAlerted.set(tabId, false);
+  }
+  _aiTabPrevTitle.set(tabId, title);
 });
 
 function _truncateNodeName(name, limit = 120) {
