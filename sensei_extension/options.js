@@ -11,6 +11,7 @@ const DEFAULTS = {
   // the user sets it from the options page. Backend reads via the
   // /extension/read_local_file endpoint.
   resumePath: "",
+  allowedUploadDirs: [],
   mcpServers: []
 };
 
@@ -40,6 +41,7 @@ function normalizeConfig(config) {
   if (!["ask", "act"].includes(next.actionPermissionMode)) next.actionPermissionMode = "ask";
   if (!Array.isArray(next.approvedOrigins)) next.approvedOrigins = [];
   if (!Array.isArray(next.permissionHistory)) next.permissionHistory = [];
+  if (!Array.isArray(next.allowedUploadDirs)) next.allowedUploadDirs = [];
   if (!Array.isArray(next.mcpServers)) next.mcpServers = [];
   return next;
 }
