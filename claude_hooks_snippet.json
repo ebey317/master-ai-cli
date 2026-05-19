@@ -1,0 +1,26 @@
+{
+  "_comment": "Paste these objects into ~/.claude/settings.json under the top-level \"hooks\" key. If \"hooks\" already exists, merge PostToolUse / SessionStart arrays.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/elijah/scripts/workflow_cadence.py tick"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /home/elijah/scripts/workflow_cadence.py reset"
+          }
+        ]
+      }
+    ]
+  }
+}
