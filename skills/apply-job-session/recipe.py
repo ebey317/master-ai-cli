@@ -371,6 +371,11 @@ class PageContext:
     return. Cycle 1: mostly populated from the raw text by the stub
     adapter `_pagecontext_from_directive_results`. Cycle 2+ adds richer
     DOM-derived fields (input counts, class attributes, aria-busy).
+    Cycle 3: dom_forms carries the structured form/field list the
+    extension's domState() emits, parsed from the JSON BROWSER_READ_PAGE
+    payload. Each entry shape matches sensei_extension's content_script
+    domState() output:
+        {index, selector, fields: [{role, name, selector, type, value_present}]}
 
     Future upgrade path: incorporate network-idle signal from the
     extension's network observation surface when available."""
@@ -378,6 +383,7 @@ class PageContext:
     url: Optional[str] = None
     title: Optional[str] = None
     has_form_content: bool = False  # heuristic: form-shaped page detected
+    dom_forms: List[dict] = field(default_factory=list)  # cycle 3: structured form/field tree
 
 
 @dataclass
@@ -454,17 +460,156 @@ _LOADING_PHRASES = [
 
 
 def _pagecontext_from_directive_results(raw: str) -> PageContext:
-    """Cycle-1 stub adapter from BROWSER_READ_PAGE raw text to PageContext.
-    Partial — many slots stay None/False until cycle 2 wires in structured
-    DOM data. The stub is intentionally simple so the integration with
-    page_signals_from_context can be wired without depending on richer
-    upstream data."""
+    """Adapter from BROWSER_READ_PAGE raw return to PageContext.
+
+    Cycle 3: tries JSON parsing first to extract the structured page_context
+    fields (url, title, dom_state.forms). Falls back to the text-only
+    cycle-1 heuristic if the input isn't JSON-shaped, so callers passing
+    legacy raw strings still work.
+    """
     if not raw:
         return PageContext(raw="")
+
+    # Try structured JSON first (the modern path: extension returns
+    # {ok, page_context: {...}, text} — caller may have passed the whole
+    # response or just the page_context block).
+    try:
+        obj = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        obj = None
+
+    if isinstance(obj, dict):
+        ctx_obj = obj.get("page_context") if "page_context" in obj else obj
+        if isinstance(ctx_obj, dict):
+            url = ctx_obj.get("url")
+            title = ctx_obj.get("title")
+            dom_state = ctx_obj.get("dom_state") or {}
+            forms = dom_state.get("forms") if isinstance(dom_state, dict) else None
+            forms = forms if isinstance(forms, list) else []
+            visible_text = ctx_obj.get("visible_text") or ""
+            has_form = bool(forms) or bool(
+                dom_state.get("counts", {}).get("inputs") if isinstance(dom_state, dict) else 0
+            )
+            return PageContext(
+                raw=visible_text or raw,
+                url=str(url) if url else None,
+                title=str(title) if title else None,
+                has_form_content=has_form,
+                dom_forms=forms,
+            )
+
+    # Legacy text-only fallback (cycle 1 path) — keeps old callers working.
     has_form = "<form" in raw.lower() or "input" in raw.lower()
-    # url and title aren't reliably parseable from the page text alone;
-    # cycle 2 adds them via structured page_context from the extension.
     return PageContext(raw=raw, has_form_content=has_form)
+
+
+# ─── Cycle 3: label → semantic field_role mapping ─────────────────────
+# Each entry: (compiled regex matching the label_visible, canonical
+# field_role from FIELD_ROLE_TO_SENSITIVITY in the active ATS adapter).
+# First match wins. Order matters — more specific patterns first.
+# Adding a new field_role to the adapter? Add a matcher here too.
+
+_LABEL_TO_FIELD_ROLE = [
+    # name fields — order matters: "first" before generic "name"
+    (re.compile(r"\b(first[\s_-]*name|given[\s_-]*name|forename)\b", re.IGNORECASE), "name_first"),
+    (re.compile(r"\b(last[\s_-]*name|surname|family[\s_-]*name)\b", re.IGNORECASE), "name_last"),
+    (re.compile(r"\b(preferred[\s_-]*name|nickname|goes[\s_-]*by)\b", re.IGNORECASE), "name_preferred"),
+    (re.compile(r"\b(full[\s_-]*name|legal[\s_-]*name|name\s*$)\b", re.IGNORECASE), "name_full"),
+    # contact
+    (re.compile(r"\b(e[\s_-]*mail|email[\s_-]*address)\b", re.IGNORECASE), "email"),
+    (re.compile(r"\b(phone|mobile|telephone|cell)\b", re.IGNORECASE), "phone"),
+    # address
+    (re.compile(r"\b(street|address[\s_-]*line[\s_-]*1|address(?!.*2))\b", re.IGNORECASE), "address_line_1"),
+    (re.compile(r"\baddress[\s_-]*line[\s_-]*2|apt|suite|unit\b", re.IGNORECASE), "address_line_2"),
+    (re.compile(r"\bcity\b|\btown\b", re.IGNORECASE), "city"),
+    (re.compile(r"\b(state|province|region)\b", re.IGNORECASE), "state"),
+    (re.compile(r"\b(zip|postal[\s_-]*code|postcode)\b", re.IGNORECASE), "zip"),
+    (re.compile(r"\bcountry\b", re.IGNORECASE), "country"),
+    (re.compile(r"\b(date[\s_-]*of[\s_-]*birth|dob|birthday)\b", re.IGNORECASE), "date_of_birth"),
+    # work-history adjacent
+    (re.compile(r"\b(years?[\s_-]*of[\s_-]*experience|experience[\s_-]*years?)\b", re.IGNORECASE), "experience_years"),
+    (re.compile(r"\b(education|degree|highest[\s_-]*level)\b", re.IGNORECASE), "education_level"),
+    (re.compile(r"\b(work[\s_-]*history|employment[\s_-]*history)\b", re.IGNORECASE), "work_history"),
+    (re.compile(r"\bcover[\s_-]*letter\b", re.IGNORECASE), "cover_letter"),
+    (re.compile(r"\b(linkedin|linked[\s_-]*in)\b", re.IGNORECASE), "linkedin_url"),
+    (re.compile(r"\b(resume|cv)\s*(upload|attach|file)?\b", re.IGNORECASE), "resume_upload"),
+    # financial
+    (re.compile(r"\b(salary|compensation|expected[\s_-]*pay)\b", re.IGNORECASE), "salary_expectation"),
+    (re.compile(r"\b(routing[\s_-]*number|bank[\s_-]*routing)\b", re.IGNORECASE), "bank_routing"),
+    (re.compile(r"\b(account[\s_-]*number|bank[\s_-]*account)\b", re.IGNORECASE), "bank_account"),
+    # government-id (refuse-sensitive — never auto-fill regardless of confidence)
+    (re.compile(r"\b(ssn|social[\s_-]*security)\b", re.IGNORECASE), "ssn"),
+    (re.compile(r"\bein\b|\bemployer[\s_-]*identification\b", re.IGNORECASE), "ein"),
+    (re.compile(r"\bpassport\b", re.IGNORECASE), "passport_number"),
+    (re.compile(r"\b(driver'?s?[\s_-]*license|dl\s*number)\b", re.IGNORECASE), "drivers_license"),
+    (re.compile(r"\bimmigration\b|\bvisa[\s_-]*number\b", re.IGNORECASE), "immigration_number"),
+    (re.compile(r"\b(work[\s_-]*auth(orization)?|i-9|eligibility[\s_-]*to[\s_-]*work)\b", re.IGNORECASE), "work_authorization_id"),
+]
+
+
+def _label_to_field_role(label: str) -> Optional[str]:
+    """Map a visible field label to a canonical field_role.
+
+    Returns the first matching role, or None if no pattern fires.
+    Caller can treat None as 'unknown / surface to operator' — the
+    executor's stop_and_ask branch handles that case.
+    """
+    if not label:
+        return None
+    for pattern, role in _LABEL_TO_FIELD_ROLE:
+        if pattern.search(label):
+            return role
+    return None
+
+
+def _extract_form_descriptors(ctx: PageContext, step_index: Optional[int]) -> list:
+    """Walk PageContext.dom_forms and produce descriptor dicts in the
+    shape FormDescriptorRecord.descriptors carries (and that
+    _executor_decide consumes).
+
+    Output shape per entry (matches the synthetic descriptor format
+    in cycle-2 stub + adds 'sensitivity' resolved at extraction time):
+        {field_role, label_visible, css_selector, html_input_type,
+         required, step_index}
+
+    field_role is mapped from the field's `name` (rendered label) via
+    _label_to_field_role. Fields with no matching role get
+    field_role=None — _executor_decide's stop_and_ask branch handles
+    that downstream; we don't drop them silently here.
+
+    Required-ness: the extension's dom_state.forms[].fields[] doesn't
+    currently surface a `required` flag. Cycle 3.1 heuristic: an
+    asterisk in the label, or html input attribute when surfaced in
+    future cycles. Until then required defaults False — safer (won't
+    error-block on optional fields) than True.
+    """
+    descriptors = []
+    for form in (ctx.dom_forms or []):
+        if not isinstance(form, dict):
+            continue
+        for fld in (form.get("fields") or []):
+            if not isinstance(fld, dict):
+                continue
+            label = str(fld.get("name") or "").strip()
+            selector = str(fld.get("selector") or "").strip()
+            if not selector:
+                # Without a selector the field is not fillable; skip.
+                continue
+            field_role = _label_to_field_role(label)
+            html_type = str(fld.get("type") or "").strip()
+            # Required heuristic: asterisk in label is the most reliable
+            # cross-ATS signal; refine in cycle 3.1 with aria-required.
+            required = "*" in label
+            descriptors.append({
+                "field_role": field_role,
+                "label_visible": label,
+                "css_selector": selector,
+                "html_input_type": html_type,
+                "required": required,
+                "step_index": step_index,
+                "_role_match": field_role is not None,
+            })
+    return descriptors
 
 
 def page_signals_from_context(
@@ -804,23 +949,15 @@ def read_form_current_step(state) -> dict:
             datetime.datetime.now(datetime.timezone.utc)
             .isoformat(timespec="microseconds")
         )
-        # Synthetic descriptor (cycle-3 replacement marker); real DOM
-        # extraction lands when smartapply / Workday / LinkedIn selectors
-        # arrive. Shape matches FIELD_ROLE_TO_SENSITIVITY consumers.
-        synthetic_descriptor = {
-            "field_role": "name_first",
-            "label_visible": "First Name",
-            "css_selector": "input[name='firstName']",
-            "html_input_type": "text",
-            "required": True,
-            "step_index": signals.step_index,
-            "_cycle3_replacement_pending": True,
-        }
+        # Cycle 3: real DOM extraction from PageContext.dom_forms. The
+        # synthetic-descriptor stub is gone; we walk the extension's
+        # domState() output and produce one descriptor per fillable field.
+        descriptors = _extract_form_descriptors(ctx, signals.step_index)
         record = FormDescriptorRecord(
             step_id=_read_form_step_id(signals),
             ts_read=ts_iso,
             page_signals=signals,
-            descriptors=[synthetic_descriptor],
+            descriptors=descriptors,
         )
         return {
             "outcome": "interrupt",
@@ -859,28 +996,232 @@ def read_form_current_step(state) -> dict:
     }
 
 
-def fill_form_current_step(state) -> dict:
-    """Cycle-2 stub. Presence check on _form_descriptors_current_step;
-    interrupts with descriptors_missing on absence or fill_form_not_implemented
-    on presence. Writes nothing to state.data, no phase advancement — the
-    real fill_form/interrupt-to-resume contract lives in cycle 3 and the
-    stub creates no precedent the cycle-3 implementation has to honor.
+# ─── Cycle 3: fill_form match-loop helpers ────────────────────────────
 
-    Per browser-Claude design review 2026-05-18: cycle 2 lands the read-side
-    plumbing + state.data contract + retry logic + this stub. Cycle 3 wires
-    the match loop, gate logic, and the full test matrix."""
+# Static across ATSs (per design review 2026-05-18): sensitivity rules
+# live in ONE place. Mirrored from atss/indeed_smart_apply.py until
+# we move that constant out of the per-ATS file into recipe.py proper.
+_FIELD_ROLE_TO_SENSITIVITY = {
+    # none — public/innocuous
+    "name_first": "none", "name_last": "none", "name_preferred": "none",
+    "name_full": "none", "experience_years": "none", "education_level": "none",
+    "work_history": "none", "cover_letter": "none", "linkedin_url": "none",
+    "resume_upload": "none",
+    # personal — fingerprint-redacted in audit log
+    "email": "personal", "phone": "personal",
+    "address_line_1": "personal", "address_line_2": "personal",
+    "city": "personal", "state": "personal", "zip": "personal",
+    "country": "personal", "date_of_birth": "personal",
+    # financial — refuse-sensitive, human keypress only
+    "salary_expectation": "financial",
+    "bank_routing": "financial", "bank_account": "financial",
+    # government_id — refuse-sensitive, human keypress only
+    "ssn": "government_id", "ein": "government_id",
+    "passport_number": "government_id", "drivers_license": "government_id",
+    "immigration_number": "government_id", "work_authorization_id": "government_id",
+}
+
+# Map canonical field_role → profile JSON key. Roles missing here have
+# no auto-source from the profile and route to stop_and_ask.
+_PROFILE_KEY_FOR_ROLE = {
+    "name_first": "first_name",
+    "name_last": "last_name",
+    "name_full": "full_name",
+    "name_preferred": "preferred_name",
+    "email": "email",
+    "phone": "phone",
+    "address_line_1": "address",
+    "address_line_2": "address_line_2",
+    "city": "city",
+    "state": "state",
+    "zip": "zip",
+    "country": "country",
+    "linkedin_url": "linkedin_url",
+    "experience_years": "experience_years",
+    "education_level": "education_level",
+    "work_history": "work_history",
+}
+
+
+def _load_profile_or_none() -> Optional[dict]:
+    """Load the operator's profile from disk. Returns None if missing
+    or invalid — caller treats absent profile as 'cannot match' and
+    routes all fields to stop_and_ask."""
+    try:
+        return json.loads(PROFILE_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _match_profile_to_descriptor(profile: Optional[dict], descriptor: dict) -> dict:
+    """Build the `match` dict _executor_decide expects from a profile
+    and a descriptor produced by _extract_form_descriptors.
+
+    Returns {confidence, value, source, profile_field, candidates}.
+    """
+    field_role = descriptor.get("field_role")
+    if not field_role or not profile:
+        return {
+            "confidence": 0.0,
+            "value": None,
+            "source": "no_profile" if not profile else "unknown_role",
+            "profile_field": None,
+            "candidates": [],
+        }
+    profile_key = _PROFILE_KEY_FOR_ROLE.get(field_role)
+    if not profile_key:
+        return {
+            "confidence": 0.0,
+            "value": None,
+            "source": f"no_profile_mapping_for_{field_role}",
+            "profile_field": None,
+            "candidates": [],
+        }
+    value = profile.get(profile_key)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return {
+            "confidence": 0.0,
+            "value": None,
+            "source": f"profile_field_{profile_key}_empty",
+            "profile_field": profile_key,
+            "candidates": [],
+        }
+    # Direct role match + populated profile field = high confidence.
+    return {
+        "confidence": 0.95,
+        "value": value,
+        "source": "role_to_profile_field",
+        "profile_field": profile_key,
+        "candidates": [],
+    }
+
+
+def _descriptor_to_executor_input(descriptor: dict) -> dict:
+    """Adapt an _extract_form_descriptors output to the shape
+    _executor_decide expects.
+
+    Maps:
+      css_selector → ref
+      label_visible → label.visible
+      html_input_type → field_type
+      field_role → sensitivity (via _FIELD_ROLE_TO_SENSITIVITY)
+    """
+    role = descriptor.get("field_role")
+    sensitivity = _FIELD_ROLE_TO_SENSITIVITY.get(role, "none") if role else "none"
+    return {
+        "ref": descriptor.get("css_selector"),
+        "label": {"visible": descriptor.get("label_visible"), "aria": None, "placeholder": None, "legend": None},
+        "name": descriptor.get("css_selector"),
+        "id": None,
+        "field_type": descriptor.get("html_input_type"),
+        "required": descriptor.get("required", False),
+        "options": None,
+        "current_value": "",  # cycle 3.1 will surface value_present from dom_state
+        "editability": "editable",
+        "sensitivity": sensitivity,
+    }
+
+
+def fill_form_current_step(state) -> dict:
+    """Cycle 3 real-mode: gate-then-match flow.
+
+    1. Presence check — descriptors must exist (read_form built them).
+    2. Errors gate — page_signals.has_blocking_errors → interrupt for
+       operator to resolve validation errors before continuing.
+    3. Submit-step gate — is_submit_step routes to submit_gate (separate
+       phase, irreversible action handling).
+    4. For each descriptor: build match from profile, run _executor_decide,
+       collect BROWSER_FILL directives for auto_fill_flag, route other
+       branches to operator (stop_and_ask, disambiguate, refuse_sensitive)
+       via an interrupt with the field's metadata.
+    5. Return either:
+       - {outcome: interrupt, _pending_directives: [BROWSER_FILL ...]}
+         when one or more fields auto-fill (operator sees the fills land)
+       - {outcome: interrupt, reason: <handoff_reason>, field: <descriptor>}
+         on the first non-auto-fill branch (operator decides per field)
+    """
     record = state.data.get(_STATE_KEY_FORM_DESCRIPTORS)
     if record is None:
         return {
             "outcome": "interrupt",
+            "details": {"reason": "descriptors_missing"},
+        }
+
+    signals = record.page_signals
+
+    # Gate 1: validation errors block forward motion until operator resolves.
+    if signals.has_blocking_errors:
+        return {
+            "outcome": "interrupt",
             "details": {
-                "reason": "descriptors_missing",
+                "reason": "validation_errors_present",
+                "validation_errors": signals.validation_errors,
             },
         }
+
+    # Gate 2: submit step routes to submit_gate_phase (irreversible).
+    if signals.is_submit_step:
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "reason": "submit_step_detected_route_to_submit_gate",
+                "step_index": signals.step_index,
+            },
+        }
+
+    profile = _load_profile_or_none()
+    fill_directives: List[str] = []
+    handoff = None
+
+    for descriptor in record.descriptors:
+        match = _match_profile_to_descriptor(profile, descriptor)
+        exec_input = _descriptor_to_executor_input(descriptor)
+        decision = _executor_decide(exec_input, match)
+        branch = decision.get("branch")
+        if branch == BRANCH_AUTO_FILL_FLAG:
+            selector = descriptor.get("css_selector")
+            value = decision.get("suggested_value")
+            if selector and value is not None:
+                # BROWSER_FILL syntax per master_ai.py: <selector> :: <value>
+                fill_directives.append(f"BROWSER_FILL: {selector} :: {value}")
+        elif handoff is None:
+            # First non-auto-fill branch becomes the handoff to operator.
+            # Subsequent fields wait until this one resolves and fill_form
+            # re-runs after the operator's keypress / confirmation.
+            handoff = {
+                "branch": branch,
+                "field_role": descriptor.get("field_role"),
+                "label_visible": descriptor.get("label_visible"),
+                "css_selector": descriptor.get("css_selector"),
+                "decision_reason": decision.get("reason"),
+            }
+
+    if fill_directives:
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "reason": "fields_filled_pending_resume",
+                "_pending_directives": fill_directives,
+                "handoff_pending": handoff,  # next non-fillable field, if any
+            },
+        }
+
+    if handoff:
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "reason": f"field_handoff_{handoff['branch']}",
+                "handoff": handoff,
+            },
+        }
+
+    # No fillable fields, no handoffs needed — every descriptor either
+    # had no profile match AND was insensitive (unusual but possible).
     return {
         "outcome": "interrupt",
         "details": {
-            "reason": "fill_form_not_implemented",
+            "reason": "no_actionable_fields",
+            "descriptor_count": len(record.descriptors),
         },
     }
 

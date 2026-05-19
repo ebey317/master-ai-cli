@@ -569,18 +569,39 @@ class ReadFormCurrentStepTests(unittest.TestCase):
         """Locked invariant #1: hydrated read produces a FormDescriptorRecord
         with step_id / ts_read (ISO 8601) / page_signals / descriptors slots,
         written to _form_descriptors_current_step. step_id derives from
-        page_signals.step_index when present."""
-        # Synthetic page text that page_signals_from_context will deem hydrated:
-        # has form content, no loading-phrase markers, has Continue button.
-        hydrated_text = (
-            "<form>Step 2 of 5 "
-            "<input name='firstName'/><input name='email'/>"
-            "<button>Continue</button>"
-            "</form>"
-        )
+        page_signals.step_index when present.
+
+        Cycle 3: descriptors now come from real DOM extraction via
+        _extract_form_descriptors (no more synthetic stub). The fixture
+        feeds a JSON page_context matching the extension's domState()
+        output shape, so the extractor produces real descriptors.
+        """
+        import json as _json
+        hydrated_payload = _json.dumps({
+            "page_context": {
+                "url": "https://example.com/apply",
+                "title": "Apply — Step 2 of 5",
+                "visible_text": "Step 2 of 5\nFirst Name *\nEmail Address\nContinue",
+                "dom_state": {
+                    "forms": [{
+                        "index": 0,
+                        "selector": "form",
+                        "fields": [
+                            {"role": "textbox", "name": "First Name *",
+                             "selector": "input[name=firstName]", "type": "text",
+                             "value_present": False},
+                            {"role": "textbox", "name": "Email Address",
+                             "selector": "input[name=email]", "type": "email",
+                             "value_present": False},
+                        ],
+                    }],
+                    "counts": {"forms": 1, "inputs": 2, "buttons": 1, "links": 0},
+                },
+            }
+        })
         state = self._make_state(**{
             recipe._STATE_KEY_INITIAL_READ_DISPATCHED: True,
-            "_last_directive_results": hydrated_text,
+            "_last_directive_results": hydrated_payload,
         })
         out = recipe.read_form_current_step(state)
         self.assertEqual(out["outcome"], "interrupt")
@@ -603,9 +624,16 @@ class ReadFormCurrentStepTests(unittest.TestCase):
         self.assertIsInstance(record.page_signals, recipe.PageSignals)
         self.assertTrue(record.page_signals.is_hydrated)
         self.assertEqual(record.page_signals.step_index, 2)
-        # one synthetic descriptor pending cycle-3 replacement
-        self.assertEqual(len(record.descriptors), 1)
-        self.assertTrue(record.descriptors[0].get("_cycle3_replacement_pending"))
+        # Cycle 3: real descriptors from dom_forms — two fields in fixture,
+        # both should map to known field_role via _label_to_field_role.
+        self.assertEqual(len(record.descriptors), 2)
+        roles = {d["field_role"] for d in record.descriptors}
+        self.assertEqual(roles, {"name_first", "email"})
+        # asterisk-required detection
+        first_name = next(d for d in record.descriptors if d["field_role"] == "name_first")
+        self.assertTrue(first_name["required"])
+        email = next(d for d in record.descriptors if d["field_role"] == "email")
+        self.assertFalse(email["required"])
 
     def test_read_form_returns_hydration_failed_when_retry_budget_exhausted(self):
         """LOCKED INVARIANT #2 — REGRESSION TEST. Retry budget for
@@ -639,21 +667,114 @@ class ReadFormCurrentStepTests(unittest.TestCase):
         self.assertEqual(out["outcome"], "interrupt")
         self.assertEqual(out["details"]["reason"], "descriptors_missing")
 
-    def test_fill_form_stub_not_implemented_when_slot_present(self):
-        """Cycle-2 stub: when descriptors are present, interrupt with
-        fill_form_not_implemented (cycle-3 placeholder). No state
-        mutation, no phase advancement — the stub creates no precedent
-        the cycle-3 implementation has to honor."""
+    def test_fill_form_handoff_when_no_profile_match(self):
+        """Cycle 3 real-mode: when a descriptor has no profile-driven
+        match (e.g., no profile file or unmapped role), the executor
+        decides stop_and_ask, and fill_form interrupts with a
+        field_handoff_<branch> reason carrying the field metadata.
+        No BROWSER_FILL emitted; operator decides per field."""
         record = recipe.FormDescriptorRecord(
             step_id="step_1",
             ts_read="2026-05-18T06:13:00.000000+00:00",
             page_signals=recipe.PageSignals(step_index=1, is_hydrated=True),
-            descriptors=[{"field_role": "name_first"}],
+            descriptors=[{
+                "field_role": "name_first",
+                "label_visible": "First Name",
+                "css_selector": "input[name=firstName]",
+                "html_input_type": "text",
+                "required": True,
+                "step_index": 1,
+            }],
+        )
+        state = self._make_state(**{recipe._STATE_KEY_FORM_DESCRIPTORS: record})
+        # No profile written — _load_profile_or_none returns None →
+        # match has confidence 0 → executor chooses stop_and_ask.
+        out = recipe.fill_form_current_step(state)
+        self.assertEqual(out["outcome"], "interrupt")
+        self.assertTrue(out["details"]["reason"].startswith("field_handoff_"))
+        self.assertEqual(out["details"]["handoff"]["field_role"], "name_first")
+        self.assertEqual(out["details"]["handoff"]["css_selector"], "input[name=firstName]")
+
+    def test_fill_form_emits_browser_fill_when_profile_matches(self):
+        """Cycle 3 real-mode: when profile supplies a value for a
+        descriptor's field_role, the executor chooses auto_fill_flag
+        and fill_form emits a BROWSER_FILL directive in
+        _pending_directives. No handoff for that field."""
+        import tempfile, os as _os
+        # Write a minimal profile to disk at PROFILE_PATH for the test.
+        # _load_profile_or_none reads from a hardcoded path; back up and
+        # restore so other tests stay isolated.
+        backup_existed = recipe.PROFILE_PATH.exists()
+        if backup_existed:
+            backup = recipe.PROFILE_PATH.read_text()
+        try:
+            recipe.PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            recipe.PROFILE_PATH.write_text(
+                '{"first_name":"Elijah","last_name":"Ebey","email":"test@example.com","phone":"5551234567","address":"123 Main St"}'
+            )
+            record = recipe.FormDescriptorRecord(
+                step_id="step_1",
+                ts_read="2026-05-18T06:13:00.000000+00:00",
+                page_signals=recipe.PageSignals(step_index=1, is_hydrated=True),
+                descriptors=[{
+                    "field_role": "name_first",
+                    "label_visible": "First Name *",
+                    "css_selector": "input[name=firstName]",
+                    "html_input_type": "text",
+                    "required": True,
+                    "step_index": 1,
+                }],
+            )
+            state = self._make_state(**{recipe._STATE_KEY_FORM_DESCRIPTORS: record})
+            out = recipe.fill_form_current_step(state)
+            self.assertEqual(out["outcome"], "interrupt")
+            self.assertEqual(out["details"]["reason"], "fields_filled_pending_resume")
+            directives = out["details"]["_pending_directives"]
+            self.assertEqual(len(directives), 1)
+            self.assertEqual(directives[0], "BROWSER_FILL: input[name=firstName] :: Elijah")
+        finally:
+            if backup_existed:
+                recipe.PROFILE_PATH.write_text(backup)
+            else:
+                try:
+                    recipe.PROFILE_PATH.unlink()
+                except FileNotFoundError:
+                    pass
+
+    def test_fill_form_validation_errors_gate(self):
+        """Cycle 3 gate: when page_signals.has_blocking_errors is True,
+        fill_form interrupts with validation_errors_present BEFORE
+        attempting any fills. Operator resolves errors first."""
+        record = recipe.FormDescriptorRecord(
+            step_id="step_1",
+            ts_read="2026-05-18T06:13:00.000000+00:00",
+            page_signals=recipe.PageSignals(
+                step_index=1, is_hydrated=True,
+                has_blocking_errors=True,
+                validation_errors=[{"field": "email", "message": "invalid format"}],
+            ),
+            descriptors=[],
         )
         state = self._make_state(**{recipe._STATE_KEY_FORM_DESCRIPTORS: record})
         out = recipe.fill_form_current_step(state)
-        self.assertEqual(out["outcome"], "interrupt")
-        self.assertEqual(out["details"]["reason"], "fill_form_not_implemented")
+        self.assertEqual(out["details"]["reason"], "validation_errors_present")
+
+    def test_fill_form_submit_step_routes_to_submit_gate(self):
+        """Cycle 3 gate: is_submit_step routes to submit_gate_phase
+        rather than auto-filling — final submit is irreversible and
+        must go through the explicit confirm path."""
+        record = recipe.FormDescriptorRecord(
+            step_id="step_5",
+            ts_read="2026-05-18T06:13:00.000000+00:00",
+            page_signals=recipe.PageSignals(
+                step_index=5, is_hydrated=True, is_submit_step=True
+            ),
+            descriptors=[],
+        )
+        state = self._make_state(**{recipe._STATE_KEY_FORM_DESCRIPTORS: record})
+        out = recipe.fill_form_current_step(state)
+        self.assertEqual(out["details"]["reason"], "submit_step_detected_route_to_submit_gate")
+        self.assertEqual(out["details"]["step_index"], 5)
 
 
 class TaskModelV0Tests(unittest.TestCase):
