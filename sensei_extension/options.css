@@ -1,13 +1,14 @@
+/* Dojo / martial palette — matches side_panel.css per elijah_brand_kit.md v3. */
 :root {
   color-scheme: light;
-  --bg: #f6f7f4;
-  --panel: #ffffff;
-  --ink: #1c2220;
-  --muted: #66706a;
-  --line: #dce2dc;
-  --accent: #0f766e;
-  --accent-strong: #0b5f59;
-  --danger: #b42318;
+  --bg: #EFE6D0;          /* paper-warm beige */
+  --panel: #F7F1E0;
+  --ink: #0E0D0B;         /* sumi ink */
+  --muted: #6B5E4A;
+  --line: #C9BE9F;
+  --accent: #B8281E;      /* vermilion */
+  --accent-strong: #8E1F18;
+  --danger: #8E1F18;
 }
 
 * {

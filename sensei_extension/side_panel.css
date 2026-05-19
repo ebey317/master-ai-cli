@@ -1,15 +1,18 @@
+/* Dojo / martial palette per elijah_brand_kit.md v3.
+   Paper-warm beige background, sumi-ink black, vermilion accent.
+   Stoplight mode-coded accents below are preserved (semantic). */
 :root {
   color-scheme: light;
-  --bg: #f6f7f4;
-  --panel: #ffffff;
-  --ink: #1c2220;
-  --muted: #66706a;
-  --line: #dce2dc;
-  --accent: #0f766e;
-  --accent-strong: #0b5f59;
-  --warn: #a16207;
-  --danger: #b42318;
-  --shadow: 0 8px 24px rgba(28, 34, 32, 0.08);
+  --bg: #EFE6D0;          /* paper-warm beige */
+  --panel: #F7F1E0;       /* slightly lighter than bg for cards */
+  --ink: #0E0D0B;         /* sumi ink black */
+  --muted: #6B5E4A;       /* aged-paper muted */
+  --line: #C9BE9F;        /* dry-brush separator */
+  --accent: #B8281E;      /* vermilion hanko seal red — default */
+  --accent-strong: #8E1F18;
+  --warn: #B17821;        /* aged-amber */
+  --danger: #8E1F18;      /* deeper vermilion */
+  --shadow: 0 8px 24px rgba(14, 13, 11, 0.10);
 }
 
 * {
