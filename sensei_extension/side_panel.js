@@ -354,6 +354,7 @@ function appendMessage(role, text, meta = "") {
   }
   log.appendChild(item);
   log.scrollTop = log.scrollHeight;
+  return item;
 }
 
 function appendError(text) {
@@ -2883,17 +2884,35 @@ async function sendPrompt() {
     const data = await timed(timings, "chat", () => backendFetch("/chat", { method: "POST", body }));
     timings.total = Math.round(performance.now() - totalStart);
     const meta = formatMeta(data, timings);
-    appendMessage("assistant", cleanReply(data.reply), meta);
     $("#routeMeta").textContent = meta;
-    // Phase 6 — Quick Mode bypasses the actions[] approval flow. The reply
-    // body carries one single-letter command + `<<END>>`; we parse, run, and
-    // auto-continue with a fresh screenshot as page_context.
+    // Phase 6 — Quick Mode keeps existing prose+loop path unchanged.
     if (body.mode === "quick") {
+      appendMessage("assistant", cleanReply(data.reply), meta);
       await runQuickModeLoop(prompt, data, timings);
     } else {
-      startLoop(data);
-      await renderActions(data.actions || [], data.blocked_actions || []);
-      maybeWarnSilentClaim(data.reply, data.actions || [], data);
+      // ONE PIPE: enqueue parsed actions to the shared bridge queue → poll loop
+      // executes via sendToContent → synthesize reply from ground-truth result.
+      // Model prose is NEVER shown. Zero fake DONE.
+      const chatActions = data.actions || [];
+      if (!chatActions.length) {
+        appendMessage("assistant", "Not sure what to do. Rephrase?");
+      } else {
+        const workingEl = appendMessage("assistant", "Working...");
+        let first = true;
+        for (const action of chatActions) {
+          const actionId = await enqueue(action);
+          if (!actionId) {
+            const errText = "Couldn't queue that action.";
+            if (first) { workingEl.textContent = errText; first = false; }
+            else appendMessage("assistant", errText);
+            continue;
+          }
+          const rec = await waitForActionResult(actionId);
+          const reply = synthesizeReply(action, rec);
+          if (first) { workingEl.textContent = reply; first = false; }
+          else appendMessage("assistant", reply);
+        }
+      }
     }
     setConnection("Backend ready");
   } catch (err) {
@@ -3120,8 +3139,71 @@ let _heartbeatTimer = null;
 // server pushes to.
 const MCP_QUEUE_POLL_MS = 3000;
 const MCP_QUEUE_SESSION = "mcp-default";
+const CHAT_QUEUE_SESSION = "chat-default";
+const CHAT_RESULT_POLL_MS = 500;
+const CHAT_RESULT_TIMEOUT_MS = 15000;
 let _mcpQueuePollTimer = null;
 let _mcpQueuePollInflight = false;
+
+// Enqueue a single action to the bridge's shared queue under chat-default session.
+// Returns the action_id assigned by the bridge, or null on failure.
+async function enqueue(action) {
+  const a = { ...action, _session_id: CHAT_QUEUE_SESSION };
+  try {
+    const data = await backendFetch("/extension/queue", {
+      method: "POST",
+      body: { session_id: CHAT_QUEUE_SESSION, actions: [a] },
+    });
+    return (data?.action_ids || [])[0] || null;
+  } catch (_err) {
+    return null;
+  }
+}
+
+// Short-poll /extension/result until Chrome's outcome lands or we time out.
+// Returns the stored result record (from /extension/action_result) or null.
+async function waitForActionResult(actionId) {
+  const deadline = performance.now() + CHAT_RESULT_TIMEOUT_MS;
+  while (performance.now() < deadline) {
+    await new Promise((r) => setTimeout(r, CHAT_RESULT_POLL_MS));
+    try {
+      const data = await backendFetch(`/extension/result?action_id=${encodeURIComponent(actionId)}`);
+      if (data?.ok && data?.result) return data.result;
+    } catch (_err) { /* retry */ }
+  }
+  return null;
+}
+
+// Pure function: map a completed action_result record → one natural-language line.
+// Never calls the model. Always derived from Chrome's ground-truth outcome only.
+function synthesizeReply(action, rec) {
+  const kind = String(action?.kind || "").toUpperCase();
+  if (!rec) return "No response from browser. Is the side panel polling?";
+  const isOk = rec.result === "success";
+  const fs = rec.final_state || {};
+  const reason = fs.reason || "";
+  if (kind === "BROWSER_NAV") {
+    const url = action.target || "";
+    return isOk ? `Opened ${url}.` : `Couldn't open that.${reason ? " " + reason : ""}`;
+  }
+  if (kind === "BROWSER_FILL") {
+    const target = action.target || "field";
+    if (!isOk) {
+      return reason === "value_did_not_persist"
+        ? "That field didn't keep the value. Might need clicking first."
+        : `Couldn't fill that.${reason ? " " + reason : ""}`;
+    }
+    return `Filled ${target}.`;
+  }
+  if (kind === "BROWSER_READ" || kind === "BROWSER_READ_PAGE" || kind === "BROWSER_OBSERVE") {
+    if (!isOk) return `Can't read this page.${reason ? " " + reason : ""}`;
+    const pc = fs.page_context || {};
+    const title = pc.title || "";
+    const text = String(pc.text || "").slice(0, 100);
+    return `I see: ${title || "(no title)"}${text ? " — " + text : ""}`;
+  }
+  return isOk ? "Done." : `Action failed.${reason ? " " + reason : ""}`;
+}
 
 function bridgeState() {
   const last = state.bridge?.lastOkAt || 0;
@@ -3203,27 +3285,34 @@ async function pollMcpQueue() {
 
   _mcpQueuePollInflight = true;
   try {
-    const data = await backendFetch(
-      `/extension/queue?session_id=${encodeURIComponent(MCP_QUEUE_SESSION)}`
-    );
-    const actions = Array.isArray(data?.actions) ? data.actions : [];
-    if (actions.length) {
-      // Tag each pulled action with its origin session so subsequent
-      // /extension/action_result POSTs can carry the right session_id and
-      // the audit log can trace results back to the MCP bucket they came
-      // from. reportAction() prefers action._session_id over the panel's
-      // own sessionId for queue-origin actions.
-      for (const a of actions) {
-        if (a && typeof a === "object" && !a._session_id) {
-          a._session_id = data?.session_id || MCP_QUEUE_SESSION;
-        }
-      }
-      // Feed the pulled actions through the same render pipeline that /chat
-      // replies use. Classification, auto-flow gating, approval UI all apply.
+    // Drain both MCP and chat-default sessions in one pass (shared poll loop,
+    // shared executeAction path — Test C: MCP still works, Test A/B: chat works).
+    for (const sid of [MCP_QUEUE_SESSION, CHAT_QUEUE_SESSION]) {
+      let data;
       try {
-        await renderActions(actions, []);
-      } catch (err) {
-        appendError(`MCP queue dispatch failed: ${err.message || err}`);
+        data = await backendFetch(
+          `/extension/queue?session_id=${encodeURIComponent(sid)}`
+        );
+      } catch (_err) {
+        continue;
+      }
+      const actions = Array.isArray(data?.actions) ? data.actions : [];
+      for (const a of actions) {
+        if (!a || typeof a !== "object") continue;
+        if (!a._session_id) a._session_id = data?.session_id || sid;
+        const tab = await activeTab().catch(() => null);
+        if (!tab?.id) {
+          reportAction(a, "reject", "failure", { error: "no active tab for MCP action" });
+          continue;
+        }
+        try {
+          await ensureContentScript(tab);
+          const result = await sendToContent(tab, a);
+          const ok = result?.ok !== false;
+          reportAction(a, "accept", ok ? "success" : "failure", result || {});
+        } catch (err) {
+          reportAction(a, "accept", "failure", { error: String(err?.message || err) });
+        }
       }
     }
   } catch (_err) {
