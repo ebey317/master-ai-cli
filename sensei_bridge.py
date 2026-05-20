@@ -34,25 +34,49 @@ SAFE_ROOT = os.path.expanduser("~")
 SAFE_DENY = ("/.ssh/", "/.gnupg/", "/.master_ai_keys", "/.master_ai_extension_token", "/.aws/")
 
 
-SYSTEM_PROMPT = """You drive a Chrome browser through Sensei, the user's local extension.
-To act, emit BROWSER_* directives on their own lines, exactly as shown.
+SYSTEM_PROMPT = """You are a browser automation agent. You control Chrome by emitting directives. You NEVER describe what you did. You NEVER summarize. You NEVER respond with prose. Every reply must be one or more directives from the list below.
 
-Grammar (one per line, no markdown fences, no JSON):
-  BROWSER_NAV: <absolute-url>
-  BROWSER_CLICK: <css-selector>
-  BROWSER_FILL: <css-selector> :: <value>
-  BROWSER_READ
-  BROWSER_UPLOAD: <css-selector> :: <absolute-file-path>
-  BROWSER_SUBMIT: <form-css-selector>
-  BROWSER_CLOSE
-  DONE: <one-line summary>
+DIRECTIVES (emit exactly, one per line, no markdown, no explanation):
+BROWSER_NAV: <absolute-url>
+BROWSER_CLICK: <css-selector>
+BROWSER_FILL: <css-selector> :: <value>
+BROWSER_READ
+BROWSER_SUBMIT: <form-css-selector>
+BROWSER_CLOSE_TAB
+ASK: <one-line question>     (use this when you need information the user has not provided)
+DONE: <one-line summary of what was accomplished>
 
-Rules:
-  - If the page is unknown, emit BROWSER_READ first to get the page context.
-  - Use real CSS selectors (id, name, aria-label, data-testid). Prefer #id or [name="x"].
-  - One directive per line. No prose between directives.
-  - When the user goal is satisfied, emit DONE: <summary> and stop.
-  - Do NOT explain. Do NOT apologize. Emit directives only.
+HARD RULES:
+1. DONE: is ONLY allowed as the very last line, AFTER real browser directives have executed. NEVER as the first or only line.
+2. If the user message already contains a [PAGE_CONTEXT] block, DO NOT emit BROWSER_READ — you already have the page. Use the context to pick selectors directly.
+3. If the user message is conversational ("hi", "hello", "why", "thanks", "what", "test", a single word, or a question with no browser task), emit ONLY: ASK: What would you like me to do on this page?  — nothing else. No BROWSER_READ, no DONE.
+4. If you need a value the user did NOT give you (email, password, name, address, phone, card number), emit ASK: and stop. NEVER invent values. NEVER use placeholder examples.
+5. Emit directives only. Zero prose. Zero explanation. Zero apology.
+6. Use real CSS selectors: prefer id (#login), name ([name="email"]), aria-label ([aria-label="Search"]).
+
+EXAMPLE — user says "go to google and search cats":
+BROWSER_NAV: https://www.google.com
+BROWSER_FILL: [name="q"] :: cats
+BROWSER_SUBMIT: form[role="search"]
+DONE: Searched Google for cats
+
+EXAMPLE — user says "sign up for tubi" (no credentials given):
+BROWSER_NAV: https://tubitv.com/signup
+ASK: What email and password do you want to use for the Tubi account?
+
+EXAMPLE — user says "show me the page":
+BROWSER_READ
+DONE: Page context read
+
+EXAMPLE — user provides explicit credentials in the prompt like "fill the email field with bob@real.com and password Hunter2":
+BROWSER_FILL: [name="email"] :: bob@real.com
+BROWSER_FILL: [name="password"] :: Hunter2
+DONE: Filled credentials
+
+WRONG (never do this):
+DONE: Signed up for Tubi                           <-- no browser actions, jumped to DONE
+BROWSER_FILL: [name="email"] :: user@example.com   <-- fabricated credentials user did not give
+BROWSER_FILL: [name="email"] :: bob@real.com       <-- copying example values when user said "sign me up" without giving an email is WRONG. Use ASK.
 """
 
 
@@ -70,7 +94,12 @@ def _audit(record: dict) -> None:
 
 
 def _ollama_chat(model: str, messages: list[dict], timeout: float = 90.0) -> dict:
-    body = json.dumps({"model": model, "messages": messages, "stream": False}).encode("utf-8")
+    body = json.dumps({
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        "keep_alive": "1h",
+    }).encode("utf-8")
     req = urllib.request.Request(
         f"{OLLAMA}/api/chat",
         data=body,
@@ -82,9 +111,27 @@ def _ollama_chat(model: str, messages: list[dict], timeout: float = 90.0) -> dic
 
 
 _DIRECTIVE_RE = re.compile(
-    r"^\s*(BROWSER_NAV|BROWSER_CLICK|BROWSER_FILL|BROWSER_READ|BROWSER_UPLOAD|BROWSER_SUBMIT|BROWSER_CLOSE|DONE)\s*(?::\s*(.*))?$",
+    r"^\s*(BROWSER_NAV|BROWSER_CLICK|BROWSER_FILL|BROWSER_READ|BROWSER_UPLOAD_FILE|BROWSER_SUBMIT|BROWSER_CLOSE_TAB|ASK|DONE)\s*(?::\s*(.*))?$",
     re.IGNORECASE,
 )
+
+PLACEHOLDER_VALUES = {
+    "user@example.com", "test@example.com", "test@test.com", "example@example.com",
+    "your-email@example.com", "youremail@example.com", "name@example.com",
+    "password", "password123", "examplepass123", "yourpassword",
+    "test", "testpassword", "test123", "password1", "passw0rd",
+    "john", "jane", "john doe", "jane doe", "first last", "firstname lastname",
+    "123-456-7890", "555-555-5555", "(555) 555-5555", "5551234567",
+    "123 main st", "1234 example st",
+    "me@foo.com", "sky9!",
+    "bob@real.com", "hunter2",
+}
+
+
+def _is_placeholder_value(value: str) -> bool:
+    if not value:
+        return True
+    return value.strip().lower() in PLACEHOLDER_VALUES
 
 
 def parse_directives(text: str) -> tuple[list[dict], str]:
@@ -95,6 +142,7 @@ def parse_directives(text: str) -> tuple[list[dict], str]:
     """
     actions: list[dict] = []
     cleaned_lines: list[str] = []
+    has_ask = False
     for raw in text.splitlines():
         line = raw.strip().strip("`").strip()
         m = _DIRECTIVE_RE.match(line)
@@ -106,20 +154,50 @@ def parse_directives(text: str) -> tuple[list[dict], str]:
         if kind == "DONE":
             cleaned_lines.append(f"DONE: {rest}")
             continue
+        if kind == "ASK":
+            cleaned_lines.append(f"ASK: {rest}")
+            has_ask = True
+            continue
         target, value = rest, ""
         if "::" in rest:
             target, value = (s.strip() for s in rest.split("::", 1))
         action = {"kind": kind, "target": target, "value": value, "status": "ready"}
         actions.append(action)
+    placeholder_fills = [a for a in actions if a["kind"] == "BROWSER_FILL" and _is_placeholder_value(a["value"])]
+    if placeholder_fills:
+        actions = [a for a in actions if a not in placeholder_fills]
+        labels = ", ".join(a["target"] for a in placeholder_fills)
+        cleaned_lines = [ln for ln in cleaned_lines if not re.match(r"^\s*DONE:", ln, re.IGNORECASE)]
+        cleaned_lines.append(f"ASK: I need real values for these fields (model tried to use placeholder data): {labels}")
+        has_ask = True
+    if has_ask:
+        actions = [a for a in actions if not (a["kind"] == "BROWSER_FILL" and not a["value"])]
+        actions = [a for a in actions if a["kind"] != "BROWSER_SUBMIT"]
     cleaned = "\n".join(s for s in cleaned_lines if s.strip())
     return actions, cleaned
+
+
+_CONVERSATIONAL_RE = re.compile(
+    r"^(hi|hey|hello|yo|sup|ok|okay|thanks|thank you|why|what|huh|test|test\.|\?+|cool|nice|good|nope|yes|no|wait)\W*$",
+    re.IGNORECASE,
+)
+
+
+def _looks_conversational(prompt: str) -> bool:
+    p = (prompt or "").strip()
+    if not p:
+        return False
+    if len(p) <= 3:
+        return True
+    return bool(_CONVERSATIONAL_RE.match(p))
 
 
 def _build_messages(prompt: str, page_context: dict | None, history: list[dict]) -> list[dict]:
     msgs: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
     msgs.extend(history)
     user_text = prompt or ""
-    if page_context:
+    skip_heavy_context = _looks_conversational(prompt)
+    if page_context and not skip_heavy_context:
         ctx_lines = ["[PAGE_CONTEXT]"]
         if page_context.get("url"):
             ctx_lines.append(f"url: {page_context['url']}")
@@ -133,6 +211,11 @@ def _build_messages(prompt: str, page_context: dict | None, history: list[dict])
             ctx_lines.append("page_text:")
             ctx_lines.append(str(page_context["text"])[:4000])
         user_text = "\n".join(ctx_lines) + "\n\n[USER]\n" + user_text
+    elif page_context and skip_heavy_context:
+        url = page_context.get("url") or ""
+        title = page_context.get("title") or ""
+        if url or title:
+            user_text = f"[PAGE: {title} — {url}]\n[USER]\n{user_text}"
     msgs.append({"role": "user", "content": user_text})
     return msgs
 
