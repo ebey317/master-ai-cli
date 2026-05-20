@@ -1415,8 +1415,16 @@ function parseFillTarget(action) {
     }
   }
   const match = raw.match(/^(.*?)\s*(?:=>|:=|::)\s*([\s\S]*)$/);
-  if (match) return { selector: match[1].trim(), value: match[2].trim(), overwrite: Boolean(extras.overwrite || extras.force) };
-  return { selector: raw, value: extras.value || extras.text || "", overwrite: Boolean(extras.overwrite || extras.force) };
+  if (match) return { selector: match[1].trim(), value: match[2].trim(), overwrite: Boolean(action?.overwrite || extras.overwrite || extras.force) };
+  // LAYER 1 (SENSEI HARDENING 2026-05-20): MCP-queued actions carry the
+  // value at action.value (top level), not in extras. Read top-level first
+  // so {kind:"BROWSER_FILL", target:"...", value:"..."} works without an
+  // extras wrapper or a "::"-delimited target string.
+  return {
+    selector: raw,
+    value: action?.value || action?.text || extras.value || extras.text || "",
+    overwrite: Boolean(action?.overwrite || extras.overwrite || extras.force),
+  };
 }
 
 function currentElementValue(el) {
@@ -2562,9 +2570,37 @@ async function executeBrowserAction(action) {
         page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 })
       };
     }
-    setElementValue(el, parsed.value);
-    await waitForPageStable(250, 1000);
-    return { ok: true, filled: parsed.selector, page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 }) };
+    // Operator's spec (SENSEI HARDENING STEP 1): explicit post-condition
+    // verification with literal element.value compare. After setting the
+    // value, dispatch input + change events, await 100ms, re-read the
+    // LIVE element from the DOM, and return exactly one of two shapes:
+    //   ok:false / result:'failure' / reason:'value_did_not_persist' / expected / observed
+    //   ok:true  / result:'success' / observed
+    // No other return path exists past this point.
+    const val = parsed.value;
+    el.value = val;
+    try { el.dispatchEvent(new Event("input",  { bubbles: true })); } catch (_e) {}
+    try { el.dispatchEvent(new Event("change", { bubbles: true })); } catch (_e) {}
+    await new Promise(r => setTimeout(r, 100));
+    let probe = el;
+    if (probe && probe.isConnected === false) {
+      try { probe = findFillElement(parsed, false) || el; } catch (_e) { probe = el; }
+    }
+    const actual = (probe && "value" in probe) ? String(probe.value || "") : "";
+    if (actual !== val) {
+      return {
+        ok: false,
+        result: "failure",
+        reason: "value_did_not_persist",
+        expected: val,
+        observed: actual,
+      };
+    }
+    return {
+      ok: true,
+      result: "success",
+      observed: actual,
+    };
   }
 
   if (kind === "BROWSER_FILL_FORM") {

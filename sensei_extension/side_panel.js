@@ -327,9 +327,14 @@ function setConnection(text, tone = "") {
 }
 
 function cleanReply(text) {
+  // DONE and ASK are directives the model emits, not chat prose. The model is
+  // not allowed to self-certify completion in the chat bubble — DONE/FAILED
+  // status is synthesized later from action_result outcomes (see
+  // summarizeRoundResults). Strip them here so model-authored "DONE:" can
+  // never reach the operator's eyes regardless of what the model wrote.
   const lines = String(text || "").split(/\n/);
   const cleaned = lines.filter((line) => {
-    return !/^\s*(RUNTERM|RUN|READ|CREATE|EDIT|REMEMBER|BROWSER_[A-Z_]+):/i.test(line)
+    return !/^\s*(RUNTERM|RUN|READ|CREATE|EDIT|REMEMBER|BROWSER_[A-Z_]+|DONE|ASK):/i.test(line)
       && !/^\s*<<<(CONTENT|FIND|REPLACE)\s*$/i.test(line)
       && !/^\s*>>>(CONTENT|FIND|REPLACE)\s*$/i.test(line);
   }).join("\n").trim();
@@ -1812,8 +1817,37 @@ function renderScreenshot(row, dataUrl) {
 }
 
 function reportAction(action, verdict, result, finalState = {}) {
+  // LAYER 3 DEAD-MAN'S SWITCH (SENSEI HARDENING 2026-05-20): force failure
+  // when BROWSER_FILL post-condition shows expected !== observed. Even if
+  // Layer 1 (content_script) AND Layer 2 (dispatch site) both leak a false
+  // success through, the observed/expected mismatch is ground truth and
+  // wins here. The audit log will never lie about a BROWSER_FILL.
+  if (String(action?.kind || "").toUpperCase() === "BROWSER_FILL"
+      && finalState
+      && typeof finalState === "object"
+      && "expected" in finalState
+      && "observed" in finalState
+      && finalState.expected !== finalState.observed) {
+    result = "failure";
+    finalState = {
+      ...finalState,
+      ok: false,
+      result: "failure",
+      reason: finalState.reason || "value_did_not_persist",
+    };
+  }
+  // session_id MUST be on every action_result the bridge sees. For actions
+  // pulled from the MCP queue we tag them with their origin session at pull
+  // time (see pollMcpQueue). For panel-driven /chat actions we fall back to
+  // the panel's own session id. Without this the audit log shows sid=<empty>
+  // and downstream tooling can't correlate actions to sessions.
+  const session_id = action?._session_id
+    || action?.session_id
+    || state.config.sessionId
+    || "panel-default";
   state.auditQueue.push({
     action_id: action.id,
+    session_id,
     action,
     verdict,
     result,
@@ -1993,8 +2027,13 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
         origin,
         permission_envelope: PermissionManager.envelopeFor(action, origin, permissionDecision),
       };
-      reportAction(action, "accept", ok ? "success" : "failure", finalState);
-      recordLoopResult(action, "accept", ok ? "success" : "failure", finalState);
+      // LAYER 2 (SENSEI HARDENING 2026-05-20): respect content_script's
+      // explicit result field. ok==true is necessary but not sufficient —
+      // if finalState.result is "failure", honor it (content_script knows
+      // the post-condition truth even when ok happens to be true).
+      const _derivedResult = (ok && finalState?.result !== "failure") ? "success" : "failure";
+      reportAction(action, "accept", _derivedResult, finalState);
+      recordLoopResult(action, "accept", _derivedResult, finalState);
     } catch (err) {
       setActionStatus(row, err.message);
       reportAction(action, "accept", "failure", { error: err.message });
@@ -2156,8 +2195,11 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
       // string. Backend / audit can read either field.
       permission_envelope: PermissionManager.envelopeFor(action, origin, permissionDecision),
     };
-    reportAction(action, "accept", ok ? "success" : "failure", finalState);
-    recordLoopResult(action, "accept", ok ? "success" : "failure", finalState);
+    // LAYER 2 (SENSEI HARDENING 2026-05-20): see comment on the sibling
+    // dispatch site (~line 2011). Honor content_script's explicit failure.
+    const _derivedResult = (ok && finalState?.result !== "failure") ? "success" : "failure";
+    reportAction(action, "accept", _derivedResult, finalState);
+    recordLoopResult(action, "accept", _derivedResult, finalState);
   } catch (err) {
     const observedTabUrl = await readObservedTabUrl(tab);
     setActionStatus(row, err.message);
@@ -2933,6 +2975,36 @@ function startLoop(data) {
   }
 }
 
+function summarizeRoundResults(results) {
+  // Walk state.loop.results and produce ONE honest status line. DONE/FAILED
+  // come from action_result outcomes only — never from model prose. Returns
+  // null if there were no actions in this round (pure conversational reply).
+  if (!Array.isArray(results) || results.length === 0) return null;
+  const total = results.length;
+  const successes = results.filter(r => r.verdict === "accept" && r.result === "success");
+  const failures = results.filter(r =>
+    r.verdict !== "reject" &&
+    (r.verdict !== "accept" || r.result === "failure" || r.result === "error")
+  );
+  const rejections = results.filter(r => r.verdict === "reject");
+  if (rejections.length > 0) {
+    return `STOPPED: ${rejections.length} of ${total} action(s) rejected.`;
+  }
+  if (failures.length === 0 && successes.length === total) {
+    return `DONE: ${total} of ${total} action(s) completed (verified by action_results).`;
+  }
+  const reasons = failures.slice(0, 5).map(r => {
+    const kind = r?.action?.kind || "?";
+    const reason = r?.final_state?.reason
+      || r?.final_state?.error
+      || r?.result
+      || "unknown";
+    return `${kind}: ${reason}`;
+  });
+  const extra = failures.length > 5 ? `; +${failures.length - 5} more` : "";
+  return `FAILED: ${failures.length} of ${total} action(s) did not complete. Reasons: ${reasons.join("; ")}${extra}`;
+}
+
 function recordLoopResult(action, verdict, result, finalState) {
   if (!state.loop.active && state.loop.pending === 0) return;
   state.loop.results.push({
@@ -2946,6 +3018,11 @@ function recordLoopResult(action, verdict, result, finalState) {
   if (verdict === "reject") state.loop.rejected = true;
   state.loop.pending = Math.max(0, state.loop.pending - 1);
   if (state.loop.pending === 0 && state.loop.active) {
+    // The round closed — synthesize an honest status bubble from
+    // action_result evidence BEFORE deferring continuation. This is the
+    // only place a "DONE" or "FAILED" reaches the operator's eyes.
+    const summary = summarizeRoundResults(state.loop.results);
+    if (summary) appendMessage("assistant", summary);
     // Defer the continuation so UI status updates flush first.
     setTimeout(() => continueLoop(), 50);
   }
@@ -3034,6 +3111,18 @@ const HEARTBEAT_INTERVAL_MS = 7000;
 const HEARTBEAT_STALE_MS = 20000;
 let _heartbeatTimer = null;
 
+// MCP→Chrome live action transport. The bridge exposes /extension/queue
+// where any MCP client (sensei_mcp_server.py via Claude Code, Codex,
+// Cline, or a bare stdio client) can POST structured BROWSER_* actions.
+// This polls the queue and feeds pulled actions into the same renderActions
+// pipeline that /chat replies use, so safety/classification/auto-flow all
+// still apply. Session id `mcp-default` is the well-known bucket the MCP
+// server pushes to.
+const MCP_QUEUE_POLL_MS = 3000;
+const MCP_QUEUE_SESSION = "mcp-default";
+let _mcpQueuePollTimer = null;
+let _mcpQueuePollInflight = false;
+
 function bridgeState() {
   const last = state.bridge?.lastOkAt || 0;
   const sinceMs = last > 0 ? performance.now() - last : Infinity;
@@ -3101,6 +3190,60 @@ function stopHeartbeat() {
   if (_heartbeatTimer) {
     clearInterval(_heartbeatTimer);
     _heartbeatTimer = null;
+  }
+}
+
+async function pollMcpQueue() {
+  // Skip when the bridge isn't healthy — the heartbeat already covers the
+  // unreachable case and there's no point hammering a dead port.
+  if (_mcpQueuePollInflight) return;
+  const bridgeOk = state.bridge?.lastOkAt > 0
+    && (performance.now() - state.bridge.lastOkAt) < HEARTBEAT_STALE_MS;
+  if (!bridgeOk) return;
+
+  _mcpQueuePollInflight = true;
+  try {
+    const data = await backendFetch(
+      `/extension/queue?session_id=${encodeURIComponent(MCP_QUEUE_SESSION)}`
+    );
+    const actions = Array.isArray(data?.actions) ? data.actions : [];
+    if (actions.length) {
+      // Tag each pulled action with its origin session so subsequent
+      // /extension/action_result POSTs can carry the right session_id and
+      // the audit log can trace results back to the MCP bucket they came
+      // from. reportAction() prefers action._session_id over the panel's
+      // own sessionId for queue-origin actions.
+      for (const a of actions) {
+        if (a && typeof a === "object" && !a._session_id) {
+          a._session_id = data?.session_id || MCP_QUEUE_SESSION;
+        }
+      }
+      // Feed the pulled actions through the same render pipeline that /chat
+      // replies use. Classification, auto-flow gating, approval UI all apply.
+      try {
+        await renderActions(actions, []);
+      } catch (err) {
+        appendError(`MCP queue dispatch failed: ${err.message || err}`);
+      }
+    }
+  } catch (_err) {
+    // Bridge flap or 4xx — silently retry next tick. The heartbeat surface
+    // is responsible for telling the user the bridge is down.
+  } finally {
+    _mcpQueuePollInflight = false;
+  }
+}
+
+function startMcpQueuePoll() {
+  pollMcpQueue();
+  if (_mcpQueuePollTimer) clearInterval(_mcpQueuePollTimer);
+  _mcpQueuePollTimer = setInterval(pollMcpQueue, MCP_QUEUE_POLL_MS);
+}
+
+function stopMcpQueuePoll() {
+  if (_mcpQueuePollTimer) {
+    clearInterval(_mcpQueuePollTimer);
+    _mcpQueuePollTimer = null;
   }
 }
 
@@ -3459,6 +3602,7 @@ async function init() {
   restoreSessionTabGroup();
   renderShortcuts();
   startHeartbeat();
+  startMcpQueuePoll();
   appendMessage("assistant", "Ready.");
 }
 

@@ -1,0 +1,118 @@
+VERIFY_AGENT_AUTOLOOP — official "we know it works for sure" test for MADAM + SENSEI.
+
+Purpose
+=======
+Prove MADAM + SENSEI can run as a real agent auto-loop system. Every layer
+below must be verified with visible proof. Fake success is a FAIL.
+
+Architecture under test
+=======================
+MADAM = machine / host / infrastructure (Linux Mint, Ollama, sensei_bridge.py,
+        sensei_mcp_server.py, Chrome extension, local config).
+SENSEI = operator intelligence / orchestration (routing, memory, retry,
+         verification, tool selection, browser directives).
+
+Dependency rule
+===============
+Anthropic and Codex are optional. MADAM + SENSEI must start, route, use local
+tools, and verify local actions without Anthropic or Codex installed or logged
+in. If a test requires Claude Code/Codex/Anthropic to pass, it is a fail of
+the dependency rule.
+
+LAYERS TO PROVE
+===============
+
+1. LOCAL mode
+   - Uses Ollama only.
+   - No cloud call allowed.
+   - If cloud is required, returns 423 Locked.
+   - Proof: orchestrator log shows route_reason=local_mode_only AND
+     local_attempted=true AND cloud_escalated=false AND provider=local-ollama.
+     Ollama process shows CPU/RAM activity during the request.
+
+2. HYBRID mode
+   - Uses Ollama first.
+   - Escalates only for hard tasks (metadata.escalate=true,
+     system>40k chars, messages>60, or [ESCALATE] marker).
+   - Proof: routine task → route_reason=hybrid_routine_local AND
+     provider=local-ollama; hard task → route_reason=hybrid_hard_task_escalated
+     AND cloud_escalated=true AND provider IN cloud pool.
+
+3. CLOUD mode
+   - Bypasses Ollama.
+   - Uses cloud provider pool (flat peers: groq, gemini, cerebras,
+     fireworks, openrouter, anthropic — no favoritism).
+   - Proof: route_reason=cloud_mode_bypass_local AND local_attempted=false
+     AND cloud_escalated=true AND provider IN cloud pool. Ollama process
+     shows no activity during the request.
+
+4. MCP registration
+   - Sensei MCP server registered with at least one client (claude mcp list
+     shows `sensei: ... Connected`) OR callable headless via stdio.
+   - Proof: tool call returns real result (not "tool not found"); the
+     headless path proves no optional client is required.
+
+5. MCP-to-Chrome transport
+   - Sensei MCP sends action → bridge /extension/queue stores → Chrome
+     extension pulls action → browser performs action → /extension/action_result
+     stores Chrome's outcome → GET /extension/result?action_id=X returns it.
+   - Proof: actual Chrome tab visibly navigates or clicks; round-trip
+     result payload is observable via /extension/result.
+
+6. Agent auto-loop behavior
+   The loop must:
+     READ goal → PLAN next action → ACT with tool → CHECK result →
+     LOG proof → REPAIR if failed → CONTINUE → STOP only at success or
+     human-approval gate.
+   - Proof: log entries for each step; failure paths trigger REPAIR not silent skip.
+
+7. Consumer workflow
+   Two scenarios, both operator-supervised:
+   A. Fill out THREE job applications up to the review/ready-to-submit
+      screen. DO NOT SUBMIT.
+   B. Create a grocery list from a user request (no purchase actions).
+   - Proof: every browser/tool action verified before the next step;
+     review screen reached for each of 3 jobs; grocery list returned to
+     operator; zero submit / zero purchase actions in the audit log.
+
+HARD SAFETY STOPS
+=================
+- Never submit applications.
+- Never purchase anything.
+- Never send personal data without operator approval.
+
+REQUIRED PROOF FIELDS (per request)
+===================================
+- mode
+- provider
+- model
+- route_reason
+- local_attempted
+- cloud_escalated
+- tool_called
+- tool_result
+- browser_action_result (when browser is used)
+
+PASS
+====
+All seven layers pass with proof. Consumer workflow reaches the allowed
+stopping point for each scenario.
+
+FAIL
+====
+ANY of: fake success, missing MCP result, silent cloud routing, broken
+queue, skipped verification, hidden Anthropic/Codex dependency, stopping
+after one action, or violating a hard safety stop.
+
+PROCESS ON FAIL
+===============
+READ → RUN → ERROR → PATCH → RUN → VERIFY. Loop until PASS or until
+blocked by a real missing dependency (e.g. Ollama is not installed).
+No skipping verification. No declaring done from logs alone.
+
+EXECUTOR
+========
+This spec is loaded and run by /home/elijah/scripts/verify_agent.sh.
+Run: bash ~/scripts/verify_agent.sh
+The script prints per-layer ✓/✗/⚠ with the proof field showing what was
+observed vs expected, and a final PASS/FAIL banner.

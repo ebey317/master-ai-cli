@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 import urllib.request
 import urllib.error
 
@@ -51,6 +52,27 @@ def _get(path: str, timeout: float = 5.0) -> dict:
     req = urllib.request.Request(BRIDGE + path, method="GET")
     with urllib.request.urlopen(req, timeout=timeout) as res:
         return json.loads(res.read().decode("utf-8"))
+
+
+def _wait_for_result(action_id: str, wait_seconds: float = 15.0, poll_ms: int = 500) -> dict:
+    """Short-poll the bridge for a browser action's outcome. Returns
+    {ok, action_id, status, result?} — `status` is 'completed' or 'pending'.
+    Used by browser.navigate/click/fill so the MCP caller sees Chrome's
+    actual result inline, not just 'I queued it'."""
+    deadline = time.time() + wait_seconds
+    while time.time() < deadline:
+        try:
+            res = _get(f"/extension/result?action_id={action_id}", timeout=3.0)
+            if res.get("ok") and res.get("result"):
+                return {"ok": True, "action_id": action_id, "status": "completed", **res}
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                return {"ok": False, "action_id": action_id, "status": "error", "error": str(e)}
+        except Exception as e:
+            return {"ok": False, "action_id": action_id, "status": "error", "error": str(e)}
+        time.sleep(poll_ms / 1000.0)
+    return {"ok": False, "action_id": action_id, "status": "pending",
+            "hint": "no result within wait window — is the Chrome extension side panel open and polling?"}
 
 
 TOOLS = [
@@ -131,27 +153,30 @@ def _call_tool(name: str, args: dict) -> dict:
             "source": "mcp",
         }
         return _post("/chat", body)
-    if name == "browser.navigate":
-        return _post("/chat", {
-            "prompt": f"Navigate to {args.get('url','')}",
-            "session_id": "mcp-nav",
-            "source": "mcp",
-            "mode": "auto",
-        })
-    if name == "browser.click":
-        return _post("/chat", {
-            "prompt": f"Click element matching selector: {args.get('selector','')}",
-            "session_id": "mcp-click",
-            "source": "mcp",
-            "mode": "auto",
-        })
-    if name == "browser.fill":
-        return _post("/chat", {
-            "prompt": f"Fill the element matching {args.get('selector','')} with the value: {args.get('value','')}",
-            "session_id": "mcp-fill",
-            "source": "mcp",
-            "mode": "auto",
-        })
+    # browser.navigate/click/fill push structured actions DIRECTLY to the
+    # bridge queue (no model call), then short-poll /extension/result so
+    # the caller sees Chrome's actual outcome inline — not a fake "queued."
+    # If the operator's Chrome extension isn't polling, the result will
+    # honestly time out and return status=pending with a hint.
+    if name in ("browser.navigate", "browser.click", "browser.fill"):
+        sid = args.get("session_id") or "mcp-default"
+        wait_s = float(args.get("wait_seconds", 15))
+        if name == "browser.navigate":
+            action = {"kind": "BROWSER_NAV", "target": args.get("url", "")}
+        elif name == "browser.click":
+            action = {"kind": "BROWSER_CLICK", "target": args.get("selector", "")}
+        else:
+            action = {"kind": "BROWSER_FILL", "target": args.get("selector", ""),
+                      "value": args.get("value", "")}
+        push = _post("/extension/queue", {"session_id": sid, "actions": [action]})
+        action_id = (push.get("action_ids") or [None])[0]
+        if not action_id:
+            return {"ok": False, "push": push, "error": "no action_id returned"}
+        # Short-poll for the Chrome outcome.
+        outcome = _wait_for_result(action_id, wait_seconds=wait_s)
+        return {"ok": outcome.get("ok", False), "session_id": sid,
+                "action": action, "action_id": action_id, "outcome": outcome,
+                "push": push}
     if name == "browser.read_local":
         return _post("/extension/read_local_file", {
             "path": args.get("path", ""),

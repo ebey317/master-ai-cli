@@ -83,6 +83,32 @@ BROWSER_FILL: [name="email"] :: bob@real.com       <-- copying example values wh
 _session_lock = threading.Lock()
 _sessions: dict[str, list[dict]] = {}
 
+# /extension/queue — MCP→Chrome live action transport.
+# MCP server (or any external client) POSTs structured actions in;
+# the side panel polls and pops them; results land back via the existing
+# /extension/action_result audit endpoint. In-memory FIFO scoped by session_id.
+_queue_lock = threading.Lock()
+_action_queue: dict[str, list[dict]] = {}
+
+# Cap per-session queue depth so a runaway producer can't OOM the bridge.
+_QUEUE_MAX_PER_SESSION = 200
+
+# Result loop: when the side panel finishes an action, it POSTs to
+# /extension/action_result. We index those by action_id so MCP callers can
+# GET /extension/result?action_id=... to see Chrome's outcome — closing the
+# loop from "I queued an action" to "Chrome did it, here's what happened."
+_results_lock = threading.Lock()
+_action_results: dict[str, dict] = {}
+_RESULTS_MAX = 1000  # LRU-ish cap; oldest by insertion order get evicted
+
+# Server-side recovery map: action_id -> session_id at enqueue time.
+# Used by /extension/action_result so the audit log ALWAYS has a populated
+# session_id, even when the panel forgets to echo it in the post body
+# (e.g., older side_panel.js not yet reloaded). Trimmed LRU-style.
+_action_session_lock = threading.Lock()
+_action_session_map: dict[str, str] = {}
+_ACTION_SESSION_MAX = 2000
+
 
 def _audit(record: dict) -> None:
     record = {"ts": time.time(), **record}
@@ -285,6 +311,39 @@ class Handler(BaseHTTPRequestHandler):
             })
         if self.path == "/version":
             return self._send_json(200, {"version": "0.1.0"})
+        # /extension/queue?session_id=... — pop + return pending actions for the session.
+        # Side panel polls this on a short interval to pick up actions that MCP
+        # (or any other producer) has pushed in.
+        if self.path.startswith("/extension/queue"):
+            qs = self.path.split("?", 1)
+            session_id = "default"
+            if len(qs) == 2:
+                for part in qs[1].split("&"):
+                    if part.startswith("session_id="):
+                        session_id = part.split("=", 1)[1] or "default"
+                        break
+            with _queue_lock:
+                actions = _action_queue.pop(session_id, [])
+            _audit({"event": "queue_pop", "session_id": session_id, "count": len(actions)})
+            return self._send_json(200, {"ok": True, "session_id": session_id, "actions": actions})
+        # /extension/result?action_id=... — look up Chrome's outcome for a
+        # specific queued action. Returns 404 (not yet) or 200 with the result.
+        # MCP callers use this to close the loop after pushing an action.
+        if self.path.startswith("/extension/result"):
+            qs = self.path.split("?", 1)
+            action_id = None
+            if len(qs) == 2:
+                for part in qs[1].split("&"):
+                    if part.startswith("action_id="):
+                        action_id = part.split("=", 1)[1] or None
+                        break
+            if not action_id:
+                return self._send_json(400, {"error": "action_id required"})
+            with _results_lock:
+                rec = _action_results.get(action_id)
+            if rec is None:
+                return self._send_json(404, {"ok": False, "action_id": action_id, "status": "pending"})
+            return self._send_json(200, {"ok": True, "action_id": action_id, "result": rec})
         return self._send_json(404, {"error": "not found"})
 
     def do_POST(self) -> None:
@@ -295,9 +354,99 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_chat(body, continuation=False)
             if path == "/chat/continue":
                 return self._handle_chat(body, continuation=True)
+            if path == "/extension/queue":
+                # MCP / external producer enqueues structured actions.
+                # body = {session_id, actions: [{kind, target, value?, ...}], ...}
+                session_id = str(body.get("session_id") or "default")
+                actions = body.get("actions") or []
+                if not isinstance(actions, list):
+                    return self._send_json(400, {"error": "actions must be a list"})
+                # Stamp each action with a queued_ts and an id if missing.
+                stamped = []
+                for a in actions:
+                    if not isinstance(a, dict) or "kind" not in a:
+                        return self._send_json(400, {"error": "each action needs a 'kind'"})
+                    a2 = dict(a)
+                    a2.setdefault("id", uuid.uuid4().hex)
+                    a2["queued_ts"] = time.time()
+                    a2["status"] = "queued"
+                    # Stamp the origin session onto the action itself so
+                    # whichever path echoes the action back in action_result
+                    # carries the session through. Belt-and-suspenders with
+                    # _action_session_map below.
+                    a2["_session_id"] = session_id
+                    stamped.append(a2)
+                with _queue_lock:
+                    bucket = _action_queue.setdefault(session_id, [])
+                    overflow = max(0, (len(bucket) + len(stamped)) - _QUEUE_MAX_PER_SESSION)
+                    if overflow:
+                        # drop oldest queued items, keep the new ones
+                        del bucket[:overflow]
+                    bucket.extend(stamped)
+                    depth = len(bucket)
+                # Server-side recovery map — action_id to session_id, used
+                # by /extension/action_result if the body lacks session_id.
+                with _action_session_lock:
+                    for a2 in stamped:
+                        _action_session_map[a2["id"]] = session_id
+                    if len(_action_session_map) > _ACTION_SESSION_MAX:
+                        excess = len(_action_session_map) - _ACTION_SESSION_MAX
+                        for old_id in list(_action_session_map.keys())[:excess]:
+                            _action_session_map.pop(old_id, None)
+                _audit({"event": "queue_push", "session_id": session_id,
+                        "count": len(stamped), "depth": depth})
+                return self._send_json(200, {
+                    "ok": True, "session_id": session_id,
+                    "enqueued": len(stamped), "queue_depth": depth,
+                    "action_ids": [a["id"] for a in stamped],
+                })
             if path == "/extension/action_result":
-                _audit({"event": "action_result", **body})
-                return self._send_json(200, {"ok": True})
+                # Stash by action_id so MCP callers can poll /extension/result.
+                aid = body.get("action_id") or (body.get("action") or {}).get("id")
+                # Resolve session_id (operator STEP 2 of SENSEI hardening):
+                # body.session_id -> action._session_id -> action.session_id
+                # -> server-side map by action_id -> "unknown". Never empty.
+                action_obj = body.get("action") or {}
+                resolved_sid = (
+                    body.get("session_id")
+                    or action_obj.get("_session_id")
+                    or action_obj.get("session_id")
+                )
+                if not resolved_sid and aid:
+                    with _action_session_lock:
+                        resolved_sid = _action_session_map.get(aid)
+                if not resolved_sid:
+                    resolved_sid = "unknown"
+                if aid:
+                    record = {
+                        "action_id": aid,
+                        "session_id": resolved_sid,
+                        "verdict": body.get("verdict"),
+                        "result": body.get("result"),
+                        "final_state": body.get("final_state"),
+                        "completed_ts": time.time(),
+                    }
+                    with _results_lock:
+                        _action_results[aid] = record
+                        # Trim oldest if over the cap.
+                        if len(_action_results) > _RESULTS_MAX:
+                            for old_id in list(_action_results.keys())[: len(_action_results) - _RESULTS_MAX]:
+                                _action_results.pop(old_id, None)
+                # Audit payload: inject resolved session_id, then merge body
+                # so body's session_id wins if present. If body had empty/missing
+                # session_id, the resolved value sticks.
+                audit_payload = {
+                    "event": "action_result",
+                    "browser_action_result": True,
+                    "session_id": resolved_sid,
+                }
+                audit_payload.update(body)
+                if not audit_payload.get("session_id"):
+                    audit_payload["session_id"] = resolved_sid
+                _audit(audit_payload)
+                return self._send_json(200, {
+                    "ok": True, "indexed": bool(aid), "session_id": resolved_sid,
+                })
             if path == "/extension/approve_action":
                 _audit({"event": "approve_action", **body})
                 return self._send_json(200, {"ok": True})
