@@ -3323,6 +3323,23 @@ async function pollMcpQueue() {
   }
 }
 
+async function syncClafBadge() {
+  const badge = document.getElementById("clafBadge");
+  if (!badge) return;
+  try {
+    const r = await fetch("http://127.0.0.1:8080/mode", { signal: AbortSignal.timeout(2000) });
+    if (!r.ok) throw new Error("bad status");
+    const d = await r.json();
+    const authLabel = d.auth === "api_key" ? "💳 API" : "✅ Max";
+    badge.textContent = `${authLabel} · ${d.claf_mode} · ${d.model}`;
+    badge.style.color = d.auth === "api_key" ? "#e67e22" : "#27ae60";
+    badge.title = `Auth: ${d.auth} | CLAF: ${d.claf_mode} | Model: ${d.model}`;
+  } catch (_) {
+    badge.textContent = "bridge?";
+    badge.style.color = "#999";
+  }
+}
+
 function startMcpQueuePoll() {
   pollMcpQueue();
   if (_mcpQueuePollTimer) clearInterval(_mcpQueuePollTimer);
@@ -3674,7 +3691,16 @@ async function init() {
       sendPrompt();
     }
   });
-  $("#modeSelect").addEventListener("change", (event) => saveMode(event.target.value));
+  $("#modeSelect").addEventListener("change", (event) => {
+    saveMode(event.target.value);
+    const extMode = event.target.value;
+    const clafMode = extMode === "auto" ? "hybrid" : extMode === "plan" ? "local" : "local";
+    fetch("http://127.0.0.1:8080/mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: clafMode })
+    }).catch(() => {});
+  });
   $("#recordButton").addEventListener("click", toggleWorkflowRecording);
   $("#micButton").addEventListener("click", toggleMic);
   $("#clearActions").addEventListener("click", () => {
@@ -3692,6 +3718,8 @@ async function init() {
   renderShortcuts();
   startHeartbeat();
   startMcpQueuePoll();
+  syncClafBadge();
+  setInterval(syncClafBadge, 15000);
   appendMessage("assistant", "Ready.");
 }
 

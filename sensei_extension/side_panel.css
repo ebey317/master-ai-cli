@@ -107,6 +107,16 @@ h2 {
   font-size: 14px;
 }
 
+.claf-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0,0,0,0.08);
+  white-space: nowrap;
+  margin-left: 4px;
+}
+
 .icon-button,
 .text-button,
 button {

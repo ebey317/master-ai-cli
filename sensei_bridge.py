@@ -28,6 +28,23 @@ PORT = 8080
 OLLAMA = "http://127.0.0.1:11434"
 DEFAULT_MODEL = os.environ.get("SENSEI_MODEL", "qwen2.5:7b")
 VISION_MODEL = os.environ.get("SENSEI_VISION_MODEL", "qwen2.5vl:7b")
+
+
+TOOL_CATALOG = """
+
+AVAILABLE MCP TOOLS:
+You have these tools registered through your MCP server right now - they are real, callable, connected. Use them. Do NOT say "I see..." and hallucinate observations - if you need to know what is on a page, navigate first then read.
+
+- sensei.chat(prompt, session_id?, page_context?, mode?): High-level goal entry. mode = review|auto|plan|quick
+- sensei.health(): Returns {ok, model, vision_model}
+- browser.navigate(url): Emits BROWSER_NAV directive
+- browser.click(selector): Emits BROWSER_CLICK directive
+- browser.fill(selector, value): Emits BROWSER_FILL directive
+- browser.read_local(path, max_bytes?): Reads a file under $HOME (safety-fenced)
+
+When the user gives you a browser-automation goal, plan the BROWSER_* directives and emit them in your output. Your Chrome extension executes them. You are an agent with real tools, not a narrator.
+"""
+
 EXT_TOKEN_PATH = os.path.expanduser("~/.master_ai_extension_token")
 AUDIT_PATH = os.path.expanduser("~/.sensei_bridge_audit.jsonl")
 SAFE_ROOT = os.path.expanduser("~")
@@ -108,6 +125,12 @@ _RESULTS_MAX = 1000  # LRU-ish cap; oldest by insertion order get evicted
 _action_session_lock = threading.Lock()
 _action_session_map: dict[str, str] = {}
 _ACTION_SESSION_MAX = 2000
+
+# Session observability for MCP session-fallback diagnostics.
+_active_panel_session_lock = threading.Lock()
+_active_panel_session: str | None = None
+_last_queue_pop_lock = threading.Lock()
+_last_queue_pop: dict[str, float] = {}
 
 
 def _audit(record: dict) -> None:
@@ -219,7 +242,7 @@ def _looks_conversational(prompt: str) -> bool:
 
 
 def _build_messages(prompt: str, page_context: dict | None, history: list[dict]) -> list[dict]:
-    msgs: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    msgs: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT + TOOL_CATALOG}]
     msgs.extend(history)
     user_text = prompt or ""
     skip_heavy_context = _looks_conversational(prompt)
@@ -311,6 +334,45 @@ class Handler(BaseHTTPRequestHandler):
             })
         if self.path == "/version":
             return self._send_json(200, {"version": "0.1.0"})
+        if self.path == "/mode":
+            claf_env = os.path.expanduser("~/projects/claf/.env")
+            claf_mode = "unknown"
+            claf_model = os.environ.get("CLAF_LOCAL_MODEL", DEFAULT_MODEL)
+            try:
+                with open(claf_env) as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith("CLAF_MODE="):
+                            claf_mode = line.split("=", 1)[1].strip()
+                        if line.startswith("CLAF_LOCAL_MODEL="):
+                            claf_model = line.split("=", 1)[1].strip()
+            except Exception:
+                pass
+            auth = "api_key" if os.environ.get("ANTHROPIC_API_KEY") else "oauth"
+            return self._send_json(200, {
+                "ok": True,
+                "claf_mode": claf_mode,
+                "auth": auth,
+                "model": claf_model,
+            })
+        # /extension/queue_state?session_id=... — observe queue depth without
+        # consuming. Helps detect session mismatch when an action sits queued
+        # forever because Chrome is polling a different session bucket.
+        if self.path.startswith("/extension/queue_state"):
+            qs = self.path.split("?", 1)
+            session_id = None
+            if len(qs) == 2:
+                for part in qs[1].split("&"):
+                    if part.startswith("session_id="):
+                        session_id = part.split("=", 1)[1] or None
+                        break
+            with _queue_lock:
+                if session_id:
+                    depth = len(_action_queue.get(session_id, []))
+                    per_session = {session_id: depth}
+                else:
+                    per_session = {sid: len(items) for sid, items in _action_queue.items()}
+            return self._send_json(200, {"ok": True, "queue_depth": per_session, "session_id": session_id})
         # /extension/queue?session_id=... — pop + return pending actions for the session.
         # Side panel polls this on a short interval to pick up actions that MCP
         # (or any other producer) has pushed in.
@@ -324,8 +386,32 @@ class Handler(BaseHTTPRequestHandler):
                         break
             with _queue_lock:
                 actions = _action_queue.pop(session_id, [])
+            with _last_queue_pop_lock:
+                _last_queue_pop[session_id] = time.time()
             _audit({"event": "queue_pop", "session_id": session_id, "count": len(actions)})
-            return self._send_json(200, {"ok": True, "session_id": session_id, "actions": actions})
+            return self._send_json(200, {"ok": True, "session_id": session_id, "actions": actions, "count": len(actions)})
+        # /extension/sessions — expose known session ids for MCP fallback:
+        # primary request id -> mcp-default -> chat-default -> active panel.
+        if self.path == "/extension/sessions":
+            known = {"mcp-default", "chat-default"}
+            with _queue_lock:
+                known.update(_action_queue.keys())
+                queue_depth = {sid: len(items) for sid, items in _action_queue.items()}
+            with _action_session_lock:
+                known.update(_action_session_map.values())
+            with _active_panel_session_lock:
+                active_sid = _active_panel_session
+            if active_sid:
+                known.add(active_sid)
+            with _last_queue_pop_lock:
+                last_pop = dict(_last_queue_pop)
+            return self._send_json(200, {
+                "ok": True,
+                "active_side_panel_session": active_sid,
+                "known_sessions": sorted(s for s in known if s),
+                "queue_depth": queue_depth,
+                "last_queue_pop": last_pop,
+            })
         # /extension/result?action_id=... — look up Chrome's outcome for a
         # specific queued action. Returns 404 (not yet) or 200 with the result.
         # MCP callers use this to close the loop after pushing an action.
@@ -342,7 +428,7 @@ class Handler(BaseHTTPRequestHandler):
             with _results_lock:
                 rec = _action_results.get(action_id)
             if rec is None:
-                return self._send_json(404, {"ok": False, "action_id": action_id, "status": "pending"})
+                return self._send_json(200, {"ok": False, "action_id": action_id, "status": "pending"})
             return self._send_json(200, {"ok": True, "action_id": action_id, "result": rec})
         return self._send_json(404, {"error": "not found"})
 
@@ -350,10 +436,25 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         body = self._read_body()
         try:
+            if path == "/mode":
+                new_mode = str(body.get("mode") or "").strip().lower()
+                if new_mode not in ("local", "hybrid", "cloud"):
+                    return self._send_json(400, {"error": "mode must be local | hybrid | cloud"})
+                import subprocess as _sp
+                result = _sp.run(
+                    [os.path.expanduser("~/scripts/set_sensei_mode.sh"), new_mode],
+                    capture_output=True, text=True, timeout=10
+                )
+                if result.returncode == 0:
+                    return self._send_json(200, {"ok": True, "claf_mode": new_mode})
+                return self._send_json(500, {"ok": False, "error": result.stderr.strip()})
             if path == "/chat":
                 return self._handle_chat(body, continuation=False)
             if path == "/chat/continue":
                 return self._handle_chat(body, continuation=True)
+            if path == "/dispatch":
+                # Alias for /extension/queue — MCP server compatibility
+                path = "/extension/queue"
             if path == "/extension/queue":
                 # MCP / external producer enqueues structured actions.
                 # body = {session_id, actions: [{kind, target, value?, ...}], ...}
@@ -397,7 +498,7 @@ class Handler(BaseHTTPRequestHandler):
                         "count": len(stamped), "depth": depth})
                 return self._send_json(200, {
                     "ok": True, "session_id": session_id,
-                    "enqueued": len(stamped), "queue_depth": depth,
+                    "count": len(stamped), "queue_depth": depth,
                     "action_ids": [a["id"] for a in stamped],
                 })
             if path == "/extension/action_result":
@@ -474,6 +575,10 @@ class Handler(BaseHTTPRequestHandler):
         session_id = str(body.get("session_id") or f"sensei-{uuid.uuid4()}")
         page_context = body.get("page_context") or {}
         model = _select_model(body)
+
+        with _active_panel_session_lock:
+            global _active_panel_session
+            _active_panel_session = session_id
 
         with _session_lock:
             history = list(_sessions.get(session_id, []))

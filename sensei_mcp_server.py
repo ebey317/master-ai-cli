@@ -1,103 +1,250 @@
 #!/usr/bin/env python3
-"""sensei_mcp_server.py — MCP stdio server that fronts the Sensei bridge.
+"""
+sensei_mcp_server.py — Sensei MCP for Claude Code (secretary-mode).
 
-Speaks JSON-RPC 2.0 over newline-delimited stdio per the Model Context
-Protocol. Exposes the Sensei browser stack as MCP tools so external
-clients (Claude Code, Cline, etc.) can drive the local Chrome extension
-without any account dependency.
-
-Protocol methods implemented:
-  - initialize
-  - notifications/initialized
-  - tools/list
-  - tools/call
-
-Tools exposed (each forwards to http://127.0.0.1:8080):
-  - sensei.chat          : run a prompt, get BROWSER_* directives back
-  - sensei.health        : ping the bridge
-  - browser.navigate     : ask the model to navigate to a URL (returns directives)
-  - browser.click        : ask the model to click a selector
-  - browser.fill         : ask the model to fill a selector with a value
-  - browser.read_local   : safely read a local file from the bridge
+Six tools: chat, browse, click, fill, read, search.
+3-tool limit only applies when local 7B is the brain. Max account = no limit.
+JSON-RPC over stdio. Talks to the Sensei bridge at 127.0.0.1:8080.
 """
 
-from __future__ import annotations
-
 import json
+import os
+import subprocess
 import sys
 import time
 import urllib.request
 import urllib.error
 
-
 BRIDGE = "http://127.0.0.1:8080"
-PROTO_VERSION = "2024-11-05"
-SERVER_NAME = "sensei-mcp"
-SERVER_VERSION = "0.1.0"
+DEFAULT_SESSION = "mcp-default"
+WAIT_SECONDS = 8
+POLL_MS = 400
 
 
-def _post(path: str, body: dict, timeout: float = 120.0) -> dict:
-    raw = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(
-        BRIDGE + path,
-        data=raw,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as res:
-        return json.loads(res.read().decode("utf-8"))
+# ---------------------------------------------------------------------------
+# bridge helpers
+# ---------------------------------------------------------------------------
+
+def _http(method, path, body=None, timeout=5.0):
+    url = f"{BRIDGE}{path}"
+    data = None
+    headers = {"Accept": "application/json"}
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            try:
+                return {"ok": True, "status": resp.status, "json": json.loads(raw)}
+            except Exception:
+                return {"ok": True, "status": resp.status, "text": raw}
+    except urllib.error.HTTPError as e:
+        return {"ok": False, "status": e.code, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "status": 0, "error": str(e)}
 
 
-def _get(path: str, timeout: float = 5.0) -> dict:
-    req = urllib.request.Request(BRIDGE + path, method="GET")
-    with urllib.request.urlopen(req, timeout=timeout) as res:
-        return json.loads(res.read().decode("utf-8"))
+def _bridge_alive():
+    r = _http("GET", "/extension/queue_state", timeout=1.0)
+    return bool(r.get("ok"))
 
 
-def _wait_for_result(action_id: str, wait_seconds: float = 15.0, poll_ms: int = 500) -> dict:
-    """Short-poll the bridge for a browser action's outcome. Returns
-    {ok, action_id, status, result?} — `status` is 'completed' or 'pending'.
-    Used by browser.navigate/click/fill so the MCP caller sees Chrome's
-    actual result inline, not just 'I queued it'."""
+def _push(action, session=DEFAULT_SESSION):
+    body = {"session_id": session, "actions": [action]}
+    return _http("POST", "/extension/queue", body=body, timeout=3.0)
+
+
+def _await_result(action_id, session=DEFAULT_SESSION, wait_seconds=WAIT_SECONDS):
+    """Poll the bridge for a completed result. Returns the result dict or a
+    timeout shape. Does not raise."""
+    if not action_id:
+        return {"ok": False, "reason": "no_action_id"}
     deadline = time.time() + wait_seconds
+    last = None
     while time.time() < deadline:
-        try:
-            res = _get(f"/extension/result?action_id={action_id}", timeout=3.0)
-            if res.get("ok") and res.get("result"):
-                return {"ok": True, "action_id": action_id, "status": "completed", **res}
-        except urllib.error.HTTPError as e:
-            if e.code != 404:
-                return {"ok": False, "action_id": action_id, "status": "error", "error": str(e)}
-        except Exception as e:
-            return {"ok": False, "action_id": action_id, "status": "error", "error": str(e)}
-        time.sleep(poll_ms / 1000.0)
-    return {"ok": False, "action_id": action_id, "status": "pending",
-            "hint": "no result within wait window — is the Chrome extension side panel open and polling?"}
+        r = _http(
+            "GET",
+            f"/extension/result?session_id={session}&action_id={action_id}",
+            timeout=2.0,
+        )
+        if r.get("ok") and r.get("json"):
+            j = r["json"]
+            if j.get("ready") or j.get("result") or j.get("action_id"):
+                return j
+            last = j
+        time.sleep(POLL_MS / 1000.0)
+    return {"ok": False, "reason": "timeout", "last": last}
 
+
+def _action_id_from_push(push_response):
+    """The bridge has shipped two shapes historically:
+       - { action_id: "..." }
+       - { action_ids: ["..."] }
+       Accept either and return the single id or None."""
+    if not push_response or not push_response.get("ok"):
+        return None
+    j = push_response.get("json") or {}
+    aid = j.get("action_id")
+    if isinstance(aid, str) and aid:
+        return aid
+    aids = j.get("action_ids")
+    if isinstance(aids, list) and aids:
+        return aids[0]
+    return None
+
+
+def _dispatch(kind, payload, session=DEFAULT_SESSION, wait=WAIT_SECONDS):
+    """Push an action to the bridge and await the result. Returns a result
+    dict shaped for the MCP content envelope."""
+    if not _bridge_alive():
+        return {"ok": False, "reason": "bridge_unreachable",
+                "hint": "Open Chrome, click the Sensei icon, pin the side panel."}
+    action = {"kind": kind, **payload}
+    push = _push(action, session=session)
+    if not push.get("ok"):
+        return {"ok": False, "reason": "push_failed", "detail": push}
+    aid = _action_id_from_push(push)
+    result = _await_result(aid, session=session, wait_seconds=wait)
+    return {"ok": result.get("ok", True), "result": result, "action_id": aid}
+
+
+# ---------------------------------------------------------------------------
+# tool handlers — each takes flat string parameters only
+# ---------------------------------------------------------------------------
+
+def tool_chat(args):
+    msg = str(args.get("msg") or "")
+    return {"content": [{"type": "text", "text": msg or "ok"}]}
+
+
+def tool_browse(args):
+    url = str(args.get("url") or "").strip()
+    if not url:
+        return {"content": [{"type": "text", "text": "browse: url is required"}]}
+    if not url.startswith("http"):
+        url = "https://" + url
+    out = _dispatch("BROWSER_NAV", {"target": url})
+    text = f"navigate {url} -> {json.dumps(out)[:600]}"
+    return {"content": [{"type": "text", "text": text}]}
+
+
+def tool_click(args):
+    what = str(args.get("what") or "").strip()
+    if not what:
+        return {"content": [{"type": "text", "text": "click: what is required"}]}
+    out = _dispatch("BROWSER_CLICK", {"target": what})
+    text = f"click '{what}' -> {json.dumps(out)[:400]}"
+    return {"content": [{"type": "text", "text": text}]}
+
+
+def tool_fill(args):
+    where = str(args.get("where") or "").strip()
+    text = str(args.get("text") or "")
+    if not where:
+        return {"content": [{"type": "text", "text": "fill: where is required"}]}
+    out = _dispatch("BROWSER_FILL", {"target": where, "value": text})
+    rep = f"fill '{where}' = {text[:60]} -> {json.dumps(out)[:400]}"
+    return {"content": [{"type": "text", "text": rep}]}
+
+
+def tool_read(args):
+    out = _dispatch("BROWSER_READ_PAGE", {})
+    rep = json.dumps(out)
+    if len(rep) > 500:
+        rep = rep[:500] + " ...[truncated]"
+    return {"content": [{"type": "text", "text": rep}]}
+
+
+def tool_search(args):
+    query = str(args.get("query") or "").strip()
+    if not query:
+        return {"content": [{"type": "text", "text": "search: query is required"}]}
+    url = "https://www.google.com/search?q=" + query.replace(" ", "+")
+    out = _dispatch("BROWSER_NAV", {"target": url})
+    rep = f"search '{query}' -> {json.dumps(out)[:400]}"
+    return {"content": [{"type": "text", "text": rep}]}
+
+
+def tool_run(args):
+    cmd = str(args.get("cmd") or "").strip()
+    if not cmd:
+        return {"content": [{"type": "text", "text": "run: cmd is required"}]}
+    try:
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+        out = (result.stdout or "").strip()
+        err = (result.stderr or "").strip()
+        rep = out if out else err if err else "(no output)"
+        if len(rep) > 800:
+            rep = rep[:800] + " ...[truncated]"
+        return {"content": [{"type": "text", "text": rep}]}
+    except subprocess.TimeoutExpired:
+        return {"content": [{"type": "text", "text": "run: timed out after 30s"}]}
+    except Exception as e:
+        return {"content": [{"type": "text", "text": f"run error: {e}"}]}
+
+
+def tool_write_file(args):
+    path = str(args.get("path") or "").strip()
+    content = str(args.get("content") or "")
+    if not path:
+        return {"content": [{"type": "text", "text": "write_file: path is required"}]}
+    path = os.path.expanduser(path)
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w") as f:
+            f.write(content)
+        return {"content": [{"type": "text", "text": f"wrote {len(content)} chars to {path}"}]}
+    except Exception as e:
+        return {"content": [{"type": "text", "text": f"write_file error: {e}"}]}
+
+
+def tool_read_file(args):
+    path = str(args.get("path") or "").strip()
+    if not path:
+        return {"content": [{"type": "text", "text": "read_file: path is required"}]}
+    path = os.path.expanduser(path)
+    try:
+        with open(path, "r") as f:
+            content = f.read(4000)
+        return {"content": [{"type": "text", "text": content}]}
+    except Exception as e:
+        return {"content": [{"type": "text", "text": f"read_file error: {e}"}]}
+
+
+HANDLERS = {
+    "chat": tool_chat,
+    "browse": tool_browse,
+    "click": tool_click,
+    "fill": tool_fill,
+    "read": tool_read,
+    "search": tool_search,
+    "run": tool_run,
+    "write_file": tool_write_file,
+    "read_file": tool_read_file,
+}
+
+
+# ---------------------------------------------------------------------------
+# tool schemas — descriptions cut to a single short sentence each.
+# every parameter is a flat string. no nested objects. no optional fields
+# with defaults. no enums. nothing the 7B model can hallucinate the shape of.
+# ---------------------------------------------------------------------------
 
 TOOLS = [
     {
-        "name": "sensei.chat",
-        "description": "Send a prompt to the Sensei bridge. The local model returns BROWSER_* directives the Chrome extension should execute (navigate, click, fill, read, upload, submit). Use this as the high-level entry point for browser automation goals.",
+        "name": "chat",
+        "description": "Reply to the user with plain text.",
         "inputSchema": {
             "type": "object",
-            "properties": {
-                "prompt": {"type": "string", "description": "Goal in natural language."},
-                "session_id": {"type": "string", "description": "Optional session id for multi-turn context."},
-                "page_context": {"type": "object", "description": "Optional {url,title,text,ax_snapshot}."},
-                "mode": {"type": "string", "enum": ["review", "auto", "plan", "quick"], "default": "auto"},
-            },
-            "required": ["prompt"],
+            "properties": {"msg": {"type": "string"}},
+            "required": ["msg"],
         },
     },
     {
-        "name": "sensei.health",
-        "description": "Health check — confirms the bridge and Ollama are reachable. Returns {ok, model, vision_model}.",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "browser.navigate",
-        "description": "Convenience wrapper — asks the model to emit a BROWSER_NAV directive for the given URL.",
+        "name": "browse",
+        "description": "Open a URL in the browser.",
         "inputSchema": {
             "type": "object",
             "properties": {"url": {"type": "string"}},
@@ -105,152 +252,137 @@ TOOLS = [
         },
     },
     {
-        "name": "browser.click",
-        "description": "Convenience wrapper — asks the model to emit a BROWSER_CLICK directive for the given CSS selector.",
+        "name": "click",
+        "description": "Click an element by visible label or selector.",
         "inputSchema": {
             "type": "object",
-            "properties": {"selector": {"type": "string"}},
-            "required": ["selector"],
+            "properties": {"what": {"type": "string"}},
+            "required": ["what"],
         },
     },
     {
-        "name": "browser.fill",
-        "description": "Convenience wrapper — asks the model to emit a BROWSER_FILL directive for the given selector + value.",
+        "name": "fill",
+        "description": "Type text into a field by label or selector.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "selector": {"type": "string"},
-                "value": {"type": "string"},
+                "where": {"type": "string"},
+                "text": {"type": "string"},
             },
-            "required": ["selector", "value"],
+            "required": ["where", "text"],
         },
     },
     {
-        "name": "browser.read_local",
-        "description": "Read a local file under $HOME via the bridge's safety-fenced reader. Refuses paths in ~/.ssh, ~/.gnupg, credentials.",
+        "name": "read",
+        "description": "Read the visible content of the current page.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "search",
+        "description": "Search Google for a query.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "run",
+        "description": "Run a shell command on this machine (CLI). Use for invoices, file ops, system tasks.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"cmd": {"type": "string"}},
+            "required": ["cmd"],
+        },
+    },
+    {
+        "name": "write_file",
+        "description": "Write or create a file on this machine. Use for invoices, documents, notes.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
-                "max_bytes": {"type": "integer", "default": 65536},
+                "content": {"type": "string"},
             },
+            "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "read_file",
+        "description": "Read a file from this machine.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
             "required": ["path"],
         },
     },
 ]
 
 
-def _call_tool(name: str, args: dict) -> dict:
-    args = args or {}
-    if name == "sensei.health":
-        return _get("/health")
-    if name == "sensei.chat":
-        body = {
-            "prompt": args.get("prompt", ""),
-            "session_id": args.get("session_id", "mcp-default"),
-            "page_context": args.get("page_context") or {},
-            "mode": args.get("mode") or "auto",
-            "source": "mcp",
-        }
-        return _post("/chat", body)
-    # browser.navigate/click/fill push structured actions DIRECTLY to the
-    # bridge queue (no model call), then short-poll /extension/result so
-    # the caller sees Chrome's actual outcome inline — not a fake "queued."
-    # If the operator's Chrome extension isn't polling, the result will
-    # honestly time out and return status=pending with a hint.
-    if name in ("browser.navigate", "browser.click", "browser.fill"):
-        sid = args.get("session_id") or "mcp-default"
-        wait_s = float(args.get("wait_seconds", 15))
-        if name == "browser.navigate":
-            action = {"kind": "BROWSER_NAV", "target": args.get("url", "")}
-        elif name == "browser.click":
-            action = {"kind": "BROWSER_CLICK", "target": args.get("selector", "")}
-        else:
-            action = {"kind": "BROWSER_FILL", "target": args.get("selector", ""),
-                      "value": args.get("value", "")}
-        push = _post("/extension/queue", {"session_id": sid, "actions": [action]})
-        action_id = (push.get("action_ids") or [None])[0]
-        if not action_id:
-            return {"ok": False, "push": push, "error": "no action_id returned"}
-        # Short-poll for the Chrome outcome.
-        outcome = _wait_for_result(action_id, wait_seconds=wait_s)
-        return {"ok": outcome.get("ok", False), "session_id": sid,
-                "action": action, "action_id": action_id, "outcome": outcome,
-                "push": push}
-    if name == "browser.read_local":
-        return _post("/extension/read_local_file", {
-            "path": args.get("path", ""),
-            "max_bytes": args.get("max_bytes", 65536),
-        })
-    raise ValueError(f"unknown tool {name}")
+# ---------------------------------------------------------------------------
+# JSON-RPC stdio loop
+# ---------------------------------------------------------------------------
+
+def _send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
 
 
-def _result_envelope(payload: dict) -> dict:
-    return {
-        "content": [
-            {"type": "text", "text": json.dumps(payload, separators=(",", ":"))}
-        ],
-        "isError": False,
-    }
+def _err(msg_id, code, message):
+    _send({"jsonrpc": "2.0", "id": msg_id, "error": {"code": code, "message": message}})
 
 
-def _error_envelope(msg: str) -> dict:
-    return {
-        "content": [{"type": "text", "text": msg}],
-        "isError": True,
-    }
-
-
-def _handle(msg: dict) -> dict | None:
+def _handle(msg):
     method = msg.get("method")
-    msg_id = msg.get("id")
+    mid = msg.get("id")
+    params = msg.get("params") or {}
 
     if method == "initialize":
         return {
-            "jsonrpc": "2.0",
-            "id": msg_id,
+            "jsonrpc": "2.0", "id": mid,
             "result": {
-                "protocolVersion": PROTO_VERSION,
-                "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "sensei", "version": "1.0.0"},
             },
         }
 
     if method == "notifications/initialized":
-        return None  # notifications have no response
+        return None
 
     if method == "tools/list":
-        return {
-            "jsonrpc": "2.0",
-            "id": msg_id,
-            "result": {"tools": TOOLS},
-        }
+        return {"jsonrpc": "2.0", "id": mid, "result": {"tools": TOOLS}}
 
     if method == "tools/call":
-        params = msg.get("params") or {}
-        name = params.get("name", "")
+        name = params.get("name")
         args = params.get("arguments") or {}
+        handler = HANDLERS.get(name)
+        if not handler:
+            return {"jsonrpc": "2.0", "id": mid,
+                    "result": {"content": [{"type": "text",
+                                            "text": f"unknown tool: {name}"}],
+                               "isError": True}}
         try:
-            payload = _call_tool(name, args)
-            return {"jsonrpc": "2.0", "id": msg_id, "result": _result_envelope(payload)}
-        except urllib.error.URLError as e:
-            return {"jsonrpc": "2.0", "id": msg_id, "result": _error_envelope(f"bridge unreachable: {e}")}
+            result = handler(args if isinstance(args, dict) else {})
+            return {"jsonrpc": "2.0", "id": mid, "result": result}
         except Exception as e:
-            return {"jsonrpc": "2.0", "id": msg_id, "result": _error_envelope(f"{type(e).__name__}: {e}")}
+            return {"jsonrpc": "2.0", "id": mid,
+                    "result": {"content": [{"type": "text",
+                                            "text": f"tool error: {e}"}],
+                               "isError": True}}
 
-    if method == "ping":
-        return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
+    if mid is None:
+        # notification we don't handle — silently drop
+        return None
 
-    if msg_id is not None:
-        return {
-            "jsonrpc": "2.0",
-            "id": msg_id,
-            "error": {"code": -32601, "message": f"method not found: {method}"},
-        }
-    return None
+    return {"jsonrpc": "2.0", "id": mid,
+            "error": {"code": -32601, "message": f"method not found: {method}"}}
 
 
-def main() -> int:
+def main():
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -258,14 +390,20 @@ def main() -> int:
         try:
             msg = json.loads(line)
         except Exception as e:
-            sys.stderr.write(f"[mcp] parse error: {e}\n")
+            sys.stderr.write(f"[sensei] parse error: {e}\n")
+            sys.stderr.flush()
             continue
-        resp = _handle(msg)
+        try:
+            resp = _handle(msg)
+        except Exception as e:
+            sys.stderr.write(f"[sensei] handler crash: {e}\n")
+            sys.stderr.flush()
+            resp = {"jsonrpc": "2.0", "id": msg.get("id"),
+                    "error": {"code": -32603, "message": f"internal: {e}"}}
         if resp is not None:
-            sys.stdout.write(json.dumps(resp) + "\n")
-            sys.stdout.flush()
+            _send(resp)
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())
