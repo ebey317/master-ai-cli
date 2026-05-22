@@ -3330,10 +3330,10 @@ async function syncClafBadge() {
     const r = await fetch("http://127.0.0.1:8080/mode", { signal: AbortSignal.timeout(2000) });
     if (!r.ok) throw new Error("bad status");
     const d = await r.json();
-    const authLabel = d.auth === "api_key" ? "💳 API" : "✅ Max";
+    const authLabel = d.auth === "api_key" ? "API" : "Max Anthropic";
     badge.textContent = `${authLabel} · ${d.claf_mode} · ${d.model}`;
     badge.style.color = d.auth === "api_key" ? "#e67e22" : "#27ae60";
-    badge.title = `Auth: ${d.auth} | CLAF: ${d.claf_mode} | Model: ${d.model}`;
+    badge.title = `Account: ${authLabel} | CLAF: ${d.claf_mode} | Model: ${d.model}`;
   } catch (_) {
     badge.textContent = "bridge?";
     badge.style.color = "#999";

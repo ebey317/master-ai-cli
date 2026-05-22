@@ -14,11 +14,14 @@ import sys
 import time
 import urllib.request
 import urllib.error
+from typing import Optional
 
 BRIDGE = "http://127.0.0.1:8080"
 DEFAULT_SESSION = "mcp-default"
 WAIT_SECONDS = 8
 POLL_MS = 400
+CLAF_HEALTHZ = os.environ.get("CLAF_URL", "http://127.0.0.1:8000").rstrip("/") + "/healthz"
+OLLAMA_TAGS = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/") + "/api/tags"
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +52,33 @@ def _http(method, path, body=None, timeout=5.0):
 def _bridge_alive():
     r = _http("GET", "/extension/queue_state", timeout=1.0)
     return bool(r.get("ok"))
+
+def _claf_alive():
+    r = _http_abs("GET", CLAF_HEALTHZ, timeout=1.5)
+    return bool(r.get("ok"))
+
+def _ollama_alive():
+    r = _http_abs("GET", OLLAMA_TAGS, timeout=1.5)
+    return bool(r.get("ok"))
+
+def _http_abs(method, url, body=None, timeout=5.0):
+    data = None
+    headers = {"Accept": "application/json"}
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            try:
+                return {"ok": True, "status": resp.status, "json": json.loads(raw)}
+            except Exception:
+                return {"ok": True, "status": resp.status, "text": raw}
+    except urllib.error.HTTPError as e:
+        return {"ok": False, "status": e.code, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "status": 0, "error": str(e)}
 
 
 def _push(action, session=DEFAULT_SESSION):
@@ -117,6 +147,21 @@ def _dispatch(kind, payload, session=DEFAULT_SESSION, wait=WAIT_SECONDS):
 def tool_chat(args):
     msg = str(args.get("msg") or "")
     return {"content": [{"type": "text", "text": msg or "ok"}]}
+
+def tool_health(args):
+    # Keep this small and deterministic: Claude Code uses it as a physical
+    # "is the domino chain wired" check.
+    bridge = _bridge_alive()
+    claf = _claf_alive()
+    ollama = _ollama_alive()
+    rep = {
+        "ok": True,
+        "bridge": bridge,
+        "claf": claf,
+        "ollama": ollama,
+        "session_default": DEFAULT_SESSION,
+    }
+    return {"content": [{"type": "text", "text": json.dumps(rep)}]}
 
 
 def tool_browse(args):
@@ -215,6 +260,7 @@ def tool_read_file(args):
 
 HANDLERS = {
     "chat": tool_chat,
+    "health": tool_health,
     "browse": tool_browse,
     "click": tool_click,
     "fill": tool_fill,
@@ -240,6 +286,14 @@ TOOLS = [
             "type": "object",
             "properties": {"msg": {"type": "string"}},
             "required": ["msg"],
+        },
+    },
+    {
+        "name": "health",
+        "description": "Report whether bridge/CLAF/Ollama are reachable (wiring check).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
         },
     },
     {
@@ -327,6 +381,9 @@ TOOLS = [
 # ---------------------------------------------------------------------------
 
 def _send(obj):
+    # MCP stdio transport is newline-delimited JSON-RPC (no embedded newlines).
+    # We keep the input parser tolerant of Content-Length in case a client uses it,
+    # but Claude Code expects newline-delimited output.
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
 
@@ -383,26 +440,77 @@ def _handle(msg):
 
 
 def main():
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
+    for msg in _iter_rpc_messages():
         try:
-            msg = json.loads(line)
-        except Exception as e:
-            sys.stderr.write(f"[sensei] parse error: {e}\n")
-            sys.stderr.flush()
-            continue
-        try:
-            resp = _handle(msg)
+            resp = _handle(msg if isinstance(msg, dict) else {})
         except Exception as e:
             sys.stderr.write(f"[sensei] handler crash: {e}\n")
             sys.stderr.flush()
-            resp = {"jsonrpc": "2.0", "id": msg.get("id"),
+            resp = {"jsonrpc": "2.0", "id": (msg or {}).get("id"),
                     "error": {"code": -32603, "message": f"internal: {e}"}}
         if resp is not None:
             _send(resp)
     return 0
+
+def _read_exact(n: int) -> bytes:
+    buf = b""
+    while len(buf) < n:
+        chunk = sys.stdin.buffer.read(n - len(buf))
+        if not chunk:
+            break
+        buf += chunk
+    return buf
+
+
+def _iter_rpc_messages():
+    """Yield parsed JSON-RPC dicts from stdin.
+
+    Supports both:
+    - MCP/LSP-style framed messages: Content-Length: N\\r\\n\\r\\n{...}
+    - newline-delimited JSON (older local scripts / ad-hoc tests)
+    """
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return
+        line_str = line.decode("utf-8", errors="replace").strip()
+        if not line_str:
+            continue
+
+        # Framed: Content-Length: N
+        if line_str.lower().startswith("content-length:"):
+            try:
+                n = int(line_str.split(":", 1)[1].strip())
+            except Exception:
+                sys.stderr.write(f"[sensei] bad content-length line: {line_str}\n")
+                sys.stderr.flush()
+                continue
+
+            # Read headers until blank line
+            while True:
+                h = sys.stdin.buffer.readline()
+                if not h:
+                    return
+                if h in (b"\r\n", b"\n"):
+                    break
+
+            raw = _read_exact(n)
+            if not raw:
+                return
+            try:
+                yield json.loads(raw.decode("utf-8", errors="replace"))
+            except Exception as e:
+                sys.stderr.write(f"[sensei] parse error: {e}\n")
+                sys.stderr.flush()
+            continue
+
+        # Newline-delimited JSON
+        try:
+            yield json.loads(line_str)
+        except Exception as e:
+            sys.stderr.write(f"[sensei] parse error: {e}\n")
+            sys.stderr.flush()
+            continue
 
 
 if __name__ == "__main__":

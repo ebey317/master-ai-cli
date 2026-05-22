@@ -348,7 +348,12 @@ class Handler(BaseHTTPRequestHandler):
                             claf_model = line.split("=", 1)[1].strip()
             except Exception:
                 pass
-            auth = "api_key" if os.environ.get("ANTHROPIC_API_KEY") else "oauth"
+            lane_file = os.path.expanduser("~/.claude_lane")
+            try:
+                lane = open(lane_file).read().strip()
+            except Exception:
+                lane = "unknown"
+            auth = "api_key" if lane == "api" else "oauth"
             return self._send_json(200, {
                 "ok": True,
                 "claf_mode": claf_mode,
