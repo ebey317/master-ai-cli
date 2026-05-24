@@ -1,6 +1,7 @@
 - [CLAF throttle + account separation](project_claf_throttle_and_account_separation.md) — Flash/Tap/Local routing, 9 cloud peers wired (6 serving as of 2026-05-22), 25K tokens/day ceiling, ANTHROPIC_CONSOLE_KEY separation enforced
 - [Account separation strict](feedback_account_separation_strict.md) — Max OAuth vs Console platform key MUST stay separate; architecture enforces via keychain naming + launch.sh unset + orchestrator alias projection
 - [Six Project Pipeline](project_pipeline_six_ideas.md) — Fair Chance Employer, Drive-In, Freelance MCP Agency, IPTV monetization, MCP School (captured 2026-05-23)
+- [Fair Chance project](project_fairchance.md) — Autofill job app service for friends/family. Template at ~/projects/fairchance/profiles/. Client profiles → /tmp/profile_{slug}.json → autofill_job_form.
 - [Sensei tennis lessons](feedback_sensei_tennis_lessons.md) — locate-first rule, stuck tab recovery, copy/paste over fill, monitor before submit, audit log visible_text for replies, golden brace = active tab
 - [Attention signal tiers](feedback_attention_signal_tiers.md) — speak.sh = question, TV = look at screen, Jazz/Gospel = urgent need attention now
 - [⚠️ claude-in-chrome UNAVAILABLE](feedback_no_claude_chrome_extension.md) — UPDATED 2026-05-24: extension does NOT connect in practice. Do NOT call mcp__claude-in-chrome__* tools. sensei is sole browser path. Observability failure → hand to operator, no escalation.
