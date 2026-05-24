@@ -1,56 +1,34 @@
 #!/usr/bin/env bash
 # claf_status.sh — Claude Code status bar.
-# Boxes: claude=<model> | style=<style> | effort=<level>
-# effort comes from stdin JSON (live) or falls back to settings.json.
-# Writes to /tmp/claude_runtime so CLAF watch can mirror it.
+# Boxes: claude=<model> | style=<style> | effort=<level> | thinking=<on/off>
+# Schema confirmed from /tmp/claude_status_raw.json 2026-05-24.
 
 INPUT=$(cat)
-SETTINGS="$HOME/.claude/settings.json"
+echo "$INPUT" > /tmp/claude_status_raw.json 2>/dev/null
 
-read MODEL STYLE EFFORT < <(echo "$INPUT" | python3 -c "
+LINE=$(echo "$INPUT" | python3 -c "
 import json, sys
-
-raw = sys.stdin.read()
 try:
-    d = json.loads(raw)
+    d = json.loads(sys.stdin.read())
 except Exception:
     d = {}
 
-# model
 m = d.get('model') or {}
-model = (m.get('display_name') or m.get('id') or '') if isinstance(m, dict) else str(m or '')
+model = (m.get('display_name') or m.get('id') or '?') if isinstance(m, dict) else str(m or '?')
 
-# style
 s = d.get('output_style') or {}
-style = (s.get('name') or 'default') if isinstance(s, dict) else (str(s) or 'default')
+style = (s.get('name') or 'default') if isinstance(s, dict) else 'default'
 
-# effort — may live in a few places depending on CC version
-effort = (
-    d.get('effortLevel')
-    or d.get('effort_level')
-    or (d.get('model') or {}).get('effort_level') if isinstance(d.get('model'), dict) else None
-    or ''
-)
+e = d.get('effort') or {}
+effort = e.get('level', '?') if isinstance(e, dict) else str(e or '?')
 
-print(model or '?', style or 'default', effort or '')
+t = d.get('thinking') or {}
+thinking = 'on' if (isinstance(t, dict) and t.get('enabled')) else 'off'
+
+print(f'claude={model} | style={style} | effort={effort} | thinking={thinking}')
 " 2>/dev/null)
 
-# effort fallback: read from settings.json if stdin didn't carry it
-if [ -z "$EFFORT" ]; then
-    EFFORT=$(python3 -c "
-import json
-try:
-    d = json.load(open('$SETTINGS'))
-    print(d.get('effortLevel','?'))
-except:
-    print('?')
-" 2>/dev/null)
-fi
+[ -z "$LINE" ] && LINE="claude=? | style=? | effort=? | thinking=?"
 
-[ -z "$MODEL" ] && MODEL="?"
-[ -z "$STYLE" ] && STYLE="?"
-[ -z "$EFFORT" ] && EFFORT="?"
-
-LINE="claude=${MODEL} | style=${STYLE} | effort=${EFFORT}"
 echo "$LINE"
 echo "$LINE" > /tmp/claude_runtime 2>/dev/null
