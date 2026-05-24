@@ -25,7 +25,7 @@ LOG = "/tmp/bc_wake_log.jsonl"
 # Widen this when adding a new AI to AI_WATCHLIST in sensei_extension's
 # service_worker.js — both must stay in sync.
 FILTER = re.compile(
-    r"\b(Claude|Anthropic|claude\.ai|DeepSeek|BC)\b",
+    r"\b(Claude|Anthropic|claude\.ai|DeepSeek|BC|Gemini|ChatGPT|GPT-?[0-9o]|aistudio|Bard|Copilot)\b",
     re.IGNORECASE,
 )
 

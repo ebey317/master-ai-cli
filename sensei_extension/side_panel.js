@@ -43,6 +43,7 @@ const READONLY_BROWSER_KINDS = new Set([
   "BROWSER_DRIVE_INSPECT_FOLDER",
   "BROWSER_CONSOLE",
   "BROWSER_NETWORK",
+  "BROWSER_TAB_LIST",   // Phase 5.5 — read-only tab enumeration
 ]);
 const CONTEXT_SETTLING_BROWSER_KINDS = new Set([
   "BROWSER_NAV",
@@ -2078,6 +2079,7 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
       renderScreenshot(row, capture.dataUrl);
       result = {
         ok: true,
+        b64: capture.dataUrl.replace(/^data:[^;]+;base64,/, ""),
         screenshot: "visible_tab_png",
         dataUrl_preview: truncateDataUrlForAudit(capture.dataUrl),
         context_lifetime: "one_turn"
@@ -2118,6 +2120,38 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
         tab_created: { id: newTab?.id, url, windowId: newTab?.windowId,
                        group_id: state.sessionTabGroup?.groupId || null },
       };
+    } else if (kind === "BROWSER_TAB_LIST") {
+      // Phase 5.5 — list all open tabs across all windows. Returns id, url,
+      // title, windowId, active, and groupId for each tab. Read-only.
+      const tabs = await chrome.tabs.query({});
+      result = {
+        ok: true,
+        count: tabs.length,
+        tabs: tabs.map((t) => ({
+          id: t.id,
+          url: t.url || "",
+          title: t.title || "",
+          windowId: t.windowId,
+          active: t.active,
+          groupId: t.groupId ?? -1,
+        })),
+      };
+    } else if (kind === "BROWSER_TAB_CLOSE") {
+      // Phase 5.5 — close a tab by numeric ID. action.target is the tab ID
+      // as a string or number. Never closes the side-panel's own tab.
+      const targetId = parseInt(String(action.target || ""), 10);
+      if (!Number.isInteger(targetId) || targetId <= 0) {
+        result = { ok: false, error: "BROWSER_TAB_CLOSE: target must be a valid tab ID integer" };
+      } else if (targetId === tab.id) {
+        result = { ok: false, error: "BROWSER_TAB_CLOSE: cannot close the current active tab" };
+      } else {
+        try {
+          await chrome.tabs.remove(targetId);
+          result = { ok: true, closed_tab_id: targetId };
+        } catch (err) {
+          result = { ok: false, error: `BROWSER_TAB_CLOSE failed: ${err?.message || err}` };
+        }
+      }
     } else if (kind === "BROWSER_CDP_MOUSE") {
       result = await dispatchCdpMouse(tab, action, timings);
       if (result?.ok) {
@@ -3300,14 +3334,54 @@ async function pollMcpQueue() {
       for (const a of actions) {
         if (!a || typeof a !== "object") continue;
         if (!a._session_id) a._session_id = data?.session_id || sid;
-        const tab = await activeTab().catch(() => null);
+        let tab = await activeTab().catch(() => null);
+        if (!tab?.id || !canInjectIntoTab(tab)) {
+          // Active tab may be a chrome:// page or user is in terminal — find
+          // any injectable http/https tab in the current window.
+          const allTabs = await chrome.tabs.query({ currentWindow: true }).catch(() => []);
+          tab = allTabs.find(t => canInjectIntoTab(t)) || null;
+        }
         if (!tab?.id) {
-          reportAction(a, "reject", "failure", { error: "no active tab for MCP action" });
+          // No injectable tab at all — for navigate actions, create one.
+          const navUrl = (a.kind === "BROWSER_NAV" || a.type === "BROWSER_NAV")
+            && /^https?:/i.test(String(a.target || "")) ? a.target : null;
+          if (navUrl) {
+            // VISIBILITY INVARIANT: every action tab must be on screen.
+            const newTab = await chrome.tabs.create({ url: navUrl, active: true }).catch(() => null);
+            reportAction(a, "accept", newTab ? "success" : "failure",
+              newTab ? { ok: true, url: navUrl, tabId: newTab.id } : { error: "tab create failed" });
+          } else {
+            reportAction(a, "reject", "failure", { error: "no injectable tab for MCP action" });
+          }
           continue;
         }
+        // VISIBILITY INVARIANT: bring the target tab AND its window to the
+        // foreground before any action fires. Operator must see every move.
+        await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
+        await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
         try {
-          await ensureContentScript(tab);
-          const result = await sendToContent(tab, a);
+          let result;
+          const actionKind = String(a.kind || a.type || "").toUpperCase();
+          if (actionKind === "BROWSER_SCREENSHOT") {
+            // captureVisibleTab can ONLY run in the service worker — route via
+            // SENSEI_CAPTURE_VISIBLE_TAB. Content script correctly refuses this
+            // with "BROWSER_SCREENSHOT must be handled by background".
+            const capture = await chrome.runtime.sendMessage({
+              type: "SENSEI_CAPTURE_VISIBLE_TAB",
+              windowId: tab.windowId
+            });
+            if (capture?.ok && capture?.dataUrl) {
+              // Strip data-URL prefix so sensei_mcp_server.py tool_screenshot
+              // can base64-decode via inner.get("b64", "").
+              const b64 = capture.dataUrl.replace(/^data:[^;]+;base64,/, "");
+              result = { ok: true, b64, screenshot: "visible_tab_png", context_lifetime: "one_turn" };
+            } else {
+              result = { ok: false, error: capture?.error || "screenshot capture failed" };
+            }
+          } else {
+            await ensureContentScript(tab);
+            result = await sendToContent(tab, a);
+          }
           const ok = result?.ok !== false;
           reportAction(a, "accept", ok ? "success" : "failure", result || {});
         } catch (err) {
@@ -3331,13 +3405,70 @@ async function syncClafBadge() {
     if (!r.ok) throw new Error("bad status");
     const d = await r.json();
     const authLabel = d.auth === "api_key" ? "API" : "Max Anthropic";
-    badge.textContent = `${authLabel} · ${d.claf_mode} · ${d.model}`;
+
+    // Also check secretary health
+    let secLabel = "";
+    try {
+      const sr = await fetch("http://127.0.0.1:8001/agent/health", { signal: AbortSignal.timeout(1500) });
+      if (sr.ok) {
+        const sd = await sr.json();
+        const active = sd.active_tasks || 0;
+        secLabel = active > 0 ? ` · sec:${active}` : " · sec:ok";
+      }
+    } catch (_) {
+      secLabel = " · sec:off";
+    }
+
+    badge.textContent = `${authLabel} · ${d.claf_mode} · ${d.model}${secLabel}`;
     badge.style.color = d.auth === "api_key" ? "#e67e22" : "#27ae60";
-    badge.title = `Account: ${authLabel} | CLAF: ${d.claf_mode} | Model: ${d.model}`;
+    badge.title = `Account: ${authLabel} | CLAF: ${d.claf_mode} | Model: ${d.model}${secLabel}`;
   } catch (_) {
     badge.textContent = "bridge?";
     badge.style.color = "#999";
   }
+}
+
+// ── Secretary debug panel ────────────────────────────────────────────────────
+let _debugPollTimer = null;
+const _debugLines = [];
+const DEBUG_MAX_LINES = 40;
+
+async function pollSecretaryDebug() {
+  const statusEl = document.getElementById("debugStatus");
+  const logEl = document.getElementById("debugLog");
+  if (!statusEl || !logEl) return;
+  try {
+    const r = await fetch("http://127.0.0.1:8001/agent/stats", { signal: AbortSignal.timeout(2000) });
+    if (!r.ok) throw new Error("no response");
+    const d = await r.json();
+    const byStatus = d.by_status || {};
+    const executing = byStatus.executing || 0;
+    const completed = byStatus.completed || 0;
+    const failed = byStatus.failed || 0;
+    statusEl.textContent = executing > 0 ? `running ${executing}` : `idle · ${completed} done`;
+    statusEl.className = "debug-status" + (executing > 0 ? " active" : "");
+
+    // Show recent events
+    const events = (d.recent_events || []).slice(0, 5);
+    const lines = events.map(e => {
+      const ts = (e.ts || "").slice(11, 19);
+      const tid = (e.task_id || "").slice(0, 6);
+      const type = e.event_type || "";
+      const pay = e.payload ? JSON.parse(e.payload || "{}") : {};
+      return `${ts} [${tid}] ${type}${pay.status ? " → " + pay.status : ""}`;
+    });
+    logEl.textContent = lines.join("\n") || "no events";
+  } catch (_) {
+    statusEl.textContent = "off";
+    statusEl.className = "debug-status";
+    logEl.textContent = "secretary not reachable";
+  }
+}
+
+function startSecretaryDebug() {
+  pollSecretaryDebug();
+  if (_debugPollTimer) clearInterval(_debugPollTimer);
+  _debugPollTimer = setInterval(pollSecretaryDebug, 4000);
 }
 
 function startMcpQueuePoll() {
@@ -3718,6 +3849,7 @@ async function init() {
   renderShortcuts();
   startHeartbeat();
   startMcpQueuePoll();
+  startSecretaryDebug();
   syncClafBadge();
   setInterval(syncClafBadge, 15000);
   appendMessage("assistant", "Ready.");

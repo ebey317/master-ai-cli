@@ -428,7 +428,13 @@ function interactiveElements(limit = INTERACTIVE_LIMIT) {
     const role = elementRole(el);
     const name = elementName(el) || "(unnamed)";
     const selector = safeSelectorFor(el);
-    return `${index + 1}. ${role} "${name}" selector=${selector}`;
+    // Layer 3: append constraint annotations so the LLM sees hard limits
+    const cons = _extractFieldConstraints(el);
+    const consKeys = Object.keys(cons);
+    const consStr = consKeys.length
+      ? " [" + consKeys.map((k) => k === "required" ? "required" : `${k}=${cons[k]}`).join(", ") + "]"
+      : "";
+    return `${index + 1}. ${role} "${name}" selector=${selector}${consStr}`;
   }).join("\n");
 }
 
@@ -2075,6 +2081,38 @@ function _resolveProfileValue(el, profile) {
   return null;
 }
 
+// Track A — Layer 3: Contextual Field-Length Boundaries (2026-05-23)
+// Extracts DOM-declared constraints so the LLM receives hard rules alongside
+// each field — stops "too much / too little text" failures.
+// Used by: interactiveElements() (LLM sees constraints on every field),
+//          fillFormByProfileMatch() (skipped_no_match entries get constraints
+//          so the LLM knows bounds when generating custom-question answers).
+function _extractFieldConstraints(el) {
+  const c = {};
+  if (!el || typeof el.getAttribute !== "function") return c;
+  const ml  = el.getAttribute("maxlength")   || el.getAttribute("maxLength");
+  const mnl = el.getAttribute("minlength")   || el.getAttribute("minLength");
+  const pat = el.getAttribute("pattern");
+  const tp  = el.getAttribute("type");
+  const mn  = el.getAttribute("min");
+  const mx  = el.getAttribute("max");
+  const stp = el.getAttribute("step");
+  const ac  = el.getAttribute("autocomplete");
+  const req = el.required || String(el.getAttribute("aria-required") || "").toLowerCase() === "true";
+  if (ml  !== null && ml  !== "") c.maxlength  = parseInt(ml,  10);
+  if (mnl !== null && mnl !== "") c.minlength  = parseInt(mnl, 10);
+  if (pat !== null && pat !== "") c.pattern    = pat;
+  // Only include type when it adds signal beyond the default text/textarea
+  if (tp  !== null && tp  !== "" && tp !== "text") c.type = tp;
+  if (mn  !== null && mn  !== "") c.min  = mn;
+  if (mx  !== null && mx  !== "") c.max  = mx;
+  if (stp !== null && stp !== "") c.step = stp;
+  // autocomplete hints help the model choose the right field-fill strategy
+  if (ac  !== null && ac  !== "" && ac !== "on" && ac !== "off") c.autocomplete = ac;
+  if (req) c.required = true;
+  return c;
+}
+
 function fillFormByProfileMatch(scopeEl, profile) {
   const scope = scopeEl instanceof Element ? scopeEl : document;
   const urlPath = (() => { try { return window.location.pathname || ""; } catch (_e) { return ""; } })();
@@ -2157,7 +2195,12 @@ function fillFormByProfileMatch(scopeEl, profile) {
       }
       const profileHit = _resolveProfileValue(el, profile);
       if (!profileHit) {
-        skipped_no_match.push({ ref, label: safePageText(labelText, 240) });
+        // Layer 3: include field constraints so the LLM knows hard limits
+        // when generating text for custom questions (essay fields, etc.)
+        const fieldCons = _extractFieldConstraints(el);
+        const noMatchEntry = { ref, label: safePageText(labelText, 240) };
+        if (Object.keys(fieldCons).length) noMatchEntry.constraints = fieldCons;
+        skipped_no_match.push(noMatchEntry);
         if (required) addUnmatchedRequired(ref, labelText);
         continue;
       }
@@ -2400,6 +2443,56 @@ async function executeBrowserAction(action) {
     };
   }
 
+  if (kind === "BROWSER_KEY") {
+    // Dispatch keyboard event to focused element or a specific target.
+    // target format: "Escape" | "Tab" | "Enter" | "ArrowDown" | "ArrowUp" | etc.
+    // Optionally prefix with selector: "input#name :: Enter"
+    const raw = String(action?.target || "").trim();
+    let targetEl = null;
+    let keySpec = raw;
+    if (raw.includes("::")) {
+      const [sel, key] = raw.split("::", 2);
+      keySpec = key.trim();
+      try { targetEl = document.querySelector(sel.trim()); } catch (_e) {}
+    }
+    const el = targetEl || document.activeElement || document.body;
+    const keyMap = {
+      escape: "Escape", esc: "Escape",
+      tab: "Tab",
+      enter: "Enter", return: "Enter",
+      space: " ",
+      arrowdown: "ArrowDown", down: "ArrowDown",
+      arrowup: "ArrowUp", up: "ArrowUp",
+      arrowleft: "ArrowLeft", left: "ArrowLeft",
+      arrowright: "ArrowRight", right: "ArrowRight",
+      backspace: "Backspace", delete: "Delete",
+      home: "Home", end: "End",
+      pagedown: "PageDown", pageup: "PageUp",
+    };
+    const key = keyMap[keySpec.toLowerCase()] || keySpec;
+    const opts = { key, bubbles: true, cancelable: true, composed: true };
+    el.dispatchEvent(new KeyboardEvent("keydown", opts));
+    el.dispatchEvent(new KeyboardEvent("keypress", opts));
+    el.dispatchEvent(new KeyboardEvent("keyup", opts));
+    if (key === "Tab") {
+      // Move browser focus to next/prev focusable element
+      const all = Array.from(document.querySelectorAll(
+        "a,button,input,select,textarea,[tabindex]:not([tabindex='-1'])"
+      )).filter(e => !e.disabled && e.offsetParent !== null);
+      const idx = all.indexOf(document.activeElement);
+      const next = all[idx + 1] || all[0];
+      if (next) next.focus();
+    }
+    await sleep(120);
+    await waitForPageStable(200, 800);
+    return {
+      ok: true,
+      key,
+      target_tag: el.tagName || "unknown",
+      page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: true, waitForStableMs: 150 })
+    };
+  }
+
   if (kind === "BROWSER_READ_PAGE" || kind === "BROWSER_OBSERVE") {
     const ctx = await pageContextAsync({
       includeVisibleText: true,
@@ -2432,6 +2525,8 @@ async function executeBrowserAction(action) {
     const el = target ? findElement(target) : null;
     return {
       ok: true,
+      url: location.href,
+      title: document.title,
       text: el ? elementText(el, READ_TEXT_LIMIT) : visibleText(READ_TEXT_LIMIT),
       page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 })
     };
@@ -2508,12 +2603,89 @@ async function executeBrowserAction(action) {
     return { ok: true, double_clicked: action.target, page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 }) };
   }
 
+  // ── RIGHT CLICK ───────────────────────────────────────────────────────────
+  if (kind === "BROWSER_RIGHT_CLICK") {
+    const el = findElement(action.target);
+    if (!el) return { ok: false, error: "target not found" };
+    el.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
+    try { _mirrorMoveGhost(el); } catch (_e) {}
+    const rect = el.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const opts = { bubbles: true, cancelable: true, composed: true, button: 2, buttons: 2,
+                   clientX: cx, clientY: cy, screenX: cx, screenY: cy, view: window };
+    el.dispatchEvent(new MouseEvent("mousedown", opts));
+    el.dispatchEvent(new MouseEvent("mouseup",   opts));
+    el.dispatchEvent(new MouseEvent("contextmenu", opts));
+    await waitForPageStable(350, 1200);
+    return { ok: true, right_clicked: action.target, page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 }) };
+  }
+
+  // ── HOVER ─────────────────────────────────────────────────────────────────
+  if (kind === "BROWSER_HOVER") {
+    const el = findElement(action.target);
+    if (!el) return { ok: false, error: "target not found" };
+    el.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+    try { _mirrorMoveGhost(el); } catch (_e) {}
+    const rect = el.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const opts = { bubbles: true, cancelable: true, composed: true, clientX: cx, clientY: cy, screenX: cx, screenY: cy, view: window };
+    el.dispatchEvent(new MouseEvent("mouseover", opts));
+    el.dispatchEvent(new MouseEvent("mouseenter", opts));
+    await sleep(300);
+    await waitForPageStable(250, 800);
+    return {
+      ok: true,
+      hovered: action.target,
+      page_context: await pageContextAsync({ includeVisibleText: true, visibleTextLimit: 1500, waitForStableMs: 150 })
+    };
+  }
+
+  // ── DRAG ──────────────────────────────────────────────────────────────────
+  if (kind === "BROWSER_DRAG") {
+    const fromEl = findElement(action.target);
+    const toEl = findElement(action.to || action?.extras?.to || "");
+    if (!fromEl) return { ok: false, error: "drag source not found" };
+    if (!toEl) return { ok: false, error: "drag destination not found" };
+    fromEl.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+    await sleep(150);
+    const fromRect = fromEl.getBoundingClientRect();
+    const toRect = toEl.getBoundingClientRect();
+    const fromX = fromRect.left + fromRect.width / 2;
+    const fromY = fromRect.top + fromRect.height / 2;
+    const toX = toRect.left + toRect.width / 2;
+    const toY = toRect.top + toRect.height / 2;
+    const mkOpts = (x, y, extra = {}) => ({ bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, screenX: x, screenY: y, view: window, ...extra });
+    fromEl.dispatchEvent(new MouseEvent("mousedown", mkOpts(fromX, fromY, { button: 0 })));
+    fromEl.dispatchEvent(new DragEvent("dragstart", { ...mkOpts(fromX, fromY), dataTransfer: new DataTransfer() }));
+    await sleep(80);
+    toEl.dispatchEvent(new DragEvent("dragover", mkOpts(toX, toY)));
+    toEl.dispatchEvent(new DragEvent("drop", mkOpts(toX, toY)));
+    fromEl.dispatchEvent(new DragEvent("dragend", mkOpts(toX, toY)));
+    fromEl.dispatchEvent(new MouseEvent("mouseup", mkOpts(toX, toY, { button: 0 })));
+    await waitForPageStable(350, 1200);
+    return {
+      ok: true,
+      dragged: action.target,
+      dropped_on: action.to,
+      page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 })
+    };
+  }
+
   if (kind === "BROWSER_FILL") {
     const parsed = parseFillTarget(action);
     const fileUpload = action?.extras?.fileUpload || null;
     const wantsFileUpload = isFileUploadAction(action, parsed);
     const el = findFillElement(parsed, wantsFileUpload);
-    if (!el) return { ok: false, error: "target not found" };
+    if (!el) return {
+      ok: false,
+      result: "failure",
+      reason: "target_not_found",
+      expected: parsed.selector,
+      observed: "[element missing]",
+      error: "target not found",
+    };
     // Sensitive-field gate (post-emit, pre-dispatch) — refuses to fill
     // password / SSN / cc_number / cvv / routing / account fields even when
     // the model emits an explicit BROWSER_FILL with a value. The deterministic
@@ -2522,54 +2694,68 @@ async function executeBrowserAction(action) {
     if (!wantsFileUpload && !fileUpload) {
       let urlPath = ""; try { urlPath = window.location.pathname || ""; } catch (_e) {}
       const sensitive = _detectSensitiveField(el, urlPath);
-      if (sensitive) {
-        let labelText = "";
-        try { labelText = renderedLabelFor(el); } catch (_e) {}
+        if (sensitive) {
+          let labelText = "";
+          try { labelText = renderedLabelFor(el); } catch (_e) {}
+          return {
+            ok: false,
+            result: "failure",
+            reason: "sensitive_field_gate",
+            category: sensitive.category,
+            tier: sensitive.tier,
+            signals: sensitive.signals,
+            target: parsed.selector,
+            label: labelText || el.placeholder || "",
+            page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 })
+          };
+        }
+      }
+      if (wantsFileUpload || fileUpload) {
+        const upload = setFileInputValue(el, fileUpload);
+        if (!upload.ok) {
+          return {
+            ok: false,
+            result: "failure",
+            reason: "file_upload_failed",
+            expected: parsed.selector,
+            observed: upload.error || "unknown",
+            error: upload.error,
+          };
+        }
         return {
-          ok: false,
-          skipped_sensitive: true,
-          category: sensitive.category,
-          tier: sensitive.tier,
-          signals: sensitive.signals,
-          target: parsed.selector,
-          label: labelText || el.placeholder || "",
-          error: `sensitive-field gate refused fill on ${sensitive.category} (${sensitive.tier}, signals: ${sensitive.signals.join(",")}). Emit NEEDS_INPUT: ${sensitive.category} :: ${labelText || parsed.selector} instead — do not invent a value.`,
+          ok: true,
+          result: "success",
+          observed: upload.file_name || "",
+          file_name: upload.file_name,
+          file_size: upload.file_size,
+          mime: upload.mime || "",
+          page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 })
         };
       }
-    }
-    if (wantsFileUpload || fileUpload) {
-      const upload = setFileInputValue(el, fileUpload);
-      if (!upload.ok) return upload;
-      return {
-        ok: true,
-        filled: parsed.selector,
-        file_upload: upload,
-        page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 })
-      };
-    }
     const current = currentElementValue(el);
     const requested = String(parsed.value || "");
     const overwrite = Boolean(parsed.overwrite || action?.overwrite || action?.extras?.overwrite || action?.extras?.force);
-    if (current.trim() && fillValuesDiffer(current, requested) && !overwrite) {
-      return {
-        ok: false,
-        conflict: true,
-        error: "field already has a different value",
-        target: parsed.selector,
-        rendered_label: renderedLabelFor(el),
-        existing_value: safePageText(current, 500),
-        requested_value: safePageText(requested, 500),
-        page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 })
-      };
-    }
-    if (current.trim() && !fillValuesDiffer(current, requested)) {
-      return {
-        ok: true,
-        filled: parsed.selector,
-        preserved_existing_value: true,
-        page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 })
-      };
-    }
+      if (current.trim() && fillValuesDiffer(current, requested) && !overwrite) {
+        return {
+          ok: false,
+          result: "failure",
+          reason: "value_conflict",
+          expected: safePageText(requested, 500),
+          observed: safePageText(current, 500),
+          target: parsed.selector,
+          label: renderedLabelFor(el) || "",
+          page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 })
+        };
+      }
+      if (current.trim() && !fillValuesDiffer(current, requested)) {
+        return {
+          ok: true,
+          result: "success",
+          observed: current,
+          preserved_existing: true,
+          page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 })
+        };
+      }
     // Operator's spec (SENSEI HARDENING STEP 1): explicit post-condition
     // verification with literal element.value compare. After setting the
     // value, dispatch input + change events, await 100ms, re-read the
@@ -2834,8 +3020,8 @@ async function executeBrowserAction(action) {
   if (kind === "BROWSER_NAV") {
     const url = String(action?.target || "").trim();
     if (!url) return { ok: false, error: "missing url" };
-    location.assign(url);
-    return { ok: true, navigated: url };
+    window.location = url;
+    return { ok: true, url: url, title: document.title };
   }
 
   if (kind === "BROWSER_CLOSE_TAB") {
@@ -2871,6 +3057,64 @@ async function executeBrowserAction(action) {
   if (kind === "BROWSER_DRIVE_INSPECT_FOLDER") {
     const state = driveState();
     return { ok: true, drive_state: state, text: state.summary };
+  }
+
+  if (kind === "BROWSER_READ_IMAGES") {
+    const minPx = Number.isFinite(action?.min_size) ? action.min_size : 80;
+    const selector = action?.target || null;
+    const root = selector ? document.querySelector(selector) : document;
+    if (!root) return { ok: false, error: `selector_not_found: ${selector}` };
+    const seen = new Set();
+    const results = [];
+    const addUrl = (url, rect, alt) => {
+      if (!url || url.startsWith("data:")) return;
+      const key = url.split("?")[0];
+      if (seen.has(key)) return;
+      seen.add(key);
+      results.push({ url, w: Math.round(rect?.width || 0), h: Math.round(rect?.height || 0), alt: alt || "" });
+    };
+    root.querySelectorAll("img").forEach(el => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width < minPx && rect.height < minPx) return;
+      if (el.srcset) {
+        const parts = el.srcset.split(",").map(s => s.trim().split(/\s+/));
+        const sorted = parts.filter(p => p.length >= 1).sort((a, b) => (parseFloat(b[1]) || 0) - (parseFloat(a[1]) || 0));
+        if (sorted.length > 0) { addUrl(sorted[0][0], rect, el.alt); return; }
+      }
+      const src = el.getAttribute("data-src") || el.getAttribute("data-deferred-src") || el.src;
+      addUrl(src, rect, el.alt);
+    });
+    root.querySelectorAll("[style]").forEach(el => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width < minPx && rect.height < minPx) return;
+      const bg = el.style.backgroundImage || "";
+      const m = bg.match(/url\(["']?([^"')]+)["']?\)/);
+      if (m) addUrl(m[1], rect, "");
+    });
+    return { ok: true, url: location.href, title: document.title, count: results.length, images: results.slice(0, 80) };
+  }
+
+  if (kind === "BROWSER_JS") {
+    const code = action?.target || "";
+    if (!code) return { ok: false, error: "BROWSER_JS: target (code) required" };
+    try {
+      // eslint-disable-next-line no-new-func
+      const fn = new Function(code);
+      const result = fn();
+      if (result === undefined) return { ok: true, result: null };
+      if (typeof result === "object") {
+        try { return { ok: true, result: JSON.parse(JSON.stringify(result)) }; } catch (_e) {}
+      }
+      return { ok: true, result: String(result) };
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) };
+    }
+  }
+
+  if (kind === "BROWSER_SCREENSHOT") {
+    // Screenshot is handled in the background service worker via chrome.tabs.captureVisibleTab.
+    // Content script signals that it should delegate upward.
+    return { ok: false, error: "BROWSER_SCREENSHOT must be handled by background" };
   }
 
   return { ok: false, error: `unsupported browser action: ${kind}` };

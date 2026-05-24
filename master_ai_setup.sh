@@ -43,8 +43,8 @@ if [ ! -f ~/scripts/stt_server.py ]; then
 fi
 
 # Set up UI services
-if [ ! -f ~/scripts/master_ai.py ]; then
-    echo "Sensei script not found. Please add master_ai.py to ~/scripts/"
+if [ ! -f ~/scripts/sensei_bridge.py ]; then
+    echo "Sensei script not found. Please add sensei_bridge.py to ~/scripts/"
 fi
 
 if [ ! -f ~/scripts/pupil.html ]; then

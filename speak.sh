@@ -32,6 +32,14 @@ RATE="${SPEAK_RATE:-175}"
 # back to remote_audio. Default to the DCR006x_BT speaker; override with
 # SPEAK_SINK=<sink-name> or set to "" to fall back to default-sink.
 SPEAK_SINK="${SPEAK_SINK-bluez_sink.C8_47_8C_01_6A_10.a2dp_sink}"
+# Verify the named sink actually exists on this PulseAudio session. If the
+# BT speaker is asleep / disconnected, drop to default-sink instead of
+# erroring with "Stream error: No such entity."
+if [[ -n "$SPEAK_SINK" ]] && command -v pactl >/dev/null 2>&1; then
+  if ! pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -qFx "$SPEAK_SINK"; then
+    SPEAK_SINK=""
+  fi
+fi
 PAPLAY_DEV_FLAG=()
 if [[ -n "$SPEAK_SINK" ]]; then
   PAPLAY_DEV_FLAG=(-d "$SPEAK_SINK")

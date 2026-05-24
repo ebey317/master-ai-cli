@@ -79,6 +79,8 @@ def fire_wake(window_id: str) -> None:
                 f.write(time.strftime("%Y-%m-%dT%H:%M:%S") + "\n")
         except OSError:
             pass
+        # Audio/speech notifications removed — wake is a signal for Claude,
+        # not for the operator. Use speak.sh only when asking the operator a question.
         log({"event": "wake_fired", "window": window_id})
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
         log({"event": "wake_failed", "error": str(e)})

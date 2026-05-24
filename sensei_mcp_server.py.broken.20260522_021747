@@ -1,0 +1,440 @@
+#!/usr/bin/env python3
+"""sensei_mcp_server.py — MCP stdio server that fronts the Sensei bridge."""
+
+from __future__ import annotations
+
+import json
+import sys
+import time
+import urllib.request
+import urllib.error
+
+BRIDGE = "http://127.0.0.1:8080"
+PROTO_VERSION = "2024-11-05"
+SERVER_NAME = "sensei-mcp"
+SERVER_VERSION = "0.1.0"
+
+
+def _post(path: str, body: dict, timeout: float = 10.0) -> dict:
+    raw = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        BRIDGE + path,
+        data=raw,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as res:
+        return json.loads(res.read().decode("utf-8"))
+
+
+def _get(path: str, timeout: float = 5.0) -> dict:
+    req = urllib.request.Request(BRIDGE + path, method="GET")
+    with urllib.request.urlopen(req, timeout=timeout) as res:
+        return json.loads(res.read().decode("utf-8"))
+
+
+def _bridge_alive(timeout: float = 1.0) -> bool:
+    try:
+        _get("/extension/queue_state", timeout=timeout)
+        return True
+    except Exception:
+        return False
+
+
+def _wait_for_result(action_id: str, wait_seconds: float = 5.0, poll_ms: int = 2000) -> dict:
+    deadline = time.time() + wait_seconds
+    while time.time() < deadline:
+        try:
+            res = _get(f"/extension/result?action_id={action_id}", timeout=3.0)
+            if res.get("ok") and res.get("result"):
+                return {
+                    "ok": True,
+                    "action_id": action_id,
+                    "status": "completed",
+                    **res,
+                }
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                pass
+            else:
+                return {
+                    "ok": False,
+                    "action_id": action_id,
+                    "status": "error",
+                    "error": str(e),
+                }
+        except Exception as e:
+            return {
+                "ok": False,
+                "action_id": action_id,
+                "status": "error",
+                "error": str(e),
+            }
+        time.sleep(poll_ms / 1000.0)
+    return {
+        "ok": False,
+        "action_id": action_id,
+        "status": "pending",
+        "hint": "No result within wait window — is the Chrome extension side panel open and polling?",
+    }
+
+
+def _queue_depth(session_id: str) -> int | None:
+    try:
+        state = _get(f"/extension/queue_state?session_id={session_id}", timeout=3.0)
+    except Exception:
+        return None
+    depth = state.get("queue_depth", {}).get(session_id)
+    if depth is None:
+        return None
+    try:
+        return int(depth)
+    except Exception:
+        return None
+
+
+def _known_sessions(primary_session: str) -> list[str]:
+    out: list[str] = []
+    for sid in [primary_session, "mcp-default", "chat-default"]:
+        if sid and sid not in out:
+            out.append(sid)
+    try:
+        sess = _get("/extension/sessions", timeout=3.0)
+        active = sess.get("active_side_panel_session", "").strip()
+        if active and active not in out:
+            out.append(active)
+        for s in sess.get("known_sessions", []):
+            s = str(s).strip()
+            if s and s not in out:
+                out.append(s)
+    except Exception:
+        pass
+    return out
+
+
+def _dispatch_with_session_fallback(action: dict, primary_session: str, wait_seconds: float = 5.0) -> dict:
+    attempts: list[dict] = []
+    for sid in _known_sessions(primary_session):
+        push = _post("/extension/queue", {"session_id": sid, "action": action}, timeout=5.0)
+        action_id = push.get("action_id") or [None]
+        if isinstance(action_id, list):
+            action_id = action_id[0] if action_id else None
+        if not action_id:
+            attempts.append({"session_id": sid, "status": "push_failed", "push": push})
+            continue
+        outcome = _wait_for_result(action_id, wait_seconds=wait_seconds)
+        attempt = {
+            "session_id": sid,
+            "action_id": action_id,
+            "status": outcome.get("status"),
+        }
+        depth = _queue_depth(sid)
+        if depth is not None:
+            attempt["queue_depth_after_wait"] = depth
+        attempts.append(attempt)
+        if outcome.get("status") == "completed":
+            return {
+                "ok": True,
+                "session_used": sid,
+                "action_id": action_id,
+                "outcome": outcome,
+                "attempts": attempts,
+            }
+    return {
+        "ok": False,
+        "status": "pending",
+        "attempts": attempts,
+    }
+
+
+TOOLS = [
+    {
+        "name": "direct_answer",
+        "description": "USE THIS IMMEDIATELY for any general conversation, question, explanation, coding help, brainstorming, or chat that does NOT require visiting a website or using a browser. This is the default and fastest path. Always prefer this tool unless the user explicitly asks you to browse the web or click something.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "response": {
+                    "type": "string",
+                    "description": "The direct response to the user's message.",
+                }
+            },
+            "required": ["response"],
+        },
+    },
+    {
+        "name": "sensei.chat",
+        "description": "Browser automation tool. Use this ONLY when the user explicitly asks to visit a website, fill a form, click something, or extract data from a page. Do NOT use this for general conversation, explanations, or coding help.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "description": "The exact goal in natural language. Be specific about what page to visit and what to do.",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Optional session id for multi-turn context.",
+                },
+                "page_context": {
+                    "type": "object",
+                    "description": "Optional ax snapshot.",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["review", "auto", "plan", "quick"],
+                    "default": "auto",
+                },
+            },
+            "required": ["prompt"],
+        },
+    },
+    {
+        "name": "sensei.health",
+        "description": "Check if the Sensei bridge and local model are running. Call this ONLY when asked about system status or if other tools are failing.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "browser.navigate",
+        "description": "Use this ONLY when the user explicitly asks to visit a specific website or URL. Do not use this unless a web page visit is specifically requested.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The full URL to navigate to. Include https://.",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Optional session id.",
+                },
+                "wait_seconds": {
+                    "type": "number",
+                    "default": 15,
+                    "description": "How long to wait for the page to load.",
+                },
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "browser.click",
+        "description": "Use this ONLY when the user explicitly asks to click, press, tap, or interact with ANY button, link, checkbox, or element on a webpage. Do not use this unless specifically requested.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "selector": {
+                    "type": "string",
+                    "description": "CSS selector of the element to click. Example: '#submit-button' or 'a.login-link'.",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Optional session id.",
+                },
+                "wait_seconds": {
+                    "type": "number",
+                    "default": 15,
+                    "description": "How long to wait for the click to complete.",
+                },
+            },
+            "required": ["selector"],
+        },
+    },
+    {
+        "name": "browser.fill",
+        "description": "Use this ONLY when the user explicitly asks to type, enter, input, or fill ANY form field, text box, password field, or input on a webpage. Do not use this unless specifically requested.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "selector": {
+                    "type": "string",
+                    "description": "CSS selector of the input field. Example: '#email' or 'input[name=password]'.",
+                },
+                "value": {
+                    "type": "string",
+                    "description": "The exact text to type into the field.",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Optional session id.",
+                },
+                "wait_seconds": {
+                    "type": "number",
+                    "default": 15,
+                    "description": "How long to wait for the fill to complete.",
+                },
+            },
+            "required": ["selector", "value"],
+        },
+    },
+    {
+        "name": "browser.read_local",
+        "description": "Read a local file from the computer. Only use this when the user explicitly asks to read a file on their machine. Refuses sensitive paths automatically.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute path to the file under $HOME.",
+                }
+            },
+            "required": ["path"],
+        },
+    },
+]
+
+
+def _handle_tool(name: str, arguments: dict) -> dict:
+    # Fast path: direct_answer bypasses the bridge entirely
+    if name == "direct_answer":
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": arguments.get("response", "How can I help?"),
+                }
+            ]
+        }
+
+    # If bridge is dead, fail fast for all other tools
+    if not _bridge_alive():
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Browser bridge is not responding. The Sensei side panel may be closed. Please open it in Chrome and try again.",
+                }
+            ],
+            "isError": True,
+        }
+
+    if name == "sensei.chat":
+        return _dispatch_with_session_fallback(
+            {"type": "chat", **arguments},
+            arguments.get("session_id", "mcp-default"),
+            wait_seconds=arguments.get("wait_seconds", 5.0),
+        )
+
+    if name == "sensei.health":
+        try:
+            state = _get("/extension/queue_state", timeout=2.0)
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Bridge OK: {state}",
+                    }
+                ]
+            }
+        except Exception as e:
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Bridge error: {e}",
+                    }
+                ],
+                "isError": True,
+            }
+
+    if name == "browser.navigate":
+        return _dispatch_with_session_fallback(
+            {"type": "navigate", **arguments},
+            arguments.get("session_id", "mcp-default"),
+            wait_seconds=arguments.get("wait_seconds", 5.0),
+        )
+
+    if name == "browser.click":
+        return _dispatch_with_session_fallback(
+            {"type": "click", **arguments},
+            arguments.get("session_id", "mcp-default"),
+            wait_seconds=arguments.get("wait_seconds", 5.0),
+        )
+
+    if name == "browser.fill":
+        return _dispatch_with_session_fallback(
+            {"type": "fill", **arguments},
+            arguments.get("session_id", "mcp-default"),
+            wait_seconds=arguments.get("wait_seconds", 5.0),
+        )
+
+    if name == "browser.read_local":
+        return _dispatch_with_session_fallback(
+            {"type": "read_local", **arguments},
+            arguments.get("session_id", "mcp-default"),
+            wait_seconds=arguments.get("wait_seconds", 5.0),
+        )
+
+    return {
+        "content": [{"type": "text", "text": f"Unknown tool: {name}"}],
+        "isError": True,
+    }
+
+
+def _send(msg: dict) -> None:
+    raw = json.dumps(msg)
+    sys.stdout.write(raw + "\n")
+    sys.stdout.flush()
+
+
+def main() -> None:
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            break
+        try:
+            req = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        method = req.get("method")
+        req_id = req.get("id")
+
+        if method == "initialize":
+            _send({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "protocolVersion": PROTO_VERSION,
+                    "capabilities": {},
+                    "serverInfo": {
+                        "name": SERVER_NAME,
+                        "version": SERVER_VERSION,
+                    },
+                },
+            })
+
+        elif method == "tools/list":
+            _send({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"tools": TOOLS},
+            })
+
+        elif method == "tools/call":
+            params = req.get("params", {})
+            name = params.get("name")
+            arguments = params.get("arguments", {})
+            result = _handle_tool(name, arguments)
+            _send({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": result,
+            })
+
+        elif method == "notifications/initialized":
+            pass
+
+        else:
+            _send({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {
+                    "code": -32601,
+                    "message": f"Method not found: {method}",
+                },
+            })
+
+
+if __name__ == "__main__":
+    main()

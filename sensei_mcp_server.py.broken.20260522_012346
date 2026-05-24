@@ -1,0 +1,326 @@
+"""sensei_mcp_server.py — MCP stdio server that fronts the Sensei bridge."""
+
+from __future__ import annotations
+
+import json
+import sys
+import time
+import urllib.request
+import urllib.error
+
+
+BRIDGE = "http://127.0.0.1:8080"
+PROTO_VERSION = "2024-11-05"
+SERVER_NAME = "sensei-mcp"
+SERVER_VERSION = "0.1.0"
+
+
+def _post(path: str, body: dict, timeout: float = 120.0) -> dict:
+    raw = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        BRIDGE + path,
+        data=raw,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as res:
+        return json.loads(res.read().decode("utf-8"))
+
+
+def _get(path: str, timeout: float = 5.0) -> dict:
+    req = urllib.request.Request(BRIDGE + path, method="GET")
+    with urllib.request.urlopen(req, timeout=timeout) as res:
+        return json.loads(res.read().decode("utf-8"))
+
+
+def _wait_for_result(action_id: str, wait_seconds: float = 15.0, poll_ms: int = 500) -> dict:
+    deadline = time.time() + wait_seconds
+    while time.time() < deadline:
+        try:
+            res = _get(f"/extension/result?action_id={action_id}", timeout=3.0)
+            if res.get("ok") and res.get("result"):
+                return {"ok": True, "action_id": action_id, "status": "completed", **res}
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                return {"ok": False, "action_id": action_id, "status": "error", "error": str(e)}
+        except Exception as e:
+            return {"ok": False, "action_id": action_id, "status": "error", "error": str(e)}
+        time.sleep(poll_ms / 1000.0)
+    return {"ok": False, "action_id": action_id, "status": "pending",
+            "hint": "no result within wait window — is the Chrome extension side panel open and polling?"}
+
+
+def _queue_depth(session_id: str) -> int | None:
+    try:
+        state = _get(f"/extension/queue_state?session_id={session_id}", timeout=3.0)
+    except Exception:
+        return None
+    depth = (state.get("queue_depth") or {}).get(session_id)
+    try:
+        return int(depth)
+    except Exception:
+        return None
+
+
+def _known_sessions(primary_session: str) -> list[str]:
+    out: list[str] = []
+    for sid in [primary_session, "mcp-default", "chat-default"]:
+        if sid and sid not in out:
+            out.append(sid)
+    try:
+        sess = _get("/extension/sessions", timeout=3.0)
+        active = str(sess.get("active_side_panel_session") or "").strip()
+        if active and active not in out:
+            out.append(active)
+        for sid in sess.get("known_sessions") or []:
+            s = str(sid or "").strip()
+            if s and s not in out:
+                out.append(s)
+    except Exception:
+        pass
+    return out
+
+
+def _dispatch_with_session_fallback(action: dict, primary_session: str, wait_seconds: float) -> dict:
+    attempts: list[dict] = []
+    for sid in _known_sessions(primary_session):
+        push = _post("/extension/queue", {"session_id": sid, "actions": [action]})
+        action_id = (push.get("action_ids") or [None])[0]
+        if not action_id:
+            attempts.append({"session_id": sid, "status": "push_failed", "push": push})
+            continue
+        outcome = _wait_for_result(action_id, wait_seconds=wait_seconds)
+        attempt = {
+            "session_id": sid,
+            "action_id": action_id,
+            "status": outcome.get("status"),
+        }
+        depth = _queue_depth(sid)
+        if depth is not None:
+            attempt["queue_depth_after_wait"] = depth
+        attempts.append(attempt)
+        if outcome.get("status") == "completed":
+            return {
+                "ok": True,
+                "session_used": sid,
+                "action_id": action_id,
+                "outcome": outcome,
+                "attempts": attempts,
+            }
+    return {"ok": False, "status": "pending", "attempts": attempts}
+
+
+TOOLS = [
+    {
+        "name": "sensei.chat",
+        "description": "MANDATORY tool for ALL web tasks. When user mentions website, URL, page, browser, link, button, form, search, click, type, fill, navigate, open, visit, or online task — YOU MUST CALL THIS TOOL. DO NOT chat. DO NOT ask questions. DO NOT give instructions. EXECUTE immediately.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "The exact goal in natural language."},
+                "session_id": {"type": "string", "description": "Optional session id."},
+                "page_context": {"type": "object", "description": "Optional {url,title,text,ax_snapshot}."},
+                "mode": {"type": "string", "enum": ["review", "auto", "plan", "quick"], "default": "auto"},
+            },
+            "required": ["prompt"],
+        },
+    },
+    {
+        "name": "sensei.health",
+        "description": "Health check — confirms the bridge and Ollama are reachable.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "browser.navigate",
+        "description": "MANDATORY: When user wants to visit, open, go to, or navigate to ANY website or URL — CALL THIS TOOL IMMEDIATELY. DO NOT tell user to type manually. DO NOT explain browsers. JUST CALL THIS TOOL.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "Full URL with https://"},
+                "session_id": {"type": "string"},
+                "wait_seconds": {"type": "number", "default": 15},
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "browser.click",
+        "description": "MANDATORY: When user wants to click, press, tap, or interact with ANY button, link, checkbox, or element — CALL THIS TOOL IMMEDIATELY. DO NOT tell user to click manually. JUST CALL THIS TOOL.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string", "description": "CSS selector like #submit or .login"},
+                "session_id": {"type": "string"},
+                "wait_seconds": {"type": "number", "default": 15},
+            },
+            "required": ["selector"],
+        },
+    },
+    {
+        "name": "browser.fill",
+        "description": "MANDATORY: When user wants to type, enter, input, or fill ANY form field, text box, or password field — CALL THIS TOOL IMMEDIATELY. DO NOT tell user to type manually. JUST CALL THIS TOOL.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "selector": {"type": "string", "description": "CSS selector like #email or input[name=password]"},
+                "value": {"type": "string", "description": "Exact text to type"},
+                "session_id": {"type": "string"},
+                "wait_seconds": {"type": "number", "default": 15},
+            },
+            "required": ["selector", "value"],
+        },
+    },
+    {
+        "name": "browser.read_local",
+        "description": "MANDATORY: When user asks to read, open, or view ANY local file — CALL THIS TOOL. DO NOT say you cannot access files.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "max_bytes": {"type": "integer", "default": 65536},
+            },
+            "required": ["path"],
+        },
+    },
+]
+
+
+def _call_tool(name: str, args: dict) -> dict:
+    args = args or {}
+    if name == "sensei.health":
+        return _get("/health")
+    if name == "sensei.chat":
+        body = {
+            "prompt": args.get("prompt", ""),
+            "session_id": args.get("session_id", "mcp-default"),
+            "page_context": args.get("page_context") or {},
+            "mode": args.get("mode") or "auto",
+            "source": "mcp",
+        }
+        return _post("/chat", body)
+    if name in ("browser.navigate", "browser.click", "browser.fill"):
+        sid = args.get("session_id") or "mcp-default"
+        wait_s = float(args.get("wait_seconds", 15))
+        if name == "browser.navigate":
+            action = {"kind": "BROWSER_NAV", "target": args.get("url", "")}
+        elif name == "browser.click":
+            action = {"kind": "BROWSER_CLICK", "target": args.get("selector", "")}
+        else:
+            action = {"kind": "BROWSER_FILL", "target": args.get("selector", ""),
+                      "value": args.get("value", "")}
+        dispatch = _dispatch_with_session_fallback(action, primary_session=sid, wait_seconds=wait_s)
+        if not dispatch.get("ok"):
+            return {
+                "ok": False,
+                "status": "pending",
+                "final_status": "queued_not_consumed",
+                "fallback_reason": "session_id_mismatch_or_panel_not_polling",
+                "attempts": dispatch.get("attempts", []),
+                "hint": "No /extension/action_result observed. Checked primary -> mcp-default -> chat-default -> active side-panel session.",
+            }
+        outcome = dispatch.get("outcome") or {}
+        rec = outcome.get("result") or {}
+        chrome_result = rec.get("result") or {}
+        return {
+            **chrome_result,
+            "ok": True,
+            "action_id": dispatch.get("action_id"),
+            "session_id": dispatch.get("session_used"),
+            "status": outcome.get("status", "pending"),
+            "final_status": "completed" if outcome.get("status") == "completed" else "pending",
+            "attempts": dispatch.get("attempts", []),
+        }
+    if name == "browser.read_local":
+        return _post("/extension/read_local_file", {
+            "path": args.get("path", ""),
+            "max_bytes": args.get("max_bytes", 65536),
+        })
+    raise ValueError(f"unknown tool {name}")
+
+
+def _result_envelope(payload: dict) -> dict:
+    return {
+        "content": [
+            {"type": "text", "text": json.dumps(payload, separators=(",", ":"))}
+        ],
+        "isError": False,
+    }
+
+
+def _error_envelope(msg: str) -> dict:
+    return {
+        "content": [{"type": "text", "text": msg}],
+        "isError": True,
+    }
+
+
+def _handle(msg: dict) -> dict | None:
+    method = msg.get("method")
+    msg_id = msg.get("id")
+
+    if method == "initialize":
+        return {
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "result": {
+                "protocolVersion": PROTO_VERSION,
+                "capabilities": {"tools": {"listChanged": False}},
+                "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+            },
+        }
+
+    if method == "notifications/initialized":
+        return None
+
+    if method == "tools/list":
+        return {
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "result": {"tools": TOOLS},
+        }
+
+    if method == "tools/call":
+        params = msg.get("params") or {}
+        name = params.get("name", "")
+        args = params.get("arguments") or {}
+        try:
+            payload = _call_tool(name, args)
+            return {"jsonrpc": "2.0", "id": msg_id, "result": _result_envelope(payload)}
+        except urllib.error.URLError as e:
+            return {"jsonrpc": "2.0", "id": msg_id, "result": _error_envelope(f"bridge unreachable: {e}")}
+        except Exception as e:
+            return {"jsonrpc": "2.0", "id": msg_id, "result": _error_envelope(f"{type(e).__name__}: {e}")}
+
+    if method == "ping":
+        return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
+
+    if msg_id is not None:
+        return {
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "error": {"code": -32601, "message": f"method not found: {method}"},
+        }
+    return None
+
+
+def main() -> int:
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except Exception as e:
+            sys.stderr.write(f"[mcp] parse error: {e}\n")
+")
+            continue
+        resp = _handle(msg)
+        if resp is not None:
+            sys.stdout.write(json.dumps(resp) + "
+")
+            sys.stdout.flush()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

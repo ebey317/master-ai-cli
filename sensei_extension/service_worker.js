@@ -362,6 +362,40 @@ const AI_WATCHLIST = [
       return !generic.test(title) && title.length > 4;
     },
   },
+  {
+    name: "gemini",
+    urlPrefix: "https://gemini.google.com/",
+    // Same generic-to-topic flip pattern as DeepSeek. Gemini's idle tab is
+    // "Gemini" (and sometimes "Gemini Apps"); after a reply lands, the title
+    // becomes a topic-based summary of the user's first message.
+    readySignal: (title, prevTitle) => {
+      if (!title || title === prevTitle) return false;
+      const generic = /^(Gemini|Gemini Apps|Gemini Advanced)$/i;
+      return !generic.test(title) && title.length > 4;
+    },
+  },
+  {
+    name: "aistudio",
+    urlPrefix: "https://aistudio.google.com/",
+    // AI Studio's idle title is "Google AI Studio" — flips to a content
+    // summary after the model responds.
+    readySignal: (title, prevTitle) => {
+      if (!title || title === prevTitle) return false;
+      const generic = /^Google AI Studio$/i;
+      return !generic.test(title) && title.length > 4;
+    },
+  },
+  {
+    name: "chatgpt",
+    urlPrefix: "https://chatgpt.com/",
+    // ChatGPT updates the title to a topic summary after the first reply.
+    // Idle: "ChatGPT" or "New chat".
+    readySignal: (title, prevTitle) => {
+      if (!title || title === prevTitle) return false;
+      const generic = /^(ChatGPT|New chat)$/i;
+      return !generic.test(title) && title.length > 4;
+    },
+  },
 ];
 
 const _aiTabPrevTitle = new Map();

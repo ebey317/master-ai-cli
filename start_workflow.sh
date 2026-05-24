@@ -108,57 +108,16 @@ else
   bad "snapshot dir ~/Desktop/AI_CONTEXT missing or not writable"
 fi
 
-# --- Audio routing for remote (RustDesk) sessions --------------------------
-# When operator is connected via RustDesk on phone/tablet, computer-side
-# audio output should be silent (no local speakers) but RustDesk should
-# still capture audio to forward to the remote client. Solution: a null
-# sink that has no physical playback. Audio plays "into" the null sink;
-# RustDesk reads its monitor; remote client hears it; physical speakers
-# stay silent.
-#
-# IMPORTANT: this block is GATED on whether RustDesk is actively capturing.
-# Without that gate, every workflow-on flip silences local speakers even
-# when the operator is sitting at the physical machine (root cause of the
-# 2026-05-19 "fix sound drivers" incident).
+# --- Audio routing — now explicit, not auto -------------------------------
+# Audio routing was previously inlined here and fired automatically on every
+# workflow start (silencing local speakers via the false-firing RustDesk
+# capture gate — 2026-05-19 incident). Now split into explicit operator-
+# invoked commands:
+#   ~/scripts/rustdesk_audio_on.sh   — route audio through null sink for remote
+#   ~/scripts/rustdesk_audio_off.sh  — restore audio to local physical sink
 echo
-echo "-- audio routing (remote / RustDesk session) --"
-
-rustdesk_so=$(pactl list source-outputs 2>/dev/null \
-  | awk '/^Source Output #/{id=$3; sub("#","",id)} /application.name = "RustDesk"/{print id; exit}')
-
-if [[ -z "$rustdesk_so" ]]; then
-  info "no active RustDesk capture — leaving audio routing alone (local speakers preserved)"
-else
-  # RustDesk is actively capturing — set up the null-sink routing.
-
-  # 1. Load the null sink if it doesn't already exist (idempotent)
-  if pactl list short sinks 2>/dev/null | grep -q '^[0-9]\+\s\+remote_audio\s'; then
-    ok "null sink 'remote_audio' already loaded"
-  else
-    if pactl load-module module-null-sink sink_name=remote_audio \
-         sink_properties='device.description="RemoteAudio"' >/dev/null 2>&1; then
-      ok "null sink 'remote_audio' loaded"
-    else
-      bad "could not load module-null-sink (PulseAudio not running?)"
-    fi
-  fi
-
-  # 2. Set as default sink so new audio streams route there
-  if pactl set-default-sink remote_audio >/dev/null 2>&1; then
-    ok "default sink set to remote_audio"
-  else
-    bad "could not set default sink"
-  fi
-
-  # 3. Move the RustDesk source-output to read from remote_audio.monitor
-  #    (RustDesk doesn't follow default-sink changes; it sticks to whatever
-  #    monitor it was reading at startup. Force the move.)
-  if pactl move-source-output "$rustdesk_so" remote_audio.monitor >/dev/null 2>&1; then
-    ok "moved RustDesk capture (so #$rustdesk_so) to remote_audio.monitor"
-  else
-    info "RustDesk capture is already on remote_audio.monitor (or move failed)"
-  fi
-fi
+echo "-- audio routing --"
+info "no auto-routing on workflow start (see ~/scripts/rustdesk_audio_on.sh / _off.sh)"
 
 # --- Cards -----------------------------------------------------------------
 echo
@@ -187,4 +146,8 @@ cat <<'EOF'
   Status:   python3 ~/scripts/workflow_cadence.py status
   Snapshot: python3 ~/scripts/workflow_cadence.py snapshot
   Push:     python3 ~/scripts/workflow_cadence.py push
+
+== Audio routing (explicit, no auto) ==
+  Remote on tablet/phone:  bash ~/scripts/rustdesk_audio_on.sh
+  Back to local speakers:  bash ~/scripts/rustdesk_audio_off.sh
 EOF

@@ -1615,6 +1615,146 @@ def _format_session_block(state: SkillState, submitted: list, params: dict) -> s
     return "\n".join(lines)
 
 
+# ─── Adapter helpers ──────────────────────────────────────────────────
+
+
+def _split_name(full_name: str) -> tuple:
+    """Return (first_name, last_name) from a full_name string.
+
+    Examples:
+      "Elijah W. Wilkins Sr." → ("Elijah", "W. Wilkins Sr.")
+      "Jane Doe"              → ("Jane", "Doe")
+      "Mononymous"            → ("Mononymous", "")
+    """
+    parts = (full_name or "").strip().split(None, 1)
+    if len(parts) >= 2:
+        return parts[0], parts[1]
+    return (parts[0] if parts else ""), ""
+
+
+def _profile_fill_directives_indeed(profile: dict) -> list:
+    """Return BROWSER_FILL chain for Indeed Smart Apply form (smartapply.indeed.com).
+
+    Selectors sourced from AIHawk + community research (2026-05-23).
+    Indeed's Smart Apply form uses name attributes on inputs.
+
+    Note: Phone field accepts 10-digit US format; strip non-digits.
+    """
+    first, last = _split_name(profile.get("full_name", ""))
+    email = profile.get("email", "")
+    phone_raw = profile.get("phone", "")
+    # Strip non-digit chars for Indeed's phone input
+    phone = "".join(c for c in phone_raw if c.isdigit())
+
+    directives = []
+    if first:
+        directives.append(f"BROWSER_FILL: input[name='firstName'] :: {first}")
+    if last:
+        directives.append(f"BROWSER_FILL: input[name='lastName'] :: {last}")
+    if email:
+        directives.append(f"BROWSER_FILL: input[name='email'] :: {email}")
+    if phone:
+        directives.append(f"BROWSER_FILL: input[name='phoneNumber'] :: {phone}")
+    # Also try legacy phone selector used on older Indeed form versions
+    if phone:
+        directives.append(f"BROWSER_FILL: input[name='phone'] :: {phone}")
+    return directives
+
+
+def _profile_fill_directives_greenhouse(profile: dict) -> list:
+    """BROWSER_FILL chain for Greenhouse ATS (boards.greenhouse.io).
+
+    Selectors: #first_name, #last_name, #email, #phone — canonical Greenhouse.
+    Phone: pass raw string; Greenhouse accepts formatted phone.
+    """
+    first, last = _split_name(profile.get("full_name", ""))
+    email = profile.get("email", "")
+    phone = profile.get("phone", "")
+
+    directives = []
+    if first:
+        directives.append(f"BROWSER_FILL: #first_name :: {first}")
+    if last:
+        directives.append(f"BROWSER_FILL: #last_name :: {last}")
+    if email:
+        directives.append(f"BROWSER_FILL: #email :: {email}")
+    if phone:
+        directives.append(f"BROWSER_FILL: #phone :: {phone}")
+    return directives
+
+
+def _profile_fill_directives_lever(profile: dict) -> list:
+    """BROWSER_FILL chain for Lever ATS (jobs.lever.co).
+
+    Lever uses input[name] attributes: name (full), email, phone.
+    """
+    full_name = profile.get("full_name", "")
+    email = profile.get("email", "")
+    phone = profile.get("phone", "")
+
+    directives = []
+    if full_name:
+        directives.append(f"BROWSER_FILL: input[name='name'] :: {full_name}")
+    if email:
+        directives.append(f"BROWSER_FILL: input[name='email'] :: {email}")
+    if phone:
+        directives.append(f"BROWSER_FILL: input[name='phone'] :: {phone}")
+    return directives
+
+
+def _profile_fill_directives_ashby(profile: dict) -> list:
+    """BROWSER_FILL chain for Ashby ATS (jobs.ashbyhq.com).
+
+    Ashby uses generic input[type='text'] / input[type='email'] / input[type='tel'].
+    Fall back to label-text selectors; these are more stable than positional.
+    """
+    first, last = _split_name(profile.get("full_name", ""))
+    email = profile.get("email", "")
+    phone = profile.get("phone", "")
+
+    directives = []
+    if first:
+        # Ashby splits first/last on most forms
+        directives.append(f"BROWSER_FILL: input[placeholder*='First'] :: {first}")
+    if last:
+        directives.append(f"BROWSER_FILL: input[placeholder*='Last'] :: {last}")
+    if email:
+        directives.append(f"BROWSER_FILL: input[type='email'] :: {email}")
+    if phone:
+        directives.append(f"BROWSER_FILL: input[type='tel'] :: {phone}")
+    return directives
+
+
+def _profile_fill_directives_ziprecruiter(profile: dict) -> list:
+    """BROWSER_FILL chain for ZipRecruiter quick-apply form.
+
+    ZipRecruiter quick-apply pops an overlay; selectors vary but
+    data-testid and name attrs are most stable.
+    """
+    first, last = _split_name(profile.get("full_name", ""))
+    email = profile.get("email", "")
+    phone_raw = profile.get("phone", "")
+    phone = "".join(c for c in phone_raw if c.isdigit())
+
+    directives = []
+    # Try data-testid first (newer ZR), fall back to name attrs
+    if first:
+        directives.append(
+            f"BROWSER_FILL: [data-testid='first-name-input'] :: {first}"
+        )
+        directives.append(f"BROWSER_FILL: input[name='firstName'] :: {first}")
+    if last:
+        directives.append(
+            f"BROWSER_FILL: [data-testid='last-name-input'] :: {last}"
+        )
+        directives.append(f"BROWSER_FILL: input[name='lastName'] :: {last}")
+    if email:
+        directives.append(f"BROWSER_FILL: input[name='email'] :: {email}")
+    if phone:
+        directives.append(f"BROWSER_FILL: input[name='phone'] :: {phone}")
+    return directives
+
+
 # ─── Adapter stubs (all INTERRUPT in v1; 12-hour push fills these in) ─
 
 def _adapter_stub(host_label: str):
@@ -1703,17 +1843,83 @@ def adapter_ziprecruiter(state: SkillState, url: str, profile: dict, rules: dict
         }
 
     if phase == "operator_review":
+        # Emit click on the ZipRecruiter Quick Apply button and read the overlay.
+        # Common selectors: .job_apply_button, button[data-testid="Apply"],
+        # .apply_now_button — try the most common one; BROWSER_FIND fallback
+        # already ran in find_apply to surface the selector.
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "_pending_directives": [
+                    "BROWSER_CLICK: .job_apply_button",
+                    "BROWSER_WAIT: 3000",
+                    "BROWSER_READ_PAGE: main",
+                ],
+                "reason": "adapter_ziprecruiter: clicking Quick Apply, reading overlay",
+                "_state_update": {"_zip_phase": "fill_form"},
+            },
+        }
+
+    if phase == "fill_form":
+        fill_dirs = _profile_fill_directives_ziprecruiter(profile)
+        if not fill_dirs:
+            return {
+                "outcome": "skipped",
+                "details": {"reason": "adapter_ziprecruiter fill_form: no profile fields"},
+            }
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "_pending_directives": fill_dirs + ["BROWSER_WAIT: 1500"],
+                "reason": "adapter_ziprecruiter: filling Quick Apply form fields",
+                "_state_update": {"_zip_phase": "upload_resume"},
+            },
+        }
+
+    if phase == "upload_resume":
+        resume_path = state.params.get("resume_path") or ""
+        if not resume_path:
+            return {
+                "outcome": "interrupt",
+                "details": {
+                    "reason": (
+                        "adapter_ziprecruiter upload_resume: no resume_path — "
+                        "skipping file upload, proceeding to submit_gate."
+                    ),
+                    "_state_update": {"_zip_phase": "submit_gate"},
+                },
+            }
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "_pending_directives": [
+                    f"BROWSER_UPLOAD_FILE: input[type='file'] :: {resume_path}",
+                    "BROWSER_WAIT: 2000",
+                ],
+                "reason": f"adapter_ziprecruiter: uploading resume ({resume_path})",
+                "_state_update": {"_zip_phase": "submit_gate"},
+            },
+        }
+
+    if phase == "submit_gate":
         return {
             "outcome": "interrupt",
             "details": {
                 "reason": (
-                    "adapter_ziprecruiter v1 scope reached: Apply button located. "
-                    "Operator-driven form-fill from here. v2 will implement: "
-                    "click Apply → parse form tree → fill from profile → "
-                    "review gate → BROWSER_SUBMIT → capture ref number."
+                    "adapter_ziprecruiter SUBMIT GATE — form filled. "
+                    "OPERATOR MUST REVIEW before submission. "
+                    "Submit selector: button[type='submit'] or .apply-submit-btn. "
+                    "Approve in session, then resume with --resume SESSION_ID."
                 ),
-                "_state_update": {"_zip_phase": "v1_scope_end"},
+                "_state_update": {"_zip_phase": "done"},
+                "requires_operator_approval": True,
             },
+        }
+
+    if phase == "done":
+        return {
+            "outcome": "applied",
+            "details": {"ats": "ziprecruiter", "reason": "operator_approved_and_submitted"},
         }
 
     return {
@@ -1872,17 +2078,90 @@ def adapter_indeed(state: SkillState, url: str, profile: dict, rules: dict) -> d
         }
 
     if phase == "read_form":
+        # We've landed on the Smart Apply overlay. Wait for hydration then
+        # read the form DOM to verify we're on the right page.
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "_pending_directives": [
+                    "BROWSER_WAIT: 2500",
+                    "BROWSER_READ_PAGE: main",
+                ],
+                "reason": "adapter_indeed: reading Smart Apply form to verify hydration",
+                "_state_update": {"_indeed_phase": "fill_form"},
+            },
+        }
+
+    if phase == "fill_form":
+        # Emit profile fill directives for Indeed Smart Apply form.
+        # Selectors from AIHawk + community (2026-05-23 research sweep).
+        fill_dirs = _profile_fill_directives_indeed(profile)
+        if not fill_dirs:
+            return {
+                "outcome": "skipped",
+                "details": {"reason": "adapter_indeed fill_form: no profile fields available"},
+            }
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "_pending_directives": fill_dirs + ["BROWSER_WAIT: 1500"],
+                "reason": "adapter_indeed: filling Smart Apply form fields",
+                "_state_update": {"_indeed_phase": "upload_resume"},
+            },
+        }
+
+    if phase == "upload_resume":
+        resume_path = state.params.get("resume_path") or ""
+        if not resume_path:
+            # No resume path provided — skip upload, proceed to submit gate
+            return {
+                "outcome": "interrupt",
+                "details": {
+                    "reason": (
+                        "adapter_indeed upload_resume: no resume_path in params — "
+                        "skipping file upload, proceeding to submit_gate. "
+                        "Provide resume_path param to enable auto-upload."
+                    ),
+                    "_state_update": {"_indeed_phase": "submit_gate"},
+                },
+            }
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "_pending_directives": [
+                    f"BROWSER_UPLOAD_FILE: input[type='file'] :: {resume_path}",
+                    "BROWSER_WAIT: 2000",
+                ],
+                "reason": f"adapter_indeed: uploading resume ({resume_path})",
+                "_state_update": {"_indeed_phase": "submit_gate"},
+            },
+        }
+
+    if phase == "submit_gate":
+        # ALWAYS stop here. Operator must approve before submit.
+        # run_apply_skill.py catches this INTERRUPT and surfaces it.
+        # The submit button selector is ".ia-continueButton" for multi-step
+        # or "button[data-tn-element='continue-button']" on final step.
+        # Operator confirms, then calls BROWSER_CLICK manually or resumes.
         return {
             "outcome": "interrupt",
             "details": {
                 "reason": (
-                    "adapter_indeed v2 click_apply complete; on "
-                    "smartapply.indeed.com form. Form-side selectors not yet "
-                    "captured — operator-driven fill from here. Next pass wires "
-                    "fill_form / upload_resume / submit_gate."
+                    "adapter_indeed SUBMIT GATE — form filled and resume uploaded. "
+                    "OPERATOR MUST REVIEW before submission. "
+                    "Submit selector: button[data-tn-element='continue-button'] "
+                    "or .ia-continueButton (Indeed Smart Apply final step). "
+                    "Resume and approve in session, then resume with --resume SESSION_ID."
                 ),
-                "_state_update": {"_indeed_phase": "v2_form_pending"},
+                "_state_update": {"_indeed_phase": "done"},
+                "requires_operator_approval": True,
             },
+        }
+
+    if phase == "done":
+        return {
+            "outcome": "applied",
+            "details": {"ats": "indeed", "reason": "operator_approved_and_submitted"},
         }
 
     return {
@@ -1891,11 +2170,321 @@ def adapter_indeed(state: SkillState, url: str, profile: dict, rules: dict) -> d
     }
 
 adapter_workday = _adapter_stub("workday")
-adapter_greenhouse = _adapter_stub("greenhouse")
-adapter_lever = _adapter_stub("lever")
-adapter_ashby = _adapter_stub("ashby")
 adapter_icims = _adapter_stub("icims")
 adapter_custom = _adapter_stub("custom")
+
+
+def adapter_greenhouse(state: SkillState, url: str, profile: dict, rules: dict) -> dict:
+    """Greenhouse ATS adapter (boards.greenhouse.io).
+
+    Selectors sourced from job-apply-plugin + AIHawk (2026-05-23 research sweep).
+
+    Phases: nav → find_apply → fill_form → upload_resume → submit_gate → done
+    Phase key: _greenhouse_phase
+    """
+    phase = state.data.get("_greenhouse_phase") or "nav"
+    last = state.data.get("_last_directive_results", "") or ""
+
+    if phase == "nav":
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "_pending_directives": [
+                    f"BROWSER_NAV: {url}",
+                    "BROWSER_WAIT: 3000",
+                    "BROWSER_READ_PAGE: main",
+                ],
+                "reason": "adapter_greenhouse: navigating to listing",
+                "_state_update": {"_greenhouse_phase": "find_apply"},
+            },
+        }
+
+    if phase == "find_apply":
+        low = last.lower()
+        for skip_co in (rules.get("skip_companies") or []):
+            if skip_co.lower() in low:
+                return {"outcome": "skipped", "details": {"reason": f"skip_company:{skip_co}"}}
+        for phrase in _BG_CHECK_PHRASES:
+            if phrase in low:
+                return {"outcome": "skipped", "details": {"reason": f"background_check:{phrase}"}}
+        if "apply" not in low:
+            return {"outcome": "skipped", "details": {"reason": "no_apply_button_on_page"}}
+        # Greenhouse standard Apply button: #submit_app-top or simple "Apply" button
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "_pending_directives": [
+                    "BROWSER_CLICK: .apply-button",
+                    "BROWSER_WAIT: 2500",
+                    "BROWSER_READ_PAGE: main",
+                ],
+                "reason": "adapter_greenhouse: clicking Apply button, reading form",
+                "_state_update": {"_greenhouse_phase": "fill_form"},
+            },
+        }
+
+    if phase == "fill_form":
+        fill_dirs = _profile_fill_directives_greenhouse(profile)
+        if not fill_dirs:
+            return {"outcome": "skipped", "details": {"reason": "adapter_greenhouse: no profile fields"}}
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "_pending_directives": fill_dirs + ["BROWSER_WAIT: 1500"],
+                "reason": "adapter_greenhouse: filling application form",
+                "_state_update": {"_greenhouse_phase": "upload_resume"},
+            },
+        }
+
+    if phase == "upload_resume":
+        resume_path = state.params.get("resume_path") or ""
+        if not resume_path:
+            return {
+                "outcome": "interrupt",
+                "details": {
+                    "reason": "adapter_greenhouse upload_resume: no resume_path — skipping, going to submit_gate",
+                    "_state_update": {"_greenhouse_phase": "submit_gate"},
+                },
+            }
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "_pending_directives": [
+                    f"BROWSER_UPLOAD_FILE: input[name='resume'] :: {resume_path}",
+                    "BROWSER_WAIT: 2000",
+                ],
+                "reason": f"adapter_greenhouse: uploading resume",
+                "_state_update": {"_greenhouse_phase": "submit_gate"},
+            },
+        }
+
+    if phase == "submit_gate":
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "reason": (
+                    "adapter_greenhouse SUBMIT GATE — form filled. "
+                    "OPERATOR MUST REVIEW. Submit selector: #submit_app. "
+                    "Resume with --resume SESSION_ID after approval."
+                ),
+                "_state_update": {"_greenhouse_phase": "done"},
+                "requires_operator_approval": True,
+            },
+        }
+
+    if phase == "done":
+        return {"outcome": "applied", "details": {"ats": "greenhouse", "reason": "operator_approved_and_submitted"}}
+
+    return {"outcome": "skipped", "details": {"reason": f"unknown_greenhouse_phase:{phase}"}}
+
+
+def adapter_lever(state: SkillState, url: str, profile: dict, rules: dict) -> dict:
+    """Lever ATS adapter (jobs.lever.co).
+
+    Selectors from job-apply-plugin + AIHawk (2026-05-23 research sweep).
+    Lever uses a direct application form on the listing page — no overlay.
+
+    Phases: nav → find_apply → fill_form → upload_resume → submit_gate → done
+    Phase key: _lever_phase
+    """
+    phase = state.data.get("_lever_phase") or "nav"
+    last = state.data.get("_last_directive_results", "") or ""
+
+    if phase == "nav":
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "_pending_directives": [
+                    f"BROWSER_NAV: {url}",
+                    "BROWSER_WAIT: 3000",
+                    "BROWSER_READ_PAGE: main",
+                ],
+                "reason": "adapter_lever: navigating to listing",
+                "_state_update": {"_lever_phase": "find_apply"},
+            },
+        }
+
+    if phase == "find_apply":
+        low = last.lower()
+        for skip_co in (rules.get("skip_companies") or []):
+            if skip_co.lower() in low:
+                return {"outcome": "skipped", "details": {"reason": f"skip_company:{skip_co}"}}
+        for phrase in _BG_CHECK_PHRASES:
+            if phrase in low:
+                return {"outcome": "skipped", "details": {"reason": f"background_check:{phrase}"}}
+        if "apply" not in low:
+            return {"outcome": "skipped", "details": {"reason": "no_apply_button_on_page"}}
+        # Lever puts the form on the page; scroll to it and read
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "_pending_directives": [
+                    "BROWSER_WAIT: 1000",
+                    "BROWSER_READ_PAGE: main",
+                ],
+                "reason": "adapter_lever: locating application form on page",
+                "_state_update": {"_lever_phase": "fill_form"},
+            },
+        }
+
+    if phase == "fill_form":
+        fill_dirs = _profile_fill_directives_lever(profile)
+        if not fill_dirs:
+            return {"outcome": "skipped", "details": {"reason": "adapter_lever: no profile fields"}}
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "_pending_directives": fill_dirs + ["BROWSER_WAIT: 1500"],
+                "reason": "adapter_lever: filling application form",
+                "_state_update": {"_lever_phase": "upload_resume"},
+            },
+        }
+
+    if phase == "upload_resume":
+        resume_path = state.params.get("resume_path") or ""
+        if not resume_path:
+            return {
+                "outcome": "interrupt",
+                "details": {
+                    "reason": "adapter_lever upload_resume: no resume_path — skipping, going to submit_gate",
+                    "_state_update": {"_lever_phase": "submit_gate"},
+                },
+            }
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "_pending_directives": [
+                    f"BROWSER_UPLOAD_FILE: input[type='file'][name='resume'] :: {resume_path}",
+                    "BROWSER_WAIT: 2000",
+                ],
+                "reason": "adapter_lever: uploading resume",
+                "_state_update": {"_lever_phase": "submit_gate"},
+            },
+        }
+
+    if phase == "submit_gate":
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "reason": (
+                    "adapter_lever SUBMIT GATE — form filled. "
+                    "OPERATOR MUST REVIEW. Submit selector: button[type='submit'] on .application-form. "
+                    "Resume with --resume SESSION_ID after approval."
+                ),
+                "_state_update": {"_lever_phase": "done"},
+                "requires_operator_approval": True,
+            },
+        }
+
+    if phase == "done":
+        return {"outcome": "applied", "details": {"ats": "lever", "reason": "operator_approved_and_submitted"}}
+
+    return {"outcome": "skipped", "details": {"reason": f"unknown_lever_phase:{phase}"}}
+
+
+def adapter_ashby(state: SkillState, url: str, profile: dict, rules: dict) -> dict:
+    """Ashby ATS adapter (jobs.ashbyhq.com).
+
+    Selectors from job-apply-plugin research (2026-05-23 sweep).
+    Ashby uses resume upload selector: #_systemfield_resume
+
+    Phases: nav → find_apply → fill_form → upload_resume → submit_gate → done
+    Phase key: _ashby_phase
+    """
+    phase = state.data.get("_ashby_phase") or "nav"
+    last = state.data.get("_last_directive_results", "") or ""
+
+    if phase == "nav":
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "_pending_directives": [
+                    f"BROWSER_NAV: {url}",
+                    "BROWSER_WAIT: 3000",
+                    "BROWSER_READ_PAGE: main",
+                ],
+                "reason": "adapter_ashby: navigating to listing",
+                "_state_update": {"_ashby_phase": "find_apply"},
+            },
+        }
+
+    if phase == "find_apply":
+        low = last.lower()
+        for skip_co in (rules.get("skip_companies") or []):
+            if skip_co.lower() in low:
+                return {"outcome": "skipped", "details": {"reason": f"skip_company:{skip_co}"}}
+        for phrase in _BG_CHECK_PHRASES:
+            if phrase in low:
+                return {"outcome": "skipped", "details": {"reason": f"background_check:{phrase}"}}
+        if "apply" not in low:
+            return {"outcome": "skipped", "details": {"reason": "no_apply_button_on_page"}}
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "_pending_directives": [
+                    "BROWSER_CLICK: button[data-testid='apply-button']",
+                    "BROWSER_WAIT: 2500",
+                    "BROWSER_READ_PAGE: main",
+                ],
+                "reason": "adapter_ashby: clicking Apply, reading form",
+                "_state_update": {"_ashby_phase": "fill_form"},
+            },
+        }
+
+    if phase == "fill_form":
+        fill_dirs = _profile_fill_directives_ashby(profile)
+        if not fill_dirs:
+            return {"outcome": "skipped", "details": {"reason": "adapter_ashby: no profile fields"}}
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "_pending_directives": fill_dirs + ["BROWSER_WAIT: 1500"],
+                "reason": "adapter_ashby: filling application form",
+                "_state_update": {"_ashby_phase": "upload_resume"},
+            },
+        }
+
+    if phase == "upload_resume":
+        resume_path = state.params.get("resume_path") or ""
+        if not resume_path:
+            return {
+                "outcome": "interrupt",
+                "details": {
+                    "reason": "adapter_ashby upload_resume: no resume_path — skipping, going to submit_gate",
+                    "_state_update": {"_ashby_phase": "submit_gate"},
+                },
+            }
+        # Ashby's known resume field: #_systemfield_resume (from job-apply-plugin research)
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "_pending_directives": [
+                    f"BROWSER_UPLOAD_FILE: #_systemfield_resume :: {resume_path}",
+                    "BROWSER_WAIT: 2000",
+                ],
+                "reason": "adapter_ashby: uploading resume via #_systemfield_resume",
+                "_state_update": {"_ashby_phase": "submit_gate"},
+            },
+        }
+
+    if phase == "submit_gate":
+        return {
+            "outcome": "interrupt",
+            "details": {
+                "reason": (
+                    "adapter_ashby SUBMIT GATE — form filled. "
+                    "OPERATOR MUST REVIEW. Submit selector: button[type='submit']. "
+                    "Resume with --resume SESSION_ID after approval."
+                ),
+                "_state_update": {"_ashby_phase": "done"},
+                "requires_operator_approval": True,
+            },
+        }
+
+    if phase == "done":
+        return {"outcome": "applied", "details": {"ats": "ashby", "reason": "operator_approved_and_submitted"}}
+
+    return {"outcome": "skipped", "details": {"reason": f"unknown_ashby_phase:{phase}"}}
 
 
 # ─── Skill definition (read by skill_runtime.load_skill) ────────────

@@ -142,6 +142,56 @@ def _audit(record: dict) -> None:
         pass
 
 
+# Track A L3 Telemetry (2026-05-23)
+# Written to ~/.sensei_l3_telemetry.jsonl so constraint hit/miss rates can be
+# computed offline: if LLM still generates text exceeding maxLength after
+# receiving the metadata → prompt-engineering problem. If metadata is absent →
+# extension problem. These are separate failure modes; the data disambiguates.
+_L3_TELEMETRY_PATH = os.path.expanduser("~/.sensei_l3_telemetry.jsonl")
+
+
+def _maybe_log_l3_telemetry(action_obj: dict, result: object) -> None:
+    """Append a telemetry record when a BROWSER_FILL_FORM action completes."""
+    try:
+        kind = (action_obj or {}).get("kind", "")
+        if kind != "BROWSER_FILL_FORM":
+            return
+        if not isinstance(result, dict):
+            return
+        filled = result.get("filled", []) or []
+        skipped = result.get("skipped_no_match", []) or []
+        # Fields that have at least one constraint key
+        skipped_with_constraints = [
+            e for e in skipped
+            if isinstance(e, dict) and e.get("constraints")
+        ]
+        # Collect maxlength values for distribution analysis
+        maxlengths = []
+        for e in skipped_with_constraints:
+            ml = (e.get("constraints") or {}).get("maxlength")
+            if ml is not None:
+                maxlengths.append(ml)
+        record = {
+            "ts": time.time(),
+            "event": "l3_fill_form",
+            "filled_count": len(filled),
+            "skipped_total": len(skipped),
+            "skipped_with_constraints": len(skipped_with_constraints),
+            "constraint_maxlengths": maxlengths,
+            # Carry the full constraint objects for the first 10 skipped fields;
+            # beyond 10, log only counts to keep the file manageable.
+            "skipped_constraints_sample": [
+                {"ref": e.get("ref"), "label": (e.get("label") or "")[:80],
+                 "constraints": e.get("constraints")}
+                for e in skipped_with_constraints[:10]
+            ],
+        }
+        with open(_L3_TELEMETRY_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, separators=(",", ":")) + "\n")
+    except Exception:
+        pass  # telemetry must never crash the bridge
+
+
 def _ollama_chat(model: str, messages: list[dict], timeout: float = 90.0) -> dict:
     body = json.dumps({
         "model": model,
@@ -334,6 +384,15 @@ class Handler(BaseHTTPRequestHandler):
             })
         if self.path == "/version":
             return self._send_json(200, {"version": "0.1.0"})
+        if self.path in ("/apply_profile", "/profile"):
+            profile_path = os.path.expanduser("~/projects/claf/apply_profile.json")
+            try:
+                import json as _json
+                with open(profile_path) as _f:
+                    profile = _json.load(_f)
+                return self._send_json(200, {"ok": True, "profile": profile})
+            except Exception as e:
+                return self._send_json(404, {"ok": False, "error": f"profile not found: {e}"})
         if self.path == "/mode":
             claf_env = os.path.expanduser("~/projects/claf/.env")
             claf_mode = "unknown"
@@ -550,6 +609,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not audit_payload.get("session_id"):
                     audit_payload["session_id"] = resolved_sid
                 _audit(audit_payload)
+                # ── Track A L3 Telemetry Probe (2026-05-23) ──────────────────
+                # Log constraint hit/miss rates for BROWSER_FILL_FORM results so
+                # we can distinguish "LLM ignores maxlength" (prompt-engineering
+                # problem) from "extension never sent maxlength" (extension problem).
+                _maybe_log_l3_telemetry(action_obj, body.get("result"))
                 return self._send_json(200, {
                     "ok": True, "indexed": bool(aid), "session_id": resolved_sid,
                 })
