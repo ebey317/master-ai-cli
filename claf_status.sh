@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # claf_status.sh — Claude Code status bar.
-# Boxes: claude=<model> | style=<style> | effort=<level> | thinking=<on/off>
+# Boxes: claude=<model> | style=<style> | effort=<level>
 # Schema confirmed from /tmp/claude_status_raw.json 2026-05-24.
 
 INPUT=$(cat)
@@ -22,13 +22,10 @@ style = (s.get('name') or 'default') if isinstance(s, dict) else 'default'
 e = d.get('effort') or {}
 effort = e.get('level', '?') if isinstance(e, dict) else str(e or '?')
 
-t = d.get('thinking') or {}
-thinking = 'on' if (isinstance(t, dict) and t.get('enabled')) else 'off'
-
-print(f'claude={model} | style={style} | effort={effort} | thinking={thinking}')
+print(f'claude={model} | style={style} | effort={effort}')
 " 2>/dev/null)
 
-[ -z "$LINE" ] && LINE="claude=? | style=? | effort=? | thinking=?"
+if [ -z "$LINE" ]; then LINE="claude=? | style=? | effort=?"; fi
 
 echo "$LINE"
 echo "$LINE" > /tmp/claude_runtime 2>/dev/null
