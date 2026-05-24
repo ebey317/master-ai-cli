@@ -1,7 +1,42 @@
 {
   "model": "sonnet",
-  "effortLevel": "xhigh",
-  "theme": "auto",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__(canva|claude_ai_Canva|claude_ai_Google_Drive|claude_ai_Gmail|claude_ai_Google_Calendar|claude_ai_Todoist|claude_ai_Indeed|claude_ai_ZipRecruiter|claude_ai_Hugging_Face|hugging-face|claude_ai_Base44|sensei|claude-in-chrome|secretary)__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/elijah/.claude/hooks/operator_visibility_guard.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/elijah/.claude/hooks/retry_policy_guard.sh"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/elijah/.claude/hooks/userpromptsubmit_inject.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "effortLevel": "high",
+  "theme": "dark-ansi",
   "editorMode": "normal",
   "autoCompactEnabled": true,
   "skipAutoPermissionPrompt": true

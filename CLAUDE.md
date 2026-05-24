@@ -34,6 +34,10 @@ The extension and the local stack must work **standalone** — even if the Claud
 
 ### 1a. MCP connection — verify on startup, open ONLY through MCP.
 
+> ⛔ **NON-NEGOTIABLE #1 — hook-enforced:** We only open MCP tabs. No exceptions. No bare Chrome tabs. No `google-chrome <url>`. No sensei `tab_create` outside the MCP group. Operator rule 2026-05-24.
+
+> ⛔ **NON-NEGOTIABLE #2 — hook-enforced:** Chrome extensions are NOT the dependency. We must maintain full parity with what claude-in-chrome provides (tab mgmt, JS eval, DOM read, console/network inspection, form input, screenshots) WITHOUT requiring a Chrome extension. If the Chrome extension goes away or breaks, the stack does not go down. Use Playwright/CDP as the extension-free path. This has been stated numerous times — do not let it slip again. Operator rule 2026-05-24.
+
 Chrome connects automatically via the claude-in-chrome extension. On startup:
 - Verify the MCP tab group exists: `tabs_context_mcp(createIfEmpty: true)` first.
 - If "Browser extension is not connected" returns, run `[[feedback_chrome_startup_protocol]]` silently (relaunch Chrome, close spurious "New Tab" window, retry). Do NOT surface the error to the operator.
@@ -107,3 +111,29 @@ That path is visible from the project root and points to Claude's project memory
 - `/home/elijah/.claude/projects/-home-elijah/memory`
 
 Use `/home/elijah/MD` for handoff notes, project memory, and Markdown files that Codex and Claude both need to read or update.
+
+### 11. Retry / failure schema — STANDING (v1.2).
+
+Hard cap = **3 attempts per (operation_id, tool)** globally. Browser observability tools (screenshot / eval / read) cap at **2** — a third attempt on a dead channel confirms nothing. The 4th attempt on any tool is forbidden.
+
+Tag every tool call with its **phase**: `planning / action / reflection / system`. Phase determines recovery: retrying the tool fixes an execution failure; retrying with the same plan fixes nothing if the plan was wrong.
+
+On any STOP, apply the fallback chain: `switch_tool → switch_protocol → operator_eyes → operator_hands`. **Exception — REFLECTION_FAILURE:** skip to `operator_eyes` first (the agent's self-assessment is the broken part; get ground truth before replanning).
+
+**8 error classes:** TRANSIENT, INTERMITTENT, PERMANENT, AUTH, OBSERVABILITY_FAILURE, SEMANTIC_NO_OP, REFLECTION_FAILURE (v1.2), UNKNOWN. OBSERVABILITY_FAILURE, REFLECTION_FAILURE, PERMANENT, and UNKNOWN = **zero retries**.
+
+**REFLECTION_FAILURE** = agent reports success but external check (screenshot, operator, assertion) shows otherwise. Distinct from SEMANTIC_NO_OP (tool did nothing) — here the tool worked but the agent assessed it wrong.
+
+**Channel C ritual — run at the start of every task (before first tool call):**
+Read `~/.claude/.retry_state.json` and confirm you see the counters. If any `consecutive_failures > 0`, name them aloud before proceeding. If the file is missing or corrupt, it self-heals on the first hook fire — note that and proceed.
+
+Canonical: `~/.claude/retry_policy.yaml` (compiled to `~/.claude/.retry_policy.json` + sha256 checksum). Memory: `[[retry-failure-schema]]`. Enforced by `~/.claude/hooks/retry_policy_guard.sh` (PostToolUse — NOT PostToolUseFailure, that event does not exist). UserPromptSubmit injector: `~/.claude/hooks/userpromptsubmit_inject.sh` (Layer 0 Channel B — prepends schema status + heartbeat to every user message). Kill switch: `touch ~/.claude/.retry_kill_switch` (legacy: `/tmp/retry_policy_disabled`). Operation namespace: `echo "name" > ~/.claude/.current_operation`.
+
+### 12. Authenticated-action visibility — STANDING.
+
+Any tool using operator's login credentials (Canva, Drive, Gmail, Calendar, Photos, Todoist, sensei, secretary, claude-in-chrome, Base44, HF, Indeed, ZipRecruiter) MUST be operator-visible:
+- Narrate before firing (one line: tool + target)
+- Open the relevant view URL in a visible sensei tab BEFORE state-changing API calls
+- Never commit/send/delete without explicit operator approval in chat
+
+Memory: `[[operator-must-see-authenticated-actions]]`. Enforced by `~/.claude/hooks/operator_visibility_guard.sh` (PreToolUse). Lockdown: `touch /tmp/operator_lockdown_authenticated`.
