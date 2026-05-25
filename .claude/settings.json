@@ -35,11 +35,6 @@
       }
     ]
   },
-  "statusLine": {
-    "type": "command",
-    "command": "/home/elijah/scripts/claf_status.sh",
-    "refreshInterval": 10
-  },
   "effortLevel": "high",
   "theme": "dark-ansi",
   "editorMode": "normal",

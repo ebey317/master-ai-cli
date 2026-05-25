@@ -1,11 +1,27 @@
 ---
 name: project_iptv_espn_launch
-description: How to open ESPN via IPTV — MPV stream command + small window preference
+description: IPTV via MPV — operator has XTREAM IPTV, always use MPV for any sports/TV stream, NEVER open a browser
 metadata: 
   node_type: memory
   type: project
   originSessionId: de36b780-0890-4b00-bda6-2ad92f2dec80
 ---
+
+## ⚠️ DEFAULT RULE — always use MPV, never the browser
+
+When operator asks to "open [any channel/sport/stream]" — query XTREAM API first, launch with MPV. Do NOT open a browser tab. The browser path was corrected 2026-05-25.
+
+Stream URL format: `{server}/live/{user}/{pass}/{stream_id}.ts`
+
+To find streams: `curl -s "{server}/player_api.php?username={user}&password={pass}&action=get_live_streams" | python3 -c "import json,sys; [print(c['stream_id'], c['name']) for c in json.load(sys.stdin) if 'keyword' in c['name'].lower()]"`
+
+## NBA channels (trex provider)
+- NBA TV HD: `749756`
+- NBA TV HDTV RAW: `1920053`
+- NBA RAW: `1920052`
+- NBA PASS PPV 1 (live game slot): `1955375`
+- NBA PASS PPV 2: `1955374`
+- NBA FAST CHANNEL: `1924248`
 
 ## Opening ESPN
 
