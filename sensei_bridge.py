@@ -22,6 +22,15 @@ import urllib.request
 import urllib.error
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
+# reentry-desk MCP client (lazy import so bridge still starts if server is absent)
+try:
+    import sys as _sys
+    import os as _os
+    _sys.path.insert(0, _os.path.expanduser("~/scripts"))
+    import reentry_client as _reentry
+    _REENTRY_OK = True
+except ImportError:
+    _REENTRY_OK = False
 
 HOST = "127.0.0.1"
 PORT = 8080
@@ -41,6 +50,15 @@ You have these tools registered through your MCP server right now - they are rea
 - browser.click(selector): Emits BROWSER_CLICK directive
 - browser.fill(selector, value): Emits BROWSER_FILL directive
 - browser.read_local(path, max_bytes?): Reads a file under $HOME (safety-fenced)
+
+REENTRY-DESK TOOLS (call via POST /reentry/<tool>):
+- reentry.create_client(name, contact_email?, phone?, notes?): Create new client profile
+- reentry.get_client(client_id): Retrieve profile by ID or name
+- reentry.list_forms(client_id): Show pending vs completed forms for a client
+- reentry.fill_form(client_id, form_name): Get merged profile+template payload for autofill
+- reentry.mark_complete(client_id, form_name): Log form as done with timestamp
+- reentry.get_status(client_id): Full pipeline view — progress across all 5 forms
+Available forms: snap_enrollment, housing_intake, job_application, ssi, id_replacement
 
 When the user gives you a browser-automation goal, plan the BROWSER_* directives and emit them in your output. Your Chrome extension executes them. You are an agent with real tools, not a narrator.
 """
@@ -190,6 +208,68 @@ def _maybe_log_l3_telemetry(action_obj: dict, result: object) -> None:
             f.write(json.dumps(record, separators=(",", ":")) + "\n")
     except Exception:
         pass  # telemetry must never crash the bridge
+
+
+def _build_fill_form_action(handoff_text: str, session_id: str) -> "dict | None":
+    """Convert a fill_form result text → BROWSER_FILL_FORM queue action.
+
+    Parses the handoff JSON returned by reentry-desk fill_form, maps the client
+    profile fields into the profile schema that content_script.js BROWSER_FILL_FORM
+    expects, and returns a stamped action dict ready for _action_queue.
+    Returns None when the handoff text is not parseable JSON.
+    """
+    try:
+        handoff = json.loads(handoff_text)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    client = handoff.get("client", {})
+    form_name = handoff.get("form", "")
+
+    # Core personal fields from create_client profile
+    personal: dict = {
+        "full_name": client.get("name", ""),
+        "email": client.get("contact_email", ""),
+        "phone": client.get("phone", ""),
+    }
+
+    # Best-effort: parse "key: value" lines from notes into personal
+    notes = client.get("notes", "")
+    if notes:
+        for line in notes.splitlines():
+            if ":" in line:
+                k, _, v = line.partition(":")
+                slug = k.strip().lower().replace(" ", "_")
+                if slug and v.strip():
+                    personal[slug] = v.strip()
+
+    profile: dict = {"personal": personal}
+
+    # Form-specific screener defaults so the extension can answer Yes/No questions
+    if form_name == "job_application":
+        profile["work_authorization"] = {
+            "authorized_us": "Yes",
+            "sponsorship_needed": "No",
+            "eighteen_or_older": "Yes",
+        }
+        profile["screener_defaults"] = {
+            "background_check_consent": "Yes",
+            "drug_test_willing": "Yes",
+            "how_did_you_hear": "Internet",
+            "reliable_transportation": "Yes",
+        }
+
+    return {
+        "id": uuid.uuid4().hex,
+        "kind": "BROWSER_FILL_FORM",
+        "profile": profile,
+        "target": "",          # document-level scope
+        "status": "queued",
+        "queued_ts": time.time(),
+        "_session_id": session_id,
+        "_form": form_name,
+        "_client_id": client.get("id", ""),
+    }
 
 
 def _ollama_chat(model: str, messages: list[dict], timeout: float = 90.0) -> dict:
@@ -633,6 +713,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_tool_find(body)
             if path == "/tool/describe_step":
                 return self._handle_describe_step(body)
+            if path.startswith("/reentry/"):
+                return self._handle_reentry(path, body)
             return self._send_json(404, {"error": f"unknown route {path}"})
         except Exception as e:
             _audit({"event": "handler_error", "path": path, "error": str(e)})
@@ -751,6 +833,57 @@ class Handler(BaseHTTPRequestHandler):
             })
         except Exception as e:
             return self._send_json(200, {"ok": False, "error": str(e)})
+
+    # ---- /reentry/* ----
+    def _handle_reentry(self, path: str, body: dict) -> None:
+        if not _REENTRY_OK:
+            return self._send_json(503, {"error": "reentry_client not available"})
+        tool = path.split("/reentry/", 1)[-1].rstrip("/")
+        if tool not in _reentry.TOOL_MAP:
+            return self._send_json(404, {
+                "error": f"unknown reentry tool '{tool}'",
+                "available": list(_reentry.TOOL_MAP),
+            })
+        try:
+            # session_id is a bridge concern, not a reentry-desk argument
+            session_id = str(body.get("session_id") or "default")
+            tool_body = {k: v for k, v in body.items() if k != "session_id"}
+
+            result = _reentry.call(tool, **tool_body)
+            _audit({"event": "reentry_tool", "tool": tool, "args": tool_body})
+
+            response: dict = {"ok": True, "tool": tool, "result": result}
+
+            # fill_form: build a BROWSER_FILL_FORM action and push it to the
+            # session queue so the extension can auto-fill the visible form.
+            if tool == "fill_form" and not result.startswith("[reentry-desk error]"):
+                action = _build_fill_form_action(result, session_id)
+                if action:
+                    with _queue_lock:
+                        bucket = _action_queue.setdefault(session_id, [])
+                        overflow = max(0, len(bucket) + 1 - _QUEUE_MAX_PER_SESSION)
+                        if overflow:
+                            del bucket[:overflow]
+                        bucket.append(action)
+                    with _action_session_lock:
+                        _action_session_map[action["id"]] = session_id
+                    _audit({
+                        "event": "reentry_fill_queued",
+                        "session_id": session_id,
+                        "action_id": action["id"],
+                        "form": action.get("_form"),
+                        "client_id": action.get("_client_id"),
+                    })
+                    response["fill_queued"] = True
+                    response["action_id"] = action["id"]
+                    response["session_id"] = session_id
+
+            return self._send_json(200, response)
+        except TypeError as e:
+            return self._send_json(400, {"error": f"bad arguments for '{tool}': {e}"})
+        except Exception as e:
+            _audit({"event": "reentry_error", "tool": tool, "error": str(e)})
+            return self._send_json(500, {"error": str(e)})
 
     # ---- /tool/find ----
     def _handle_tool_find(self, body: dict) -> None:
