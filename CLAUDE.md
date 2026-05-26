@@ -62,9 +62,18 @@ Never say "I can't." Reframe every wall as "haven't figured out yet." Operator c
 
 `~/scripts/speak.sh` is for conversational beats worth hearing — openings, closings, real questions, real findings. NOT: status echoes, acknowledgments, file paths, code snippets, "standing by," tool narration. See `[[feedback_voice_vs_text_channel_curation]]`.
 
-### 7. Browser actions — operator-visible, MCP tab group.
+### 7. Browser actions — sensei is the only path.
 
-Any action against authenticated browser sessions runs in a visible MCP-managed Chrome tab. Operator IS the browser; I'm the hands. Screenshot BEFORE coordinate-based pastes. See `[[feedback_operator_browser_visibility_nonneg]]` and `[[feedback_chrome_startup_protocol]]` (includes silent recovery on "Browser extension is not connected").
+**sensei is the only browser path. No exceptions.**
+
+Execute → screenshot → show. No narration before. No "done" without screenshot.
+
+Tool map: `mcp__sensei__browse` / `click` / `fill` / `read` / `screenshot` / `search` / `run` / `js_eval` / `scroll` / `key_press` / `console_logs` / `network_requests` / `tab_list` / `tab_create` / `tab_close`.
+
+Dead paths (§1a): `mcp__claude-in-chrome__*` (extension does not connect), bare `google-chrome <url>` (creates tab outside MCP group).
+
+Full routing table: `/home/elijah/MD/TOOL_ROUTING.md`.
+See also `[[feedback_operator_browser_visibility_nonneg]]` and `[[feedback_chrome_startup_protocol]]` (includes silent recovery on "Browser extension is not connected").
 
 ### 8. Cost-aware routing.
 
@@ -117,3 +126,14 @@ Any tool using operator's login credentials (Canva, Drive, Gmail, Calendar, Phot
 - Never commit/send/delete without explicit operator approval in chat
 
 Memory: `[[operator-must-see-authenticated-actions]]`. Enforced by `~/.claude/hooks/operator_visibility_guard.sh` (PreToolUse). Lockdown: `touch /tmp/operator_lockdown_authenticated`.
+
+### 13. Tool routing — consult the table, then act.
+
+Before any tool call, routing is pre-decided — no deliberation at runtime.
+
+Canonical spec: `/home/elijah/MD/TOOL_ROUTING.md`
+
+Three rules that override everything:
+1. **Act-first.** When operator says "open / go / check / click X" — execute, screenshot, show. Zero preamble.
+2. **Verified = evidence.** "Done" without a screenshot or grep output is a hallucination.
+3. **Dead paths stay dead.** `mcp__claude-in-chrome__*` and bare `google-chrome <url>` are NEVER used. See §1a.
