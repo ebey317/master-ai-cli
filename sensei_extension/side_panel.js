@@ -2241,6 +2241,46 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
 
     const ok = Boolean(result?.ok);
     const suffix = timings.inject ? ` (${timings.inject} ms inject)` : "";
+
+    // ── Step 6: expected_outcome receipt verification ──────────────────────
+    // If the model declared an expected_outcome AND the action returned an
+    // action_receipt, compare them. Mismatches surface a warning card in the
+    // UI and inject receipt_mismatch into the next continuation payload.
+    let receiptMismatch = null;
+    if (ok && action?.expected_outcome && result?.action_receipt) {
+      const receipt = result.action_receipt;
+      const expected = String(action.expected_outcome).toLowerCase().trim();
+      let mismatchReason = null;
+
+      if (receipt.action === "BROWSER_FILL") {
+        // For fills: check value_matches flag first; fall back to string compare.
+        if (receipt.value_matches === false) {
+          mismatchReason = `expected field value matching "${action.expected_outcome}", got "${receipt.value_after}"`;
+        }
+      } else if (receipt.action === "BROWSER_CLICK") {
+        // For clicks: if outcome mentions "navigate" or "page" but URL didn't change, flag it.
+        if (/navigat|page\s+load|redirect/i.test(expected) && !receipt.url_changed) {
+          mismatchReason = `expected navigation but URL unchanged (${receipt.url_after})`;
+        }
+        // If outcome mentions "submit" but no submit signals detected, flag it.
+        if (/submit|sent|completed|success/i.test(expected) && !receipt.submit_detected && !receipt.url_changed) {
+          mismatchReason = `expected submission but no submit signals or URL change detected`;
+        }
+      }
+
+      if (mismatchReason) {
+        receiptMismatch = mismatchReason;
+        // Append a warning annotation to the action card row.
+        try {
+          const warnEl = document.createElement("p");
+          warnEl.className = "action-receipt-warn";
+          warnEl.textContent = `⚠️ Receipt mismatch: ${mismatchReason}`;
+          row.appendChild(warnEl);
+        } catch (_e) { /* DOM ops are best-effort */ }
+      }
+    }
+    // ──────────────────────────────────────────────────────────────────────
+
     setActionStatus(row, ok ? `Done${suffix}` : (result?.error || "Failed"));
     const observedTabUrl = await readObservedTabUrl(tab);
     const finalState = {
@@ -2251,6 +2291,8 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
       // Phase 1.2 — typed permission envelope alongside the legacy decision
       // string. Backend / audit can read either field.
       permission_envelope: PermissionManager.envelopeFor(action, origin, permissionDecision),
+      // Step 6 — receipt mismatch (null when no mismatch or no receipt)
+      ...(receiptMismatch ? { receipt_mismatch: receiptMismatch } : {}),
     };
     // LAYER 2 (SENSEI HARDENING 2026-05-20): see comment on the sibling
     // dispatch site (~line 2011). Honor content_script's explicit failure.
