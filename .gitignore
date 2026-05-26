@@ -18,6 +18,7 @@
 /.claude/*
 !/.claude/plans/
 !/.claude/projects/
+!/.claude/hooks/
 !/.claude/settings.json
 !/.claude/CLAUDE.md
 
