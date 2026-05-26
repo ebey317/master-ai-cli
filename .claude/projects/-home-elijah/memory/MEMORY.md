@@ -1,6 +1,7 @@
 - [CLAF throttle + account separation](project_claf_throttle_and_account_separation.md) — Flash/Tap/Local routing, 9 cloud peers wired (6 serving as of 2026-05-22), 25K tokens/day ceiling, ANTHROPIC_CONSOLE_KEY separation enforced
 - [Account separation strict](feedback_account_separation_strict.md) — Max OAuth vs Console platform key MUST stay separate; architecture enforces via keychain naming + launch.sh unset + orchestrator alias projection
 - [Six Project Pipeline](project_pipeline_six_ideas.md) — Fair Chance Employer, Drive-In, Freelance MCP Agency, IPTV monetization, MCP School (captured 2026-05-23)
+- [Life Party — Event MCP](project_life_party.md) — Business 07. QR portal, VIP Spotlight (30-sec live on the big screen + clip), synced music, group thread, TV displays, POS. Service first. Slides 24-25 in MasterAI deck.
 - [Fair Chance project](project_fairchance.md) — Autofill job app service for friends/family. Template at ~/projects/fairchance/profiles/. Client profiles → /tmp/profile_{slug}.json → autofill_job_form.
 - [Sensei tennis lessons](feedback_sensei_tennis_lessons.md) — locate-first rule, stuck tab recovery, copy/paste over fill, monitor before submit, audit log visible_text for replies, golden brace = active tab
 - [Attention signal tiers](feedback_attention_signal_tiers.md) — speak.sh = question, TV = look at screen, Jazz/Gospel = urgent need attention now
@@ -23,3 +24,9 @@
 - [⚠️ No narrative gaps](feedback_no_narrative_gaps.md) — Do not invent explanations to fill data gaps. If timeline doesn't add up, flag it. Go get the actual data before explaining anything.
 - [⚠️ Two account sides — Pro vs API/CLAF](feedback_two_account_sides.md) — Pro=claude.ai Max flat fee, API/CLAF=Console pay-per-token via launch.sh. Never mix. ASK which side before account-level work. No welcome greeting on either side (removed 2026-05-24).
 - [reentry-desk MCP server](project_reentry_desk.md) — 6 tools (create_client, get_client, list_forms, fill_form, mark_complete, get_status). User-scope registration, available all sessions. ~/projects/reentry-desk/. Wire Pupil to it next.
+- [⚠️ Stop clicking — ask first](feedback_stop_clicking_ask_first.md) — Operator owns the computer. ALWAYS ask before browser action. ASK → HEAR BACK → THEN ACT. Locked 2026-05-25.
+- [⚠️ Everything verified on screen](feedback_verified_on_screen.md) — After every consequential action show visible proof. Never say "done" without screenshot/read confirmation. Locked 2026-05-25.
+- [Data specialist identity](feedback_data_specialist_identity.md) — Operator is a data specialist providing a public service. Extension must be 100% accurate. Master AI, Elijah Wilkins, Indianapolis. Locked 2026-05-25.
+- [Session-start memory hook](project_session_start_memory_hook.md) — Build hook to read MEMORY.md + pinned memories on FIRST prompt of each thread only. Enhance userpromptsubmit_inject.sh. NOT YET BUILT.
+- [Chrome extension clone project](project_chrome_extension_clone.md) — Clone proven MV3 extension, add operator's tools, add debug/devtools mode. 100% accuracy target. Base: ~/scripts/sensei_extension/. NOT YET STARTED.
+- [Open tab pattern](feedback_open_tab_pattern.md) — "open tab"/"open mcp tab" = one tab to google.com via sensei tab_create. Dev tools (console_logs, network_requests) confirmed live 2026-05-26.
