@@ -1,5 +1,7 @@
-const DEFAULT_CONFIG = {
+const CONFIG_SCHEMA = {
   backendUrl: "http://127.0.0.1:8080",
+  agentUrl: "http://127.0.0.1:8001",
+  wakeRelayUrl: "http://127.0.0.1:8765/wake",
   token: "",
   mode: "review",
   sessionId: "",
@@ -16,6 +18,8 @@ const DEFAULT_CONFIG = {
   schedules: [],
   mcpServers: []
 };
+
+const DEFAULT_CONFIG = { ...CONFIG_SCHEMA };
 
 const REQUEST_TIMEOUTS = {
   default: 60000,
@@ -1678,6 +1682,24 @@ async function sendToContent(tab, action, timings = {}) {
   const ready = await ensureContentScript(tab, timings);
   if (!ready) throw new Error("cannot access this tab");
   const bridgedAction = await attachLocalFilePayload(action);
+
+  // ── Iframe bridge routing ──────────────────────────────────────────────────
+  // Targets prefixed with "iframe::" (e.g. "iframe::p_007") originate from
+  // cross-origin child frames. Route through the top-frame content script's
+  // SENSEI_IFRAME_DISPATCH handler, which posts into each iframe; the relay in
+  // each frame forwards to the service worker's SENSEI_IFRAME_ACTION handler.
+  const rawTarget = String(bridgedAction?.target || "");
+  if (rawTarget.startsWith("iframe::")) {
+    const iframeRef = rawTarget.slice("iframe::".length).trim();
+    const iframeAction = { ...bridgedAction, target: iframeRef };
+    return chrome.tabs.sendMessage(tab.id, {
+      type: "SENSEI_IFRAME_DISPATCH",
+      action: iframeAction,
+      actionId: crypto.randomUUID(),
+    });
+  }
+  // ──────────────────────────────────────────────────────────────────────────
+
   return chrome.tabs.sendMessage(tab.id, { type: "SENSEI_EXECUTE_ACTION", action: bridgedAction });
 }
 
@@ -2854,7 +2876,7 @@ async function sendPrompt() {
     const detail = bridge.lastError || "no heartbeat";
     appendError(
       `Bridge unreachable (${detail}). Would have sent: "${prompt}". ` +
-      `Restart master-ai-ui.service to reconnect, then try again.`,
+      `Restart your Sensei backend to reconnect, then try again.`,
     );
     setConnection("Bridge unreachable", "error");
 
@@ -3401,7 +3423,7 @@ async function syncClafBadge() {
   const badge = document.getElementById("clafBadge");
   if (!badge) return;
   try {
-    const r = await fetch("http://127.0.0.1:8080/mode", { signal: AbortSignal.timeout(2000) });
+    const r = await fetch(`${state.config.backendUrl}/mode`, { signal: AbortSignal.timeout(2000) });
     if (!r.ok) throw new Error("bad status");
     const d = await r.json();
     const authLabel = d.auth === "api_key" ? "API" : "Max Anthropic";
@@ -3409,7 +3431,7 @@ async function syncClafBadge() {
     // Also check secretary health
     let secLabel = "";
     try {
-      const sr = await fetch("http://127.0.0.1:8001/agent/health", { signal: AbortSignal.timeout(1500) });
+      const sr = await fetch(`${state.config.agentUrl}/agent/health`, { signal: AbortSignal.timeout(1500) });
       if (sr.ok) {
         const sd = await sr.json();
         const active = sd.active_tasks || 0;
@@ -3438,7 +3460,7 @@ async function pollSecretaryDebug() {
   const logEl = document.getElementById("debugLog");
   if (!statusEl || !logEl) return;
   try {
-    const r = await fetch("http://127.0.0.1:8001/agent/stats", { signal: AbortSignal.timeout(2000) });
+    const r = await fetch(`${state.config.agentUrl}/agent/stats`, { signal: AbortSignal.timeout(2000) });
     if (!r.ok) throw new Error("no response");
     const d = await r.json();
     const byStatus = d.by_status || {};
@@ -3826,7 +3848,7 @@ async function init() {
     saveMode(event.target.value);
     const extMode = event.target.value;
     const clafMode = extMode === "auto" ? "hybrid" : extMode === "plan" ? "local" : "local";
-    fetch("http://127.0.0.1:8080/mode", {
+    fetch(`${state.config.backendUrl}/mode`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode: clafMode })

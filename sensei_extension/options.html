@@ -20,6 +20,18 @@
       </label>
 
       <label>
+        Agent Sidecar URL <small>(optional)</small>
+        <input id="agentUrl" type="url" placeholder="http://127.0.0.1:8001">
+        <small>URL of the optional agent/secretary sidecar. Leave blank to disable agent health and stats display.</small>
+      </label>
+
+      <label>
+        Wake Relay URL <small>(optional)</small>
+        <input id="wakeRelayUrl" type="url" placeholder="http://127.0.0.1:8765/wake">
+        <small>URL where the extension sends AI tab ready notifications. Leave blank to disable.</small>
+      </label>
+
+      <label>
         Master AI Token
         <input id="token" type="password" autocomplete="off">
       </label>

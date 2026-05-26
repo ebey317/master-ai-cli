@@ -27,6 +27,14 @@ const INDEED_REFERENCE_RE = /smartapply\.indeed\.com\/.+\/([a-f0-9]{16,})/i;
 const DEFAULT_ROUTER_BASE = "http://127.0.0.1:8080";
 const DISPATCH_PATH = "/dispatch";
 
+// ─── Ref-ID grounding system — Pupil element map ─────────────────────────────
+// Every call to interactiveElements() stamps visible DOM elements with a stable
+// data-pupil-id attribute and records them in window.__pupilElementMap. Actions
+// resolve refs through the map (O(1) lookup) before falling back to selector/
+// text search. Counter and map survive script re-injection (|| guard).
+globalThis.__pupilCounter = globalThis.__pupilCounter || 0;
+globalThis.__pupilElementMap = globalThis.__pupilElementMap || {};
+
 globalThis.__SENSEI_FIRST_SUBMIT_PAUSE_STATE__ = globalThis.__SENSEI_FIRST_SUBMIT_PAUSE_STATE__ || {
   first_app_pause_armed: true,
   pending_submit: null,
@@ -37,6 +45,31 @@ globalThis.__SENSEI_SIMPLIFY_DISMISS_STATE__ = globalThis.__SENSEI_SIMPLIFY_DISM
 };
 
 try { console.log("injected"); } catch (_err) {}
+
+// ─── Iframe relay — when this script runs inside a child frame, install a
+// postMessage listener so the top-level content script (or side panel) can
+// delegate actions into the frame by posting SENSEI_IFRAME_ACTION messages.
+// The relay converts postMessage → chrome.runtime.sendMessage so the service
+// worker can track frameId and route the result back to the caller.
+if (typeof window !== "undefined" && window !== window.top) {
+  window.addEventListener("message", (evt) => {
+    if (!evt.data || evt.data.type !== "SENSEI_IFRAME_ACTION") return;
+    // Only relay messages from the same extension (top frame posts them with
+    // a shared secret or we rely on the service worker's sender.frameId check).
+    try {
+      chrome.runtime.sendMessage(
+        { type: "SENSEI_IFRAME_ACTION", action: evt.data.action || {} },
+        (result) => {
+          // Post result back up to the top frame so side_panel.js can receive it.
+          try { window.top.postMessage({ type: "SENSEI_IFRAME_RESULT", result, actionId: evt.data.actionId }, "*"); }
+          catch (_e) { /* cross-origin top — result delivered via service worker */ }
+        }
+      );
+    } catch (_e) {
+      // chrome.runtime not available (e.g. context invalidated); ignore.
+    }
+  });
+}
 
 globalThis.__SENSEI_PAGE_OBSERVER_STATE__ = globalThis.__SENSEI_PAGE_OBSERVER_STATE__ || {
   version: 0,
@@ -77,9 +110,29 @@ function installPageObservationHooks() {
   }, true);
 
   let mutationTimer = 0;
+  let _lastInteractiveCount = document.querySelectorAll(ACTION_TARGETS).length;
   const scheduleMutationBump = () => {
     clearTimeout(mutationTimer);
-    mutationTimer = setTimeout(() => bumpPageObservation("mutation.debounced"), PAGE_STABLE_DEBOUNCE_MS);
+    mutationTimer = setTimeout(() => {
+      bumpPageObservation("mutation.debounced");
+      // ── Stale map guard ────────────────────────────────────────────────
+      // When the interactive element count shifts by more than 5 (SPA route
+      // change, dynamic form injection, etc.) invalidate the ref-ID map so
+      // the next interactiveElements() call rebuilds it fresh. Lazy — not
+      // rebuilt here, just cleared so the first observation after the change
+      // stamps clean refs without collisions.
+      try {
+        const currentCount = document.querySelectorAll(ACTION_TARGETS).length;
+        if (Math.abs(currentCount - _lastInteractiveCount) > 5) {
+          _lastInteractiveCount = currentCount;
+          globalThis.__pupilElementMap = {};
+          globalThis.__pupilCounter = 0;
+          document.querySelectorAll("[data-pupil-id]").forEach(
+            (stale) => stale.removeAttribute("data-pupil-id")
+          );
+        }
+      } catch (_e) { /* never break page observation */ }
+    }, PAGE_STABLE_DEBOUNCE_MS);
   };
   const root = document.querySelector("main,[role='main'],#main,[data-testid*='main'],[aria-label*='main' i]") || document.body || document.documentElement;
   if (root && MutationObserver) {
@@ -424,18 +477,42 @@ function interactiveElements(limit = INTERACTIVE_LIMIT) {
   const candidates = collectDeep(ACTION_TARGETS, limit * 10)
     .filter(isVisible)
     .slice(0, limit);
-  return candidates.map((el, index) => {
+
+  // ── Ref-ID stamping ──────────────────────────────────────────────────────
+  // Each visible interactive element gets a stable data-pupil-id on first
+  // observation. Existing stamps are preserved across repeated calls so refs
+  // remain stable within a page load. The map is rebuilt incrementally.
+  candidates.forEach((el) => {
+    if (!el.hasAttribute("data-pupil-id")) {
+      globalThis.__pupilCounter += 1;
+      el.setAttribute("data-pupil-id", `p_${String(globalThis.__pupilCounter).padStart(3, "0")}`);
+    }
+    const ref = el.getAttribute("data-pupil-id");
     const role = elementRole(el);
-    const name = elementName(el) || "(unnamed)";
-    const selector = safeSelectorFor(el);
-    // Layer 3: append constraint annotations so the LLM sees hard limits
+    const label = elementName(el) || "";
+    globalThis.__pupilElementMap[ref] = {
+      type: role,
+      label,
+      placeholder: el.getAttribute("placeholder") || "",
+      value: currentElementValue ? currentElementValue(el) : (el.value || ""),
+      el,
+    };
+  });
+
+  // Return structured objects — the model sees ref IDs, not fragile text selectors.
+  // Layer 3 constraint annotations (required, maxlength, etc.) are preserved.
+  return candidates.map((el) => {
     const cons = _extractFieldConstraints(el);
-    const consKeys = Object.keys(cons);
-    const consStr = consKeys.length
-      ? " [" + consKeys.map((k) => k === "required" ? "required" : `${k}=${cons[k]}`).join(", ") + "]"
-      : "";
-    return `${index + 1}. ${role} "${name}" selector=${selector}${consStr}`;
-  }).join("\n");
+    const entry = {
+      ref: el.getAttribute("data-pupil-id"),
+      type: elementRole(el),
+      label: elementName(el) || "",
+      placeholder: el.getAttribute("placeholder") || "",
+      selector: safeSelectorFor(el),
+    };
+    if (Object.keys(cons).length) entry.constraints = cons;
+    return entry;
+  });
 }
 
 function semanticFallbackElements(limit = 140) {
@@ -1342,6 +1419,17 @@ function findElement(target) {
   let raw = String(target || "").trim();
   if (!raw) return null;
 
+  // ── Fast-path: ref-ID lookup ─────────────────────────────────────────────
+  // If the model emits a p_NNN ref, resolve it directly through the element
+  // map without any selector parsing. Falls through to legacy resolution if
+  // the ref is unknown (stale map or model hallucination).
+  if (/^p_\d{3,}$/.test(raw)) {
+    const entry = globalThis.__pupilElementMap?.[raw];
+    if (entry?.el && isVisible(entry.el)) return entry.el;
+    // Ref not in map (or element is no longer visible) — fall through to
+    // legacy selector/text resolution so the action degrades gracefully.
+  }
+
   // Strip whitespace-delimited inline comments the model sometimes appends to
   // selectors, e.g. `a[data-testid="x"]  # click next page`. Do NOT treat `#id`
   // selectors as comments unless there's whitespace before the `#`.
@@ -1369,7 +1457,11 @@ function findElement(target) {
       if (extracted) {
         raw = String(extracted).trim();
       } else if (parsed.ref) {
-        // No ref→selector map exists; refs are model hallucinations.
+        // Resolve JSON-wrapped ref {"ref":"p_001"} via the element map.
+        const refKey = String(parsed.ref).trim();
+        const entry = globalThis.__pupilElementMap?.[refKey];
+        if (entry?.el && isVisible(entry.el)) return entry.el;
+        // Ref unknown or element gone — surface target_not_found so model adapts.
         return null;
       } else if (parsed.text) {
         // Fall through to text-needle search with the text field.
@@ -2582,13 +2674,26 @@ async function executeBrowserAction(action) {
     // dispatching the click event. The animation is purely for the operator's
     // benefit; the actual click fires immediately via el.click().
     try { _mirrorMoveGhost(el); } catch (_e) {}
+    // ── Receipt snapshot (before click) ───────────────────────────────────
+    const _click_url_before = location.href;
+    const _click_dom_before = document.querySelectorAll(ACTION_TARGETS).length;
     el.click();
     await waitForPageStable(350, 1400);
     const confirmation_post = await maybePostConfirmationDetected(action);
+    const action_receipt = {
+      ref: action.target,
+      action: "BROWSER_CLICK",
+      url_before: _click_url_before,
+      url_after: location.href,
+      url_changed: _click_url_before !== location.href,
+      dom_delta: document.querySelectorAll(ACTION_TARGETS).length - _click_dom_before,
+      submit_detected: submitSignals.length >= 2,
+    };
     return {
       ok: true,
       clicked: action.target,
       confirmation_post,
+      action_receipt,
       page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 })
     };
   }
@@ -2761,8 +2866,9 @@ async function executeBrowserAction(action) {
     // value, dispatch input + change events, await 100ms, re-read the
     // LIVE element from the DOM, and return exactly one of two shapes:
     //   ok:false / result:'failure' / reason:'value_did_not_persist' / expected / observed
-    //   ok:true  / result:'success' / observed
+    //   ok:true  / result:'success' / observed / action_receipt
     // No other return path exists past this point.
+    const _fill_url_before = location.href;
     const val = parsed.value;
     el.value = val;
     try { el.dispatchEvent(new Event("input",  { bubbles: true })); } catch (_e) {}
@@ -2782,10 +2888,19 @@ async function executeBrowserAction(action) {
         observed: actual,
       };
     }
+    const action_receipt = {
+      ref: action.target,
+      action: "BROWSER_FILL",
+      url_before: _fill_url_before,
+      url_after: location.href,
+      value_after: actual,
+      value_matches: actual === val,
+    };
     return {
       ok: true,
       result: "success",
       observed: actual,
+      action_receipt,
     };
   }
 
@@ -3195,6 +3310,31 @@ if (globalThis.chrome?.runtime?.onMessage?.addListener) {
 
     if (message?.type === "SENSEI_RECORD_STOP") {
       sendResponse(stopWorkflowRecording());
+      return false;
+    }
+
+    // Iframe bridge — top-frame dispatch path. Side panel sends an action with
+    // a target like "iframe::p_007". The top-frame content script strips the
+    // "iframe::" prefix and posts the action into all child frames via
+    // postMessage; the relay in each frame picks it up, forwards to the service
+    // worker which routes back. The action_id lets the caller correlate results.
+    if (message?.type === "SENSEI_IFRAME_DISPATCH") {
+      const action = message.action || {};
+      const actionId = message.actionId || crypto.randomUUID();
+      try {
+        const frames = document.querySelectorAll("iframe");
+        frames.forEach((iframe) => {
+          try {
+            iframe.contentWindow?.postMessage(
+              { type: "SENSEI_IFRAME_ACTION", action, actionId },
+              "*"
+            );
+          } catch (_e) { /* cross-origin frame — postMessage rejects silently */ }
+        });
+        sendResponse({ ok: true, dispatched_to_frames: frames.length, actionId });
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err?.message || err) });
+      }
       return false;
     }
 

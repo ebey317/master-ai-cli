@@ -1,5 +1,7 @@
 const DEFAULTS = {
   backendUrl: "http://127.0.0.1:8080",
+  agentUrl: "http://127.0.0.1:8001",
+  wakeRelayUrl: "http://127.0.0.1:8765/wake",
   mode: "review",
   token: "",
   sessionId: "",
@@ -114,7 +116,15 @@ async function _ensureContentScriptForTab(tabId) {
     return true;
   } catch (_err) {
     try {
+      // Inject into top frame.
       await chrome.scripting.executeScript({ target: { tabId }, files: ["content_script.js"] });
+      // Inject into all cross-origin child frames so iframe elements get ref-IDs
+      // and can relay BROWSER_* actions back through the service worker.
+      try {
+        await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ["content_script.js"] });
+      } catch (_iframeErr) {
+        // allFrames injection is best-effort — some frames may block scripting.
+      }
       await chrome.tabs.sendMessage(tabId, { type: "SENSEI_PING" });
       return true;
     } catch (_err2) {
@@ -339,7 +349,6 @@ async function _ensureNetworkEnabled(tabId) {
 }
 
 const _aiTabAlerted = new Map();
-const AI_WAKE_RELAY = "http://127.0.0.1:8765/wake";
 
 // Narrow watchlist — only fire for AIs in the active work loop.
 // Each entry: { name, urlPrefix, readySignal(title, prevTitle) -> bool }
@@ -424,17 +433,21 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   const wasAlerted = _aiTabAlerted.get(tabId) === true;
   if (isReady && !wasAlerted) {
     _aiTabAlerted.set(tabId, true);
-    fetch(AI_WAKE_RELAY, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        title,
-        tabId,
-        ai: entry.name,
-        ts: new Date().toISOString(),
-      }),
-      keepalive: true,
-    }).catch(() => {});
+    storageGet(["wakeRelayUrl"]).then((stored) => {
+      const relayUrl = stored.wakeRelayUrl || DEFAULTS.wakeRelayUrl;
+      if (!relayUrl) return;
+      fetch(relayUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title,
+          tabId,
+          ai: entry.name,
+          ts: new Date().toISOString(),
+        }),
+        keepalive: true,
+      }).catch(() => {});
+    });
   } else if (!isReady && wasAlerted) {
     _aiTabAlerted.set(tabId, false);
   }
@@ -924,6 +937,33 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "SENSEI_RUN_SHORTCUT") {
     executeWorkflowShortcut(message.shortcut || {}, message.params || {}, { manual: true })
       .then(sendResponse);
+    return true;
+  }
+
+  // Iframe bridge — relay BROWSER_* actions from cross-origin child frames.
+  // The content script running inside a frame cannot directly receive messages
+  // from side_panel.js (different origin), so it sends them here via
+  // chrome.runtime.sendMessage. We forward to the frame using the sender's
+  // frameId and tab ID, then route the result back to the side panel.
+  if (message?.type === "SENSEI_IFRAME_ACTION") {
+    const frameId = _sender?.frameId;
+    const tabId = _sender?.tab?.id;
+    if (!Number.isInteger(frameId) || !Number.isInteger(tabId)) {
+      sendResponse({ ok: false, error: "SENSEI_IFRAME_ACTION: missing sender frameId or tabId" });
+      return false;
+    }
+    // Forward the action to the frame that announced it. The content script
+    // in that frame already has SENSEI_EXECUTE_ACTION wired up.
+    chrome.tabs.sendMessage(tabId, {
+      type: "SENSEI_EXECUTE_ACTION",
+      action: message.action || {},
+    }, { frameId }, (result) => {
+      if (chrome.runtime.lastError) {
+        sendResponse({ ok: false, error: chrome.runtime.lastError.message });
+      } else {
+        sendResponse(result);
+      }
+    });
     return true;
   }
 

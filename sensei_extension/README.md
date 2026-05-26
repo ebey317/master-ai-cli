@@ -56,6 +56,16 @@ The side panel renders that as one *Approve-All* card on first
 touch; subsequent actions on the same approved site flow without
 re-prompting (subject to the always-confirm list above).
 
+## Backend Compatibility
+
+The extension works with **any** HTTP backend that implements the API contract —
+not just Master AI. See [`API_CONTRACT.md`](API_CONTRACT.md) for the full list
+of endpoints your backend must implement to be compatible.
+
+All URLs (main backend, optional agent sidecar, wake relay) are configurable
+from the Options page — no code changes needed to point at a different host,
+port, or service.
+
 ## Local setup
 
 1. Run the Master AI backend (`stt_server.py` on port 8080):

@@ -1,5 +1,7 @@
 const DEFAULTS = {
   backendUrl: "http://127.0.0.1:8080",
+  agentUrl: "http://127.0.0.1:8001",
+  wakeRelayUrl: "http://127.0.0.1:8765/wake",
   token: "",
   mode: "review",
   sessionId: "",
@@ -123,6 +125,8 @@ async function load() {
   const config = normalizeConfig(stored);
   if (!config.sessionId) config.sessionId = `sensei-${crypto.randomUUID()}`;
   $("#backendUrl").value = config.backendUrl || DEFAULTS.backendUrl;
+  $("#agentUrl").value = config.agentUrl || "";
+  $("#wakeRelayUrl").value = config.wakeRelayUrl || "";
   $("#token").value = config.token || "";
   $("#mode").value = config.mode || "review";
   $("#sessionId").value = config.sessionId;
@@ -137,6 +141,8 @@ async function load() {
 async function save() {
   const values = {
     backendUrl: $("#backendUrl").value.trim().replace(/\/+$/, "") || DEFAULTS.backendUrl,
+    agentUrl: $("#agentUrl").value.trim().replace(/\/+$/, ""),
+    wakeRelayUrl: $("#wakeRelayUrl").value.trim(),
     token: $("#token").value.trim(),
     mode: $("#mode").value,
     sessionId: $("#sessionId").value.trim() || `sensei-${crypto.randomUUID()}`,
