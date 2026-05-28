@@ -10,10 +10,17 @@ metadata:
 
 # Monday.com Portfolio
 
-**Workspace:** Master AI Portfolio  
-**URL:** https://ebey317s-team.monday.com/workspaces/15737966  
-**Workspace ID:** 15737966  
+**⚠️ CANONICAL ACCOUNT:** `ebey317s-team.monday.com` (NO `-company` suffix). Email ebey317@gmail.com, user Elijah Wilkins id 104422259, Pro trial.
+**Workspace:** Master AI Portfolio
+**URL:** https://ebey317s-team.monday.com/workspaces/15737966
+**Workspace ID:** 15737966
 **Status:** LIVE (created 2026-05-28)
+
+## ⚠️ TWO-ACCOUNT TRAP (resolved 2026-05-28)
+Same email had TWO separate Monday accounts:
+- `ebey317s-team` (KEEP) — MCP connector authed here, 12 boards live here
+- `ebey317s-team-company` (KILL) — empty duplicate, browser landed here by default, made it look like "nothing is there". Being deleted manually by operator.
+The MCP connector ONLY drives `ebey317s-team`. If boards ever "go missing," check you're on the right account slug — NOT the `-company` one.
 
 ## 12 Business Boards
 
