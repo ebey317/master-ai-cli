@@ -12,8 +12,8 @@ When operator says "open tab" or "open mcp tab":
 2. Wait ~2s, then screenshot to confirm it loaded.
 3. No narration before. Show screenshot after.
 
-**Why:** Operator established this pattern 2026-05-26 — single tab to Google, always through MCP/sensei path.
-**How to apply:** Never open two tabs unless explicitly asked for multiple. Never use bare `google-chrome <url>`.
+**Why:** Operator established this pattern 2026-05-26 — single tab to Google, always through MCP/sensei path. Confirmed 2026-05-27: this IS the only way to open a tab. No alternatives.
+**How to apply:** Never open two tabs unless explicitly asked for multiple. Never use bare `google-chrome <url>`. `tab_create` to Google is THE canonical tab-open pattern — full stop.
 
 Dev tools pipeline confirmed same session:
 - `console_logs` → BROWSER_CONSOLE relay in content_script.js → `__SENSEI_CONSOLE_EVENTS__`

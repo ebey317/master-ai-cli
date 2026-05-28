@@ -28,6 +28,6 @@ Operator requirement locked 2026-05-25:
 - `~/.claude/hooks/userpromptsubmit_inject.sh` — add first-prompt detection + memory injection
 - New state file: `~/.claude/.last_session_id` — tracks session boundary
 
-**Status:** NOT YET BUILT. This is a standing requirement.
+**Status:** ✅ BUILT 2026-05-27. Hook v1.2 — injects 18 ⚠️/⚡ flagged memories (250 chars each) on first prompt of every session. Tested and confirmed working.
 
 Related: [[feedback_verified_on_screen]], [[project_chrome_extension_clone]]

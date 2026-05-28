@@ -1,5 +1,4 @@
 {
-  "model": "haiku",
   "hooks": {
     "PreToolUse": [
       {
@@ -21,6 +20,15 @@
             "command": "/home/elijah/.claude/hooks/retry_policy_guard.sh"
           }
         ]
+      },
+      {
+        "matcher": "Bash|mcp__sensei__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/elijah/.claude/hooks/violation_learning_hook.sh"
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
@@ -35,9 +43,11 @@
       }
     ]
   },
+  "enabledPlugins": {},
   "effortLevel": "high",
   "theme": "dark-ansi",
   "editorMode": "normal",
   "autoCompactEnabled": true,
-  "skipAutoPermissionPrompt": true
+  "skipAutoPermissionPrompt": true,
+  "model": "haiku"
 }

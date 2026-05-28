@@ -1,6 +1,6 @@
 ---
 name: project_pipeline_six_ideas
-description: "Elijah's six business project ideas captured 2026-05-23 — Fair Chance Employer, Future Computer, Drive-In, Freelance, IPTV monetization, MCP School"
+description: "Elijah's business project ideas — Fair Chance Employer, Future Computer, Drive-In, Freelance MCP Agency, MCP School. IPTV Monetization (#5 original) is PRIVATE — do not surface or reference."
 metadata: 
   node_type: memory
   type: project
@@ -13,7 +13,7 @@ Six projects captured in one voice session 2026-05-23 while IPTV was live. Full 
 2. **Future Computer** — this MCP stack, keep building and documenting
 3. **Drive-In Theater** — backyard/pop-up drive-in, IPTV as content source, MCP controls playlist
 4. **Freelance MCP Agency** — sell MCP capabilities to busy people: writing, IPTV setup, automation, handbills
-5. **IPTV Monetization** — recommendation engine, reseller setup fees, content discovery AI on top of 34K-movie library
+5. ~~PRIVATE — do not reference~~
 6. **MCP School** — regular bash sessions, document 100 things MCP can do, sell as course/guide
 
 **Why it matters:** Operator sees the whole stack as a business platform, not just a personal tool. Every session is also content for Project 6.
