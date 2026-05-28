@@ -45,8 +45,14 @@ metadata:
 - Execute work: send emails, check Gmail, fill forms, call APIs
 - Update board: mark tasks done, add notes, create new items
 
+## Reference Files
+
+- **PPTX:** ~/Desktop/MasterAI_Full_Portfolio_2026.pptx (36-slide pitch deck, kept for reference + sharing)
+- **ODS/XLSX:** DELETED (replaced by Monday)
+- **Source of truth:** Monday.com workspace (this is where I query)
+
 ## Integration
 
-Drop the ODS file. Monday is the single source of truth for portfolio state. No spreadsheet sync needed.
+Monday is the single source of truth for portfolio state. PowerPoint is the pitch deck. No spreadsheet sync needed.
 
 Next session: auto-load this memory, I know where to find your portfolio.
