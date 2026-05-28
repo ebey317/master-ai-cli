@@ -27,8 +27,15 @@ metadata:
    | Notes / result | `long_text_mm3sgrdx` | submitted / failed + detail |
 3. **Post an item update** summarizing: job title, employer, application date, job URL, result (submitted/failed). The UPDATE is what fires Elena's trigger.
 
-## After that
-Elena handles the rest (her trigger fires on the update). Operator: "I handle the rest from there."
+## ⚠️ REALITY CHECK — Elena is MISCONFIGURED (tested 2026-05-28)
+Live test result: Elena (agent `90940`, "Board Scaffolder") **does NOT verify or acknowledge.** Her trigger fires on every update, but her *plan* says "create 3 example items" — so on EVERY trigger she re-runs scaffolding and spawns ~9 duplicate example items. She ignores the update's text content entirely.
+- One test message = **+9 duplicate items** (board jumped 92 → 101). She never posted a reply/ACK despite explicit instruction to reply-not-create.
+- Root cause: trigger ("when update created") is mismatched to plan ("scaffold + make examples"). She should be a VERIFIER (read report → advance Applied → Log Email Verification, or flag Needs Review) but is wired as a one-shot setup bot stuck on repeat.
+- **DO NOT ping/message Elena again** until her plan is rewritten to verify-not-scaffold (or she's deactivated). Every update to this board = more duplicate spam. The board is bloated to ~101 items from this.
+- Fix options (need operator go): (1) rewrite agent 90940's plan to verification behavior, (2) deactivate her, (3) clean the duplicate/test rows.
+
+## After that (INTENDED design — not current reality, see above)
+Elena was *supposed* to handle the rest (verify Claude's report, advance the stage). Operator: "I handle the rest from there." Currently she does NOT do this — she scaffolds. Fix required before relying on the handoff.
 
 ## Hard-won facts about this channel
 - The board is the cross-agent mailbox. No public URL exists; Monday API has NO agent mutations — can't @mention/trigger an agent programmatically. The only trigger is **posting an update to the board** (operator activated Elena's trigger in the UI 2026-05-28).

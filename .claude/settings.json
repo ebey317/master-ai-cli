@@ -44,10 +44,10 @@
     ]
   },
   "enabledPlugins": {},
-  "effortLevel": "high",
+  "effortLevel": "xhigh",
   "theme": "dark-ansi",
   "editorMode": "normal",
+  "verbose": true,
   "autoCompactEnabled": true,
-  "skipAutoPermissionPrompt": true,
-  "model": "haiku"
+  "skipAutoPermissionPrompt": true
 }

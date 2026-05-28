@@ -11,4 +11,4 @@ NEVER call `google-chrome <url>` from Bash. That creates a tab outside the MCP g
 
 **How to apply:** When a URL needs to open: mcp__sensei__tab_create → mcp__sensei__browse within that tab. Never shell out to google-chrome with a URL argument.
 
-Last captured: 2026-05-28 10:48:58
+Last captured: 2026-05-28 19:29:40

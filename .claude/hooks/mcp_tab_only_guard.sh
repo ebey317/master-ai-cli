@@ -8,8 +8,15 @@
 
 set -euo pipefail
 
-TOOL_NAME="${CLAUDE_TOOL_NAME:-}"
-TOOL_INPUT="${CLAUDE_TOOL_INPUT:-}"
+HOOK_INPUT="$(cat 2>/dev/null || true)"
+TOOL_NAME=$(printf '%s' "$HOOK_INPUT" | python3 -c '
+import json, os, sys
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    payload = {}
+print(payload.get("tool_name") or os.environ.get("CLAUDE_TOOL_NAME", ""))
+' 2>/dev/null || printf '%s' "${CLAUDE_TOOL_NAME:-}")
 
 # Only enforce on sensei browse
 if [[ "$TOOL_NAME" != "mcp__sensei__browse" ]]; then

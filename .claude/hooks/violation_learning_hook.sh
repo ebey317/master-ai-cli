@@ -7,8 +7,31 @@
 
 set -uo pipefail
 
-TOOL_NAME="${CLAUDE_TOOL_NAME:-}"
-TOOL_INPUT="${CLAUDE_TOOL_INPUT:-}"
+HOOK_INPUT="$(cat 2>/dev/null || true)"
+
+TOOL_NAME=$(printf '%s' "$HOOK_INPUT" | python3 -c '
+import json, os, sys
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    payload = {}
+print(payload.get("tool_name") or os.environ.get("CLAUDE_TOOL_NAME", ""))
+' 2>/dev/null || printf '%s' "${CLAUDE_TOOL_NAME:-}")
+
+TOOL_INPUT=$(printf '%s' "$HOOK_INPUT" | python3 -c '
+import json, os, sys
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    payload = {}
+tool_input = payload.get("tool_input")
+if tool_input is None:
+    print(os.environ.get("CLAUDE_TOOL_INPUT", ""))
+elif isinstance(tool_input, str):
+    print(tool_input)
+else:
+    print(json.dumps(tool_input))
+' 2>/dev/null || printf '%s' "${CLAUDE_TOOL_INPUT:-}")
 
 MEMORY_DIR="$HOME/.claude/projects/-home-elijah/memory"
 MEMORY_INDEX="$MEMORY_DIR/MEMORY.md"
@@ -53,9 +76,15 @@ MEMEOF
 # ── Extract command/url from JSON input ───────────────────────────────────────
 get_field() {
     local field="$1"
-    echo "$TOOL_INPUT" | python3 -c \
-        "import json,sys; d=json.load(sys.stdin); print(d.get('$field',''))" \
-        2>/dev/null || echo ""
+    printf '%s' "$TOOL_INPUT" | python3 -c "
+import json, sys
+raw = sys.stdin.read()
+try:
+    d = json.loads(raw)
+    print(d.get('$field', ''))
+except Exception:
+    print(raw.strip() if '$field' == 'command' else '')
+" 2>/dev/null || echo ""
 }
 
 # ── Pattern 1: Bare Chrome tab via Bash ───────────────────────────────────────
