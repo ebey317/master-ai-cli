@@ -2,6 +2,15 @@
   "hooks": {
     "PreToolUse": [
       {
+        "matcher": "mcp__sensei__browse",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/elijah/.claude/hooks/mcp_tab_only_guard.sh"
+          }
+        ]
+      },
+      {
         "matcher": "mcp__(canva|claude_ai_Canva|claude_ai_Google_Drive|claude_ai_Gmail|claude_ai_Google_Calendar|claude_ai_Todoist|claude_ai_Indeed|claude_ai_ZipRecruiter|claude_ai_Hugging_Face|hugging-face|claude_ai_Base44|sensei|claude-in-chrome|secretary)__.*",
         "hooks": [
           {
@@ -27,6 +36,15 @@
           {
             "type": "command",
             "command": "/home/elijah/.claude/hooks/violation_learning_hook.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__sensei__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/elijah/.claude/hooks/mcp_tab_action_tracker.sh"
           }
         ]
       }

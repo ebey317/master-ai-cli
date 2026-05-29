@@ -47,5 +47,6 @@
 - [Command Center — voice remote concept](project_command_center.md) — Universal voice remote (physical + phone). Voice commands all streaming + IPTV. Backend: Whisper→LLM intent parser→Router→Executors (MPV/Roku ECP). Concept locked 2026-05-28.
 - [⚠️ Bare Chrome tab — Bash google-chrome used](feedback_violation_bare_chrome_tab.md) — violation captured 2026-05-28
 - [⚠️ Leave BioVega alone](feedback_leave_biovega_alone.md) — HARD: do not initiate any BioVega work (board builds, rebuilds, re-querying). Operator said it repeatedly. Skip it when seeding the queue. Only touch if he asks unprompted.
+- [⚠️ Brainstorm → Monday workflow (ALL products)](feedback_brainstorm_to_monday_workflow.md) — Vision/insight discussions → discrete items in product's 💡 Ideas & Brainstorm group. Name + Notes + Priority. Applies to all 12 boards.
 - [Fair Chance relay inbox](reference_fairchance_inbox.md) — fairchance110@gmail.com wired into email-bridge as account "fairchance" (proof-of-service inbox). 2FA on, app pw in credentials.json only.
 - [⚠️ IPTV stream opened in browser instead of MPV](feedback_violation_iptv_in_browser.md) — violation captured 2026-05-28
