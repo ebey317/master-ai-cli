@@ -520,7 +520,13 @@ class Handler(BaseHTTPRequestHandler):
         # /extension/queue?session_id=... — pop + return pending actions for the session.
         # Side panel polls this on a short interval to pick up actions that MCP
         # (or any other producer) has pushed in.
-        if self.path.startswith("/extension/queue"):
+        # /extension/pending is the OLD endpoint name some extension builds still
+        # poll (cloned-but-stale Chrome installs). Aliased here so the bridge is
+        # backward-compatible with both old and new extension versions — without
+        # it, an old extension polls /extension/pending forever and 404s on every
+        # call, so no browser action ever executes (the "panel shows Ready but
+        # nothing happens" bug).
+        if self.path.startswith("/extension/queue") or self.path.startswith("/extension/pending"):
             qs = self.path.split("?", 1)
             session_id = "default"
             if len(qs) == 2:
@@ -530,10 +536,29 @@ class Handler(BaseHTTPRequestHandler):
                         break
             with _queue_lock:
                 actions = _action_queue.pop(session_id, [])
+                # SESSION BRIDGING (the "browser just times out / gives up" fix):
+                # the MCP server enqueues to the canonical "mcp-default" bucket,
+                # but the side panel polls with its OWN session_id (a random
+                # per-install "sensei-<uuid>" when the operator hasn't pinned one).
+                # Those two never meet — MCP actions pile up in mcp-default, the
+                # panel drains an empty bucket, and every browser tool times out
+                # after 30s. So any active poller ALSO drains the canonical
+                # producer buckets. Results are keyed by action_id, not session,
+                # so the MCP caller still finds its result. Guard avoids
+                # double-draining when the poller already IS a canonical session.
+                if session_id not in ("mcp-default", "chat-default"):
+                    for _canon in ("mcp-default", "chat-default"):
+                        _extra = _action_queue.pop(_canon, [])
+                        if _extra:
+                            actions.extend(_extra)
             with _last_queue_pop_lock:
                 _last_queue_pop[session_id] = time.time()
             _audit({"event": "queue_pop", "session_id": session_id, "count": len(actions)})
-            return self._send_json(200, {"ok": True, "session_id": session_id, "actions": actions, "count": len(actions)})
+            # Return both "actions" (new) and "pending" (old) keys so either
+            # extension build reads the payload regardless of which it expects.
+            return self._send_json(200, {"ok": True, "session_id": session_id,
+                                         "actions": actions, "pending": actions,
+                                         "count": len(actions)})
         # /extension/sessions — expose known session ids for MCP fallback:
         # primary request id -> mcp-default -> chat-default -> active panel.
         if self.path == "/extension/sessions":
