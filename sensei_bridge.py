@@ -670,7 +670,11 @@ class Handler(BaseHTTPRequestHandler):
                     "count": len(stamped), "queue_depth": depth,
                     "action_ids": [a["id"] for a in stamped],
                 })
-            if path == "/extension/action_result":
+            if path in ("/extension/action_result", "/extension/mcp_result"):
+                # /extension/mcp_result is the OLD result-post endpoint some
+                # extension builds still use (counterpart of /extension/pending).
+                # Without this alias the action executes but the result 404s,
+                # so the MCP caller polls /extension/result forever → 30s timeout.
                 # Stash by action_id so MCP callers can poll /extension/result.
                 aid = body.get("action_id") or (body.get("action") or {}).get("id")
                 # Resolve session_id (operator STEP 2 of SENSEI hardening):
