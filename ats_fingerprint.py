@@ -1,6 +1,6 @@
 """ats_fingerprint.py — Score-based ATS detection from a DOM snapshot.
 
-Returns one of: "greenhouse" | "lever" | "workday" | "unknown"
+Returns one of: "greenhouse" | "lever" | "workday" | "smartrecruiters" | "unknown"
 Requires at least MIN_SCORE hits before committing to a label.
 Designed to be called with either raw HTML text or a URL string.
 
@@ -80,6 +80,23 @@ _WORKDAY_SIGS: list[tuple[str, int]] = [
     (r'workday-web-sdk',                   1),
 ]
 
+_SMARTRECRUITERS_SIGS: list[tuple[str, int]] = [
+    # URL patterns
+    (r"smartrecruiters\.com",              1),
+    (r"jobs\.smartrecruiters\.com",        1),
+    # DOM attributes SmartRecruiters always injects
+    (r'data-sh-id=["\']',                  1),
+    (r'data-smartrecruiters',              1),
+    # Form / input name patterns (standard SR field names)
+    (r'name=["\']firstName["\']',          1),
+    (r'name=["\']lastName["\']',           1),
+    (r'name=["\']phoneNumber["\']',        1),
+    (r'name=["\']web\.linkedin["\']',      1),
+    # JavaScript object / config keys SR pages embed
+    (r'SmartRecruiters',                   1),
+    (r'smartrecruiters-widget',            1),
+]
+
 # ── Core scorer ───────────────────────────────────────────────────────────────
 
 def _score(corpus: str, sigs: list[tuple[str, int]]) -> int:
@@ -99,7 +116,7 @@ def fingerprint_ats(html: str, url: str = "") -> str:
         url:  The page URL — included in the scored corpus for URL-based signals.
 
     Returns:
-        One of: "greenhouse" | "lever" | "workday" | "unknown"
+        One of: "greenhouse" | "lever" | "workday" | "smartrecruiters" | "unknown"
         "unknown" if no ATS scores >= MIN_SCORE.
     """
     if not html and not url:
@@ -110,11 +127,13 @@ def fingerprint_ats(html: str, url: str = "") -> str:
     gh_score = _score(corpus, _GREENHOUSE_SIGS)
     lv_score = _score(corpus, _LEVER_SIGS)
     wd_score = _score(corpus, _WORKDAY_SIGS)
+    sr_score = _score(corpus, _SMARTRECRUITERS_SIGS)
 
     scores = {
-        "greenhouse": gh_score,
-        "lever":      lv_score,
-        "workday":    wd_score,
+        "greenhouse":      gh_score,
+        "lever":           lv_score,
+        "workday":         wd_score,
+        "smartrecruiters": sr_score,
     }
 
     best_ats, best_score = max(scores.items(), key=lambda kv: kv[1])
