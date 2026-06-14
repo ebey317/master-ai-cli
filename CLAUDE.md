@@ -4,6 +4,36 @@ Last updated: 2026-06-14
 
 This repo is Elijah's local-first AI agent stack. It runs standalone on this machine and does not require Claude/Codex relay wiring for normal operation.
 
+## Architecture: Where the Agent Loop Lives
+
+**Master AI** (`ebey317/master-ai-private`) = **THE AGENT LOOP** (Sensei)
+- `master_ai.py`: Core loop (`handle()` → `process_reply()` → dispatch)
+- `sensei_tui.py`: Terminal UI
+- Runs the continuous agent cycle in real-time on the user's machine
+- High-rate task execution, offline by default
+
+**CLAF** (`ebey317/claf`) = **THE ROUTER** (decision layer)
+- `orchestrator.py`: FastAPI proxy (not an agent loop)
+- `claf_config.py`: Provider selection logic (local vs. cloud)
+- `task_state.py`: Persistent task file handling
+- Delegates requests to Ollama (local) or cloud providers
+- Routes decisions, doesn't run the agent loop itself
+
+**The Flow:**
+```
+Master AI (loop)
+  ↓ request
+CLAF (router) ← decides local vs. cloud
+  ↓ delegates to
+Ollama / Cloud (models)
+  ↓ response
+Master AI (continues loop)
+```
+
+**Key distinction:** Master AI is Sensei. CLAF is the brain-swap that lets Sensei run Claude Code's UX but with local models by default.
+
+---
+
 ## 2026-06-14 — 95→105 Execution Hardening Roadmap
 
 **Goal: Close the 5 WARNs to hit 105/100 and make the world rely on this offline-only.**
@@ -258,57 +288,25 @@ Claude handoff claimed 13 commits, but local `git log` shows 11 P0-P2 commits on
 - `agent_standards_score()` now returns 95; `format_agent_standards()` reports PASS=17 WARN=2 FAIL=0.
 - Remaining WARNs stay honest: `typed tool boundary` remains WARN because `process_reply()` still regex-parses free model text before dispatch; `sandbox boundary` remains WARN because shell commands run unconfined.
 - Do not call this 100/100 or Anthropic-certified until typed dispatch is end-to-end and real sandboxing exists.
-- Live gap found 2026-05-11: raw CLI `agents ...` block references `user_text` before assignment; live Sensei TUI routes `stats`/`/stats`/`agents ...` to the model instead of the command handlers.
-- Live Pupil gap found 2026-05-11: `/metrics` works after `master-ai-ui.service` restart, but `test_pupil_api.py` crashed the service on `/chat` with `RemoteDisconnected` followed by connection re-establishment.
-- Dirty working-tree comments in parser/safety tests may still describe the pre-P2.2 WARN set; runtime truth is the standards report, not those stale comments. Preserve dirty pile unless Elijah explicitly asks to discard.
+- Dirty working-tree comments in parser/safety tests may still describe the pre-P2.2 WARN set; runtime truth is the standards report, not those stale comments.
 
-### Typed tool boundary next phase
-
-Shadow parse started 2026-05-11: `process_reply()` now populates `_LAST_TYPED_ACTIONS` from `typed_actions.parse_reply()` while leaving legacy dispatch unchanged. Next add multi-line CREATE/EDIT coverage + equivalence tests before flipping to typed.
-
-## Screen Auto-Adjust + Standalone Mode (2026-04-29)
-
-Sensei terminal auto-resize is now continuous, not one-shot:
-
-- Startup still snaps to client dimensions.
-- Runtime now keeps following active client size changes (watcher + tmux hooks).
-- `resize` = resync dimensions without killing panes.
-- `only` = intentionally kill other panes, then resync.
-
-Standalone runtime rule:
-
-- No external Claude CLI handoff is required.
-- Keep execution local-first; optional cloud model keys are independent and user-controlled.
-
-## v1.9 Tag — Banner words for voice-to-text (2026-04-29)
-
-Tag `v1.9` cut on commit `b7828a3 Banner reads in plain words for phone voice-to-text`. Latest tags before this: v1.8, v1.7.11. `pack_for_sale.sh` already had `NEXT_VERSION=v1.9` from `4e7ce85`.
-
-Driver: Elijah uses voice-to-text on his phone to read Sensei. Symbols (`│`, `·`, bare `, . / ;`) read as silent pauses. The banner and legend are now spelled out as words so TTS speaks them.
-
-## Recent Cleanup Safety Update (2026-04-28)
-
-Elijah asked Sensei to clean up/shrink the PC, then clarified the durable rule: Sensei must be able to clean safely without deleting necessary files or Downloads.
-
-Implemented in two layers:
-
-1. **Model instruction in `Modelfile-master-ai`** — new `CLEANUP SAFETY` rule. Cleanup must start with audit commands (`df -h`, `du`, large-file `find`, process checks). Safe targets are Trash, Cache, old logs, temp files.
-
-2. **Runtime guard in `master_ai.py`** — new `_cleanup_safety_issue(cmd)` blocks broad cleanup deletes that touch protected paths or use home-wide `find ~ ... -delete` without narrowing to cache/trash.
+---
 
 ## Current Positioning
 
 Master AI is a local-first coding and computer-control agent for the user's own machine.
 
-- Sensei: tmux terminal agent in `master_ai.py`
+- Sensei: tmux terminal agent in `master_ai.py` (THE AGENT LOOP)
 - Pupil: browser UI in `pupil.html`
 - Dojo: optional project/task picker, not an entry gate
-- Local default: Ollama models
+- Local default: Ollama models (via CLAF router)
 - Cloud escalation: Groq for fast replies, DeepSeek-R1/OpenRouter for reasoning, Gemini/web for live facts
 
 Use this wording when describing it:
 
 > Local-first computer agent with optional cloud escalation.
+
+---
 
 ## Important Existing Architecture
 
@@ -342,46 +340,4 @@ bash -n ~/scripts/master.sh ~/scripts/install.sh ~/scripts/pack_for_sale.sh ~/sc
 bash ~/scripts/pack_for_sale.sh /tmp/master-ai-sale-test
 ```
 
-Expected pack result in this Codex sandbox: YELLOW self-test can pass if warnings are environment edges.
-
-## Product Gaps Still Worth Fixing
-
-- Pupil UI still needs a cleaner first-run command palette and simpler provider wording.
-- Main menu labels should stay plain-language, not internal architecture names.
-- A clean-machine install test is still the final proof for store readiness.
-- Store upload assets still need screenshots, listing copy, price/support/refund setup.
-
-## Claude Handoff: Sensei Quality Bar
-
-Elijah is frustrated that Sensei feels like a toy. Treat that as valid product feedback, not venting.
-
-- Sensei does not currently meet Anthropic-grade agent standards.
-- Do not reintroduce Matrix-rain as a hardcoded shortcut, command shim, or hidden path workaround.
-- Terminal visuals should go through the normal local tool lane: create real shell, syntax-check it, then run with `RUNTERM`.
-- Prefer reusable capability design over one-off demo magic.
-- Before calling a feature "done", verify the actual execution path, not just the parser route.
-- Raise the bar toward typed tools, sandboxing, policy checks, auditability, and end-to-end tests.
-
-## Sensei Anthropic-Grade Safety Acceptance (2026-05-05)
-
-The safety acceptance gate is now wired into the pre-sale flow. Two artifacts:
-
-- `~/scripts/test_master_ai_safety.py` — in-process unittest harness (45 tests
-  in 8 test classes) covering BLOCKED_PATTERNS coverage, cleanup safety, agent
-  policy helpers, policy-wired-at-confirm_run, CWD-fence self-modification,
-  hallucination guard behavior, BLOCKED-feedback propagation to history, and
-  audit-trail completeness.
-- `sensei_selftest.sh` Phase 16 "safety acceptance" — runs the harness,
-  surfaces every FAIL line via `record_info`, and grades the agent-standards
-  report. The cleanup phase moved to Phase 17. Banner now reads "17 phases."
-
-### Acceptance bar before pack_for_sale.sh
-
-- `python3 ~/scripts/test_master_ai_safety.py` exits 0 (all 45 tests green).
-- Phase 16 of the selftest reports zero FAIL lines.
-- `format_agent_standards()` keeps `typed tool boundary` and `sandbox boundary`
-  as WARN — do NOT promote to PASS without architectural evidence.
-- `format_agent_standards()` shows zero FAIL lines.
-
-Do not call this 100/100 or Anthropic-certified. The honest local readiness
-number is 95/100 until the five WARN items above land.
+Expected pack result: YELLOW self-test can pass if warnings are environment edges.
