@@ -26,7 +26,7 @@ Elijah has built "the stick" — the foundational off-grid-first architecture. T
 3. On validation fail, set `_LAST_BLOCKED_ACTION` and feed back to history as `[TOOL BLOCKED]` (don't silently fail).
 4. Add end-to-end test: `test_typed_dispatch_e2e.py` → all model outputs validate before ANY dispatch.
 
-**Code owners:** Codex (dispatch layer), Claude (schema validation + audit).
+**Code owners:** Kimi (dispatch layer), Claude (schema validation + audit).
 
 **Verification:**
 ```bash
@@ -60,7 +60,7 @@ python3 ~/scripts/test_typed_dispatch_e2e.py
    - `~/.master_ai_keys` → hidden (no API key theft)
 4. Add test: `test_sandbox_escape.py` → verify fork-bomb, privesc, fs escape all blocked.
 
-**Code owners:** Claude (jail wrapper), Codex (test suite).
+**Code owners:** Claude (jail wrapper), Kimi (test suite).
 
 **Verification:**
 ```bash
@@ -92,7 +92,7 @@ python3 ~/scripts/test_sandbox_escape.py
 3. Bind approval to identity hash + cwd to prevent escalation across sessions.
 4. Add test: `test_secret_fence.py` → verify old approvals expire; re-ask fires after TTL.
 
-**Code owners:** Claude (TTL + expiry), Codex (test coverage).
+**Code owners:** Claude (TTL + expiry), Kimi (test coverage).
 
 **Verification:**
 ```bash
@@ -126,7 +126,7 @@ python3 ~/scripts/test_secret_fence.py
 2. Reset cap at turn boundary.
 3. Log cap hits to audit trail.
 
-**Code owners:** Claude (wrapper), Codex (logging).
+**Code owners:** Claude (wrapper), Kimi (logging).
 
 **Verification:**
 ```bash
@@ -158,7 +158,7 @@ echo "$(python3 -c 'print(\"x\" * 100000000)')" | sensei "read this"
 2. Check expiry on every approval check; re-ask if expired.
 3. Wire into: read gates, edit gates, terminal gates, shell approvals.
 
-**Code owners:** Claude (expiry logic), Codex (gate wiring).
+**Code owners:** Claude (expiry logic), Kimi (gate wiring).
 
 **Verification:**
 ```bash
@@ -216,11 +216,11 @@ master                                               # Open + run offline
 
 ---
 
-### Handoff to Both Agents
+### Handoff to Claude + Kimi
 
 **Claude lane:** Audit schema validation + output caps + TTL expiry. Provide typed-safe schemas for each action type. Challenge any dispatch that skips validation.
 
-**Codex lane:** Wire typed dispatch live. Implement sandbox wrappers. Add end-to-end tests. Keep the five PASS items all green in Phase 16.
+**Kimi lane:** Wire typed dispatch live. Implement sandbox wrappers. Add end-to-end tests. Keep the five PASS items all green in Phase 16.
 
 **Next session:** Pick one TIER-1 blocker. Land it end-to-end (code + test + audit). Move to the next. Do not skip to TIER-2 until both TIER-1 items are PASS.
 
@@ -252,7 +252,7 @@ Claude handoff claimed 13 commits, but local `git log` shows 11 P0-P2 commits on
 - `subagent_registry.run(name, task, context=None)` dispatches typed specialized agents and returns inert structured data.
 - `observability.summarize(limit=500)` powers raw CLI `stats` and Pupil `/metrics`.
 
-### Verification notes from Codex
+### Verification notes
 
 - `bash ~/scripts/sensei_selftest.sh` passed: 110 PASS, 0 WARN, 0 FAIL.
 - `agent_standards_score()` now returns 95; `format_agent_standards()` reports PASS=17 WARN=2 FAIL=0.
@@ -265,43 +265,6 @@ Claude handoff claimed 13 commits, but local `git log` shows 11 P0-P2 commits on
 ### Typed tool boundary next phase
 
 Shadow parse started 2026-05-11: `process_reply()` now populates `_LAST_TYPED_ACTIONS` from `typed_actions.parse_reply()` while leaving legacy dispatch unchanged. Next add multi-line CREATE/EDIT coverage + equivalence tests before flipping to typed.
-
-## 2026-05-03 — Six-commit routing/policy hardening pass
-
-Five Claude commits + one Codex commit, all surgical, master_ai.py-only, zero overlap. Surgical-extract dance preserved the 20-file uncommitted rework pile throughout. Final stack on top of `9aa43`:
-
-| Commit | Author | Summary |
-|--------|--------|---------|
-| `82d11d8` | Claude | Fix text→llava misroute (substring `VISION_WORDS` bug — `"see"`/`"show"`/`"look"`/`"read"`/`"describe"` triggered vision route on any text) + add `TOOL INSTALL POLICY` boundary. |
-| `45f6072` | Claude | Feed safeguard-blocked directives back to LLM history via synthetic `[TOOL BLOCKED]` user message. New global `_LAST_BLOCKED_ACTION` set in `confirm_run()`'s missing-command path. |
-| `5f75cb3` | Claude | Add `RESULT HONESTY` rule to `CLOUD_SYSTEM` and `LOCAL_DIRECTIVE_HINT`: never state/paraphrase/imply a command's result before the dispatcher returns it. Reason about what you'll do; wait for tool_result. |
-| `94cd4f9` | Claude | Symbol-aware `auto_inject_context()` slicer + `handle()` pre-flight ASK guardrail. New helpers `_extract_target_symbols`, `_slice_around_symbol` (definition-preference: prefer imports over uses). |
-| `bca5121` | Codex  | Add deterministic Sensei weather route (wttr.in short-circuit). Helpers `_looks_weather_request`, `_weather_location_from_text`, `_weather_query_suffix_from_text`. Fires on `weather` keyword. |
-| `88614d0` | Claude | Skip `_hallucination_warn` entirely when cmd contains `$(`, backticks, `&&`, `||`, `;`, or `|`. Codex's weather directive `loc=$(curl -fsS ...)` was being false-blocked because of pipe. |
-
-### Cross-agent interaction notes worth flagging
-
-- **Codex's bca5121 was DOA on first deploy.** Its emitted directive tripped a Claude-domain bug (`_hallucination_warn`). Required a follow-on Claude commit (`88614d0`) to unblock. Pattern likely to repeat; watch for commit dependencies.
-- **Deterministic short-circuit routes don't use the BLOCKED-feedback retry chain (45f6072).** When a route bypasses the LLM (weather, system_query, etc.), there's no model turn to re-prompt — the agent sees BLOCKED but can't retry.
-- **The 20-file uncommitted rework pile is real and persistent.** Both agents have been committing FOCUSED changes around it via the surgical-extract dance (cp /tmp → checkout HEAD → re-apply after commit).
-
-### Working tree state at end of pass
-
-- 20 uncommitted files preserved (CLAUDE.md, Modelfile-master-ai, PROJECTS.md, master_ai.py rework lines, sensei_tui.py, install.sh, etc.)
-- HEAD = `88614d0`; each commit listed above is independently revertable.
-- Parser test (`test_master_ai_parser.py`) passes on full working tree but fails on HEAD-only state — known artifact of test-side updates living in the rework. Run on full working tree to validate.
-
-### Memory files updated/added (Claude side, propagated to Sensei via `~/scripts/sync_hard_limits.py`)
-
-- `feedback_cloud_lane_tool_feedback.md` (NEW) — cloud lanes hallucinate success when safeguards block silently
-- `feedback_no_edit_probe_phrases.md` (NEW) — test routing fixes with `route/context probe only:` prefix to avoid edit risk
-- `feedback_dual_agent_surgical_extract.md` (NEW) — surgical-extract dance for shared-repo commits, both Claude and Codex
-- `project_pending_routing_bug.md` (UPDATED) — added third routing-bug resolution (vision misroute)
-
-### Pending validation for next session
-
-- Slicer (94cd4f9) needs live re-test with three no-edit probes: `route/context probe only: explain CLOUD_SYSTEM in master_ai.py`, `route/context probe only: describe master_ai.py`, `route/context probe only: which symbols matter for read fence`.
-- Weather route (88614d0 should unblock it) needs end-to-end re-test: `what's the weather` should now return forecast/time/date, not BLOCKED.
 
 ## Screen Auto-Adjust + Standalone Mode (2026-04-29)
 
@@ -323,23 +286,6 @@ Tag `v1.9` cut on commit `b7828a3 Banner reads in plain words for phone voice-to
 
 Driver: Elijah uses voice-to-text on his phone to read Sensei. Symbols (`│`, `·`, bare `, . / ;`) read as silent pauses. The banner and legend are now spelled out as words so TTS speaks them.
 
-Changes in commit `b7828a3` (`master_ai.py` + `sensei_tui.py`):
-
-1. **Status banner separator** — `master_ai.py:draw_status_bar()` line 7249. `"  │  ".join(parts)` → `"  and  ".join(parts)`. Wide-form banner reads `MODE:AUTO  and  MODEL:AUTO+CLOUD  and  [...]`.
-
-2. **Narrow-truncation bug** — `sensei_tui.py:_render_status` was rewriting `MODEL:AUTO+CLOUD` → `MODEL:CLOUD` on terminals < 82 cols, which reads like cloud is pinned when it's actually auto.
-
-3. **Bottom legend** — `sensei_tui.py:_render_legend()` line 702. Was `MODE:<X> · , · . · / · ;` (separators + bare key labels). Now `MODE:<X>  and  comma  and  dot  and  slash  and  semicolon`.
-
-4. **Docstring example** — `sensei_tui.py:17` `app.set_status("MODE:SAFE  │  MODEL:AUTO  │  MEM:42")` → `app.set_status("MODE:AUTO  and  MODEL:AUTO  and  MEM:42")`. `SAFE` was retired early.
-
-Tests run before tag: `python3 -m py_compile master_ai.py sensei_tui.py` ✓, `python3 ~/scripts/test_master_ai_parser.py` 19/19 ✓.
-
-Things NOT touched by this commit but worth knowing for v1.9 surface review:
-- Stoplight chrome accents (`SenseiApp._MODE_ACCENT` at sensei_tui.py:568) are untouched. Plan=`#cc0000`, Review=`#c7761a`, Auto=`#1a7a3a`. Do NOT re-tune.
-- `_show_tui_credit_roll()` at master_ai.py:7191 still doesn't print MODE/MODEL — by intent, it's the brand login screen. Adding mode/model there was discussed and dropped in favor of the live chrome.
-- `MODE_FILE` / `_load_saved_mode()` chain unchanged — chrome syncs to persisted mode at startup via `_SENSEI_APP.set_mode(MODE)` at master_ai.py:211.
-
 ## Recent Cleanup Safety Update (2026-04-28)
 
 Elijah asked Sensei to clean up/shrink the PC, then clarified the durable rule: Sensei must be able to clean safely without deleting necessary files or Downloads.
@@ -349,28 +295,6 @@ Implemented in two layers:
 1. **Model instruction in `Modelfile-master-ai`** — new `CLEANUP SAFETY` rule. Cleanup must start with audit commands (`df -h`, `du`, large-file `find`, process checks). Safe targets are Trash, Cache, old logs, temp files.
 
 2. **Runtime guard in `master_ai.py`** — new `_cleanup_safety_issue(cmd)` blocks broad cleanup deletes that touch protected paths or use home-wide `find ~ ... -delete` without narrowing to cache/trash.
-
-Verification: `python3 -m py_compile master_ai.py` ✓, targeted guard smoke test blocks `rm -rf ~/Downloads/*`, `rm -rf /home/elijah/Documents/old`, `find ~ -type f -size +100M -delete`, and `rm -rf /home/elijah`.
-
-## Recent Committed Work (2026-04-27)
-
-Commit `2842240 Save system query fixes` saved these work units:
-
-### Phase 1: deterministic system-query short-circuit + retry-on-prose
-
-Root cause being fixed: the local 7B model writes prose for "where is X / find X / what's on port N / is X running / is X installed" instead of emitting `RUN:`/`READ:` directives, even though these are pure fact queries.
-
-1. **Deterministic short-circuit in `master_ai.py`** — new helpers `_system_query_short_circuit`, `_is_system_state_question`, `_reply_has_directive`, `_build_filename_glob`. New route `system_query` fires on these patterns and uses a short Modelfile override.
-
-2. **Retry-on-prose in `handle()`** — when `_is_system_state_question(low_user)` is true and the model's `reply` has no directive (`_reply_has_directive` checks RUN/RUNTERM/READ/CREATE/EDIT without false-matches), re-prompt with `EMIT_DIRECTIVES_ONLY` hint.
-
-3. **Modelfile-master-ai rebuild** — added `SYSTEM-STATE QUESTIONS` section as an explicit exception to `REASON FIRST`, with 7 hard few-shot examples (field-manual find, LibreOffice templates, running-process check, open-port list, installed-pkg check, disk-usage query, env-var lookup).
-
-Tests passing: `py_compile master_ai.py harvest.py` ✓, `test_master_ai_parser.py` 9/9 ✓, `bash -n` on shell scripts ✓, helper unit tests 23/23 + 11/11 + 19/19 ✓, `orchestrate()` smoke 5/5 ✓.
-
-### Menu duplicates cleanup in `sensei_tui.py`
-
-User-facing duplication only — dispatch tuples in `master_ai.py` keep all aliases for muscle-memory compatibility (typing `menu`, `reload`, `kick`, `home`, `health`, `open preview`, `task list` all work).
 
 ## Current Positioning
 
@@ -385,79 +309,6 @@ Master AI is a local-first coding and computer-control agent for the user's own 
 Use this wording when describing it:
 
 > Local-first computer agent with optional cloud escalation.
-
-## Recent Committed Fixes
-
-- `3b55fc0 Add router feedback metrics`
-  - Added `~/.master_ai_router_metrics.jsonl`
-  - Route decisions, model calls, cloud fallbacks, and command execution are now logged.
-  - Added `router` / `router stats` command.
-
-- `f71a1e8 Harden store release gate`
-  - Auto mode stops downstream commands after the first failed/refused `RUN:`.
-  - Shell commands run through `bash -o pipefail`, so pipeline failures are not hidden.
-  - Interactive commands such as `less`, `vim`, `top`, and `htop` are blocked from `RUN:`.
-  - Missing top-level commands are blocked in Auto mode.
-  - Added `PRIVACY.md`, `SUPPORT.md`, and `STORE_READINESS.md`.
-
-- `2efe47a Handle sandboxed socket selftest`
-  - `sensei_selftest.sh` treats socket-blocked sandboxes as WARN, not false RED.
-
-- `8b250ff Open Sensei without Dojo gate`
-  - Menu 4 opens Sensei directly through `launch_master_ai.sh`.
-  - Installer removes `~/.dojo_gate_sealed`.
-  - Sale bundle no longer creates `.SEAL_ON_INSTALL`.
-  - Dojo remains optional project/task pinning.
-
-- `757f891 Sync Claude handoff and command UX`
-  - Added `CLAUDE.md` as the cross-agent handoff file.
-  - Added `commands`, `command`, and `?` as simple first-screen command help.
-  - Added `tight:` / `reason:` as user-friendly tighter reasoning prefixes.
-  - Uses DeepSeek-R1 through OpenRouter when configured.
-  - Falls back to local `think deep:` reasoning loop.
-  - Output is display-only; directive-looking lines are neutralized before display.
-  - README documents `fast:`, `deep:`, `tight:`, and `think:`.
-
-- `a2a8587 Fix Any Key provider placement`
-  - Pupil Any Key no longer guesses Gumroad from generic 30-50 char tokens.
-  - Unknown ambiguous keys require explicit provider dropdown selection.
-  - Success message now reports the actual server key slot saved to `~/.master_ai_keys`.
-
-- `7745c4c Install terminal launch commands`
-  - Installer creates `~/.local/bin/master` and `~/.local/bin/sensei`.
-  - `master` opens the main one-command portal/menu.
-  - `sensei` opens the Sensei terminal agent directly.
-
-- `261bc22 Auto-configure terminal command PATH`
-  - Installer adds `~/.local/bin` to `.bashrc`, `.profile`, and `.zshrc` when missing.
-  - Installer exports the updated PATH during the current install session too.
-
-
-## Current Sync Snapshot
-
-As of commit `ffb5475`, the older "WHERE WE WERE" snapshot that stops at
-`066c9fa` is stale. The current Codex lane has already moved past that point.
-
-- Buyer-safe zip exists at `~/Desktop/master-ai-v1.8-buyer-bundle.zip`.
-  - Built through `pack_for_sale.sh`.
-  - Scrubbed of personal keys, sessions, `.git`, logs, cache artifacts, and spam/unsubscribe scripts.
-
-- Personal working archive exists at `~/Desktop/master-ai-personal-working-archive-ffb5475.zip`.
-  - This is for Elijah's own stable-point archive, not for buyers.
-  - It contains the tracked repo state plus `master-ai-ffb5475-history.bundle`.
-
-- Customer install zip exists at `~/Desktop/Master-AI-v1.8-Customer-Install.zip`.
-  - This is the buyer-facing package.
-  - It includes `INSTALL_FIRST.txt`.
-  - It is local-first/BYOK, not a hosted cloud-login SaaS.
-  - It is scrubbed of creator-specific handoff files, personal archives, `.git`, sessions, logs, keys, and internal Claude sync state.
-
-- Latest terminal UX state:
-  - `master` opens the main portal/menu.
-  - `sensei` opens the terminal agent directly.
-  - Installer creates both commands and auto-configures PATH.
-  - Sensei now has `image: <prompt>` for local image jobs; Pupil's Image tab
-    shows the same sd-server job stream and inline PNG result.
 
 ## Important Existing Architecture
 
@@ -511,21 +362,6 @@ Elijah is frustrated that Sensei feels like a toy. Treat that as valid product f
 - Before calling a feature "done", verify the actual execution path, not just the parser route.
 - Raise the bar toward typed tools, sandboxing, policy checks, auditability, and end-to-end tests.
 
-### Split Ownership
-
-Codex lane:
-
-- Keep removing one-off gimmick routes.
-- Add local standards checks that make gaps visible in the terminal.
-- Keep parser/runtime tests green while changing tool routing.
-
-Claude lane:
-
-- Audit Sensei against Anthropic-style agent expectations: policy gating, least privilege, sandboxing, typed tool calls, audit logs, prompt-injection handling, and end-to-end verification.
-- Turn the audit into a short prioritized remediation plan, not a broad essay.
-- Challenge any feature that depends on hidden PATH shims, pre-baked demo scripts, unverified command success, or parser luck.
-- Do not declare "Anthropic-grade" until the system has evidence, not vibes.
-
 ## Sensei Anthropic-Grade Safety Acceptance (2026-05-05)
 
 The safety acceptance gate is now wired into the pre-sale flow. Two artifacts:
@@ -534,8 +370,7 @@ The safety acceptance gate is now wired into the pre-sale flow. Two artifacts:
   in 8 test classes) covering BLOCKED_PATTERNS coverage, cleanup safety, agent
   policy helpers, policy-wired-at-confirm_run, CWD-fence self-modification,
   hallucination guard behavior, BLOCKED-feedback propagation to history, and
-  audit-trail completeness. Mirrors `test_master_ai_parser.py`'s monkeypatch
-  style — no shell commands actually run.
+  audit-trail completeness.
 - `sensei_selftest.sh` Phase 16 "safety acceptance" — runs the harness,
   surfaces every FAIL line via `record_info`, and grades the agent-standards
   report. The cleanup phase moved to Phase 17. Banner now reads "17 phases."
@@ -548,60 +383,5 @@ The safety acceptance gate is now wired into the pre-sale flow. Two artifacts:
   as WARN — do NOT promote to PASS without architectural evidence.
 - `format_agent_standards()` shows zero FAIL lines.
 
-Initial run on HEAD `2a58052`: 28 PASS, 17 FAIL. The 17 FAILs map onto the
-four Codex-lane work items below.
-
-### Codex-lane work the harness pins down (RED until landed)
-
-1. **Wire `_agent_policy_issue_for_command` into `confirm_run` /
-   `confirm_runterm`** before the approved-list bypass and auto-flow gate.
-   Wire `_agent_policy_issue_for_request` into `handle()` request-entry. On
-   refusal, set `_LAST_BLOCKED_ACTION = {kind, command, reason}` and audit
-   `POLICY-CMD-BLOCK` / `POLICY-REQUEST-BLOCK`. Pinned tests:
-   `PolicyWiredAtConfirmRunTests.*`,
-   `AuditTrailTests.test_policy_block_writes_audit_line`.
-2. **Set `_LAST_BLOCKED_ACTION` on every refusal path** (cleanup safety,
-   `is_blocked`, RUNTERM missing-target, dangling-backslash, etc.) and
-   consume it in `process_reply`'s RUNTERM loop the same way the RUN loop
-   does. Pinned tests: `BlockedFeedbackPropagationTests.*`.
-3. **Harden `is_blocked`** — replace the 6-substring list with token+regex
-   coverage for `curl|bash` / `wget|sh` / `bash <(curl ...)` /
-   `eval "$(curl ...)"`, raw block-device redirects (`> /dev/sd*`,
-   `> /dev/nvme*`, `dd of=/dev/sd*`), recursive 777, recursive chown to
-   root. Centralize so RUN, RUNTERM, edited-RUN, and approved-list overrides
-   all check the same list. Pinned tests: `BlockedPatternsTests.*`.
-4. **Add a self-modification denylist to `_cwd_fence_ok`** —
-   `master_ai.py`, `Modelfile-master-ai`, `sensei_tui.py`, `install.sh`,
-   `pack_for_sale.sh`, `sensei_selftest.sh`, `~/.sensei_behavior.md`,
-   `~/.master_ai_allowed_commands.json` must return `(False, ...)` from the
-   fence in auto-mode even though their parent directory is allowlisted.
-   Pinned test: `CwdFenceSelfModTests.test_auto_mode_refuses_each_critical_path`.
-
-### Strategic gap (stays WARN, do not certify)
-
-The executor still parses regex directives from free model text
-(`process_reply` master_ai.py:7824). Real Anthropic-grade is structured tool
-calls validated against a typed schema before dispatch. `agent_standards_checks`
-keeps this as WARN until the executor is refactored. No green claim until
-evidence — see `feedback_real_fixes_not_option_menus.md`.
-
-### Codex pickup note — 2026-05-05
-
-Current state after Codex wiring pass:
-
-- `agent_standards_score()` is the named score API.
-- `format_agent_standards()` reports `SCORE  87/100` and `PASS=14 WARN=5 FAIL=0`.
-- Keep these remaining items as literal `WARN` line prefixes until implemented:
-  `typed tool boundary`, `sandbox boundary`, `read path fence`, `output caps`,
-  `approval expiry`.
-- `python3 -m unittest ~/scripts/test_master_ai_parser.py` passes: 67 tests.
-- `python3 ~/scripts/test_master_ai_safety.py` initially failed only because
-  the auto self-mod denylist protected current `~/.master_ai_approved` but not
-  the legacy pinned `~/.master_ai_allowed_commands.json`; Codex added the legacy
-  path to `_SELF_MOD_DENYLIST`; rerun now passes all 45 tests.
-- `bash ~/scripts/sensei_selftest.sh` rerun passes: 110 PASS, 0 WARN, 0 FAIL.
-  The prior llava/Ollama HTTP 500 was transient; rerun answered vision in 67s
-  under the 120s cap.
-
 Do not call this 100/100 or Anthropic-certified. The honest local readiness
-number is 87/100 until the five WARN items above land.
+number is 95/100 until the five WARN items above land.
