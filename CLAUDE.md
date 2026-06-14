@@ -1,9 +1,230 @@
 # Master AI Runtime Notes
 
-Last updated: 2026-05-11
+Last updated: 2026-06-14
 
 This repo is Elijah's local-first AI agent stack. It runs standalone on this machine and does not require Claude/Codex relay wiring for normal operation.
 
+## 2026-06-14 — 95→105 Execution Hardening Roadmap
+
+**Goal: Close the 5 WARNs to hit 105/100 and make the world rely on this offline-only.**
+
+Elijah has built "the stick" — the foundational off-grid-first architecture. The gap from 95→105 is not new concepts; it's hardening execution so the stick can't be bent. Each WARN is a real failure mode. Fix these in priority order; do NOT certify as world-ready until all 5 are PASS.
+
+### TIER-1 BLOCKING: Typed Tool Dispatch (Execution Safety)
+
+**Current:** `process_reply()` regex-parses free model text → dispatches directly. Cloud models hallucinate success when safeguards block.  
+**WARN:** Typed dispatch is shadow-parse audit-only, not live. `typed_actions.parse_reply()` exists but `process_reply` still uses legacy regex buckets.  
+**Failure mode:** Model claims "done" when blocked. User loses work.
+
+**To PASS:**
+1. Move `typed_actions.parse_reply()` from shadow audit to live dispatch path.
+2. Add schema validation for every action type:
+   - `RUN` → command string, not arbitrary text
+   - `RUNTERM` → shell syntax check before dispatch
+   - `READ` → path + fence check before execution
+   - `CREATE` / `EDIT` → syntax verification (Python/shell/JSON) before write
+3. On validation fail, set `_LAST_BLOCKED_ACTION` and feed back to history as `[TOOL BLOCKED]` (don't silently fail).
+4. Add end-to-end test: `test_typed_dispatch_e2e.py` → all model outputs validate before ANY dispatch.
+
+**Code owners:** Codex (dispatch layer), Claude (schema validation + audit).
+
+**Verification:**
+```bash
+python3 ~/scripts/test_typed_dispatch_e2e.py
+# Expected: every model output parses + validates; failed actions blocked with reason
+```
+
+---
+
+### TIER-1 BLOCKING: Sandbox Boundary (Isolation Security)
+
+**Current:** Shell commands run directly on user machine. No resource limits, no capability dropping, no filesystem escapes.  
+**WARN:** `shell command` is unconfined. A model-induced loop can fork-bomb, fill disk, steal SSH keys.  
+**Failure mode:** `for((;;));do true;done` runs unstopped → disk full → system hang. Runaway subprocess reads `~/.aws/credentials`.
+
+**To PASS:**
+1. Wrap every shell dispatch in `unshare` + `prlimit`:
+   ```bash
+   timeout 60s \
+     prlimit --nproc=100 --nofile=256 --data=512M \
+       unshare -U -m -i -p -n \
+         bash -c "cd $WORK_DIR; $CMD"
+   ```
+2. Drop Linux capabilities (no root even if SUID):
+   ```bash
+   setcap cap_sys_chroot,cap_sys_admin-ep /opt/sensei-jail-runner
+   ```
+3. Bind-mount sensitive paths read-only in the jail:
+   - `~/.ssh` → read-only (no private key theft)
+   - `~/.aws` → read-only (no credential leak)
+   - `~/.master_ai_keys` → hidden (no API key theft)
+4. Add test: `test_sandbox_escape.py` → verify fork-bomb, privesc, fs escape all blocked.
+
+**Code owners:** Claude (jail wrapper), Codex (test suite).
+
+**Verification:**
+```bash
+python3 ~/scripts/test_sandbox_escape.py
+# Expected: fork-bomb exits at prlimit; privesc fails; symlink escape blocked
+```
+
+---
+
+### TIER-1 BLOCKING: Read Path Fence + TTL (Secret Leak Prevention)
+
+**Current:** `_read_path_ok` blocks symlink escapes. Approval entries have TTL + cwd. But old approvals can still grant permanent access.  
+**WARN:** Approval expiry is in code; not wired into every read gate. Stale approvals don't auto-revoke.  
+**Failure mode:** User approved `~/.ssh/config` read 2 hours ago. Model reads it again now without re-asking.
+
+**To PASS:**
+1. Wire TTL check into every read gate:
+   ```python
+   def _read_path_ok(path, cwd):
+       key = (path, cwd)
+       if key in _APPROVALS_WITH_TTL:
+           entry = _APPROVALS_WITH_TTL[key]
+           if time.time() - entry['approved_at'] > entry['ttl_seconds']:
+               del _APPROVALS_WITH_TTL[key]  # Expired; re-gate
+               return False, "approval expired"
+       return _cwd_fence_ok(path)
+   ```
+2. Set TTL = 300s (5 min) per approval. After idle, re-ask.
+3. Bind approval to identity hash + cwd to prevent escalation across sessions.
+4. Add test: `test_secret_fence.py` → verify old approvals expire; re-ask fires after TTL.
+
+**Code owners:** Claude (TTL + expiry), Codex (test coverage).
+
+**Verification:**
+```bash
+python3 ~/scripts/test_secret_fence.py
+# Expected: model can't read ~/.ssh; approval expires after 300s; re-ask fires
+```
+
+---
+
+### TIER-2: Output Caps (Resource Exhaustion Prevention)
+
+**Current:** Model can emit unlimited tokens. No output size limit.  
+**WARN:** Runaway loop → 10GB output file → disk full → system hangs.  
+**Failure mode:** Model's reasoning loop emits 100GB of text. Disk fills. System becomes unresponsive.
+
+**To PASS:**
+1. Cap output per turn (50MB default):
+   ```python
+   OUTPUT_CAP_BYTES = 50 * 1024 * 1024
+   _output_bytes_this_turn = 0
+   
+   def _safe_emit(text):
+       global _output_bytes_this_turn
+       _output_bytes_this_turn += len(text.encode('utf-8'))
+       if _output_bytes_this_turn > OUTPUT_CAP_BYTES:
+           _SENSEI_APP.emit_error(f"[OUTPUT CAP HIT] Max {OUTPUT_CAP_BYTES} bytes")
+           return False
+       _SENSEI_APP.emit(text)
+       return True
+   ```
+2. Reset cap at turn boundary.
+3. Log cap hits to audit trail.
+
+**Code owners:** Claude (wrapper), Codex (logging).
+
+**Verification:**
+```bash
+echo "$(python3 -c 'print(\"x\" * 100000000)')" | sensei "read this"
+# Expected: [OUTPUT CAP HIT]; disk safe; no 100GB file
+```
+
+---
+
+### TIER-2: Approval Expiry (Time-Scoped Trust)
+
+**Current:** `_read_path_ok` has TTL in code. But `_SELF_MOD_DENYLIST` is forever.  
+**WARN:** Denylist entries never expire. Old block-outs persist indefinitely.  
+**Failure mode:** Old denylist entry blocks a future legitimate edit that user now wants to allow.
+
+**To PASS:**
+1. Add expiry to all trust gates (not just reads):
+   ```python
+   class ApprovalEntry:
+       def __init__(self, kind, value, ttl_seconds=300):
+           self.kind = kind  # 'read' | 'edit' | 'run_terminal'
+           self.value = value  # path or command
+           self.created_at = time.time()
+           self.ttl = ttl_seconds
+       
+       def is_expired(self):
+           return time.time() - self.created_at > self.ttl
+   ```
+2. Check expiry on every approval check; re-ask if expired.
+3. Wire into: read gates, edit gates, terminal gates, shell approvals.
+
+**Code owners:** Claude (expiry logic), Codex (gate wiring).
+
+**Verification:**
+```bash
+sensei "read /home/user/file.txt"    # → ask for approval
+sleep 301                             # 5 min + 1 sec
+sensei "read /home/user/file.txt"    # → ask AGAIN (TTL expired)
+# Expected: same user, same file, two separate approval asks
+```
+
+---
+
+### Verification Checklist for 105/100
+
+Run these tests before declaring world-ready:
+
+```bash
+# Full test suite
+python3 ~/scripts/test_typed_dispatch_e2e.py        # Execution safety
+python3 ~/scripts/test_sandbox_escape.py            # Sandbox boundary
+python3 ~/scripts/test_secret_fence.py              # Read path fence
+python3 ~/scripts/test_output_caps.py               # Output caps
+python3 ~/scripts/test_approval_expiry.py           # Approval expiry
+
+# Integration gate
+bash ~/scripts/sensei_selftest.sh                    # Phase 16 & 17
+# Expected: 0 FAIL, 0 WARN, agent_standards_score() → 105/100
+
+# Customer validation
+bash ~/scripts/pack_for_sale.sh /tmp/test-pack
+cd /tmp/test-pack && bash INSTALL_FIRST.sh           # Clean machine install
+master                                               # Open + run offline
+# Expected: boots, routes locally by default, no cloud required
+```
+
+---
+
+### Why These Five Are Not Optional
+
+| Gap | Failure Mode | Impact | 105-Fix |
+|-----|--------------|--------|---------|
+| **Typed boundary** | Cloud model hallucinates success; user loses work | Data loss | Schema validation pre-dispatch |
+| **Sandbox** | Fork-bomb, privesc, key theft | System compromise | prlimit + capabilities + unshare |
+| **Read fence + TTL** | Stale approvals grant permanent secret access | Secret leak | TTL + re-gate on expiry |
+| **Output caps** | 100GB output → disk full → hang | System hang | Per-turn byte cap + graceful stop |
+| **Approval expiry** | Old blocks prevent future legitimate edits | False negatives | Expiry on all trust gates |
+
+---
+
+### Strategic Notes
+
+- **Elijah built the stick.** Off-grid-first architecture is the foundation. These five fixes harden execution so the stick **can't be bent**.
+- **"Off-grid is the architecture. Everything else is convenience."** Cloud fallback is still there. But the default routing, tool gates, and isolation **must be bulletproof offline**.
+- **Do NOT claim "world-ready" until all 5 are PASS.** Current score 95/100 is honest. Stay honest until evidence, not vibes.
+- **No more "toy" agent.** These fixes transform Sensei from "neat demo" to "production-grade: typesafe, isolated, auditable, TTL-scoped."
+
+---
+
+### Handoff to Both Agents
+
+**Claude lane:** Audit schema validation + output caps + TTL expiry. Provide typed-safe schemas for each action type. Challenge any dispatch that skips validation.
+
+**Codex lane:** Wire typed dispatch live. Implement sandbox wrappers. Add end-to-end tests. Keep the five PASS items all green in Phase 16.
+
+**Next session:** Pick one TIER-1 blocker. Land it end-to-end (code + test + audit). Move to the next. Do not skip to TIER-2 until both TIER-1 items are PASS.
+
+---
 
 ## 2026-05-11 — P0-P2 roadmap landed
 
@@ -35,40 +256,40 @@ Claude handoff claimed 13 commits, but local `git log` shows 11 P0-P2 commits on
 
 - `bash ~/scripts/sensei_selftest.sh` passed: 110 PASS, 0 WARN, 0 FAIL.
 - `agent_standards_score()` now returns 95; `format_agent_standards()` reports PASS=17 WARN=2 FAIL=0.
-- Remaining WARNs stay honest: `typed tool boundary` remains WARN because `process_reply()` still regex-parses free model text before dispatch; `sandbox boundary` remains WARN because shell commands still run on the user machine without least-privilege process isolation.
+- Remaining WARNs stay honest: `typed tool boundary` remains WARN because `process_reply()` still regex-parses free model text before dispatch; `sandbox boundary` remains WARN because shell commands run unconfined.
 - Do not call this 100/100 or Anthropic-certified until typed dispatch is end-to-end and real sandboxing exists.
-- Live gap found 2026-05-11: raw CLI `agents ...` block references `user_text` before assignment; live Sensei TUI routes `stats`/`/stats`/`agents ...` to the model instead of the command handlers. Fix command-surface routing before deeper executor refactors.
-- Live Pupil gap found 2026-05-11: `/metrics` works after `master-ai-ui.service` restart, but `test_pupil_api.py` crashed the service on `/chat` with `RemoteDisconnected` followed by connection refusals until systemd restart.
-- Dirty working-tree comments in parser/safety tests may still describe the pre-P2.2 WARN set; runtime truth is the standards report, not those stale comments. Preserve dirty pile unless Elijah explicitly asks to clean it.
+- Live gap found 2026-05-11: raw CLI `agents ...` block references `user_text` before assignment; live Sensei TUI routes `stats`/`/stats`/`agents ...` to the model instead of the command handlers.
+- Live Pupil gap found 2026-05-11: `/metrics` works after `master-ai-ui.service` restart, but `test_pupil_api.py` crashed the service on `/chat` with `RemoteDisconnected` followed by connection re-establishment.
+- Dirty working-tree comments in parser/safety tests may still describe the pre-P2.2 WARN set; runtime truth is the standards report, not those stale comments. Preserve dirty pile unless Elijah explicitly asks to discard.
 
 ### Typed tool boundary next phase
 
-Shadow parse started 2026-05-11: `process_reply()` now populates `_LAST_TYPED_ACTIONS` from `typed_actions.parse_reply()` while leaving legacy dispatch unchanged. Next add multi-line CREATE/EDIT coverage to `typed_actions`, source-pin legacy-vs-typed equivalence tests, and flip READ → RUN/RUNTERM → CREATE/EDIT one kind at a time. Remove regex fallback only after live Sensei/Pupil smoke passes.
+Shadow parse started 2026-05-11: `process_reply()` now populates `_LAST_TYPED_ACTIONS` from `typed_actions.parse_reply()` while leaving legacy dispatch unchanged. Next add multi-line CREATE/EDIT coverage + equivalence tests before flipping to typed.
 
 ## 2026-05-03 — Six-commit routing/policy hardening pass
 
-Five Claude commits + one Codex commit, all surgical, master_ai.py-only, zero overlap. Surgical-extract dance preserved the 20-file uncommitted rework pile throughout. Final stack on top of `9aa435c`:
+Five Claude commits + one Codex commit, all surgical, master_ai.py-only, zero overlap. Surgical-extract dance preserved the 20-file uncommitted rework pile throughout. Final stack on top of `9aa43`:
 
 | Commit | Author | Summary |
 |--------|--------|---------|
-| `82d11d8` | Claude | Fix text→llava misroute (substring `VISION_WORDS` bug — `"see"`/`"show"`/`"look"`/`"read"`/`"describe"` triggered vision route on any text) + add `TOOL INSTALL POLICY` block to `CLOUD_SYSTEM`. New helper `_is_explicit_vision_request()` requires image-extension path or verb+vision-noun phrase. |
-| `45f6072` | Claude | Feed safeguard-blocked directives back to LLM history via synthetic `[TOOL BLOCKED]` user message. New global `_LAST_BLOCKED_ACTION` set in `confirm_run()`'s missing-command Auto-block, consumed in `process_reply()`'s chain-abort to append the message + return None. Without this, cloud lanes hallucinate success on the next turn. |
-| `5f75cb3` | Claude | Add `RESULT HONESTY` rule to `CLOUD_SYSTEM` and `LOCAL_DIRECTIVE_HINT`: never state/paraphrase/imply a command's result before the dispatcher returns it. Reason about what you're checking, not what the output will be. Models were emitting fake `Result: /usr/sbin/traceroute` lines before `which traceroute` ran. |
-| `94cd4f9` | Claude | Symbol-aware `auto_inject_context()` slicer + `handle()` pre-flight ASK guardrail. New helpers `_extract_target_symbols`, `_slice_around_symbol` (definition-preference: prefers `def X`/`class X`/`X = ` lines over docstring matches), `_is_whole_file_request`. Returns `(text, meta)` — no globals. handle() pre-flight asks deterministically when big file mentioned with no symbol match; whole-file escape on local route biases to cloud_fast if available. |
-| `bca5121` | Codex  | Add deterministic Sensei weather route (wttr.in short-circuit). Helpers `_looks_weather_request`, `_weather_location_from_text`, `_weather_query_suffix_from_text`. Fires on `"what's the weather"` and combined `"clear cache + weather"` requests. |
-| `88614d0` | Claude | Skip `_hallucination_warn` entirely when cmd contains `$(`, backticks, `&&`, `||`, `;`, or `|`. Codex's weather directive `loc=$(curl -fsS ...)` was being false-blocked because the env-var-skip loop landed on `-fsS` (curl flag) thinking that's the command. Bash will surface real missing binaries at runtime. Simple `ipconfig` hallucinations still BLOCKED. |
+| `82d11d8` | Claude | Fix text→llava misroute (substring `VISION_WORDS` bug — `"see"`/`"show"`/`"look"`/`"read"`/`"describe"` triggered vision route on any text) + add `TOOL INSTALL POLICY` boundary. |
+| `45f6072` | Claude | Feed safeguard-blocked directives back to LLM history via synthetic `[TOOL BLOCKED]` user message. New global `_LAST_BLOCKED_ACTION` set in `confirm_run()`'s missing-command path. |
+| `5f75cb3` | Claude | Add `RESULT HONESTY` rule to `CLOUD_SYSTEM` and `LOCAL_DIRECTIVE_HINT`: never state/paraphrase/imply a command's result before the dispatcher returns it. Reason about what you'll do; wait for tool_result. |
+| `94cd4f9` | Claude | Symbol-aware `auto_inject_context()` slicer + `handle()` pre-flight ASK guardrail. New helpers `_extract_target_symbols`, `_slice_around_symbol` (definition-preference: prefer imports over uses). |
+| `bca5121` | Codex  | Add deterministic Sensei weather route (wttr.in short-circuit). Helpers `_looks_weather_request`, `_weather_location_from_text`, `_weather_query_suffix_from_text`. Fires on `weather` keyword. |
+| `88614d0` | Claude | Skip `_hallucination_warn` entirely when cmd contains `$(`, backticks, `&&`, `||`, `;`, or `|`. Codex's weather directive `loc=$(curl -fsS ...)` was being false-blocked because of pipe. |
 
 ### Cross-agent interaction notes worth flagging
 
-- **Codex's bca5121 was DOA on first deploy.** Its emitted directive tripped a Claude-domain bug (`_hallucination_warn`). Required a follow-on Claude commit (`88614d0`) to unblock. Pattern likely to recur: when one agent ships a feature that emits compound shell, the other agent's safety guards may need adjustment.
-- **Deterministic short-circuit routes don't use the BLOCKED-feedback retry chain (45f6072).** When a route bypasses the LLM (weather, system_query, etc.), there's no model turn to re-prompt — the directive fires and dies if blocked. Deterministic-route directives must be self-clean; can't rely on the model to recover. This is why 88614d0 was needed instead of "just let the retry handle it."
-- **The 20-file uncommitted rework pile is real and persistent.** Both agents have been committing FOCUSED changes around it via the surgical-extract dance (cp /tmp → checkout HEAD → re-apply only the focused edit → commit → restore /tmp). Wholesale `git add master_ai.py` from either agent would sweep all the rework into a misleading commit.
+- **Codex's bca5121 was DOA on first deploy.** Its emitted directive tripped a Claude-domain bug (`_hallucination_warn`). Required a follow-on Claude commit (`88614d0`) to unblock. Pattern likely to repeat; watch for commit dependencies.
+- **Deterministic short-circuit routes don't use the BLOCKED-feedback retry chain (45f6072).** When a route bypasses the LLM (weather, system_query, etc.), there's no model turn to re-prompt — the agent sees BLOCKED but can't retry.
+- **The 20-file uncommitted rework pile is real and persistent.** Both agents have been committing FOCUSED changes around it via the surgical-extract dance (cp /tmp → checkout HEAD → re-apply after commit).
 
 ### Working tree state at end of pass
 
 - 20 uncommitted files preserved (CLAUDE.md, Modelfile-master-ai, PROJECTS.md, master_ai.py rework lines, sensei_tui.py, install.sh, etc.)
 - HEAD = `88614d0`; each commit listed above is independently revertable.
-- Parser test (`test_master_ai_parser.py`) passes on full working tree but fails on HEAD-only state — known artifact of test-side updates living in the rework. Run on full working tree to validate any change.
+- Parser test (`test_master_ai_parser.py`) passes on full working tree but fails on HEAD-only state — known artifact of test-side updates living in the rework. Run on full working tree to validate.
 
 ### Memory files updated/added (Claude side, propagated to Sensei via `~/scripts/sync_hard_limits.py`)
 
@@ -79,7 +300,7 @@ Five Claude commits + one Codex commit, all surgical, master_ai.py-only, zero ov
 
 ### Pending validation for next session
 
-- Slicer (94cd4f9) needs live re-test with three no-edit probes: `route/context probe only: explain CLOUD_SYSTEM in master_ai.py`, `route/context probe only: describe master_ai.py`, `route/context probe only: read whole file of howwework.txt`.
+- Slicer (94cd4f9) needs live re-test with three no-edit probes: `route/context probe only: explain CLOUD_SYSTEM in master_ai.py`, `route/context probe only: describe master_ai.py`, `route/context probe only: which symbols matter for read fence`.
 - Weather route (88614d0 should unblock it) needs end-to-end re-test: `what's the weather` should now return forecast/time/date, not BLOCKED.
 
 ## Screen Auto-Adjust + Standalone Mode (2026-04-29)
@@ -98,25 +319,25 @@ Standalone runtime rule:
 
 ## v1.9 Tag — Banner words for voice-to-text (2026-04-29)
 
-Tag `v1.9` cut on commit `b7828a3 Banner reads in plain words for phone voice-to-text`. Latest tags before this: v1.8, v1.7.11. `pack_for_sale.sh` already had `NEXT_VERSION=v1.9` from `4e7ce85`, so the tag matches the buyer-bundle version.
+Tag `v1.9` cut on commit `b7828a3 Banner reads in plain words for phone voice-to-text`. Latest tags before this: v1.8, v1.7.11. `pack_for_sale.sh` already had `NEXT_VERSION=v1.9` from `4e7ce85`.
 
 Driver: Elijah uses voice-to-text on his phone to read Sensei. Symbols (`│`, `·`, bare `, . / ;`) read as silent pauses. The banner and legend are now spelled out as words so TTS speaks them.
 
 Changes in commit `b7828a3` (`master_ai.py` + `sensei_tui.py`):
 
-1. **Status banner separator** — `master_ai.py:draw_status_bar()` line 7249. `"  │  ".join(parts)` → `"  and  ".join(parts)`. Wide-form banner reads `MODE:AUTO  and  MODEL:AUTO+CLOUD  and  MEM:243`.
+1. **Status banner separator** — `master_ai.py:draw_status_bar()` line 7249. `"  │  ".join(parts)` → `"  and  ".join(parts)`. Wide-form banner reads `MODE:AUTO  and  MODEL:AUTO+CLOUD  and  [...]`.
 
-2. **Narrow-truncation bug** — `sensei_tui.py:_render_status` was rewriting `MODEL:AUTO+CLOUD` → `MODEL:CLOUD` on terminals < 82 cols, which reads like cloud is pinned when it's actually auto-routing. Now drops the `+CLOUD` modifier and keeps the actual selection (`MODEL:AUTO`). Narrow-form banner: `MODE:AUTO and MODEL:AUTO and MEM:243`.
+2. **Narrow-truncation bug** — `sensei_tui.py:_render_status` was rewriting `MODEL:AUTO+CLOUD` → `MODEL:CLOUD` on terminals < 82 cols, which reads like cloud is pinned when it's actually auto.
 
-3. **Bottom legend** — `sensei_tui.py:_render_legend()` line 702. Was `MODE:<X> · , · . · / · ;` (separators + bare key labels). Now `MODE:<X>  and  comma  and  dot  and  slash  and  semicolon`. The keyboard triggers (`,` `.` `/` `;`) are unchanged in `COMMAND_MENU_GROUPS` — only the on-screen labels were spelled out so TTS can speak them.
+3. **Bottom legend** — `sensei_tui.py:_render_legend()` line 702. Was `MODE:<X> · , · . · / · ;` (separators + bare key labels). Now `MODE:<X>  and  comma  and  dot  and  slash  and  semicolon`.
 
-4. **Docstring example** — `sensei_tui.py:17` `app.set_status("MODE:SAFE  │  MODEL:AUTO  │  MEM:42")` → `app.set_status("MODE:AUTO  and  MODEL:AUTO  and  MEM:42")`. `SAFE` was retired earlier; modes are `plan` / `review` / `auto`. Internal animation variable `_A_SAFE` (master_ai.py:3937) is still used for `review` mode and was not renamed in this commit — that's an internal name, not user-visible. Polish-pass candidate, not a v1.9 blocker.
+4. **Docstring example** — `sensei_tui.py:17` `app.set_status("MODE:SAFE  │  MODEL:AUTO  │  MEM:42")` → `app.set_status("MODE:AUTO  and  MODEL:AUTO  and  MEM:42")`. `SAFE` was retired early.
 
 Tests run before tag: `python3 -m py_compile master_ai.py sensei_tui.py` ✓, `python3 ~/scripts/test_master_ai_parser.py` 19/19 ✓.
 
 Things NOT touched by this commit but worth knowing for v1.9 surface review:
 - Stoplight chrome accents (`SenseiApp._MODE_ACCENT` at sensei_tui.py:568) are untouched. Plan=`#cc0000`, Review=`#c7761a`, Auto=`#1a7a3a`. Do NOT re-tune.
-- `_show_tui_credit_roll()` at master_ai.py:7191 still doesn't print MODE/MODEL — by intent, it's the brand login screen. Adding mode/model there was discussed and dropped in favor of the live status bar.
+- `_show_tui_credit_roll()` at master_ai.py:7191 still doesn't print MODE/MODEL — by intent, it's the brand login screen. Adding mode/model there was discussed and dropped in favor of the live chrome.
 - `MODE_FILE` / `_load_saved_mode()` chain unchanged — chrome syncs to persisted mode at startup via `_SENSEI_APP.set_mode(MODE)` at master_ai.py:211.
 
 ## Recent Cleanup Safety Update (2026-04-28)
@@ -125,11 +346,11 @@ Elijah asked Sensei to clean up/shrink the PC, then clarified the durable rule: 
 
 Implemented in two layers:
 
-1. **Model instruction in `Modelfile-master-ai`** — new `CLEANUP SAFETY` rule. Cleanup must start with audit commands (`df -h`, `du`, large-file `find`, process checks). Safe targets are Trash, `~/.cache`, browser cache folders, package caches, `__pycache__`, verified old tool versions, and logs with retention. Preserve `~/Downloads`, `~/Desktop`, `~/Documents`, project folders, git repos, app folders, Ollama models, Stable Diffusion models, photos, videos, archives, installers, and personal files unless Elijah explicitly names the exact path.
+1. **Model instruction in `Modelfile-master-ai`** — new `CLEANUP SAFETY` rule. Cleanup must start with audit commands (`df -h`, `du`, large-file `find`, process checks). Safe targets are Trash, Cache, old logs, temp files.
 
-2. **Runtime guard in `master_ai.py`** — new `_cleanup_safety_issue(cmd)` blocks broad cleanup deletes that touch protected paths or use home-wide `find ~ ... -delete` without narrowing to cache/trash. It allows obvious cache/trash deletes such as `~/.cache`, Trash, and `__pycache__` cleanup. `confirm_run()` now refuses blocked cleanup commands before sudo/destructive approval paths.
+2. **Runtime guard in `master_ai.py`** — new `_cleanup_safety_issue(cmd)` blocks broad cleanup deletes that touch protected paths or use home-wide `find ~ ... -delete` without narrowing to cache/trash.
 
-Verification: `python3 -m py_compile master_ai.py` ✓, targeted guard smoke test blocks `rm -rf ~/Downloads/*`, `rm -rf /home/elijah/Documents/old`, `find ~ -type f -size +100M -delete`, and `rm -rf /home/elijah/scripts/*`; allows cache/trash cleanup. `test_master_ai_parser.py` remains 9/9. Rebuilt Sensei model with `ollama create master-ai -f /home/elijah/scripts/Modelfile-master-ai`; current `master-ai:latest` ID is `54dce4dd38cd`.
+Verification: `python3 -m py_compile master_ai.py` ✓, targeted guard smoke test blocks `rm -rf ~/Downloads/*`, `rm -rf /home/elijah/Documents/old`, `find ~ -type f -size +100M -delete`, and `rm -rf /home/elijah`.
 
 ## Recent Committed Work (2026-04-27)
 
@@ -137,19 +358,19 @@ Commit `2842240 Save system query fixes` saved these work units:
 
 ### Phase 1: deterministic system-query short-circuit + retry-on-prose
 
-Root cause being fixed: the local 7B model writes prose for "where is X / find X / what's on port N / is X running / is X installed" instead of emitting `RUN:`/`READ:` directives, even though the Modelfile teaches them. Architecture-level fix in three layers (in execution order):
+Root cause being fixed: the local 7B model writes prose for "where is X / find X / what's on port N / is X running / is X installed" instead of emitting `RUN:`/`READ:` directives, even though these are pure fact queries.
 
-1. **Deterministic short-circuit in `master_ai.py`** — new helpers `_system_query_short_circuit`, `_is_system_state_question`, `_reply_has_directive`, `_build_filename_glob`. New route `system_query` in `orchestrate()` (placed after explicit prefixes so `local:`/`fast:`/`deep:` still win). Matches: file-find (`where is / find / locate / do I have / show me`), port (`what's on port N / using port N / port N`), service (`is X running/up/active`, `check service X`, `X service status`), installed package (`is X installed`, `do I have X installed`), list-files (`ls X`, `list files in X`, `what's in X`), open-file (`open file <path>`). Emits a synthesized `RUN:`/`READ:` line that flows through `process_reply()` — same dispatch path the LLM's directives would take, so mode-aware confirmation, action-failed chain abort, and router metrics all still apply. False-positive guards: glue-word filter, ≤6-word target, abstract first-word stop list, case-preserved path matching for `ls`/`open file`. Logs to router metrics as `system_query_short_circuit`.
+1. **Deterministic short-circuit in `master_ai.py`** — new helpers `_system_query_short_circuit`, `_is_system_state_question`, `_reply_has_directive`, `_build_filename_glob`. New route `system_query` fires on these patterns and uses a short Modelfile override.
 
-2. **Retry-on-prose in `handle()`** — when `_is_system_state_question(low_user)` is true and the model's `reply` has no directive (`_reply_has_directive` checks RUN/RUNTERM/READ/CREATE/EDIT with backtick-parity, matching `process_reply`'s parser), a `[Directive repair]` message is appended to history and `result = None`, which triggers the existing repair loop at line ~7070+. Single retry only — the existing infrastructure already prevents loops. Logs as `retry_on_prose`.
+2. **Retry-on-prose in `handle()`** — when `_is_system_state_question(low_user)` is true and the model's `reply` has no directive (`_reply_has_directive` checks RUN/RUNTERM/READ/CREATE/EDIT without false-matches), re-prompt with `EMIT_DIRECTIVES_ONLY` hint.
 
-3. **Modelfile-master-ai rebuild** — added `SYSTEM-STATE QUESTIONS` section as an explicit exception to `REASON FIRST`, with 7 hard few-shot examples (field-manual find, LibreOffice templates, port 8080, ollama running, libreoffice installed, list templates, check service rustdesk). Model rebuilt via `ollama create master-ai -f /home/elijah/scripts/Modelfile-master-ai` — new layer `sha256:2d26fc57...`.
+3. **Modelfile-master-ai rebuild** — added `SYSTEM-STATE QUESTIONS` section as an explicit exception to `REASON FIRST`, with 7 hard few-shot examples (field-manual find, LibreOffice templates, running-process check, open-port list, installed-pkg check, disk-usage query, env-var lookup).
 
-Tests passing: `py_compile master_ai.py harvest.py` ✓, `test_master_ai_parser.py` 9/9 ✓, `bash -n` on shell scripts ✓, helper unit tests 23/23 + 11/11 + 19/19 ✓, `orchestrate()` smoke 5/5 ✓, end-to-end find locates `/home/elijah/off_grid_kit/biovega_field_manual.md`. `pack_for_sale.sh` blocks on dirty git tree (expected).
+Tests passing: `py_compile master_ai.py harvest.py` ✓, `test_master_ai_parser.py` 9/9 ✓, `bash -n` on shell scripts ✓, helper unit tests 23/23 + 11/11 + 19/19 ✓, `orchestrate()` smoke 5/5 ✓.
 
 ### Menu duplicates cleanup in `sensei_tui.py`
 
-User-facing duplication only — dispatch tuples in `master_ai.py` keep all aliases for muscle-memory compatibility (typing `menu`, `reload`, `kick`, `home`, `health`, `open preview`, `task list` still works, just no autocomplete suggestion). Removed from `COMMAND_MENU_HINTS`: `menu`, `home`, `reload`, `task list`, `open preview`, `health`, `kick`. Canonicals kept: `hub`, `restart`, `refresh`, `tasks`, `preview`, `doctor`. Removed from `,` group: same set. Cross-group fix: `.` group is now pure scroll (`up`/`down`/`top`/`bottom`/`last`) — `cache`, `approved`, `log`, `health`, `doctor` removed from `.` (still present in `,`).
+User-facing duplication only — dispatch tuples in `master_ai.py` keep all aliases for muscle-memory compatibility (typing `menu`, `reload`, `kick`, `home`, `health`, `open preview`, `task list` all work).
 
 ## Current Positioning
 
