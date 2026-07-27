@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================
-# MADAM-MARY SYSTEM TUNE-UP
+# your-machine SYSTEM TUNE-UP
 # Run: sudo bash ~/scripts/system_tune.sh
 # ============================================
 
@@ -19,7 +19,7 @@ REAL_USER="$SUDO_USER"
 
 echo ""
 echo "╔══════════════════════════════════════════╗"
-echo "║       MADAM-MARY SYSTEM TUNE-UP          ║"
+echo "║       your-machine SYSTEM TUNE-UP          ║"
 echo "╚══════════════════════════════════════════╝"
 
 # ── 1. APT CLEANUP ──────────────────────────────

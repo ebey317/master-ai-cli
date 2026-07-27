@@ -30,14 +30,14 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-sys.path.insert(0, "/home/elijah/scripts")
+sys.path.insert(0, "/home/user/scripts")
 
 # Importing master_ai pulls in the committed CLOUD_SYSTEM builder + the
 # key loader + the user-agent dance. We don't go through stt_server at
 # all — this is a direct teaching probe.
 import master_ai  # noqa: E402
 
-FIXTURE_URL = "file:///home/elijah/scripts/sensei_extension/test/job_app_smoke.html"
+FIXTURE_URL = "file:///home/user/scripts/sensei_extension/test/job_app_smoke.html"
 INTERACTIVE_ELEMENTS = "\n".join([
     '1. textbox "First name" selector=#firstName',
     '2. textbox "Last name" selector=#lastName',
@@ -68,7 +68,7 @@ USER_PROMPT = (
     "\n"
     "[USER PROMPT]\n"
     "Fill out this job application for Elijah W., 317-555-0100, "
-    "ebey317@gmail.com, Indianapolis IN 46201, 10 years experience, "
+    "you@example.com, Indianapolis IN 46201, 10 years experience, "
     'authorized to work in the US, cover letter "I want this job", '
     "then submit."
 )

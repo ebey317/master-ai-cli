@@ -46,7 +46,7 @@ from bs4 import BeautifulSoup  # stdlib-adjacent — already shipped on this box
 BASE = "http://127.0.0.1:8080"
 TIMEOUT_S = 20
 CHAT_TIMEOUT_S = 600  # local Ollama prefill can take a while on CPU
-FIXTURE_PATH = Path("/home/elijah/scripts/sensei_extension/test/job_app_smoke.html")
+FIXTURE_PATH = Path("/home/user/scripts/sensei_extension/test/job_app_smoke.html")
 FIXTURE_URL = f"file://{FIXTURE_PATH}"
 
 # Fields the fixture's submit handler treats as required. Mirrors FIELD_IDS
@@ -113,7 +113,7 @@ SYNTHETIC_INTERACTIVE = "\n".join([
 
 PROMPT = (
     "Fill out this job application for Elijah W., phone 317-555-0100, "
-    "email ebey317@gmail.com, in Indianapolis IN ZIP 46201, "
+    "email you@example.com, in Indianapolis IN ZIP 46201, "
     "10 years experience, authorized to work in the US, cover letter "
     '"I want this job". Then click Submit. Do not upload a résumé.'
 )

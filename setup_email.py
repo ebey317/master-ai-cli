@@ -9,7 +9,7 @@ Run this in any terminal:
 It walks you through configuring Gmail, AOL, and Outlook accounts. For each
 provider you choose to configure it:
   1. Opens the app-password page in your default browser
-  2. Asks for your full email address (e.g., ebey317@gmail.com)
+  2. Asks for your full email address (e.g., you@example.com)
   3. Asks for the 16-character app password (hidden — your password never
      prints to screen, never lands in shell history, never enters Claude's chat)
   4. Atomically writes both into ~/.master_ai_keys (JSON, chmod 600)
@@ -33,7 +33,7 @@ PROVIDERS = {
         "password_url": "https://myaccount.google.com/apppasswords",
         "key_password": "gmail_app_password",
         "key_sender": "gmail_sender",
-        "default_sender": "ebey317@gmail.com",
+        "default_sender": "you@example.com",
         "host": "smtp.gmail.com", "port": 465, "ssl": True,
         "instructions": (
             "Sign in as your Gmail account → app-name box → type \"Master AI\" → click\n"

@@ -21,7 +21,7 @@ This test uses only a local static page:
 3. Open the test page in Chrome:
 
    ```text
-   file:///home/elijah/scripts/sensei_extension/test/loop_smoke.html
+   file:///home/user/scripts/sensei_extension/test/loop_smoke.html
    ```
 
 4. Open DevTools on the test page.
@@ -61,7 +61,7 @@ Request body should include:
   "mode": "auto",
   "source": "chrome_extension",
   "page_context": {
-    "url": "file:///home/elijah/scripts/sensei_extension/test/loop_smoke.html",
+    "url": "file:///home/user/scripts/sensei_extension/test/loop_smoke.html",
     "title": "Sensei Loop Smoke",
     "interactive_elements": "..."
   }

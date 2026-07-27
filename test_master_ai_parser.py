@@ -254,14 +254,14 @@ class DirectiveParserTests(unittest.TestCase):
         master_ai.confirm_run = _run
 
         result = master_ai.process_reply(
-            'RUN: grep -n "CLOUD_SYSTEM" /home/elijah/scripts/master_ai.py',
+            'RUN: grep -n "CLOUD_SYSTEM" /home/user/scripts/master_ai.py',
             history,
             streamed=False,
             continue_after_tools=True,
         )
 
         self.assertIsNone(result)
-        self.assertEqual(self.calls, [("run", 'grep -n "CLOUD_SYSTEM" /home/elijah/scripts/master_ai.py')])
+        self.assertEqual(self.calls, [("run", 'grep -n "CLOUD_SYSTEM" /home/user/scripts/master_ai.py')])
         self.assertIn("[RUN RESULT]", history[-1]["content"])
         self.assertIn("9581:CLOUD_SYSTEM", history[-1]["content"])
 
@@ -544,7 +544,7 @@ class DirectiveParserTests(unittest.TestCase):
 
     def test_auto_context_codex_md_alias_reads_claude_handoff(self):
         inject_ctx, meta = master_ai.auto_inject_context("read whole file Codex.md")
-        self.assertIn("/home/elijah/scripts/CLAUDE.md", inject_ctx)
+        self.assertIn("/home/user/scripts/CLAUDE.md", inject_ctx)
         self.assertTrue(meta["whole_file_requested"])
 
     def test_auto_context_slicer_ignores_filename_stem_for_handle_cloud_deep(self):
@@ -569,7 +569,7 @@ class DirectiveParserTests(unittest.TestCase):
         # directives" cause the slicer to hunt for a `READ` symbol and pull
         # the wrong file region.
         prompt = (
-            "verify cloud_deep routing in /home/elijah/scripts/master_ai.py. "
+            "verify cloud_deep routing in /home/user/scripts/master_ai.py. "
             "emit READ/RUN/CREATE/EDIT/WRITE directives as needed. "
             "Mark TODO/FIXME entries when found."
         )
@@ -589,7 +589,7 @@ class DirectiveParserTests(unittest.TestCase):
         # wrong block).
         inject_ctx, meta = master_ai.auto_inject_context(
             "verify the current cloud_deep routing in "
-            "/home/elijah/scripts/master_ai.py. Do not answer from memory. "
+            "/home/user/scripts/master_ai.py. Do not answer from memory. "
             "Use the auto-context if it is sufficient; if not, emit "
             "READ/RUN directives. State whether _route_to_cloud_model exists."
         )
@@ -598,11 +598,11 @@ class DirectiveParserTests(unittest.TestCase):
 
     def test_local_read_target_resolves_codex_possessive_md(self):
         target = master_ai._resolve_local_text_target("codex's md")
-        self.assertEqual(str(target), "/home/elijah/scripts/CLAUDE.md")
+        self.assertEqual(str(target), "/home/user/scripts/CLAUDE.md")
 
     def test_local_read_target_resolves_codex_memory_alias(self):
         target = master_ai._resolve_local_text_target("~/scripts/codex_memory.md")
-        self.assertEqual(str(target), "/home/elijah/scripts/CLAUDE.md")
+        self.assertEqual(str(target), "/home/user/scripts/CLAUDE.md")
 
     def test_matrix_credit_screen_is_tool_required(self):
         self.assertTrue(master_ai._is_tool_required("make a matrix credit screen"))
@@ -776,7 +776,7 @@ class DirectiveParserTests(unittest.TestCase):
         probe.write_text("CLOUD_SYSTEM injects directive grammar for cloud lanes.\n")
         captured = []
         replies = [
-            'RUN: grep -n "CLOUD_SYSTEM" /home/elijah/scripts/master_ai.py',
+            'RUN: grep -n "CLOUD_SYSTEM" /home/user/scripts/master_ai.py',
             f"READ: {probe}",
             "CLOUD_SYSTEM is injected into cloud-lane history before cloud calls.",
         ]
@@ -860,7 +860,7 @@ class DirectiveParserTests(unittest.TestCase):
         orig_auto_context = master_ai.auto_inject_context
         captured = []
         replies = [
-            'RUN: grep -n "CLOUD_SYSTEM" /home/elijah/scripts/master_ai.py',
+            'RUN: grep -n "CLOUD_SYSTEM" /home/user/scripts/master_ai.py',
             "CLOUD_SYSTEM is injected into cloud-lane history.",
         ]
         try:

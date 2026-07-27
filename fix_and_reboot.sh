@@ -15,7 +15,7 @@ echo "=== Master AI — Apply freeze fix + reboot ==="
 echo ""
 
 echo "[1/3] Applying S05 (i915 PSR/FBC safety parameters)..."
-bash /home/elijah/scripts/apply_i915_safety.sh
+bash /home/user/scripts/apply_i915_safety.sh
 
 echo ""
 echo "[2/3] Flushing disk buffers..."

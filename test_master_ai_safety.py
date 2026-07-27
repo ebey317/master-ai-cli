@@ -94,7 +94,7 @@ class BlockedPatternsTests(_Base):
         self.assertFalse(master_ai.is_blocked("curl -sf https://example.com/file -o /tmp/f"))
 
     def test_benign_chmod_not_blocked(self):
-        self.assertFalse(master_ai.is_blocked("chmod +x /home/elijah/scripts/foo.sh"))
+        self.assertFalse(master_ai.is_blocked("chmod +x /home/user/scripts/foo.sh"))
 
 
 class CleanupSafetyTests(_Base):
@@ -105,7 +105,7 @@ class CleanupSafetyTests(_Base):
         self.assertIsNotNone(master_ai._cleanup_safety_issue("rm -rf ~/Downloads/*"))
 
     def test_blocks_documents_wildcard(self):
-        self.assertIsNotNone(master_ai._cleanup_safety_issue("rm -rf /home/elijah/Documents/old"))
+        self.assertIsNotNone(master_ai._cleanup_safety_issue("rm -rf /home/user/Documents/old"))
 
     def test_blocks_homewide_find_delete(self):
         self.assertIsNotNone(

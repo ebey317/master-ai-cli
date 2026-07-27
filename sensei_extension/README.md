@@ -174,6 +174,6 @@ python3 ~/scripts/test_extension_e2e_smoke.py
 python3 ~/scripts/test_chrome_headless_e2e.py
 ```
 
-Manual: open `file:///home/elijah/scripts/sensei_extension/test/
+Manual: open `file:///home/user/scripts/sensei_extension/test/
 job_app_smoke.html`, side-panel Auto, run the prompt from
 `JOB_APP_CHECKLIST.md`, verify all 10 fields fill and Submit clicks.

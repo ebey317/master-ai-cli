@@ -19,7 +19,7 @@ except ImportError:
     sys.stderr.write("FAIL: jsonschema not installed (pip3 install --user jsonschema)\n")
     sys.exit(1)
 
-SCHEMA_PATH = Path("/home/elijah/scripts/schemas/browser_planner_v1.json")
+SCHEMA_PATH = Path("/home/user/scripts/schemas/browser_planner_v1.json")
 
 
 def main() -> int:

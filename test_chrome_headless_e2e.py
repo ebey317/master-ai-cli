@@ -146,7 +146,7 @@ class WS:
         except OSError:
             pass
 
-FIXTURE_PATH = "/home/elijah/scripts/sensei_extension/test/job_app_smoke.html"
+FIXTURE_PATH = "/home/user/scripts/sensei_extension/test/job_app_smoke.html"
 FIXTURE_URL = f"file://{FIXTURE_PATH}"
 
 # Reproduces the action sequence the model emits — see
@@ -157,7 +157,7 @@ FIXTURE_URL = f"file://{FIXTURE_PATH}"
 ACTIONS = [
     {"kind": "BROWSER_FILL",  "target": "#firstName :: Elijah"},
     {"kind": "BROWSER_FILL",  "target": "#lastName :: W."},
-    {"kind": "BROWSER_FILL",  "target": "#email :: ebey317@gmail.com"},
+    {"kind": "BROWSER_FILL",  "target": "#email :: you@example.com"},
     {"kind": "BROWSER_FILL",  "target": "#phone :: 317-555-0100"},
     {"kind": "BROWSER_FILL",  "target": "#city :: Indianapolis"},
     {"kind": "BROWSER_FILL",  "target": "#state :: IN"},

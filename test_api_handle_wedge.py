@@ -14,7 +14,7 @@ import time
 import unittest
 from unittest import mock
 
-sys.path.insert(0, "/home/elijah/scripts")
+sys.path.insert(0, "/home/user/scripts")
 
 import stt_server  # noqa: E402
 

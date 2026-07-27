@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStartPre=/bin/sh -c 'i=0; until curl -s http://localhost:11434/api/tags >/dev/null || [ $i -gt 60 ]; do sleep 1; i=$((i+1)); done'
-ExecStart=/usr/bin/python3 /home/elijah/scripts/prewarm_master_ai.py
+ExecStart=/usr/bin/python3 /home/user/scripts/prewarm_master_ai.py
 
 [Install]
 WantedBy=default.target

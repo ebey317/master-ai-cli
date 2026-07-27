@@ -1,6 +1,6 @@
 [Unit]
 Description=Biweekly deep clean — Thursday 04:30 Indianapolis
-Documentation=file:///home/elijah/scripts/deep_clean.sh
+Documentation=file:///home/user/scripts/deep_clean.sh
 
 [Timer]
 # Fire every Thursday at 04:30 local. deep_clean.sh has its own

@@ -36,7 +36,7 @@ class TurnPrivacyStateTests(unittest.TestCase):
         self.assertTrue(master_ai._is_turn_private())
 
     def test_private_blocks_without_approval(self):
-        master_ai._mark_turn_private("test reason: /home/elijah/Pictures/foo.jpg")
+        master_ai._mark_turn_private("test reason: /home/user/Pictures/foo.jpg")
         ok, reason = master_ai._check_cloud_send_allowed()
         self.assertFalse(ok)
         self.assertIn("test reason", reason)
@@ -67,15 +67,15 @@ class PrivacyPolicySourceOfTruthTests(unittest.TestCase):
 
     def test_private_path_pictures_flagged(self):
         reason = master_ai._privacy_check_path_or_content(
-            "/home/elijah/Pictures/photo.jpg", "")
+            "/home/user/Pictures/photo.jpg", "")
         self.assertTrue(reason)
         # confirm harvest agrees
         self.assertTrue(harvest.is_private(
-            prompt="/home/elijah/Pictures/photo.jpg"))
+            prompt="/home/user/Pictures/photo.jpg"))
 
     def test_private_path_jobseeker_flagged(self):
         reason = master_ai._privacy_check_path_or_content(
-            "/home/elijah/jobseeker/resume.txt", "")
+            "/home/user/jobseeker/resume.txt", "")
         self.assertTrue(reason)
 
     def test_private_term_in_content_flagged(self):
@@ -173,13 +173,13 @@ class RunOutputExfilTests(unittest.TestCase):
 
     def test_private_path_in_cmd_marks_private(self):
         reason = master_ai._check_run_output_for_privacy(
-            "RUN", "cat /home/elijah/Documents/notes.txt", "hello")
+            "RUN", "cat /home/user/Documents/notes.txt", "hello")
         self.assertTrue(reason)
         self.assertTrue(master_ai._is_turn_private())
 
     def test_private_path_in_cmd_pictures(self):
         reason = master_ai._check_run_output_for_privacy(
-            "RUN", "ls /home/elijah/Pictures/", "drwxr-xr-x  ...")
+            "RUN", "ls /home/user/Pictures/", "drwxr-xr-x  ...")
         self.assertTrue(reason)
         self.assertTrue(master_ai._is_turn_private())
 
@@ -204,14 +204,14 @@ class RunOutputExfilTests(unittest.TestCase):
     def test_runterm_kind_also_marks(self):
         # Same helper covers RUNTERM (visual scripts that cat private paths)
         reason = master_ai._check_run_output_for_privacy(
-            "RUNTERM", "bash /home/elijah/jobseeker/show_cover.sh", "")
+            "RUNTERM", "bash /home/user/jobseeker/show_cover.sh", "")
         self.assertTrue(reason)
         self.assertTrue(master_ai._is_turn_private())
 
     def test_marked_run_then_blocks_cloud(self):
         # Integration: after RUN exfil marks private, ask_cloud must block.
         master_ai._check_run_output_for_privacy(
-            "RUN", "cat /home/elijah/.aws/credentials", "[default]\naws_secret=...")
+            "RUN", "cat /home/user/.aws/credentials", "[default]\naws_secret=...")
         ok, _ = master_ai._check_cloud_send_allowed()
         self.assertFalse(ok)
 

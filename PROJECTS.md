@@ -1,6 +1,6 @@
 # Elijah's Projects
 
-> Authoritative list of everything Elijah is building on Madam-Mary.
+> Authoritative list of everything Elijah is building on your-machine.
 > Ideas captured via `master.sh` menu option 9 auto-append to the Ideas / POCs section.
 > **Project boards below are the dojo gate's source of truth.** Checkbox = source of truth for task state. Sensei reads this file on launch.
 
@@ -26,7 +26,7 @@
   - [ ] lock the "pack it up for sale" ritual (version tag + commit + memory update)
   - [x] fix stdin race in confirm prompts — Q2 typed while Q1's RUN/CREATE/EDIT/RUNTERM confirm is open gets swallowed as the 1/2/3/4 keystroke instead of queuing. Patch: two-channel stdin in master_ai.py (`_CONFIRM_IQ` + `_AWAITING_CONFIRM` flag; wrap the four confirm_ funcs; route in `_on_submit` + `_tui_input`). ~20 lines, no sensei_tui.py changes. **Do NOT re-enable the v1.7.11-reverted worker queue** — fix is stdin routing only. Confirmed by Elijah 2026-04-21 remote. Verified on disk 2026-04-27.
   - [x] investigate routing falling off master-ai — FIXED 2026-04-21 afternoon. Root cause: orchestrate() line 992-994 routed all prompts ≤20 words to qwen2.5:3b (the spark). Short ≠ simple — "fix the bug" is 3 words but needs senior-engineer reasoning. Branch deleted; short prompts now fall through to master-ai default. 3B reserved for idle tips + vision preprocessing only. Lives behind `refresh`.
-  - [x] tmux mouse-mode toggle — DONE 2026-04-25: Sensei now has `mouse remote`, `mouse local`, and `mouse status`. `mouse remote` saves `SENSEI_MOUSE=1` and flips tmux mouse on for phone/RustDesk scrolling + taps. `mouse local` saves `SENSEI_MOUSE=0` and flips tmux mouse off so terminal drag-select copy works cleanly at Madam-Mary. `launch_master_ai.sh` now reads `~/.master_ai_settings` instead of forcing `SENSEI_MOUSE=1` every launch. Use `refresh` after switching so the TUI relaunches with the saved app-level mouse setting.
+  - [x] tmux mouse-mode toggle — DONE 2026-04-25: Sensei now has `mouse remote`, `mouse local`, and `mouse status`. `mouse remote` saves `SENSEI_MOUSE=1` and flips tmux mouse on for phone/RustDesk scrolling + taps. `mouse local` saves `SENSEI_MOUSE=0` and flips tmux mouse off so terminal drag-select copy works cleanly at your-machine. `launch_master_ai.sh` now reads `~/.master_ai_settings` instead of forcing `SENSEI_MOUSE=1` every launch. Use `refresh` after switching so the TUI relaunches with the saved app-level mouse setting.
   - [x] one-command health/productivity check — DONE 2026-04-25: Sensei now has `doctor` / `health`. It prints Pupil/Web UI, master-ai-ui.service, Ollama, required models, `/thoughts`, TTS, phone URL, mode/model/cloud keys, mouse profile, memory/approved counts, open tasks, pinned project/task, and latest crash line. This is the first stop after "doesn't work" and before long work sessions.
   - [ ] **Cruncher — hardware-aware data prep pipeline (NEW concept, NOT the archived chunker)** — Elijah 2026-04-21: *"takes a lot of data and breaks it down into the data that we can feed into our system specifically based off of our settings and what's hardware hard drive AI capabilities all of that, and once we throw our chunk in it, crunches it up and digested it into edible sections, and then it puts a timer up there to say based off this we will be able to feed this to sensei basically in this amount of time and it doesn't automatically pass it out so it runs smoothly."* Different from the archived `chunker.sh` (which was just text splitting). This is a **prep pipeline** that: (1) measures input size in tokens, (2) reads `selfscan.sh` output for hardware tier (GREEN/YELLOW/ORANGE/RED), (3) computes estimated wall-clock time = `tokens / measured_tok_per_sec` from the box's recent harvest data, (4) shows time estimate + chunk plan in a confirm prompt, (5) waits for user `go` before feeding chunks one at a time with pause between to let local model digest each piece. Surfaces in Sensei as `crunch: <paste>` or via menu. Lives at ~/scripts/cruncher.py. Reuses `master_ai_voice.json` thinking phrases between chunks. **Don't build tonight — too late in the session for clean implementation. Design first, build fresh.**
 
@@ -50,7 +50,7 @@
 - **Role:** apprentice / workshop / intake UI
 - **Gate:** open (this is where work comes IN — no gate to enter)
 - **Model:** qwen2.5:7b   ← friendly 7B for teaching, brainstorming, scoping
-- **Artifact:** `~/scripts/pupil.html` (1200 lines, martial-arts belt themes white/yellow/blue/green/purple/brown/black/hacker). Open: `file:///home/elijah/scripts/pupil.html`
+- **Artifact:** `~/scripts/pupil.html` (1200 lines, martial-arts belt themes white/yellow/blue/green/purple/brown/black/hacker). Open: `file:///home/user/scripts/pupil.html`
 - **Last:** 2026-05-12 — M0 Chrome extension bridge landed. `/chat` now runs through non-interactive `api_handle()` around `master_ai.handle()` and returns proposed typed actions; `~/scripts/sensei_extension/` has the MV3 side panel/content-script/options scaffold. **Next pickup:** load the extension unpacked, set `~/.master_ai_extension_token` in options, and test approving/rejecting `BROWSER_*` actions from a live tab.
 - **Goal:** general-audience AI UI for users leveling up (beginner→intermediate→pro); students of the AI arts. Feeds polished artifacts up to Sensei who either masters them or humbles them back.
 - **Tasks:**
@@ -142,7 +142,7 @@
 
 ### Master AI — Multi-User Node (captured 2026-04-18 brainstorm)
 - **Pitch:** each Master AI instance supports up to 4 local users, each with their own accounts / memory / sessions, sharing the one Ollama runtime
-- **Why 4:** keeps CPU/RAM per-user reasonable on Madam-Mary-class hardware; small group feel
+- **Why 4:** keeps CPU/RAM per-user reasonable on your-machine-class hardware; small group feel
 - **Scope items:** local account setup (add user / switch user), per-user memory file, per-user session dir, Ollama check on startup
 - **Touches:** master.sh menu (new "Users" section), master_ai.py (per-user paths via $USER or a sensei_user flag)
 - **Status:** concept — next up after Sensei UI stabilizes

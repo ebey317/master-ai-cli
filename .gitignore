@@ -24,3 +24,11 @@ image_engine/out/
 .master_ai_keys
 *.key
 *.pem
+client_secret*.json
+*token*.json
+*.env
+.env
+
+# Personal state (lives in separate private repos)
+memory/
+.claude/

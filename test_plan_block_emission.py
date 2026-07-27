@@ -34,7 +34,7 @@ from pathlib import Path
 BASE = "http://127.0.0.1:8080"
 TIMEOUT_S = 20
 CHAT_TIMEOUT_S = 600
-FIXTURE_URL = "file:///home/elijah/scripts/sensei_extension/test/job_app_smoke.html"
+FIXTURE_URL = "file:///home/user/scripts/sensei_extension/test/job_app_smoke.html"
 
 MULTI_STEP_INTERACTIVE = "\n".join([
     '1. textbox "First name" selector=#firstName',
@@ -103,7 +103,7 @@ class PlanBlockEmissionTests(unittest.TestCase):
     def test_multi_step_emits_plan_block_with_required_sections(self):
         prompt = (
             "Fill this job application for Elijah W., 317-555-0100, "
-            "ebey317@gmail.com, Indianapolis IN 46201, 10 years "
+            "you@example.com, Indianapolis IN 46201, 10 years "
             'experience, authorized to work in the US, cover letter '
             '"I want this job", then submit.'
         )

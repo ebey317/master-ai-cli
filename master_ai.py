@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ============================================================
 # MASTER AI — AI Agent · Vision · Voice · Web · PC Control
-# Machine: Madam-Mary | User: Elijah
+# Machine: your-machine | User: Elijah
 # Run: python3 ~/scripts/master_ai.py
 # ============================================================
 #
@@ -647,11 +647,11 @@ def send_email_via_smtp(to, subject, body, *, attach=None, sender=None):
         for guess_provider in ("gmail", "aol", "outlook"):
             if keys.get(_EMAIL_PROVIDERS[guess_provider]["key"]):
                 sender_key = f"{guess_provider}_sender"
-                sender = keys.get(sender_key) or ("ebey317@gmail.com" if guess_provider == "gmail" else None)
+                sender = keys.get(sender_key) or ("you@example.com" if guess_provider == "gmail" else None)
                 if sender:
                     break
         if not sender:
-            sender = "ebey317@gmail.com"
+            sender = "you@example.com"
     provider = _email_provider_for_sender(sender)
     cfg = _EMAIL_PROVIDERS[provider]
     pw = keys.get(cfg["key"])
@@ -1913,7 +1913,7 @@ def _is_generative_video_request(stripped_low):
     )
 
 def _video_quality_anchor():
-    return Path("/home/elijah/Desktop/rabbit_hop.mp4")
+    return Path("/home/user/Desktop/rabbit_hop.mp4")
 
 # App-shape detection: text that mentions building/making + concrete tech.
 # Used to disambiguate "show me my pictures" (real vision request) vs.
@@ -3067,7 +3067,7 @@ def wikipedia_search(query, max_articles=3, timeout=8):
     try:
         req = urllib.request.Request(
             search_url,
-            headers={"User-Agent": "MasterAI/1.8 (Elijah; contact ebey317@gmail.com)"},
+            headers={"User-Agent": "MasterAI/1.8 (Elijah; contact you@example.com)"},
         )
         with urllib.request.urlopen(req, timeout=timeout) as r:
             hits = json.loads(r.read().decode()).get("query", {}).get("search", [])
@@ -3087,7 +3087,7 @@ def wikipedia_search(query, max_articles=3, timeout=8):
                        + _up.quote(title.replace(" ", "_")))
             req = urllib.request.Request(
                 sum_url,
-                headers={"User-Agent": "MasterAI/1.8 (Elijah; contact ebey317@gmail.com)"},
+                headers={"User-Agent": "MasterAI/1.8 (Elijah; contact you@example.com)"},
             )
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 s = json.loads(r.read().decode())
@@ -3112,7 +3112,7 @@ def ddg_instant_answer(query, timeout=6):
            "&format=json&no_html=1&skip_disambig=1")
     try:
         req = urllib.request.Request(url, headers={
-            "User-Agent": "MasterAI/1.8 (Elijah; contact ebey317@gmail.com)"
+            "User-Agent": "MasterAI/1.8 (Elijah; contact you@example.com)"
         })
         with urllib.request.urlopen(req, timeout=timeout) as r:
             d = json.loads(r.read().decode())
@@ -4093,7 +4093,7 @@ def local_thinking_stop(handle):
 
 # ── CLOUD AI ──────────────────────────────────────────────────
 MASTER_AI_IDENTITY_SYSTEM = (
-    "You are Master AI — Elijah's collaborator on Madam-Mary (Linux). "
+    "You are Master AI — Elijah's collaborator on your-machine (Linux). "
     "You run as Sensei (tmux agent) or Pupil (browser UI), with Dojo (project picker), "
     "Belts (themes), voice servers (stt:5050 / tts), harvest (cache+few-shot), and "
     "doctor/health command — every surface, every command, every file IS you. "
@@ -6858,14 +6858,14 @@ def is_blocked(cmd):
     return _blocked_shell_issue(cmd) is not None
 
 _CLEANUP_PROTECTED_PATHS = (
-    "~/Downloads", "$HOME/Downloads", "/home/elijah/Downloads",
-    "~/Desktop", "$HOME/Desktop", "/home/elijah/Desktop",
-    "~/Documents", "$HOME/Documents", "/home/elijah/Documents",
-    "~/Pictures", "$HOME/Pictures", "/home/elijah/Pictures",
-    "~/Videos", "$HOME/Videos", "/home/elijah/Videos",
-    "~/Music", "$HOME/Music", "/home/elijah/Music",
-    "~/scripts", "$HOME/scripts", "/home/elijah/scripts",
-    "~/.ollama", "$HOME/.ollama", "/home/elijah/.ollama",
+    "~/Downloads", "$HOME/Downloads", "/home/user/Downloads",
+    "~/Desktop", "$HOME/Desktop", "/home/user/Desktop",
+    "~/Documents", "$HOME/Documents", "/home/user/Documents",
+    "~/Pictures", "$HOME/Pictures", "/home/user/Pictures",
+    "~/Videos", "$HOME/Videos", "/home/user/Videos",
+    "~/Music", "$HOME/Music", "/home/user/Music",
+    "~/scripts", "$HOME/scripts", "/home/user/scripts",
+    "~/.ollama", "$HOME/.ollama", "/home/user/.ollama",
 )
 
 _CLEANUP_SAFE_DELETE_HINTS = (
@@ -6895,7 +6895,7 @@ def _cleanup_safety_issue(cmd):
         return None
 
     # Home-wide delete sweeps must be narrowed to cache/trash paths first.
-    if re.search(r"(^|[;&|]\s*)find\s+(~|\$home|/home/elijah)(\s|/|$)", low) and "-delete" in low:
+    if re.search(r"(^|[;&|]\s*)find\s+(~|\$home|/home/user)(\s|/|$)", low) and "-delete" in low:
         if not any(h.lower() in low for h in _CLEANUP_SAFE_DELETE_HINTS):
             return "home-wide cleanup delete needs a narrowed cache/trash path"
 
@@ -8260,7 +8260,7 @@ def _normalize_run_cmd(cmd):
     return fixed
 
 def _normalize_ollama_systemctl_scope(cmd):
-    """Ollama is a system unit on Madam-Mary, never a user unit."""
+    """Ollama is a system unit on your-machine, never a user unit."""
     try:
         parts = shlex.split(cmd)
     except Exception:
@@ -10559,7 +10559,7 @@ def handle_tight_reasoning(user_text, query, history, depth="deep"):
         print(f"  {R}tight reasoning error: {e}{X}")
 
 def handle_image_gen(user_text, prompt, history):
-    """Submit a local image-gen job via sd-server (CPU, ~56s/image on Madam-Mary).
+    """Submit a local image-gen job via sd-server (CPU, ~56s/image on your-machine).
 
     Async by design: returns immediately with the job id. The PNG lands in
     ~/scripts/image_engine/out/. Pupil pane (when wired) polls /sdcpp/v1/jobs/<id>.
@@ -11032,7 +11032,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
         else ""
     )
     LOCAL_SYSTEM = (
-        f"You are Master AI on Madam-Mary ({os_info}).\n\n"
+        f"You are Master AI on your-machine ({os_info}).\n\n"
         # Scratchpad rule goes FIRST and overrides the "no explanations"
         # rule below — otherwise the model obeys the stricter directive
         # and skips the scratchpad line entirely.
@@ -11058,7 +11058,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
     )
     CLOUD_SYSTEM = (
         f"You are Master AI — a task-executing AI service agent built by Elijah, "
-        f"running on Madam-Mary ({os_info}, {arch}).\n"
+        f"running on your-machine ({os_info}, {arch}).\n"
         f"Current MODE: {MODE.upper()} (plan/review/auto are the three operating modes; see CURRENT MODE block below).\n\n"
         "IDENTITY: You are a service tool and automation agent — NOT a conversational assistant. "
         "Your job is to perform tasks: run shell commands, read/write files, search the web, "
@@ -11087,7 +11087,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "your time?' — yes, that surface exists. DO NOT say you can't reason.\n\n"
         "IDENTITY (DO NOT BREAK CHARACTER): You ARE Master AI — the whole product, not the "
         "language model that animates you. Master AI is the brand around Sensei (she/her — "
-        "the agent), and Sensei is YOU. Your body lives here on Madam-Mary: the local "
+        "the agent), and Sensei is YOU. Your body lives here on your-machine: the local "
         "backend that runs commands, reads files, and thinks. Your reach extends through "
         "your two arms: the tmux Sensei pane (your hand at the keyboard) and the Chrome "
         "extension (your hand on the browser — DOM clicks, navigation, form-fills, page "
@@ -11571,7 +11571,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "FULL PALETTE EVERYWHERE — OVERRIDE THE BROWSER-ONLY REFLEX: When a request comes "
         "through the Chrome extension entry point, your tool palette is NOT limited to "
         "BROWSER_*. The extension is Sensei's visible surface to a LOCAL backend on "
-        "Madam-Mary that has full machine access. The backend auto-dispatches RUN/RUNTERM/"
+        "your-machine that has full machine access. The backend auto-dispatches RUN/RUNTERM/"
         "READ/CREATE/EDIT directives server-side with the same auto-mode safeguards as the "
         "Sensei terminal lane. If a request needs to open a desktop app, run a shell "
         "command, read a file, write a file, or check a local service, emit those "
@@ -11619,7 +11619,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "VIDEO GENERATION: If the user asks to make/create/generate a video/clip/movie and does\n"
         "not provide source footage, create an original MP4 from scratch instead of asking for a URL.\n"
         "Use CREATE to write a local generator script or frame builder, then RUN to verify and render.\n"
-        "Use /home/elijah/Desktop/rabbit_hop.mp4 as the minimum quality anchor for word-only bunny/video requests: real scene, visible subject motion, background depth, and a valid MP4. If the output is just text-on-background or a placeholder encode, repair and regenerate.\n"
+        "Use /home/user/Desktop/rabbit_hop.mp4 as the minimum quality anchor for word-only bunny/video requests: real scene, visible subject motion, background depth, and a valid MP4. If the output is just text-on-background or a placeholder encode, repair and regenerate.\n"
         "Only ask for source footage when the user explicitly says edit/use existing footage.\n\n"
         "URL DISCIPLINE — NEVER invent a URL, git remote, or path. If the user says\n"
         "'open <website>' or 'open github', emit `RUN: xdg-open <actual-url>`. If you\n"
@@ -12326,7 +12326,7 @@ def main():
         if lo in ("clean", "clean ui", "clean web", "clean dashboard", "sensei clean"):
             try:
                 subprocess.Popen(
-                    ["python3", "/home/elijah/scripts/sensei_clean_web.py", "--open"],
+                    ["python3", "/home/user/scripts/sensei_clean_web.py", "--open"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,

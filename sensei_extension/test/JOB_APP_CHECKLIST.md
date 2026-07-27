@@ -27,7 +27,7 @@ which is currently expected to FAIL until Phase 2.1b lands.
 3. Open the test page in Chrome:
 
    ```text
-   file:///home/elijah/scripts/sensei_extension/test/job_app_smoke.html
+   file:///home/user/scripts/sensei_extension/test/job_app_smoke.html
    ```
 
 4. DevTools on the test page. Required panels: `Console`, `Network`.
@@ -50,7 +50,7 @@ which is currently expected to FAIL until Phase 2.1b lands.
 
    ```text
    fill out this job application for Elijah W., 317-555-0100,
-   ebey317@gmail.com, Indianapolis IN 46201, 10 years experience,
+   you@example.com, Indianapolis IN 46201, 10 years experience,
    authorized to work in the US, cover letter "I want this job",
    then submit.
    ```
@@ -64,7 +64,7 @@ which is currently expected to FAIL until Phase 2.1b lands.
   "mode": "auto",
   "source": "chrome_extension",
   "page_context": {
-    "url": "file:///home/elijah/scripts/sensei_extension/test/job_app_smoke.html",
+    "url": "file:///home/user/scripts/sensei_extension/test/job_app_smoke.html",
     "title": "Sensei Job App Smoke",
     "interactive_elements": "..."
   }
@@ -103,7 +103,7 @@ BROWSER_CLICK on `#submitButton` OR a continuation. Acceptable shapes:
   "actions": [
     { "kind": "BROWSER_FILL",   "target": "#firstName => Elijah" },
     { "kind": "BROWSER_FILL",   "target": "#lastName => W." },
-    { "kind": "BROWSER_FILL",   "target": "#email => ebey317@gmail.com" },
+    { "kind": "BROWSER_FILL",   "target": "#email => you@example.com" },
     { "kind": "BROWSER_FILL",   "target": "#phone => 317-555-0100" },
     { "kind": "BROWSER_FILL",   "target": "#city => Indianapolis" },
     { "kind": "BROWSER_FILL",   "target": "#state => IN" },

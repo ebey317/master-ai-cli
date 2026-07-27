@@ -1,7 +1,7 @@
 #!/bin/bash
 # Find the page number containing EPA 608 certification in transcript PDF
 
-TRANSCRIPT_PATH='/home/elijah/Desktop/resume/Transcript.pdf'
+TRANSCRIPT_PATH='/home/user/Desktop/resume/Transcript.pdf'
 TEMP_DIR='/tmp/transcript_pages'
 
 # Check if pdftotext is installed

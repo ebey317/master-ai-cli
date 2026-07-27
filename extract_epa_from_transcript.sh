@@ -1,7 +1,7 @@
 #!/bin/bash
 # Extract EPA 608 certification page from transcript PDF
 
-TRANSCRIPT_PATH='/home/elijah/Desktop/resume/Transcript.pdf'
+TRANSCRIPT_PATH='/home/user/Desktop/resume/Transcript.pdf'
 OUTPUT_PATH="$HOME/portfolio/master/epa608_type2.pdf"
 PAGE_NUMBER=1  # Page 1 contains EPA certification
 

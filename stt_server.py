@@ -946,7 +946,7 @@ def _api_prompt(prompt, *, source="", page_context=None, schedule_id="",
     if resume_path:
         # Phase 2.1: tell the model where the user's résumé file is. Used by
         # the model to emit BROWSER_FILL targets like
-        # `BROWSER_FILL: input[type="file"] :: file:///home/elijah/...`. The
+        # `BROWSER_FILL: input[type="file"] :: file:///home/user/...`. The
         # extension uses /extension/read_local_file to fetch the bytes for
         # DataTransfer-based upload (full bridge in 2.1b).
         lines.append(f"resume_path: {_safe_context_text(resume_path, 500)}")

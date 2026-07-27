@@ -7,7 +7,7 @@ CLI can show:
   Last full scan : 2026-05-11 22:14
   Files seen     : 34,506
   Reclaim ready  : 30.6 MB
-  Last run dir   : /home/elijah/sensei_runs/20260511_221456
+  Last run dir   : /home/user/sensei_runs/20260511_221456
 
 State lives at ~/.config/sensei-clean/state.json (0600). Never contains
 file names — only counts and totals, so it's safe to view at any time.

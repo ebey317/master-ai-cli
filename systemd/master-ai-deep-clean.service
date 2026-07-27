@@ -1,11 +1,11 @@
 [Unit]
 Description=Master AI biweekly deep clean (bug check + file clean)
-Documentation=file:///home/elijah/scripts/deep_clean.sh
+Documentation=file:///home/user/scripts/deep_clean.sh
 After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/home/elijah/scripts/deep_clean.sh
+ExecStart=/home/user/scripts/deep_clean.sh
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7

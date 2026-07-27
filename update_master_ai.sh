@@ -4,7 +4,7 @@
 # repos, and "update Master AI" must never turn into `git fetch --all`.
 set -euo pipefail
 
-HOME_DIR="${HOME:-/home/elijah}"
+HOME_DIR="${HOME:-/home/user}"
 SCRIPTS_DIR="$HOME_DIR/scripts"
 BACKUP_ROOT="$HOME_DIR/.master_ai_update_backups"
 STAMP="$(date +%Y%m%d_%H%M%S)"

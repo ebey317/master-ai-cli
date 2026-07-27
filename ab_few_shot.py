@@ -4,7 +4,7 @@ Few-shot A/B harness.
 
 Runs each prompt in a prompt-set file through master_ai.ask_local() twice:
 once with FEW_SHOT=0 (control) and once with FEW_SHOT=1 (treatment).
-Writes a side-by-side markdown report to /home/elijah/MD/.
+Writes a side-by-side markdown report to /home/user/MD/.
 
 Usage:
     python3 ~/scripts/ab_few_shot.py PROMPTS_FILE [REPORT_OUT]
@@ -12,7 +12,7 @@ Usage:
 PROMPTS_FILE: path to a text file, one prompt per line, blank lines and
               lines starting with '#' are skipped.
 REPORT_OUT:   optional output path. Defaults to
-              /home/elijah/MD/handoff_fewshot_ab_<YYYY-MM-DD>.md
+              /home/user/MD/handoff_fewshot_ab_<YYYY-MM-DD>.md
 
 The script:
   1. Captures the existing ~/.master_ai_settings.
@@ -35,7 +35,7 @@ import traceback
 from pathlib import Path
 
 SETTINGS = Path.home() / ".master_ai_settings"
-MD_DIR = Path("/home/elijah/MD")
+MD_DIR = Path("/home/user/MD")
 
 
 def read_settings():

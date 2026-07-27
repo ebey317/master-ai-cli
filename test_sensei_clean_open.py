@@ -84,8 +84,8 @@ def _cloud_item(remote: str, provider_id: str, name: str) -> ItemRecord:
 class LocalOpenViewTests(unittest.TestCase):
     def test_local_adapter_returns_file_path(self):
         adapter = LocalFSAdapter(run_id="r1", roots=["/tmp"], quarantine_root="/tmp/q")
-        item = _local_item("/home/elijah/foo.txt")
-        self.assertEqual(adapter.open_view(item), "/home/elijah/foo.txt")
+        item = _local_item("/home/user/foo.txt")
+        self.assertEqual(adapter.open_view(item), "/home/user/foo.txt")
 
     def test_local_adapter_returns_empty_for_rclone_path(self):
         adapter = LocalFSAdapter(run_id="r1", roots=["/tmp"], quarantine_root="/tmp/q")

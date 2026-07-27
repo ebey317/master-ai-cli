@@ -192,7 +192,7 @@ class DirectiveParser(unittest.TestCase):
         self.assertEqual(a.target, "matrix-rain")
 
     def test_parse_read_line(self):
-        a = ta.parse_directive("READ: /home/elijah/scripts/master_ai.py")
+        a = ta.parse_directive("READ: /home/user/scripts/master_ai.py")
         self.assertEqual(a.kind, "READ")
         self.assertEqual(a.risk, ta.Risk.SAFE)
 
@@ -371,7 +371,7 @@ class MakeAuditRecord(unittest.TestCase):
     def test_make_record_for_run(self):
         r = ta.make_audit_record(
             kind="RUN", detail="ls /tmp",
-            profile="elijah", mode="auto", cwd="/home/elijah",
+            profile="elijah", mode="auto", cwd="/home/user",
             model="master-ai",
         )
         self.assertEqual(r["kind"], "RUN")

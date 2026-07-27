@@ -1,7 +1,7 @@
 {
   "name": "com.master_ai.sensei_extension",
   "description": "Sensei local native messaging bridge",
-  "path": "/home/elijah/scripts/sensei_native_host.py",
+  "path": "/home/user/scripts/sensei_native_host.py",
   "type": "stdio",
   "allowed_origins": [
     "chrome-extension://__EXTENSION_ID__/"
