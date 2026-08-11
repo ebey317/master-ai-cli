@@ -37,6 +37,42 @@ That's what this is. Not a wrapper around someone else's product. My own AI agen
 
 ---
 
+
+## Quick Start
+
+1. Clone the repo:
+   ```bash
+   git clone https://github.com/ebey317/master-ai-cli
+   cd master-ai-cli
+   ```
+
+2. Install via the provided script (recommended for first-time users):
+   ```bash
+   bash install.sh
+   ```
+   This will:
+   - Copy files to `~/scripts/`
+   - Set up systemd services
+   - Prompt for Ollama and model downloads
+   - Add `~/.local/bin` to your PATH
+
+   Alternatively, install via pip (for developers):
+   ```bash
+   pip install -e .
+   ```
+
+3. Run the agent:
+   ```bash
+   master-ai
+   ```
+
+4. (Optional) Launch the TUI:
+   ```bash
+   sensei
+   ```
+
+---
+
 ## The Architecture — The Nightclub
 
 I had to understand this in my own words before I could build it. Here's how I explain it:

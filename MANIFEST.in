@@ -1,0 +1,18 @@
+# Exclude dev/operator files from source distributions and wheels
+exclude .github
+exclude *.sh
+exclude AUDIT*.md
+exclude CHANGES.md
+exclude PLAN_SPLIT.md
+exclude CLAUDE*.md
+exclude *.json
+exclude Modelfile-*
+exclude PROJECTS.md
+exclude LAYER_MAP.md
+exclude APOCALYPSE_*.md
+exclude LINKS.md
+recursive-exclude tests *
+recursive-exclude __pycache__ *
+recursive-exclude *.egg-info *
+recursive-exclude build *
+recursive-exclude dist *

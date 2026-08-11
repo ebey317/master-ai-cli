@@ -89,7 +89,13 @@ def discover(directory: Optional[Path] = None) -> int:
     d = directory or SUBAGENTS_DIR
     _DISCOVERED_DIR = Path(d)
     if not _DISCOVERED_DIR.is_dir():
-        return len(_REGISTRY)
+        # Fallback: if the default ~/scripts/subagents doesn't exist, try the
+        # repo-local subagents/ directory (useful for git clones and editable installs).
+        fallback = Path(__file__).parent / "subagents"
+        if fallback.is_dir():
+            _DISCOVERED_DIR = fallback
+        else:
+            return len(_REGISTRY)
     for fp in sorted(_DISCOVERED_DIR.glob("*.py")):
         if fp.name.startswith("_"):
             continue

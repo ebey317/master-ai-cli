@@ -7962,8 +7962,9 @@ def agent_standards_checks():
         "audit trail hook",
         f"audit file: {AUDIT_LOG}")
 
-    parser_tests = Path.home() / "scripts" / "test_master_ai_parser.py"
-    selftest = Path.home() / "scripts" / "sensei_selftest.sh"
+    repo_dir = Path(__file__).resolve().parent
+    parser_tests = repo_dir / "test_master_ai_parser.py"
+    selftest = repo_dir / "sensei_selftest.sh"
     add("PASS" if parser_tests.is_file() else "FAIL",
         "parser regression tests",
         str(parser_tests))
@@ -12067,6 +12068,16 @@ def show_last_summary():
 
 # ── MAIN LOOP ─────────────────────────────────────────────────
 def main():
+    if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
+        print(
+            "usage: master-ai [-h]\n\n"
+            "Local-first AI agent CLI with vision, voice, MCP integration, "
+            "and multi-provider routing.\n\n"
+            "Running with no arguments starts the interactive Sensei session.\n\n"
+            "options:\n"
+            "  -h, --help  show this help message and exit"
+        )
+        sys.exit(0)
     # In TUI mode prompt_toolkit owns the alternate screen — don't shell out
     # to `clear`, it writes ANSI directly to the real terminal and confuses
     # the full-screen rendering, often causing a 2-second silent exit.

@@ -22,14 +22,17 @@ import unittest
 from pathlib import Path
 
 os.environ["SENSEI_TUI"] = "0"
-sys.path.insert(0, os.path.expanduser("~/scripts"))
-
+REPO_ROOT = Path(__file__).parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+if "subagent_registry" in sys.modules:
+    del sys.modules["subagent_registry"]
 import subagent_registry as sr  # noqa: E402
 
 
 class DiscoveryAndListing(unittest.TestCase):
     def test_six_or_more_builtins_registered(self):
-        sr.discover()  # idempotent
+        sr.discover(Path(__file__).parent / "subagents")  # idempotent
         names = {a.name for a in sr.list_subagents()}
         for required in ("code_reviewer", "test_runner", "file_finder",
                          "directive_simulator", "context_inspector",
@@ -40,7 +43,7 @@ class DiscoveryAndListing(unittest.TestCase):
             f"expected ≥6 subagents, got {len(names)}: {names}")
 
     def test_get_returns_known_and_none(self):
-        sr.discover()
+        sr.discover(Path(__file__).parent / "subagents")
         self.assertIsNotNone(sr.get("code_reviewer"))
         self.assertIsNone(sr.get("definitely_not_a_subagent_xyz"))
         self.assertIsNone(sr.get(None))
@@ -154,7 +157,7 @@ class BrokenSubagentDoesNotCrashRegistry(unittest.TestCase):
             # Re-discover the real builtins so subsequent tests pass.
             sr.clear()
             sr._REGISTRY.update(saved)
-            sr.discover()
+            sr.discover(Path(__file__).parent / "subagents")
         finally:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
