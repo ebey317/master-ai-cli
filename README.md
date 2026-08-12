@@ -66,7 +66,23 @@ That's what this is. Not a wrapper around someone else's product. My own AI agen
    master-ai
    ```
 
-4. (Optional) Launch the TUI:
+4. (Optional) Configure keys and providers on first run:
+   ```bash
+   master-ai --setup
+   ```
+   You can use a temporary GitHub Models assistant to walk through setup:
+   ```bash
+   GITHUB_TOKEN=ghp_xxx master-ai --setup
+   ```
+   The token is only used during setup; once complete, GitHub AI disconnects.
+
+5. (Optional) Remove Master AI:
+   ```bash
+   master-ai --uninstall
+   ```
+   Levels: pip package + keys, all user data, or total wipe including Ollama.
+
+6. (Optional) Launch the TUI:
    ```bash
    sensei
    ```

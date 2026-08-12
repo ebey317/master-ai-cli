@@ -284,7 +284,7 @@ class CodexFindingsRegressionGuard(unittest.TestCase):
         # Look for `if lo == "hooks"` in master_ai source.
         # main() is the REPL loop, so the trigger lives somewhere in
         # that function (or nearby).
-        with open("/home/user/scripts/master_ai.py") as f:
+        with open(master_ai.__file__) as f:
             src = f.read()
         self.assertIn('if lo == "hooks" or lo.startswith("hooks ")', src,
             "hooks REPL command not wired — Codex caught this on "

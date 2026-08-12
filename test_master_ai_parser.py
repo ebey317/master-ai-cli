@@ -543,8 +543,11 @@ class DirectiveParserTests(unittest.TestCase):
         self.assertEqual(history[-1]["content"], result)
 
     def test_auto_context_codex_md_alias_reads_claude_handoff(self):
+        # Portable across machines/usernames: assert the alias resolved to
+        # the CLAUDE.md handoff file, not a literal absolute path tied to
+        # one dev box's home directory and search-dir layout.
         inject_ctx, meta = master_ai.auto_inject_context("read whole file Codex.md")
-        self.assertIn("/home/user/scripts/CLAUDE.md", inject_ctx)
+        self.assertIn("CLAUDE.md", inject_ctx)
         self.assertTrue(meta["whole_file_requested"])
 
     def test_auto_context_slicer_ignores_filename_stem_for_handle_cloud_deep(self):
@@ -597,12 +600,19 @@ class DirectiveParserTests(unittest.TestCase):
         self.assertIn("master_ai.py @ cloud_deep", inject_ctx)
 
     def test_local_read_target_resolves_codex_possessive_md(self):
+        # Portable across machines/usernames: the alias must resolve to
+        # *some* real CLAUDE.md handoff file, not a literal path tied to
+        # one dev box's home directory and search-dir layout.
         target = master_ai._resolve_local_text_target("codex's md")
-        self.assertEqual(str(target), "/home/user/scripts/CLAUDE.md")
+        self.assertIsNotNone(target)
+        self.assertEqual(target.name, "CLAUDE.md")
+        self.assertTrue(target.is_file())
 
     def test_local_read_target_resolves_codex_memory_alias(self):
         target = master_ai._resolve_local_text_target("~/scripts/codex_memory.md")
-        self.assertEqual(str(target), "/home/user/scripts/CLAUDE.md")
+        self.assertIsNotNone(target)
+        self.assertEqual(target.name, "CLAUDE.md")
+        self.assertTrue(target.is_file())
 
     def test_matrix_credit_screen_is_tool_required(self):
         self.assertTrue(master_ai._is_tool_required("make a matrix credit screen"))

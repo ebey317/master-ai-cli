@@ -32,12 +32,16 @@ class WedgeRegressionTests(unittest.TestCase):
             holder_acquired = threading.Event()
             holder_release = threading.Event()
 
+            # api_handle() serializes per-lane (see _API_HANDLE_LOCKS) so
+            # cloud lanes stop queuing behind local Ollama inference. This
+            # payload (plain "hello", no model prefix) predicts to the
+            # "local" lane, so that's the lock to contend for.
             def _holder():
-                stt_server._API_HANDLE_LOCK.acquire()
+                stt_server._API_HANDLE_LOCKS["local"].acquire()
                 holder_acquired.set()
                 # Hold longer than the test's acquire timeout (0.5s).
                 holder_release.wait(timeout=3.0)
-                stt_server._API_HANDLE_LOCK.release()
+                stt_server._API_HANDLE_LOCKS["local"].release()
 
             t = threading.Thread(target=_holder, daemon=True)
             t.start()
@@ -69,9 +73,9 @@ class WedgeRegressionTests(unittest.TestCase):
         ApiHandleBusy. (It may raise other things — bad payload, missing model
         — but the wedge protection must not false-fire.)"""
         # Make sure the lock is unheld before we start.
-        self.assertTrue(stt_server._API_HANDLE_LOCK.acquire(timeout=1.0),
+        self.assertTrue(stt_server._API_HANDLE_LOCKS["local"].acquire(timeout=1.0),
                         "lock was already held going into the uncontended test")
-        stt_server._API_HANDLE_LOCK.release()
+        stt_server._API_HANDLE_LOCKS["local"].release()
 
         # Use a payload that triggers an early ValueError (missing prompt)
         # so we don't actually call Ollama in the test.

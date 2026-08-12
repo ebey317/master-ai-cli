@@ -23,8 +23,13 @@ from pathlib import Path
 
 os.environ["SENSEI_TUI"] = "0"
 REPO_ROOT = Path(__file__).parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+# Always insert at position 0 (not just "if missing") — other test files
+# collected earlier may have already pushed ~/scripts ahead of REPO_ROOT
+# in sys.path, which makes an "if not in sys.path" guard a no-op since
+# REPO_ROOT is technically present, just not first. On a dev machine with
+# an unrelated live deployment at ~/scripts (different subagent_registry.py
+# / subagents), that leaves the wrong module winning the lookup below.
+sys.path.insert(0, str(REPO_ROOT))
 if "subagent_registry" in sys.modules:
     del sys.modules["subagent_registry"]
 import subagent_registry as sr  # noqa: E402

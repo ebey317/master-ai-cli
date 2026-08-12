@@ -2530,11 +2530,19 @@ def orchestrate(history, user_text, image_path=None):
     # when api_handle parses the synthesized RUN. Built 2026-05-13 after the
     # cloud lane refused "open hypnotix" even with FULL PALETTE OVERRIDE in
     # CLOUD_SYSTEM — architecture beats prompting.
-    desk_synth = _desktop_launch_short_circuit(stripped, low, words)
-    if desk_synth:
-        return {"route": "desktop_launch",
-                "synth_reply": desk_synth,
-                "reason": "desktop-app launch pattern → synthesized RUN: directive (registry-handled)"}
+    #
+    # Gated off chrome_extension automation turns like every other pre-model
+    # short-circuit in this function (see 2b/2c above): page_context content
+    # is attacker-influenced, and automation turns already have a reliable
+    # model-bearing lane (cloud_fast → Groq, CLOUD_SYSTEM teaching holds
+    # there) that can reason about the request instead of a deterministic
+    # bypass firing on page text it never should have seen.
+    if not _is_chrome_ext_automation:
+        desk_synth = _desktop_launch_short_circuit(stripped, low, words)
+        if desk_synth:
+            return {"route": "desktop_launch",
+                    "synth_reply": desk_synth,
+                    "reason": "desktop-app launch pattern → synthesized RUN: directive (registry-handled)"}
 
     generative_video = _is_generative_video_request(low)
     if generative_video:
@@ -7410,6 +7418,10 @@ def _read_path_ok(filepath):
     """Return (ok, why). Resolves symlinks and checks:
        - resolved path stays under an allowed root (HOME, /tmp, /var/log)
        - resolved path matches no secret-path deny pattern
+       - the originally-requested path (pre-resolve) matches no deny pattern
+         either — a secret-named symlink pointing at a differently-named
+         real file must not slip past the denylist just because the target
+         happens to be named something else.
 
     A symlink that escapes the allowed roots fails on the first check —
     that's the symlink-escape denial. Use this in the READ dispatch
@@ -7419,9 +7431,10 @@ def _read_path_ok(filepath):
         real = p.resolve(strict=False)
     except Exception as e:
         return (False, f"path resolve failed: {e}")
+    requested = str(p)
     s = str(real)
     for pat in _READ_DENY_PATTERNS:
-        if pat.search(s):
+        if pat.search(s) or pat.search(requested):
             return (False, f"secret-path denylist: {pat.pattern}")
     for root in _READ_ALLOWED_ROOTS:
         try:
@@ -12070,14 +12083,36 @@ def show_last_summary():
 def main():
     if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
         print(
-            "usage: master-ai [-h]\n\n"
+            "usage: master-ai [-h] [--setup] [--uninstall]\n\n"
             "Local-first AI agent CLI with vision, voice, MCP integration, "
             "and multi-provider routing.\n\n"
-            "Running with no arguments starts the interactive Sensei session.\n\n"
+            "Running with no arguments starts the interactive Sensei session.\n"
+            "Use --setup to configure keys and providers.\n"
+            "Use --uninstall to remove Master AI.\n\n"
             "options:\n"
-            "  -h, --help  show this help message and exit"
+            "  -h, --help     show this help message and exit\n"
+            "      --setup    run the interactive setup wizard\n"
+            "      --uninstall  run the interactive uninstall wizard"
         )
         sys.exit(0)
+
+    if any(arg == "--uninstall" for arg in sys.argv[1:]):
+        import uninstall_wizard
+        uninstall_wizard.run_uninstall(use_github="--github" in sys.argv[1:])
+        sys.exit(0)
+
+    if any(arg == "--setup" for arg in sys.argv[1:]):
+        import setup_wizard
+        setup_wizard.run_setup_explicit()
+        sys.exit(0)
+
+    # First-run setup wizard — only if no keys, no setup done, no permissions done
+    try:
+        import setup_wizard
+        setup_wizard.run_setup_if_first_run()
+    except Exception as e:
+        log(f"SETUP_WIZARD_ERROR: {e}")
+
     # In TUI mode prompt_toolkit owns the alternate screen — don't shell out
     # to `clear`, it writes ANSI directly to the real terminal and confuses
     # the full-screen rendering, often causing a 2-second silent exit.

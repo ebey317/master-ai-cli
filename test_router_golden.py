@@ -61,8 +61,11 @@ class ChatRouting(RouterGoldenBase):
         self.assertIn("model", d)
 
     def test_thanks_routes_local(self):
+        # "thanks" is a pure acknowledgment (commit 555cc09) — short-
+        # circuited to a deterministic one-line reply with no model call.
         d = self.decide("thanks")
-        self.assertEqual(d["route"], "local")
+        self.assertEqual(d["route"], "acknowledgment")
+        self.assertIn("response", d)
 
     def test_plain_question_routes_local(self):
         d = self.decide("what is the capital of France")
@@ -85,9 +88,15 @@ class CodeRouting(RouterGoldenBase):
 
 
 class SystemQueryRouting(RouterGoldenBase):
+    # The original "system_query" route (_system_query_short_circuit) was
+    # deleted in commit aad2762 and reintroduced under a new name,
+    # "deterministic_intent" (_deterministic_intent_to_directive, commit
+    # 953f31a) — same behavior (synthesizes a RUN:/READ: directive, no
+    # model call), new route string.
+
     def test_where_is_file_short_circuits(self):
         d = self.decide("where is biovega_field_manual.md on my computer")
-        self.assertEqual(d["route"], "system_query")
+        self.assertEqual(d["route"], "deterministic_intent")
         self.assertIn("synth_reply", d)
         self.assertTrue(d["synth_reply"])
         self.assertTrue(
@@ -97,17 +106,17 @@ class SystemQueryRouting(RouterGoldenBase):
 
     def test_port_check_short_circuits(self):
         d = self.decide("what's on port 8080")
-        self.assertEqual(d["route"], "system_query")
+        self.assertEqual(d["route"], "deterministic_intent")
         self.assertIn("synth_reply", d)
 
     def test_is_service_running_short_circuits(self):
         d = self.decide("is ollama running")
-        self.assertEqual(d["route"], "system_query")
+        self.assertEqual(d["route"], "deterministic_intent")
 
     def test_messy_voice_where_is(self):
         # Phone voice-to-text often drops punctuation and concatenates words.
         d = self.decide("where is the libreoffice templates folder on disk")
-        self.assertEqual(d["route"], "system_query")
+        self.assertEqual(d["route"], "deterministic_intent")
 
 
 class VisionRouting(RouterGoldenBase):
@@ -168,9 +177,12 @@ class ReasoningRouting(RouterGoldenBase):
 
 class WeatherRouting(RouterGoldenBase):
     def test_whats_the_weather_short_circuits(self):
+        # The weather short-circuit (fed wttr.in) was deleted for good in
+        # commit aad2762, with no replacement — "what's the weather" now
+        # falls through to a normal local chat turn, same as any other
+        # question the deterministic-intent/ack layers don't recognize.
         d = self.decide("what's the weather")
-        self.assertEqual(d["route"], "weather")
-        self.assertIn("synth_reply", d)
+        self.assertEqual(d["route"], "local")
 
 
 class CurrentEventsRouting(RouterGoldenBase):
@@ -239,19 +251,21 @@ class HarvestRecordedOnDeterministicShortCircuit(RouterGoldenBase):
     def test_handle_records_harvest_for_system_query_route(self):
         import inspect
         src = inspect.getsource(master_ai.handle)
-        # The dispatch block for system_query/weather routes must call
-        # harvest.record. We look for the harvest.record call appearing in
-        # the same source AFTER the route check; cheapest reliable proxy
-        # is "system_query" string + "harvest.record" string both present.
-        self.assertIn('system_query', src,
-            "handle() lost the system_query route branch entirely")
+        # The "system_query" route name itself was retired in commit
+        # aad2762 and its behavior reintroduced as "deterministic_intent"
+        # (commit 953f31a). We look for the harvest.record call appearing
+        # in the same source after the route check; cheapest reliable
+        # proxy is "deterministic_intent" string + "harvest.record" string
+        # both present.
+        self.assertIn('deterministic_intent', src,
+            "handle() lost the deterministic_intent route branch entirely")
         self.assertIn('harvest.record', src,
-            "handle() has no harvest.record call — system_query route "
-            "won't populate the cache. P0.3 regression.")
+            "handle() has no harvest.record call — deterministic_intent "
+            "route won't populate the cache. P0.3 regression.")
         # Pin the specific deterministic-route harvest call so a refactor
         # can't remove just THIS one without breaking the test.
         self.assertIn('task_type="deterministic"', src,
-            "system_query/weather dispatch missing "
+            "deterministic_intent dispatch missing "
             "harvest.record(..., task_type='deterministic') — P0.3 fix lost")
 
 

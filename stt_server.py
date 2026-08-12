@@ -1631,7 +1631,7 @@ def _api_parse_actions(reply, *, mode="plan", model="", source="", session_id=""
         if isinstance(page_context, dict) and page_context.get("url"):
             extras["page_url"] = _safe_context_text(page_context.get("url"), 500)
         action["extras"] = extras
-        if chrome_extension:
+        if source == "chrome_extension":
             action["_5wh"] = _synthesize_5wh(action["kind"], action["target"], reply or "", page_url)
         actions.append(action)
 
