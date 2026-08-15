@@ -12106,6 +12106,17 @@ def main():
         setup_wizard.run_setup_explicit()
         sys.exit(0)
 
+    # Startup key gate — require at least one API key or a local Ollama
+    # server before anything else runs. If neither exists, this launches
+    # the interactive bash prompt (setup_keys.sh) and re-checks.
+    try:
+        import gate
+        gate.ensure_ready()
+    except SystemExit:
+        raise
+    except Exception as e:
+        log(f"STARTUP_GATE_ERROR: {e}")
+
     # First-run setup wizard — only if no keys, no setup done, no permissions done
     try:
         import setup_wizard

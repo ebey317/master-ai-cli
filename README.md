@@ -61,12 +61,21 @@ That's what this is. Not a wrapper around someone else's product. My own AI agen
    pip install -e .
    ```
 
-3. Run the agent:
+3. Add your API keys (interactive bash prompt — Groq and OpenRouter have free tiers):
+   ```bash
+   bash setup_keys.sh          # paste keys, stored in ~/.master_ai_keys (0600)
+   bash setup_keys.sh --check  # validate stored keys against live APIs
+   ```
+   Routing auto-detects whatever you configured: local Ollama by default,
+   Groq fast lane, OpenRouter deep lane, Gemini free tier, Fireworks fallback.
+   No key and no Ollama = startup gate blocks with instructions.
+
+4. Run the agent:
    ```bash
    master-ai
    ```
 
-4. (Optional) Configure keys and providers on first run:
+5. (Optional) Full setup wizard (providers, Ollama models, permissions):
    ```bash
    master-ai --setup
    ```
@@ -76,7 +85,7 @@ That's what this is. Not a wrapper around someone else's product. My own AI agen
    ```
    The token is only used during setup; once complete, GitHub AI disconnects.
 
-5. (Optional) Remove Master AI:
+6. (Optional) Remove Master AI:
    ```bash
    master-ai --uninstall
    ```

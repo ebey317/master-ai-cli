@@ -13,7 +13,7 @@ setup(
     url="https://github.com/ebey317/master-ai-cli",
     py_modules=[
         "ab_few_shot", "approval_queue", "capabilities", "claf_cli_integration",
-        "completion", "extract_html", "harvest", "hooks", "iprice", "loop_fsm",
+        "completion", "extract_html", "gate", "harvest", "hooks", "iprice", "loop_fsm",
         "master_ai", "observability", "prewarm_master_ai", "prompt_versions",
         "router", "sensei_clean", "sensei_clean_app", "sensei_clean_web",
         "sensei_extractor", "sensei_memory_index", "sensei_native_host",
