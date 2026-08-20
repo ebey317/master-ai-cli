@@ -323,11 +323,14 @@ def _run_context_on_fixture(fixture_url, options):
         shutil.rmtree(user_data, ignore_errors=True)
 
 
-SEARCH_URL = "file:///home/user/scripts/sensei_extension/test/fake_drive_search.html"
-EMPTY_URL = "file:///home/user/scripts/sensei_extension/test/fake_drive_empty_folder.html"
-FILE_UPLOAD_URL = "file:///home/user/scripts/sensei_extension/test/file_upload_smoke.html"
-PAGE_CONTEXT_URL = "file:///home/user/scripts/sensei_extension/test/page_context_shadow_spa_iframe.html"
-FRAMEWORK_FILL_URL = "file:///home/user/scripts/sensei_extension/test/framework_fill_smoke.html"
+_TEST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "sensei_extension", "test")
+
+SEARCH_URL = "file://" + os.path.join(_TEST_DIR, "fake_drive_search.html")
+EMPTY_URL = "file://" + os.path.join(_TEST_DIR, "fake_drive_empty_folder.html")
+FILE_UPLOAD_URL = "file://" + os.path.join(_TEST_DIR, "file_upload_smoke.html")
+PAGE_CONTEXT_URL = "file://" + os.path.join(_TEST_DIR, "page_context_shadow_spa_iframe.html")
+FRAMEWORK_FILL_URL = "file://" + os.path.join(_TEST_DIR, "framework_fill_smoke.html")
 
 INSPECT_ACTION = {
     "kind": "BROWSER_DRIVE_INSPECT_FOLDER",

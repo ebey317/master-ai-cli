@@ -146,7 +146,10 @@ class WS:
         except OSError:
             pass
 
-FIXTURE_PATH = "/home/user/scripts/sensei_extension/test/job_app_smoke.html"
+FIXTURE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "sensei_extension", "test", "job_app_smoke.html",
+)
 FIXTURE_URL = f"file://{FIXTURE_PATH}"
 
 # Reproduces the action sequence the model emits — see

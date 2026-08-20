@@ -212,9 +212,13 @@ class RecallRouting(RouterGoldenBase):
         # if memory is empty, in which case orchestrate falls through. We
         # only assert that IF recall fires, the route shape is sane.
         d = self.decide("remember what we talked about yesterday")
-        # Either recall_memory (if MEMORY file exists with content) or local
-        # (if memory empty). Both are valid in test environments.
-        self.assertIn(d["route"], ("recall_memory", "local"))
+        # recall_memory (if MEMORY file exists with content), local (if
+        # memory empty and nothing else claims it), or time_sensitive_warn
+        # — "yesterday" is a strong time-sensitive marker (see
+        # _looks_time_sensitive) and this base's apocalypse run_mode routes
+        # unclaimed time-sensitive queries there before falling to local.
+        # All three are valid in test environments.
+        self.assertIn(d["route"], ("recall_memory", "local", "time_sensitive_warn"))
 
 
 class RouteDecisionShape(RouterGoldenBase):

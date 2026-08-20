@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
@@ -106,12 +107,22 @@ class RcloneRemoteProbeOnlyTests(unittest.TestCase):
     """RcloneRemoteAdapter must default to probe-only: scan yields
     nothing, apply/undo refuse with clear messages."""
 
+    @contextmanager
     def _stub_rclone(self, listremotes_return, about_return):
-        return mock.patch.multiple(
+        # probe() gates on shutil.which(_rclone_bin()) before ever calling
+        # rclone_about — stub that too so these tests exercise the mocked
+        # about/listremotes behavior instead of failing with
+        # "rclone-not-installed" on machines that don't have rclone on PATH.
+        with mock.patch.multiple(
             "sensei_clean.adapters.rclone_remote",
             rclone_listremotes=mock.Mock(return_value=listremotes_return),
             rclone_about=mock.Mock(return_value=about_return),
-        )
+            _rclone_bin=mock.Mock(return_value="/usr/bin/rclone"),
+        ), mock.patch(
+            "sensei_clean.adapters.rclone_remote.shutil.which",
+            return_value="/usr/bin/rclone",
+        ):
+            yield
 
     def test_scan_default_is_empty(self):
         with self._stub_rclone(["gdrive"], {"used": 100, "total": 1000}):

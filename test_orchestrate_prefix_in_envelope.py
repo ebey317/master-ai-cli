@@ -25,10 +25,20 @@ input routes correctly to cloud_fast.
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import master_ai
+
+# These tests exercise prefix-routing logic, which is gated on which cloud
+# providers have keys configured (see orchestrate()'s have_groq/have_fireworks/
+# have_cerebras checks). The real ~/.master_ai_keys is live, mutable, out-of-repo
+# credential state — asserting against it makes these tests flaky/environment-
+# dependent. Patch load_keys() so routing behavior is deterministic regardless
+# of what's actually configured on the machine running the suite.
+_FAKE_KEYS = {"groq": "test-groq-key", "fireworks": "test-fireworks-key",
+              "cerebras": "test-cerebras-key", "openrouter": "test-or-key"}
 
 
 def _wrap(user_text: str, page_url: str = "https://www.google.com/") -> str:
@@ -52,7 +62,13 @@ def _wrap(user_text: str, page_url: str = "https://www.google.com/") -> str:
 
 class PrefixInsideEnvelopeTests(unittest.TestCase):
     """All cases assume keys for groq/fireworks/cerebras/openrouter are
-    present in ~/.master_ai_keys (verified live in this session)."""
+    configured (patched via _FAKE_KEYS so results don't depend on the
+    live ~/.master_ai_keys file)."""
+
+    def setUp(self):
+        patcher = mock.patch.object(master_ai, "load_keys", return_value=_FAKE_KEYS)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_fast_in_envelope_routes_to_cloud_fast(self):
         wrapped = _wrap("fast: take a screenshot of this page")
@@ -108,6 +124,11 @@ class PrefixInRawTuiInputTests(unittest.TestCase):
     """Pure TUI input (no API envelope) must still route correctly —
     regression coverage for the unchanged path."""
 
+    def setUp(self):
+        patcher = mock.patch.object(master_ai, "load_keys", return_value=_FAKE_KEYS)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_fast_raw_routes_to_cloud_fast(self):
         d = master_ai.orchestrate([], "fast: what's 2+2")
         self.assertEqual(d["route"], "cloud_fast")
@@ -132,6 +153,11 @@ class PrefixInRawTuiInputTests(unittest.TestCase):
 
 
 class EnvelopePreservationTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.object(master_ai, "load_keys", return_value=_FAKE_KEYS)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_envelope_head_preserved_when_stripping_fast(self):
         wrapped = _wrap("fast: hello")
         d = master_ai.orchestrate([], wrapped)
