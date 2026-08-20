@@ -5354,6 +5354,51 @@ def _show_schedules():
         print(f"{BC}  ║{X}  {Y}{sid:<16}{X} {flag:<8} {C}{when:<6} {cadence:<8}{X} {cmd:<24}{BC}║{X}")
     print(f"{BC}  ╚{'═'*70}╝{X}\n")
 
+# ── SKILL AUTHORING ─────────────────────────────────────────────
+def _skill_dir(name: str):
+    return Path.home() / ".hermes" / "skills" / "master-ai-cli" / name
+
+def _slugify(s: str) -> str:
+    return re.sub(r"[^a-z0-9_-]+", "-", s.lower()).strip("-").replace("--", "-")
+
+def _create_skill(name: str, description: str, body: str):
+    """Create a user-local Hermes skill from a master-ai-cli slash command."""
+    import yaml
+    slug = _slugify(name)
+    if not slug:
+        return None, "invalid skill name"
+    if len(description) > 60:
+        description = description[:57].rstrip() + "."
+    if not description.endswith("."):
+        description += "."
+    skill_dir = _skill_dir(slug)
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_path = skill_dir / "SKILL.md"
+    content = f"""---
+name: {slug}
+description: {description}
+version: 0.1.0
+author: Master AI CLI, Hermes Agent
+license: MIT
+platforms: [linux]
+metadata:
+  hermes:
+    tags: [master-ai-cli, auto-generated]
+---
+
+# {name}
+
+{body}
+"""
+    skill_path.write_text(content)
+    return str(skill_path), None
+
+def _list_auto_skills():
+    root = Path.home() / ".hermes" / "skills" / "master-ai-cli"
+    if not root.exists():
+        return []
+    return [d.name for d in root.iterdir() if (d / "SKILL.md").is_file()]
+
 def _query_rag(user_text, top_k=3, max_chars=3000):
     """Fetch relevant repo context from the canonical RAG index."""
     try:
@@ -7018,6 +7063,8 @@ def show_commands():
         ("/schedule stop", "stop the scheduler daemon"),
         ("/schedule start", "start the scheduler daemon"),
         ("/rag rebuild", "rebuild the canonical RAG index"),
+        ("/skill \"Name\" \"Desc.\" body", "create a Hermes skill from this CLI"),
+        ("/skills", "list auto-generated skills"),
     ]
     width = 66
     print(f"\n{BC}  ╔{'═' * width}╗{X}")
@@ -12728,6 +12775,26 @@ def main():
             else:
                 print(f"  {Y}usage: /schedule <command> HH:MM <hourly|daily|weekly|monthly>{X}")
                 print(f"  {D}example: /schedule /rag rebuild 02:00 daily{X}")
+            continue
+
+        # ── Skill authoring slash command ─────────────────────
+        if lo.startswith("skill"):
+            if lo in ("skills", "skill list"):
+                skills = _list_auto_skills()
+                print(f"\n{BC}  Auto-generated skills:{X} {skills or 'none'}")
+                continue
+            # /skill "name" "description" body...
+            m = re.match(r'skill\s+"([^"]+)"\s+"([^"]+)"\s*(.*)', cmd, re.I | re.S)
+            if m:
+                name, desc, body = m.group(1).strip(), m.group(2).strip(), m.group(3).strip()
+                path, err = _create_skill(name, desc, body)
+                if err:
+                    print(f"  {R}skill error: {err}{X}")
+                else:
+                    print(f"  {G}created skill: {path}{X}")
+            else:
+                print(f"  {Y}usage: /skill \"Name\" \"One-line description.\" body markdown{X}")
+                print(f"  {D}example: /skill \"Email Triage\" \"Triage my email inbox.\" Use existing scripts/triage_emails.py; run with --review default.{X}")
             continue
 
         if lo == "help":
