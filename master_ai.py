@@ -261,15 +261,20 @@ MODELS = {
     # senior-engineer habits, and save-path taxonomy are KV-cached once — no
     # per-turn prompt cost. Rebuild after editing the Modelfile:
     #   ollama create master-ai -f ~/scripts/Modelfile-master-ai
-    "fast":    "qwen2.5:3b",       # spark — briefings, idle, quick answers
-    "master":  "master-ai",        # primary — qwen2.5:7b + baked senior-engineer behavior
-    "vision":  "llava",            # eyes — scrap scanner, apothecary
-    "coder":   "master-ai",        # shared with master (same 7B base + rules)
+    "fast":    "qwen2.5:3b",        # spark — briefings, idle, quick answers
+    "master":  "master-ai",         # primary — qwen2.5:7b + baked senior-engineer behavior
+    "vision":  "llava",             # eyes — scrap scanner, apothecary
+    "coder":   "master-ai",         # shared with master (same 7B base + rules)
     "general": "master-ai",
-    "heavy":   "llava",            # text-capable local fallback
-    "qwen3":   "qwen3.5:cloud",    # cloud — complex analysis
-    "kimi":    "kimi-k2.5:cloud",  # cloud — best vision when online
+    "heavy":   "llava",             # text-capable local fallback
+    "qwen3":   "qwen3.5:397b-cloud",# cloud-composite — complex analysis
+    "kimi":    "kimi-k2.5:cloud",   # cloud — best vision when online (NOT PULLED — run `ollama pull kimi-k2.5:cloud`)
 }
+
+# Fallback used when the custom master-ai model or an optional cloud tag is not
+# actually pulled on this machine. Keeps the local-first promise without
+# requiring a fresh `ollama create` after every install.
+_LOCAL_FALLBACK_MODEL = "qwen2.5:7b"
 
 # All models with labels for the picker menu
 MODEL_MENU = [
@@ -277,8 +282,8 @@ MODEL_MENU = [
     ("master-ai",          "LOCAL  · Sensei primary · qwen2.5:7b + baked rules"),
     ("qwen2.5:3b",         "LOCAL  · 3B · spark · instant · briefings · quick answers"),
     ("llava",              "LOCAL  · multimodal · vision + chat · scanner"),
-    ("qwen3.5:cloud",      "LOCAL  · 397B · thinking · tools · vision"),
-    ("kimi-k2.5:cloud",    "LOCAL  · 1T params · deep reasoning · vision"),
+    ("qwen3.5:397b-cloud", "LOCAL  · 397B · thinking · tools · vision"),
+    ("kimi-k2.5:cloud",    "LOCAL  · 1T params · deep reasoning · vision · requires pull"),
     # ── CLOUD (free tiers — tokens tracked) ──
     ("groq",               "☁ FREE · Llama 3.3 70B — fastest"),
     ("fireworks",          "☁ BYOK · DeepSeek V3.1 — Fireworks"),
@@ -331,6 +336,8 @@ MODEL_COMMAND_ALIASES = {
     "gptoss": "gpt-oss-120b",
     "gpt-oss": "gpt-oss-120b",
     "qwen coder": "qwen3-coder",
+    "qwen3": "qwen3.5:397b-cloud",
+    "qwen3.5": "qwen3.5:397b-cloud",
 }
 
 PINNED_MODEL = None  # set by 'model' command to override auto-routing
@@ -574,11 +581,80 @@ def _awaiting_confirm(fn):
     return _wrap
 
 # ── LOAD KEYS ────────────────────────────────────────────────
+# ~/.master_ai_keys is a symlink to the canonical keychain
+# (~/Desktop/Projects/keychain/master_ai_keys, see KEYCHAIN.md), which is
+# plain KEY=VALUE — not JSON. Try JSON first (back-compat with keys written
+# by this repo's own setup tools), then fall back to parsing KV lines and
+# mapping the canonical uppercase names onto the lowercase names the
+# routing code above reads via KEYS.get(...). ANTHROPIC_API_KEY is
+# deliberately never mapped here — only ANTHROPIC_CONSOLE_KEY is, per the
+# Max-OAuth/Console key separation documented in KEYCHAIN.md.
+_KEY_PREFIXES = {
+    "groq": ("gsk_",),
+    "openrouter": ("sk-or-", "sk-or-v1-"),
+    "openai": ("sk-",),
+    "anthropic": ("sk-ant-",),
+    "gemini": ("AIzaSy",),
+    "fireworks": ("fk-",),
+    "cerebras": ("csk-",),
+    "deepseek": ("sk-d-", "sk-"),
+}
+
+_KV_KEY_MAP = {
+    "OPENROUTER_API_KEY": "openrouter",
+    "GROQ_API_KEY": "groq",
+    "GEMINI_API_KEY": "gemini",
+    "ANTHROPIC_CONSOLE_KEY": "anthropic",
+    "CEREBRAS_API_KEY": "cerebras",
+    "FIREWORKS_API_KEY": "fireworks",
+    "OPENAI_API_KEY": "openai",
+    "DEEPSEEK_API_KEY": "deepseek",
+    "HUGGINGFACE_TOKEN": "huggingface",
+    "HF_TOKEN": "huggingface",
+}
+
+def _parse_kv_keys(text):
+    out = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, val = line.partition("=")
+        name, val = name.strip(), val.strip()
+        short = _KV_KEY_MAP.get(name)
+        if short and val and short not in out:
+            out[short] = val
+    return out
+
+def _key_looks_valid(provider, value):
+    """Return True only if the stored key has the provider's real prefix.
+
+    Placeholder / redacted / empty strings must not count as "having a key"
+    because the orchestrator routes chat to Groq/OpenRouter based on these
+    booleans, and a fake key causes silent cloud failures or wrong model
+    selection."""
+    v = (value or "").strip()
+    if not v or "redacted" in v.lower() or "«" in v or "»" in v or v.lower() in ("none", "null", "placeholder"):
+        return False
+    prefixes = _KEY_PREFIXES.get(provider)
+    if not prefixes:
+        return True
+    return any(v.startswith(p) for p in prefixes)
+
 def load_keys():
     try:
-        return json.loads(KEYS_FILE.read_text())
+        text = KEYS_FILE.read_text()
     except Exception:
         return {}
+    try:
+        return json.loads(text)
+    except Exception:
+        return _parse_kv_keys(text)
+
+def keys_now_valid():
+    """Same shape as load_keys() but values are bools: does this provider have a real key?"""
+    raw = load_keys()
+    return {k: _key_looks_valid(k, v) for k, v in raw.items()}
 
 KEYS = load_keys()
 
@@ -1568,7 +1644,7 @@ def detect_route(text, has_image=False):
     if _matches_terms(t, words, REASONING_WORDS):
         return "cloud", "deepseek-r1", "reasoning → DeepSeek R1"
     if _matches_terms(t, words, COMPLEX_WORDS):
-        return "local", MODELS["qwen3"], "complex → qwen3.5:cloud (397B)"
+        return "local", MODELS["qwen3"], "complex → qwen3.5:397b-cloud (397B)"
     return "local", MODELS["master"], f"general → {MODELS['master']}"
 
 # ── SMART ORCHESTRATOR ───────────────────────────────────────
@@ -2354,7 +2430,7 @@ def orchestrate(history, user_text, image_path=None):
 
     Explicit prefixes (always win, regardless of mode):
       fast:    → Groq (opt-in speed)
-      deep:    → DeepSeek-R1 or qwen3.5:cloud (opt-in reasoning)
+      deep:    → DeepSeek-R1 or qwen3.5:397b-cloud (opt-in reasoning)
       local:   → force local 7b (explicit privacy)
       private: → same as local:, intent-flagged
     """
@@ -2416,14 +2492,16 @@ def orchestrate(history, user_text, image_path=None):
 
     run_mode = _read_run_mode()
     keys_now = load_keys()
-    have_groq   = bool((keys_now.get('groq') or '').strip())
-    have_fireworks = bool((keys_now.get('fireworks') or '').strip())
-    have_cerebras = bool((keys_now.get('cerebras') or '').strip())
-    have_or     = bool((keys_now.get('openrouter') or '').strip())
-    have_gemini = bool((keys_now.get('gemini') or '').strip())
+    keys_valid = keys_now_valid()
+    have_groq   = keys_valid.get('groq', False)
+    have_fireworks = keys_valid.get('fireworks', False)
+    have_cerebras = keys_valid.get('cerebras', False)
+    have_or     = keys_valid.get('openrouter', False)
+    have_gemini = keys_valid.get('gemini', False)
+    have_deepseek = keys_valid.get('deepseek', False)
     # Cerebras is intentionally opt-in for now (`cerebras:` / `model cerebras`),
     # not part of the automatic cloud fallback policy.
-    any_cloud   = have_groq or have_fireworks or have_or or have_gemini
+    any_cloud   = have_groq or have_fireworks or have_or or have_gemini or have_deepseek
 
     # 1. Context pressure — save & refresh before we blow context
     total_chars = sum(len(m.get("content", "") or "") for m in history)
@@ -2467,7 +2545,7 @@ def orchestrate(history, user_text, image_path=None):
                     "reason": "explicit 'deep:' → DeepSeek-R1"}
         return {"route": "cloud_deep", "model": MODELS["qwen3"],
                 "stripped_text": _strip_prefix(5),
-                "reason": "explicit 'deep:' → qwen3.5:cloud"}
+                "reason": "explicit 'deep:' → qwen3.5:397b-cloud"}
     if user_section_low.startswith("local:") or user_section_low.startswith("private:"):
         # "private:" is 8 chars, "local:" is 6. The previous code used 7
         # for "private:" which left a stray ":" in the stripped text.
@@ -2667,7 +2745,7 @@ def orchestrate(history, user_text, image_path=None):
             return _choose_route([
                 {"route": "cloud_deep", "model": MODELS["qwen3"],
                  "task_type": "deep", "base_score": 84,
-                 "reason": "peacetime alter/code/deep → qwen3.5:cloud"},
+                 "reason": "peacetime alter/code/deep → qwen3.5:397b-cloud"},
                 {"route": "local", "model": "qwen2.5:14b" if _have_14b() else MODELS["master"],
                  "task_type": "deep", "base_score": 72,
                  "reason": "local deep fallback"},
@@ -4167,7 +4245,7 @@ def ask_cloud_groq(messages):
     if not _cloud_allowed("groq"):
         return None
     key = KEYS.get("groq")
-    if not key:
+    if not _key_looks_valid("groq", key):
         return None
     messages = _inject_identity(messages)
     messages = _trim_groq_messages(messages, _GROQ_MAX_INPUT_CHARS)
@@ -4209,7 +4287,7 @@ def ask_cloud_openai(messages):
     if not _cloud_allowed("openai"):
         return None
     key = KEYS.get("openai")
-    if not key:
+    if not _key_looks_valid("openai", key):
         return None
     messages = _inject_identity(messages)
     log("CLOUD [openai/gpt-4o]")
@@ -4228,7 +4306,7 @@ def ask_cloud_gemini(messages):
     if not _cloud_allowed("gemini"):
         return None
     key = KEYS.get("gemini")
-    if not key:
+    if not _key_looks_valid("gemini", key):
         return None
     messages = _inject_identity(messages)
     log("CLOUD [gemini/1.5-flash]")
@@ -4250,7 +4328,7 @@ def ask_cloud_anthropic(messages):
     if not _cloud_allowed("anthropic"):
         return None
     key = KEYS.get("anthropic")
-    if not key:
+    if not _key_looks_valid("anthropic", key):
         return None
     messages = _inject_identity(messages)
     log("CLOUD [anthropic/claude-sonnet-4-6]")
@@ -4275,7 +4353,7 @@ def ask_cloud_deepseek(messages):
     if not _cloud_allowed("deepseek"):
         return None
     key = KEYS.get("deepseek")
-    if not key:
+    if not _key_looks_valid("deepseek", key):
         return None
     messages = _inject_identity(messages)
     log("CLOUD [deepseek/R1-reasoner]")
@@ -4307,7 +4385,7 @@ def ask_cloud_fireworks_dsv3(messages):
     if not _cloud_allowed("fireworks"):
         return None
     key = KEYS.get("fireworks")
-    if not key:
+    if not _key_looks_valid("fireworks", key):
         return None
     messages = _inject_identity(messages)
     log("CLOUD [fireworks/deepseek-v3p1]")
@@ -4353,7 +4431,7 @@ def _ask_openrouter(messages, model, label, timeout=60):
     if not _cloud_allowed(provider_key):
         return None
     key = KEYS.get("openrouter")
-    if not key:
+    if not _key_looks_valid("openrouter", key):
         return None
     messages = _inject_identity(messages)
     log(f"CLOUD [openrouter/{label}]")
@@ -4407,7 +4485,7 @@ def _ask_cerebras(messages, model, label, timeout=60):
     if not _cloud_allowed(provider_key):
         return None
     key = KEYS.get("cerebras")
-    if not key:
+    if not _key_looks_valid("cerebras", key):
         return None
     messages = _inject_identity(messages)
     log(f"CLOUD [cerebras/{label}]")
@@ -5864,6 +5942,7 @@ def _resolve_model_choice(choice):
     return ""
 
 def _is_key_backed_model(model):
+    """Name-based check: does this model slot normally require an API key?"""
     return (model or "").lower() in CLOUD_MODEL_NAMES
 
 def _model_required_key(model):
@@ -5883,8 +5962,7 @@ def _pin_model_choice(choice):
     msg = f"{G}✅ Selected model: {W}{resolved}{X}"
     key_name = _model_required_key(resolved)
     if key_name:
-        keys_now = load_keys()
-        if (keys_now.get(key_name) or "").strip():
+        if keys_now_valid().get(key_name, False):
             msg += f"  {D}key:{key_name} ready{X}"
         else:
             msg += f"  {Y}key:{key_name} not saved; calls will fail until `keys` is set{X}"
@@ -5909,6 +5987,7 @@ def _model_usage_rows(limit=12):
 
 def format_model_monitor():
     keys_now = load_keys()
+    _keys_ok = keys_now_valid()
     local = [m for m, d in MODEL_MENU if not _is_key_backed_model(m)]
     cloud = [m for m, d in MODEL_MENU if _is_key_backed_model(m)]
     lines = ["Model monitor"]
@@ -5917,7 +5996,7 @@ def format_model_monitor():
     keyed = []
     for m in cloud:
         k = _model_required_key(m)
-        status = "ok" if k and (keys_now.get(k) or "").strip() else "missing"
+        status = "ok" if k and _keys_ok.get(k, False) else "missing"
         keyed.append(f"{m}({k}:{status})")
     lines.append("   key-backed: " + ", ".join(keyed))
     usage = _model_usage_rows()
@@ -6656,8 +6735,8 @@ def show_tips():
     blank()
     row("General/code",    "→ master-ai (one local primary brain)")
     row("Fast local",      "→ qwen2.5:3b (quick brief answers)")
-    row("Complex / analysis","→ qwen3.5:cloud (397B — deep thinking)")
-    row("Vision / images", "→ kimi-k2.5:cloud (1T — best vision)")
+    row("Complex / analysis","→ qwen3.5:397b-cloud (397B — deep thinking)")
+    row("Vision / images", "→ kimi-k2.5:cloud (1T — best vision, requires pull)")
     row("Reasoning / math","→ DeepSeek R1 (cloud)")
     row("Web / news",      "→ Gemini + DuckDuckGo search")
     row("type 'model'",    "open picker — select any model manually")
@@ -10535,8 +10614,7 @@ def handle_tight_reasoning(user_text, query, history, depth="deep"):
     # Fast and max bypass the cloud one-shot path. Fast wants local-fast
     # TTFB; max needs the second-critic-pass that only the local loop has.
     use_cloud = depth in ("standard", "deep")
-    keys_now = load_keys()
-    if use_cloud and (keys_now.get("openrouter") or "").strip():
+    if use_cloud and keys_now_valid().get("openrouter", False):
         print(f"  {BC}[thinking: tight reasoning ({depth}) → DeepSeek-R1]{X}")
         system = (
             "You are Sensei's tight reasoning lane. Answer the user's hard "
@@ -10790,13 +10868,13 @@ def handle(user_text, history, image_path=None, context_policy=None):
             and ctx_meta.get('whole_file_requested')
             and ctx_meta.get('inject_chars', 0) > _WHOLE_FILE_CLOUD_BIAS_AT):
         try:
-            _keys_now = load_keys()
-            _any_cloud_now = any((_keys_now.get(k) or '').strip()
+            _keys_ok = keys_now_valid()
+            _any_cloud_now = any(_keys_ok.get(k, False)
                                  for k in ('groq', 'fireworks', 'openrouter', 'gemini'))
         except Exception:
-            _keys_now, _any_cloud_now = {}, False
+            _keys_ok, _any_cloud_now = {}, False
         if _any_cloud_now and _read_run_mode() == "peacetime":
-            _cloud_model = "groq" if (_keys_now.get('groq') or '').strip() else "fireworks"
+            _cloud_model = "groq" if _keys_ok.get('groq', False) else "fireworks"
             decision = {
                 "route": "cloud_fast",
                 "model": _cloud_model,
@@ -10945,7 +11023,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
             "      → cloud answer via Groq (needs key from menu 11)" if not have_groq
                 else "      → quick cloud answer via Groq",
             f"  deep: {q}",
-            "      → qwen3.5:cloud (free, no key needed) or DeepSeek-R1",
+            "      → qwen3.5:397b-cloud (free, no key needed) or DeepSeek-R1",
             f"  search {q}",
             "      → retry web search",
             "",
@@ -10973,7 +11051,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
     elif decision["route"] == "cloud" and decision.get("model"):
         # _choose_route can return a plain cloud provider (Fireworks/Gemini/etc.)
         # after scoring. Honor that decision; falling back to detect_route() here
-        # can accidentally route deep turns through Ollama's qwen3.5:cloud lane,
+        # can accidentally route deep turns through Ollama's qwen3.5:397b-cloud lane,
         # which is an HTTP endpoint and can fail independently of BYOK providers.
         route, model, reason = "cloud", decision["model"], decision["reason"]
         print(f"  {BC}[thinking: cloud → {model}]{X}")
@@ -10981,26 +11059,26 @@ def handle(user_text, history, image_path=None, context_policy=None):
         route, model, reason = "vision", decision["model"], decision["reason"]
     elif decision["route"] == "cloud_deep":
         # deepseek-r1 is OpenRouter (true cloud) → route='cloud'.
-        # qwen3.5:cloud is Ollama-proxied. Its lane has been returning HTTP 403
+        # qwen3.5:397b-cloud is Ollama-proxied. Its lane has been returning HTTP 403
         # on every call, so when a real cloud key exists, route through
         # ask_cloud()'s fallback chain instead of dying on the dead Ollama lane.
         # No cloud key → fall back to local master-ai (still useful) rather than
-        # the qwen3.5:cloud dead end.
+        # the qwen3.5:397b-cloud dead end.
         if decision["model"] == "deepseek-r1":
             route, model, reason = "cloud", "deepseek-r1", decision["reason"]
             print(f"  {BC}[thinking: deep → DeepSeek-R1]{X}")
         elif decision["model"] == MODELS["qwen3"]:
-            keys_now = load_keys()
+            _keys_ok = keys_now_valid()
             cloud_pref = next((m for k, m in (
                 ("fireworks",  "fireworks"),
                 ("groq",       "groq"),
                 ("gemini",     "gemini"),
                 ("openrouter", "deepseek-r1"),
-            ) if keys_now.get(k)), None)
+            ) if _keys_ok.get(k, False)), None)
             if cloud_pref:
                 route, model, reason = "cloud", cloud_pref, (
-                    decision["reason"] + f" → qwen3.5:cloud unavailable, using {cloud_pref}")
-                print(f"  {BC}[thinking: deep → {cloud_pref} (qwen3.5:cloud fallback)]{X}")
+                    decision["reason"] + f" → qwen3.5:397b-cloud unavailable, using {cloud_pref}")
+                print(f"  {BC}[thinking: deep → {cloud_pref} (qwen3.5:397b-cloud fallback)]{X}")
             else:
                 route, model, reason = "local", MODELS["master"], (
                     decision["reason"] + " → no cloud keys, using local master-ai")
@@ -11097,7 +11175,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "critic + finalizer chain (commit c7586d4). `reason:` output is INERT prose (no "
         "directive execution); the user reads it, then issues a new turn for the action. "
         "Cloud lanes can also pick this up via `tight:`/`think:` shortcuts when DeepSeek-R1 "
-        "or qwen3.5:cloud is configured. When asked 'can you reason / think deeper / take "
+        "or qwen3.5:397b-cloud is configured. When asked 'can you reason / think deeper / take "
         "your time?' — yes, that surface exists. DO NOT say you can't reason.\n\n"
         "IDENTITY (DO NOT BREAK CHARACTER): You ARE Master AI — the whole product, not the "
         "language model that animates you. Master AI is the brand around Sensei (she/her — "
@@ -11789,7 +11867,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
                      "I skipped the slow local fallback to avoid another freeze.")
 
     elif route == "vision":
-        print(f"{D}  [kimi-k2.5:cloud — vision]{X}")
+        print(f"{D}  [kimi-k2.5:cloud — vision (not pulled)]{X}")
         reply = ask_local_stream(history, model=MODELS["kimi"], image_path=image_path)
         if not reply:
             reply = ask_local_stream(history, model=MODELS["master"], image_path=image_path)
