@@ -3,13 +3,18 @@
 Stationary bottom "input station":
   ┌─ ✏ label ──────────────────────────────┐
   │ 🥷  cursor lives here, text wraps      │
-  │ hub · help · tips · model · mode plan  │  (blue legend)
+  │ /help · /model · /mode plan · /chats   │  (blue legend)
   │ 💭 rotating tip while idle             │
   └─────────────────────────────────────────┘
 
 Everything else — AI replies, status line, scrollable history — overlays /
 moves above this fixed box. The input area never shifts, so the cursor is
 ALWAYS right after the ninja.
+
+Slash-command namespace (v1.9):
+  / = open the command palette
+  /<name> = execute a built-in command
+  All commands live under one prefix. No punctuation buckets.
 
 Public API (used by master_ai.py):
     app = SenseiApp()
@@ -179,42 +184,54 @@ COMMAND_MENU_HINTS = {
     "reason max:": "local max loop (mandatory second-critic pass)",
 }
 
+# Single slash-command namespace. Every built-in command is reachable via
+# /<name>. The slash palette opens with just "/" and filters as you type.
+# Payload commands (the ones that need an argument) keep a trailing space or
+# colon so the cursor lands ready for input.
+PAYLOAD_COMMANDS = {
+    "remember:", "forget:", "task add", "git commit",
+    "image:", "image status", "image latest", "max:", "agent:",
+    "reason:", "reason fast:", "reason standard:", "reason deep:", "reason max:",
+    "agents run", "agents inspect",
+    "hooks enable", "hooks disable",
+}
+
 COMMAND_MENU_GROUPS = {
-    ",": [
-        "hub", "help", "controls", "tips",
-        "update", "master update", "refresh", "restart",
+    "/": [
+        # general
+        "hub", "help", "controls", "tips", "commands",
+        "update", "master update", "refresh", "restart", "kick",
         "save session", "load summary", "load session", "transcript", "log",
         "preview", "clear", "clear history", "clear cache",
         "clear approved", "clear chats", "chats", "doctor", "clean",
-        "projects", "apps", "autotips", "slideshow", "tour", "keys", "approved",
-        "cache", "perms", "tutorial", "project",
-        # P1.5 + P1.7 new command surfaces (2026-05-11)
-        "stats", "agents", "agents list", "hooks", "hooks list",
-        "go", "cancel", "e", "only",
-    ],
-    ";": [
+        "projects", "apps", "autotips", "slideshow", "tour",
+        "keys", "approved", "cache", "perms", "tutorial", "project",
+        # settings / model
         "mode plan", "mode review", "mode auto", "mode local", "mode connected", "mode",
-        "model", "model auto", "model local", "model qwen", "model qwen2.5:3b", "model llava",
+        "model", "model auto", "model local", "model master-ai", "model qwen2.5:3b", "model llava",
         "model groq", "model deepseek-r1", "model qwen3-coder", "model gemini",
-        "model stats", "keys",
+        "model stats", "model qwen3.5:397b-cloud", "model kimi-k2.5:cloud",
         "tts on", "tts off", "tts",
         "hints on", "hints off", "hints",
         "mouse remote", "mouse local", "mouse status",
         "few_shot on", "few_shot off", "few_shot status",
         "privacy status", "privacy approve send",
         "accessibility",
-    ],
-    ".": [
+        # navigation / status
         "up", "down", "top", "bottom", "last",
-    ],
-    "/": [
-        "remember:", "forget:", "task add", "git commit",
+        # payload / tools
+        "remember:", "forget:", "task add", "task done", "task clear", "tasks", "task",
+        "git commit", "git status", "git diff", "git log", "git",
         "image:", "image status", "image latest", "max:", "agent:",
-        # P1.3 (reason depths) + P1.5 (agents subcommands) payload commands
         "reason:", "reason fast:", "reason standard:", "reason deep:", "reason max:",
-        "agents run", "agents inspect",
-        # P1.4 hooks REPL (2026-05-11)
-        "hooks enable", "hooks disable",
+        "search", "read", "dl", "gdrive", "mesh",
+        "agents", "agents list", "agents inspect", "agents run",
+        "hooks", "hooks list", "hooks enable", "hooks disable", "hooks reload",
+        "stats", "router", "router stats",
+        # plan approval
+        "go", "cancel", "e", "only",
+        # exit
+        "x",
     ],
 }
 
@@ -223,6 +240,19 @@ for _group in COMMAND_MENU_GROUPS.values():
     for _cmd in _group:
         if _cmd not in COMPLETER_WORDS:
             COMPLETER_WORDS.append(_cmd)
+
+# Any command that legitimately needs an argument before it can run is a
+# payload command; selecting it from the slash palette leaves the cursor at
+# the end ready for typing instead of submitting immediately.
+def _is_payload_command(command: str) -> bool:
+    if command in PAYLOAD_COMMANDS:
+        return True
+    if command.endswith(":"):
+        return True
+    # subcommands that are known to need an argument
+    return command in ("task add", "task done", "agents run", "agents inspect",
+                       "hooks enable", "hooks disable", "git commit", "image status",
+                       "search", "read", "dl", "mesh ask")
 
 def _menu_prefix(text: str) -> Optional[str]:
     text = (text or "")
@@ -259,13 +289,12 @@ def _menu_command_matches(text: str) -> List[str]:
         ranked.append((score, idx, command))
     return [command for _, _, command in sorted(ranked)]
 
-class PunctCommandCompleter(Completer):
-    """Popup command menus triggered by punctuation prefixes.
+class SlashCommandCompleter(Completer):
+    """Popup command palette triggered by the single '/' prefix.
 
-    Typing `,`, `;`, `.`, or `/` opens the matching command bucket. Typing
-    after the prefix filters by command text or hint. The inserted text
-    replaces the punctuation prefix so the existing command dispatcher
-    receives the same words as manual typing.
+    Typing '/' opens the palette. Typing after the slash filters commands by
+    text or hint. The inserted text replaces the slash so the existing command
+    dispatcher in master_ai.py receives the same words as manual typing.
     """
 
     def get_completions(self, document, complete_event):
@@ -283,16 +312,16 @@ class PunctCommandCompleter(Completer):
             )
 
 LEGEND_WORDS = [
-    "hub", "help", "controls", "tips", "model", "mode plan", "chats", "tts",
-    "transcript", "log", "comma", "semicolon", "period", "slash",
+    "/help", "/model", "/mode plan", "/chats", "/tts", "/slash",
     "e=edit label",
 ]
 
 IDLE_TIPS = [
-    "type 'hub' for the full command menu",
-    "'mode plan' brainstorms + drafts plans (default — no execution)",
-    "'mode review' confirms every command one at a time",
-    "'mode auto' runs commands without asking — destructive still pauses",
+    "type '/' for the command palette",
+    "'/help' for quick reference",
+    "'/mode plan' brainstorms + drafts plans (default — no execution)",
+    "'/mode review' confirms every command one at a time",
+    "'/mode auto' runs commands without asking — destructive still pauses",
     "'fast: your prompt' routes through Groq (fast cloud, needs key)",
     "'deep: your prompt' routes to DeepSeek-R1 (deep reasoning)",
     "'max: your prompt' runs the strongest planner/critic reasoning loop",
@@ -300,21 +329,22 @@ IDLE_TIPS = [
     "'local: your prompt' forces local model explicitly",
     "'mode connected' switches the whole session to cloud-first",
     "on a pending plan — press 1 or Enter to accept, 4 to keep talking",
-    "'copy chat' saves the full session to a markdown file",
-    "'clear cache' if Sensei is serving the same cached answer",
-    "'doctor' shows URLs, services, mode, mouse, and current task",
-    "'chats' to browse saved sessions",
+    "'/copy chat' saves the full session to a markdown file",
+    "'/clear cache' if Sensei is serving the same cached answer",
+    "'/doctor' shows URLs, services, mode, mouse, and current task",
+    "'/chats' to browse saved sessions",
     "PageUp / PageDown scroll output by a full visible page",
-    "'up' / 'down' scroll output; 'top' / 'bottom' jumps",
-    "Shift+Tab opens the settings bucket when input is empty",
-    "'mouse remote' for phone scrolling; 'mouse local' for drag-copy",
-    "'refresh' soft-reloads the engine; 'kick' forces a supervisor respawn",
-    "'e' edits this thread's label",
-    "'model' switches the active AI model",
-    "'tts on' speaks replies out loud (Piper voice)",
-    "'remember: <fact>' saves a fact across all sessions",
-    "', ; . / are worth pressing",
+    "'/up' / '/down' scroll output; '/top' / '/bottom' jumps",
+    "Shift+Tab cycles plan → review → auto when input is empty",
+    "'/mouse remote' for phone scrolling; '/mouse local' for drag-copy",
+    "'/refresh' soft-reloads the engine; '/kick' forces a supervisor respawn",
+    "'/e' edits this thread's label",
+    "'/model' switches the active AI model",
+    "'/tts on' speaks replies out loud (Piper voice)",
+    "'/remember: <fact>' saves a fact across all sessions",
+    "'/' alone opens the slash palette — one prefix for everything",
 ]
+
 
 def _term_size():
     return shutil.get_terminal_size((80, 24))
@@ -462,7 +492,7 @@ class SenseiApp:
             # still growing for pasted prompts.
             height=Dimension(min=1, max=5, preferred=2),
             history=FileHistory(HISTORY_FILE),
-            completer=PunctCommandCompleter(),
+            completer=SlashCommandCompleter(),
             complete_while_typing=True,
             focusable=True,
             # User-typed text stays the terminal's default color — no blue.
@@ -767,21 +797,13 @@ class SenseiApp:
         ])
 
     def _render_legend(self):
-        # Action keys named literally — punctuation as words. `,` is the
-        # comma key, `.` the dot key, etc. Symbols read as silent pauses
-        # on phone voice-to-text; the spelled-out names speak.
-        # Elijah 2026-04-29: "make my action punctuation words not symbols".
+        # Single slash-command namespace. The legend advertises the one
+        # prefix that opens the command palette, plus the edit-label shortcut.
         current_mode = getattr(self, "_mode", "plan").upper()
         return FormattedText([
             ("class:legend", f"MODE:{current_mode}"),
             ("class:sep", "  and  "),
-            ("class:legend", "comma"),
-            ("class:sep", "  and  "),
-            ("class:legend", "dot"),
-            ("class:sep", "  and  "),
             ("class:legend", "slash"),
-            ("class:sep", "  and  "),
-            ("class:legend", "semicolon"),
         ])
 
     def _render_tip(self):
@@ -837,8 +859,8 @@ class SenseiApp:
         return matches[0] if matches else None
 
     def _insert_payload_command(self, command: str) -> bool:
-        """Payload commands replace the comma prefix and wait for user text."""
-        if not any(command == p or command.startswith(p + " ") for p in COMMAND_MENU_GROUPS.get("/", [])):
+        """Payload commands wait for user text after the command is inserted."""
+        if not _is_payload_command(command):
             return False
         suffix = "" if command.endswith(":") else " "
         self._input.buffer.document = Document(command + suffix, len(command + suffix))

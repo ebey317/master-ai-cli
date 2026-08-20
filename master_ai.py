@@ -78,32 +78,28 @@ try:
     atexit.register(readline.write_history_file, _HIST)
 
     _COMPLETIONS = [
-        "hub", "menu", "home", "help", "controls", "shortcuts", "tips", "model", "model auto", "model local", "model stats",
-        "model master-ai", "model qwen", "model qwen2.5:3b", "model llava",
-        "model groq", "model fireworks", "model cerebras", "model deepseek-r1", "model hermes-405b",
-        "model gpt-oss-120b", "model nemotron", "model qwen3-coder", "model gemini",
-        "model openrouter", "model openai", "model anthropic",
-        "mode plan", "mode review", "mode auto",
-        "mode local", "mode connected",
-        "mode", "memory", "remember:", "forget:", "task", "task add ", "task list",
-        "task done ", "task clear", "tasks", "save session", "load summary", "copy chat", "copy session",
-        "load session", "clear", "clear history", "clear cache", "clear approved", "clear chats",
-        "chats", "doctor", "health", "standards", "agent standards", "refresh", "reload", "restart", "kick",
-        "up", "down", "top", "bottom", "last",
-        "mouse remote", "mouse local", "mouse status",
-        "projects", "apps", "autotips", "slideshow", "tour",
-        "keys", "approved", "cache", "harvest", "router", "perms", "tutorial", "hints on", "hints off",
-        "commands", "controls", "shortcuts", "?",
-        "tts on", "tts off", "tts",
-        "hints", "project", "attach ", "search ", "dl ", "image: ", "image status ", "image latest",
-        "git", "git status",
-        "git diff", "git log", "git commit ", "go", "cancel", "accessibility", "x",
-        "how", "how we work", "hww", "agent:", "max:",
+        # slash-palette canonical commands (classic / non-TUI mode)
+        "/", "/help", "/commands", "/controls", "/tips", "/model", "/model auto", "/model local",
+        "/model stats", "/model master-ai", "/model qwen2.5:3b", "/model llava",
+        "/model groq", "/model deepseek-r1", "/model qwen3-coder", "/model gemini",
+        "/mode plan", "/mode review", "/mode auto", "/mode local", "/mode connected", "/mode",
+        "/memory", "remember:", "forget:", "/task", "/task add ", "/task list", "/task done ",
+        "/task clear", "/tasks", "/save session", "/load summary", "/copy chat", "/copy session",
+        "/load session", "/clear", "/clear history", "/clear cache", "/clear approved", "/clear chats",
+        "/chats", "/doctor", "/health", "/standards", "/agent standards", "/refresh", "/reload", "/restart", "/kick",
+        "/up", "/down", "/top", "/bottom", "/last",
+        "/mouse remote", "/mouse local", "/mouse status",
+        "/projects", "/apps", "/autotips", "/slideshow", "/tour",
+        "/keys", "/approved", "/cache", "/harvest", "/router", "/perms", "/tutorial", "/hints on", "/hints off",
+        "/tts on", "/tts off", "/tts",
+        "/project", "/attach ", "/search ", "/dl ", "image: ", "image status ", "image latest",
+        "/git", "/git status", "/git diff", "/git log", "git commit ", "/go", "/cancel", "/accessibility", "/x",
+        "/how", "/how we work", "/hww", "agent:", "max:",
         # P1.3 / P1.5 / P1.7 new surfaces — make them discoverable via tab
-        "stats", "agents", "agents list", "agents inspect ", "agents run ",
+        "/stats", "/agents", "/agents list", "agents inspect ", "agents run ",
         "reason: ", "reason fast: ", "reason standard: ", "reason deep: ", "reason max: ",
         # P1.4 hooks REPL (2026-05-11)
-        "hooks", "hooks list", "hooks enable ", "hooks disable ", "hooks reload",
+        "/hooks", "/hooks list", "hooks enable ", "hooks disable ", "/hooks reload",
     ]
     def _completer(text, state):
         matches = [c for c in _COMPLETIONS if c.startswith(text)]
@@ -505,7 +501,7 @@ def print_thread_box_bottom():
 
 def print_legend():
     """Plain legend line — TYPE these commands at the prompt."""
-    print(f"  {D}⌨ type:{X}  {BC}hub{X} · {BC}help{X} · {BC}tips{X} · {BC}model{X} · {BC}mode plan{X} · {BC}chats{X} · {BC}tts{X} · {BC}e{X}=edit label · {BC}x{X}=exit")
+    print(f"  {D}⌨ type:{X}  {BC}/help{X} · {BC}/model{X} · {BC}/mode plan{X} · {BC}/chats{X} · {BC}/tts{X} · {BC}e{X}=edit label · {BC}/x{X}=exit")
 
 # ── Auto-label: after N exchanges, suggest a label if none is set ──
 _AUTO_LABEL_LOCK = threading.Lock()
@@ -6310,7 +6306,7 @@ def show_autotips(slide_delay=4.0):
             "Letter keys (n/b/q) > arrows — RustDesk eats Esc",
             "Drag-select in tmux → copies to phone (needs xclip)",
             "'tts on' → replies spoken aloud",
-            "', ; . /' are worth pressing",
+            "'/' opens the command palette",
             "'last' → re-print last AI reply inline",
         ]),
     ]
@@ -6541,7 +6537,7 @@ def show_help():
             ("<text> + Enter",       "send message directly — no prefix needed"),
             ("Tab / Shift+Tab",      "complete forward/backward through choices"),
             ("PageUp / PageDown",    "scroll output by one visible page"),
-            (", ; . /",              "punctuation buckets to explore"),
+            ("/",                    "open the command palette"),
             ("↑ / ↓",               "scroll command history"),
             ("← →",                 "move cursor within line"),
             ("i <path>",             "analyze an image file"),
@@ -6638,7 +6634,7 @@ def show_help():
             ("help hide <name>",     "hide a slide (e.g. 'help hide SCROLL')"),
             ("help show <name>",     "re-enable a hidden slide"),
             ("help reset",           "show every slide again"),
-            ("help buckets",         "show the punctuation teaser"),
+            ("help buckets",         "show the slash-command teaser"),
             ("x",                    "exit Master AI"),
         ]),
     ]
@@ -6801,8 +6797,8 @@ def show_tips():
 
     section("POWER TIPS")
     blank()
-    row("Tab",             "auto-complete any command; punctuation buckets narrow faster")
-    row("Shift+Tab",       "reverse completion; empty input opens settings bucket")
+    row("Tab",             "auto-complete any / command; slash palette narrows faster")
+    row("Shift+Tab",       "reverse completion; empty input cycles plan → review → auto")
     row("PageUp/PageDown", "scroll the Sensei output by one visible page")
     row("↑ / ↓",          "scroll through command history")
     row("file mentions",   "AI auto-reads files you name in your message")
@@ -6821,30 +6817,29 @@ def show_commands():
     """Simple first-screen command card for normal users."""
     rows = [
         ("Just type", "Ask for anything in plain English"),
-        ("hub / menu / home", "open the full command menu"),
-        ("help", "quick reference"),
-        ("controls", "terminal + browser control standards"),
-        ("tips", "practical command tips"),
-        ("mode plan", "Think first. Nothing runs until you approve"),
-        ("mode review", "Ask before each file edit or command"),
-        ("mode auto", "Work faster. Safe blocks still apply"),
-        ("mode local", "Local-only routing"),
-        ("mode connected", "Cloud-first routing"),
+        ("/", "open the full command palette"),
+        ("/help", "quick reference"),
+        ("/commands", "full command card"),
+        ("/controls", "terminal + browser control standards"),
+        ("/tips", "practical command tips"),
+        ("/mode plan", "Think first. Nothing runs until you approve"),
+        ("/mode review", "Ask before each file edit or command"),
+        ("/mode auto", "Work faster. Safe blocks still apply"),
+        ("/mode local", "Local-only routing"),
+        ("/mode connected", "Cloud-first routing"),
         ("reason: <question>", "Quick deep answer"),
         ("max: <question>", "Strongest local reasoning loop"),
         ("agent: <task>", "Plan, execute, critique, retry"),
         ("fast: <message>", "Quick cloud answer when Groq is configured"),
         ("image: <prompt>", "Submit a local PNG job"),
         ("image status <id>", "Fetch/show the completed PNG artifact"),
-        (", ; . /", "Explore the punctuation buckets"),
-        ("project ~/path", "Use a folder as context"),
+        ("/project ~/path", "Use a folder as context"),
         ("remember: <fact>", "Save something to memory"),
-        ("doctor", "Check services, models, URLs, and warnings"),
-        ("update", "Update Master AI safely"),
-        ("copy chat", "Export this conversation"),
-        ("help buckets", "Show the punctuation teaser"),
-        ("refresh / reload", "soft-reload the screen/engine"),
-        ("kick / restart", "force restart if stuck"),
+        ("/doctor", "Check services, models, URLs, and warnings"),
+        ("/update", "Update Master AI safely"),
+        ("/copy chat", "Export this conversation"),
+        ("/refresh", "soft-reload the screen/engine"),
+        ("/kick", "force restart if stuck"),
     ]
     width = 66
     print(f"\n{BC}  ╔{'═' * width}╗{X}")
@@ -6864,8 +6859,8 @@ def show_controls():
     rows = [
         ("Sensei", "terminal/TUI controls; respects tmux and terminal copy/paste"),
         ("Pupil", "browser controls; normal HTML, right-click, touch, Tab order"),
-        ("Tab", "complete commands / move through visible terminal choices"),
-        ("Shift+Tab", "move backward in choices; empty input opens settings bucket"),
+        ("Tab", "complete slash commands / move through visible terminal choices"),
+        ("Shift+Tab", "move backward in choices; empty input cycles plan → review → auto"),
         ("PageUp/PageDown", "scroll Sensei output by one visible page"),
         ("Home/End", "jump Sensei output to top / bottom"),
         ("Up/Down", "input command history in Sensei"),
@@ -6887,21 +6882,25 @@ def show_controls():
     print(f"  {D}Rule: do not reinvent platform controls; use the standard surface behavior.{X}\n")
 
 def show_buckets():
-    """Quick reference for the punctuation command buckets."""
+    """Quick reference for the slash-command palette."""
     rows = [
-        (",", "general actions"),
-        (";", "settings: mode, model, keys, tts, hints"),
-        (".", "navigation + status"),
-        ("/", "payload commands"),
+        ("/", "open the command palette"),
+        ("/help", "quick reference"),
+        ("/commands", "full command card"),
+        ("/model", "pick active model"),
+        ("/mode plan", "plan mode"),
+        ("/doctor", "system health"),
+        ("/chats", "browse saved sessions"),
+        ("/x", "exit"),
     ]
     width = 66
     print(f"\n{BC}  ╔{'═' * width}╗{X}")
-    print(f"{BC}  ║{X}  {BW}Punctuation Buckets{X}{' ' * (width - 20)}{BC}║{X}")
+    print(f"{BC}  ║{X}  {BW}Slash Commands{X}{' ' * (width - 16)}{BC}║{X}")
     print(f"{BC}  ╠{'═' * width}╣{X}")
     for key, desc in rows:
-        print(f"{BC}  ║{X}  {Y}{key:<2}{X} {C}{desc:<54}{X}{BC}║{X}")
+        print(f"{BC}  ║{X}  {Y}{key:<12}{X} {C}{desc:<50}{X}{BC}║{X}")
     print(f"{BC}  ╚{'═' * width}╝{X}")
-    print(f"  {D}Tip: type punctuation + letters (example: /im or ;mod) to narrow fast.{X}\n")
+    print(f"  {D}Tip: type '/' then letters (example: /mo) to narrow fast.{X}\n")
 
 # ── SAFETY BLOCK ─────────────────────────────────────────────
 BLOCKED_PATTERNS = [
@@ -12396,11 +12395,12 @@ def main():
 
         lo = cmd.lower()
 
-        # P1.5/P1.7 follow-up: accept a single leading "/" so /stats,
-        # /agents, /reason:, /hub, etc. all route the same as the bare
-        # form. Codex flagged the slash-prefix variant on 2026-05-11.
-        # Strip only ONE leading slash, not greedy — preserves intent
-        # of any command that legitimately needs slashes elsewhere.
+        # Single slash-command namespace: a bare "/" opens the palette.
+        # Anything else with a leading "/" strips it and falls through to
+        # the same dispatcher that already handles the bare form.
+        if lo == "/":
+            show_commands()
+            continue
         if lo.startswith("/") and len(lo) > 1:
             cmd = cmd[1:]
             lo = cmd.lower()
