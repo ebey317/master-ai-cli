@@ -5233,6 +5233,127 @@ def _timeout_fallback_system_prompt(cloud_system: str) -> str:
     head = (cloud_system or "").split("[MEMORY]", 1)[0].rstrip()
     return head + "\n\n[MEMORY]\n(omitted for timeout fallback; answer only the current user request)"
 
+# ── SCHEDULER ──────────────────────────────────────────────────
+def _scheduler_path():
+    return Path.home() / ".master_ai_schedules.json"
+
+def _scheduler_log():
+    return Path.home() / ".master_ai_scheduler.log"
+
+def _scheduler_pid():
+    return Path.home() / ".master_ai_scheduler.pid"
+
+def _load_schedules():
+    try:
+        p = _scheduler_path()
+        if not p.exists():
+            return []
+        data = json.loads(p.read_text())
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        log(f"SCHEDULER_LOAD_ERROR: {e}")
+        return []
+
+def _save_schedules(schedules):
+    try:
+        _scheduler_path().write_text(json.dumps(schedules, indent=2))
+    except Exception as e:
+        log(f"SCHEDULER_SAVE_ERROR: {e}")
+
+def _scheduler_running():
+    pid_file = _scheduler_pid()
+    if not pid_file.exists():
+        return False
+    try:
+        import os
+        pid = int(pid_file.read_text().strip())
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        pid_file.unlink(missing_ok=True)
+        return False
+
+def _start_scheduler_daemon():
+    import subprocess, sys
+    scheduler = Path.home() / "scripts" / "master_ai_scheduler.py"
+    if not scheduler.exists():
+        print("scheduler script not found; run from repo first.")
+        return False
+    if _scheduler_running():
+        print(f"{G}scheduler already running{X}")
+        return True
+    # start detached
+    proc = subprocess.Popen(
+        [sys.executable, str(scheduler), "start"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    # wait a moment for pid file
+    import time
+    for _ in range(10):
+        if _scheduler_running():
+            print(f"{G}scheduler started{X}")
+            return True
+        time.sleep(0.2)
+    print(f"{Y}scheduler start pending — check log{X}")
+    return True
+
+def _stop_scheduler_daemon():
+    import subprocess, sys
+    scheduler = Path.home() / "scripts" / "master_ai_scheduler.py"
+    if not scheduler.exists():
+        return False
+    subprocess.run([sys.executable, str(scheduler), "stop"], capture_output=True, text=True)
+    pid_file = _scheduler_pid()
+    if pid_file.exists():
+        try:
+            import os
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 9)
+        except Exception:
+            pass
+        pid_file.unlink(missing_ok=True)
+    print(f"{G}scheduler stopped{X}")
+    return True
+
+def _add_schedule(command, when, cadence):
+    schedules = _load_schedules()
+    sid = f"sched_{int(__import__('time').time())}"
+    schedules.append({
+        "id": sid,
+        "command": command,
+        "when": when,
+        "cadence": cadence,
+        "enabled": True,
+        "created": __import__('datetime').datetime.now().isoformat(),
+    })
+    _save_schedules(schedules)
+    return sid
+
+def _remove_schedule(sid):
+    schedules = _load_schedules()
+    before = len(schedules)
+    schedules = [s for s in schedules if s.get("id") != sid]
+    _save_schedules(schedules)
+    return before - len(schedules)
+
+def _list_schedules():
+    return _load_schedules()
+
+def _show_schedules():
+    rows = [(s.get("id"), s.get("when"), s.get("cadence"), s.get("command"), s.get("enabled", True)) for s in _load_schedules()]
+    if not rows:
+        print(f"  {D}no schedules set{X}")
+        return
+    print(f"\n{BC}  ╔{'═'*70}╗{X}")
+    print(f"{BC}  ║{X}  {BW}Schedules{' '*61}{BC}║{X}")
+    print(f"{BC}  ╠{'═'*70}╣{X}")
+    for sid, when, cadence, cmd, enabled in rows:
+        flag = f"{G}on{X}" if enabled else f"{R}off{X}"
+        print(f"{BC}  ║{X}  {Y}{sid:<16}{X} {flag:<8} {C}{when:<6} {cadence:<8}{X} {cmd:<24}{BC}║{X}")
+    print(f"{BC}  ╚{'═'*70}╝{X}\n")
+
 def _query_rag(user_text, top_k=3, max_chars=3000):
     """Fetch relevant repo context from the canonical RAG index."""
     try:
@@ -6892,6 +7013,11 @@ def show_commands():
         ("/copy chat", "Export this conversation"),
         ("/refresh", "soft-reload the screen/engine"),
         ("/kick", "force restart if stuck"),
+        ("/schedule <cmd> HH:MM daily", "run a slash command on a schedule"),
+        ("/schedules", "list active schedules"),
+        ("/schedule stop", "stop the scheduler daemon"),
+        ("/schedule start", "start the scheduler daemon"),
+        ("/rag rebuild", "rebuild the canonical RAG index"),
     ]
     width = 66
     print(f"\n{BC}  ╔{'═' * width}╗{X}")
@@ -12568,6 +12694,42 @@ def main():
             show_controls()
             continue
 
+        # ── Scheduler slash commands ──────────────────────────
+        if lo.startswith("schedule"):
+            parts = cmd.split(None, 2)
+            if lo in ("schedules", "schedule list"):
+                _show_schedules()
+                _start_scheduler_daemon()
+                continue
+            if lo.startswith("schedule start") or lo == "scheduler start":
+                _start_scheduler_daemon()
+                continue
+            if lo.startswith("schedule stop") or lo == "scheduler stop":
+                _stop_scheduler_daemon()
+                continue
+            if lo.startswith("schedule remove") or lo.startswith("unschedule"):
+                target = ""
+                if lo.startswith("schedule remove"):
+                    target = cmd.split(None, 2)[2] if len(parts) > 2 else ""
+                else:
+                    target = cmd.split(None, 1)[1] if len(parts) > 1 else ""
+                n = _remove_schedule(target)
+                print(f"  {G}removed {n} schedule(s){X}")
+                continue
+            # /schedule "command" 09:00 daily
+            m = re.match(r'schedule\s+"([^"]+)"\s+(\d{1,2}:\d{2})\s+(hourly|daily|weekly|monthly)', cmd, re.I)
+            if not m:
+                m = re.match(r"schedule\s+(\S+)\s+(\d{1,2}:\d{2})\s+(hourly|daily|weekly|monthly)", cmd, re.I)
+            if m:
+                command, when, cadence = m.group(1), m.group(2), m.group(3).lower()
+                sid = _add_schedule(command, when, cadence)
+                print(f"  {G}scheduled {sid}: {command} @ {when} ({cadence}){X}")
+                _start_scheduler_daemon()
+            else:
+                print(f"  {Y}usage: /schedule <command> HH:MM <hourly|daily|weekly|monthly>{X}")
+                print(f"  {D}example: /schedule /rag rebuild 02:00 daily{X}")
+            continue
+
         if lo == "help":
             maybe_msg = show_help()
             if maybe_msg:
@@ -13148,6 +13310,27 @@ def main():
             sys.stdout.flush()
             os.execvp(sys.executable, [sys.executable, str(Path.home() / "scripts/master_ai.py")])
             continue  # unreachable
+
+        # ── RAG rebuild ────────────────────────────────────────
+        if lo.startswith("rag rebuild") or lo == "rag refresh":
+            import subprocess, sys
+            build_script = Path.home() / "projects" / "master-ai-context" / ".rag" / "build.py"
+            if not build_script.exists():
+                build_script = Path("/tmp/build_rag.py")
+            print(f"  {C}rebuilding RAG index...{X}")
+            proc = subprocess.Popen(
+                [sys.executable, str(build_script)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            for line in proc.stdout:
+                line = line.rstrip()
+                if line:
+                    print(f"  {D}{line[:200]}{X}")
+            proc.wait()
+            print(f"  {G}RAG rebuild finished (exit {proc.returncode}){X}")
+            continue
 
         # ── Clear variants ─────────────────────────────────────
         if lo in ("clear", "clear history"):
