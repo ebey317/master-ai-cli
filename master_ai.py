@@ -5233,25 +5233,77 @@ def _timeout_fallback_system_prompt(cloud_system: str) -> str:
     head = (cloud_system or "").split("[MEMORY]", 1)[0].rstrip()
     return head + "\n\n[MEMORY]\n(omitted for timeout fallback; answer only the current user request)"
 
+def _query_rag(user_text, top_k=3, max_chars=3000):
+    """Fetch relevant repo context from the canonical RAG index."""
+    try:
+        import json, math, sqlite3, requests
+        db_path = Path.home() / "projects" / "master-ai-context" / ".rag" / "index.sqlite3"
+        if not db_path.exists() or not user_text:
+            return ""
+        resp = requests.post(
+            "http://localhost:11434/api/embed",
+            json={"model": "nomic-embed-text:v1.5", "input": [user_text]},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        emb = data.get("embeddings") or data.get("embedding") or []
+        if isinstance(emb, list) and emb and isinstance(emb[0], list):
+            emb = emb[0]
+        if not emb:
+            return ""
+        e_norm = math.sqrt(sum(x * x for x in emb)) or 1.0
+        conn = sqlite3.connect(str(db_path))
+        rows = conn.execute(
+            "SELECT source, repo, start_line, end_line, text, embedding FROM chunks"
+        ).fetchall()
+        scored = []
+        for source, repo, sl, el, txt, emb_blob in rows:
+            if not emb_blob:
+                continue
+            try:
+                vec = json.loads(emb_blob.decode("utf-8"))
+            except Exception:
+                continue
+            if not vec or len(vec) != len(emb):
+                continue
+            v_norm = math.sqrt(sum(x * x for x in vec)) or 1.0
+            sim = sum(a * b for a, b in zip(emb, vec)) / (e_norm * v_norm)
+            scored.append((sim, source, repo, sl, el, txt))
+        conn.close()
+        scored.sort(reverse=True)
+        out = []
+        total = 0
+        for sim, source, repo, sl, el, txt in scored[:top_k]:
+            chunk = f"[{repo} {source}:{sl}-{el}]\n{txt}"
+            if total + len(chunk) > max_chars:
+                break
+            out.append(chunk)
+            total += len(chunk)
+        return "\n\n".join(out)
+    except Exception as e:
+        log(f"RAG_QUERY_ERROR: {e}")
+        return ""
+
 def select_memory_context(user_text, max_chars=6000, mode="default"):
-    """Compact durable memory for local-model turns.
+    """Compact durable memory + canonical RAG repo context for local-model turns.
 
     Local routes intentionally skip a dynamic system prompt so Ollama can keep
     the baked Modelfile prefix hot. Without putting memory anywhere else,
     though, the normal master-ai lane never sees ~/.master_ai_memory. Keep a
     bounded, relevant slice in the user turn so fixes and durable facts stick
     without flooding the 4k context window.
+
+    v1.9: also queries the canonical RAG index built from ~/projects/ so repo
+    facts, CLAUDE.md notes, and prior project state ride along automatically.
     """
+    rag = _query_rag(user_text)
     memory = load_memory()
-    if not memory:
-        return ""
     lines = [
         ln.rstrip()
-        for ln in memory.splitlines()
+        for ln in (memory or "").splitlines()
         if ln.strip() and not _is_memory_marker_line(ln)
     ]
-    if not lines:
-        return ""
 
     words = {
         w.lower()
@@ -5880,7 +5932,7 @@ def run_tutorial():
         ("Modes: Plan / Review / Auto",
          "mode plan    → concrete execution plan first (default, no execution)\nmode review  → ask before every command (per-action confirm)\nmode auto    → run commands without asking (destructive still pauses)"),
         ("Memory",
-         "remember: I prefer dark mode\n  → teaches me a fact to keep across sessions\nforget: dark mode\n  → removes matching facts\nmemory\n  → shows all stored facts"),
+         "remember: I prefer dark mode\n  → teaches me a fact to keep across sessions\nforget: dark mode\n  → removes matching facts\nmemory\n  → shows all stored facts\nRAG index\n  → repo context from ~/projects is auto-injected for local turns"),
         ("Voice Input",
          "Type 'v' and press Enter to record your voice.\nI'll transcribe and send it.\nType 'r 10' to record for 10 seconds."),
         ("Projects",
