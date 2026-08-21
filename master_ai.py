@@ -7063,6 +7063,8 @@ def show_commands():
         ("/schedule stop", "stop the scheduler daemon"),
         ("/schedule start", "start the scheduler daemon"),
         ("/rag rebuild", "rebuild the canonical RAG index"),
+        ("/email", "triage last 3 days across accounts"),
+        ("/email delete", "approve and execute all DELETE-tagged emails"),
         ("/skill \"Name\" \"Desc.\" body", "create a Hermes skill from this CLI"),
         ("/skills", "list auto-generated skills"),
     ]
@@ -12775,6 +12777,25 @@ def main():
             else:
                 print(f"  {Y}usage: /schedule <command> HH:MM <hourly|daily|weekly|monthly>{X}")
                 print(f"  {D}example: /schedule /rag rebuild 02:00 daily{X}")
+            continue
+
+        # ── Email triage slash command ────────────────────────
+        if lo in ("email", "triage", "inbox") or lo.startswith("email ") or lo.startswith("triage "):
+            import subprocess, sys
+            base = [sys.executable, str(Path.home() / "scripts" / "triage_emails.py")]
+            if lo in ("email", "triage", "inbox"):
+                args = ["--days", "3"]
+            elif lo.startswith("email delete") or lo.startswith("triage delete"):
+                args = ["--days", "3", "--delete-approvals", "ALL"]
+            else:
+                args = ["--days", "3"]
+            print(f"  {C}triaging email...{X}")
+            proc = subprocess.run(base + args, capture_output=True, text=True, timeout=300)
+            if proc.stdout:
+                for line in proc.stdout.splitlines()[:200]:
+                    print(f"  {line}")
+            if proc.stderr:
+                print(f"  {R}{proc.stderr[:500]}{X}")
             continue
 
         # ── Skill authoring slash command ─────────────────────
