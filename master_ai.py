@@ -12410,6 +12410,16 @@ def main():
         setup_wizard.run_setup_explicit()
         sys.exit(0)
 
+    # Headless / delegated task mode — allows another AI or script to invoke
+    # master-ai-cli like Claude Code CLI (`master-ai --task "..." --headless`).
+    # This branch intentionally runs before the interactive startup sequence so
+    # it never opens the TUI or blocks on stdin.
+    headless_args = [arg for arg in sys.argv[1:]
+                     if arg in ("--headless", "--task", "-t", "--task-file", "--max-turns", "--json")]
+    if headless_args or any(arg.startswith("--task=") or arg.startswith("-t=") for arg in sys.argv[1:]):
+        import headless_runner
+        sys.exit(headless_runner.main())
+
     # Startup key gate — require at least one API key or a local Ollama
     # server before anything else runs. If neither exists, this launches
     # the interactive bash prompt (setup_keys.sh) and re-checks.
@@ -14535,6 +14545,13 @@ def _run_with_tui():
 
 
 if __name__ == "__main__":
+    # Headless / delegated task mode must be detected before the TUI is
+    # constructed, otherwise interactive mode swallows the terminal.
+    if any(arg in ("--headless", "--task", "-t", "--task-file") for arg in sys.argv[1:]) \
+       or any(arg.startswith("--task=") or arg.startswith("-t=") for arg in sys.argv[1:]):
+        import headless_runner
+        sys.exit(headless_runner.main())
+
     if _SENSEI_ENABLED and _SENSEI_APP is not None:
         _run_with_tui()
     else:

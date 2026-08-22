@@ -1,0 +1,15 @@
+# ShellCheck configuration
+# See https://github.com/koalaman/shellcheck#ignoring-specific-checks
+
+# Disable checks that are not relevant for this project
+# SC2034: var appears unused - we use variables in subshells
+# SC2086: double quote to prevent globbing and word splitting
+# SC2154: var is referenced but not assigned
+# SC2164: use cd ... && command instead of cd ...; command
+shellcheck_disable=SC2034,SC2086,SC2154,SC2164
+
+# Exclude files that are not shell scripts
+exclude=*.py,*.md,*.json,*.toml,*.yaml
+
+# Set shell to bash
+set shell=bash

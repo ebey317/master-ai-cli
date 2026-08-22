@@ -224,6 +224,118 @@ MIT — because it should be free. Like everything else that matters.
 
 ---
 
+## API/Service Documentation
+
+### Core Components
+
+The Master AI system consists of several key components:
+
+- **master_ai.py**: The core agent loop that handles the main processing pipeline
+- **sensei_tui.py**: Terminal UI for interacting with the agent
+- **verifiers.py**: Verification framework for ensuring system stability
+- **router.py**: Model routing logic for selecting between local and cloud providers
+- **approval_queue.py**: Safety layer for approving destructive actions
+
+### Service Interfaces
+
+The system provides several service interfaces:
+
+1. **Command Line Interface (CLI)**: Run `master-ai` or `sensei` to start the agent
+2. **Headless / Delegation Mode**: Run a task without the TUI
+3. **TTS Server**: Text-to-speech service for audio output
+4. **STT Server**: Speech-to-text service for voice input
+5. **Vision Interface**: Image processing via LLaVA and image generation
+6. **MCP Integration**: Model Context Protocol for tool communication
+7. **Browser Extension**: Chrome extension for visual interaction
+
+### Headless Mode
+
+Master AI can be invoked non-interactively from another agent or script, similar
+to Claude Code CLI's print mode. This is useful for automation, CI, and
+delegation from tools like Hermes or other AI systems.
+
+```bash
+# Run a one-shot task
+master-ai --task "Review src/auth.py for security issues" --headless
+
+# Read task from a file
+master-ai --task-file /tmp/task.md --headless
+
+# Limit the number of tool turns
+master-ai --task "Add a docstring to helpers.py" --headless --max-turns 5
+
+# Output structured JSON
+master-ai --task "Summarize the README" --headless --json
+```
+
+In headless mode, the TUI, banner, setup wizard, and permissions wizard are
+skipped. The task is sent to the configured model and any returned tool
+directives (`READ:`, `CREATE:`, `EDIT:`, `RUN:`, `SUBAGENT:`) are executed in
+a bounded loop. Destructive shell commands are blocked by default.
+
+### Configuration
+
+Configuration is managed through:
+- `setup_keys.sh`: For setting up API keys (stored in `~/.master_ai_keys`)
+- `install.sh`: For system setup and installation
+- `pyproject.toml`: For Python package configuration
+
+## Contribution Guidelines
+
+We welcome contributions! Here's how to get started:
+
+### Getting Started
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/your-feature-name`
+3. Make your changes
+4. Run the test suite: `pytest`
+5. Run linters: `ruff check .` and `black --check .`
+6. Run shellcheck: `shellcheck *.sh`
+7. Commit your changes with descriptive messages
+8. Push to your fork
+9. Open a pull request
+
+### Code Style
+
+- Follow PEP 8 guidelines
+- Use 88-character line length (Black)
+- Use ruff for linting
+- Write unit tests for new functionality
+- Keep functions small and focused
+- Document public APIs with docstrings
+
+### Testing
+
+- Write unit tests in the `tests/` directory
+- Test file names should start with `test_`
+- Use descriptive test names
+- Cover edge cases and error conditions
+- Run tests before submitting a PR
+
+### Documentation
+
+- Update README.md when adding new features
+- Add docstrings to new functions and classes
+- Keep documentation in sync with code changes
+
+### Security
+
+- Never commit API keys or secrets
+- Use the approval queue for destructive actions
+- Follow the safety layer guidelines in approval_queue.py
+- Test for security vulnerabilities
+
+### Review Process
+
+- PRs will be reviewed by the maintainers
+- Tests must pass before merging
+- Code style must be consistent
+- Documentation must be updated
+- Changes should be backward compatible when possible
+
+---
+
 ## Author
 
 **Elijah Wilkins** — self-taught AI systems builder, HVAC installer, and creator of Master AI.

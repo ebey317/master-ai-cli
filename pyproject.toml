@@ -1,68 +1,25 @@
-[build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "master-ai-cli"
-version = "0.1.0"
-description = "Local-first AI agent CLI with vision, voice, MCP integration, and multi-provider routing"
-readme = "README.md"
-license = {text = "MIT"}
-authors = [
-    {name = "Elijah Wilkins"}
-]
-requires-python = ">=3.10"
-keywords = ["ai", "agent", "cli", "local-first", "mcp", "vision", "voice"]
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Operating System :: OS Independent",
-]
-dependencies = [
-    "ddgs>=0.8.0",
+[tool.pytest.ini_options]
+addopts = "--tb=short -v --cov=master_ai --cov=sensei_tui --cov=approval_queue --cov=hooks --cov=capabilities --cov=observability --cov=router --cov=subagent_registry --cov=skill_runtime --cov=tts_server --cov=typed_actions --cov=verifiers --cov=whereisit --cov-report=term-missing --cov-report=html"
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+markers = [
+    "slow: marks tests as slow",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
 ]
 
-[project.optional-dependencies]
-gdrive = [
-    "google-api-python-client>=2.0.0",
-    "google-auth-oauthlib>=1.0.0",
-]
-voice = [
-    "openai-whisper>=20231117",
-    "pyaudio>=0.2.14",
-]
-vision = [
-    "opencv-python>=4.8.0",
-    "pillow>=10.0.0",
-]
-dev = [
-    "pytest>=7.0.0",
-    "pytest-cov>=4.0.0",
-]
+# Test directory
+testpaths = ["tests"]
 
-[project.urls]
-Homepage = "https://github.com/ebey317/master-ai-cli"
-Documentation = "https://github.com/ebey317/master-ai-cli#readme"
-Repository = "https://github.com/ebey317/master-ai-cli.git"
-Issues = "https://github.com/ebey317/master-ai-cli/issues"
+# Ignore directories
+norecursedirs = [".git", "__pycache__", "build", "dist", "*.egg-info"]
 
-[project.scripts]
-master-ai = "master_ai:main"
-sensei = "master_ai:main"
+# Do not collect files that are not tests
+python_paths = ["."]
 
-[tool.setuptools]
-py-modules = [
-    "ab_few_shot", "approval_queue", "capabilities", "claf_cli_integration",
-    "completion", "extract_html", "harvest", "hooks", "iprice", "loop_fsm",
-    "master_ai", "observability", "prewarm_master_ai", "prompt_versions",
-    "router", "sensei_clean", "sensei_clean_app", "sensei_clean_web",
-    "sensei_extractor", "sensei_memory_index", "sensei_native_host",
-    "sensei_reasoning_loop", "sensei_reflect", "sensei_tool_detector",
-    "sensei_tui", "setup_email", "setup_wizard", "skill_runtime", "slideshow", "slideshow_uninstall",
-    "stt_server", "subagent_registry", "tts_server", "typed_actions", "uninstall_wizard",
-    "url_grounding", "verifiers", "whereisit",
+# Disable warnings
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
 ]
-packages = ["sensei_clean", "sensei_clean.adapters"]

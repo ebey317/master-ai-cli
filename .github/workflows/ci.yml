@@ -1,0 +1,74 @@
+# GitHub Actions CI workflow
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11"]
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install dependencies
+      run: |
+        pip install --upgrade pip
+        pip install -e .[dev]
+        pip install ruff black pytest pytest-cov shellcheck pre-commit
+    
+    - name: Run pre-commit
+      run: |
+        pre-commit install
+        pre-commit run --all-files
+    
+    - name: Run shellcheck
+      run: |
+        shellcheck --external-sources --exclude=SC2034,SC2086,SC2154,SC2164 *.sh
+    
+    - name: Run ruff
+      run: |
+        ruff check .
+        ruff format --check .
+    
+    - name: Run pytest
+      run: |
+        pytest --tb=short -v --cov=master_ai --cov=sensei_tui --cov=approval_queue --cov=hooks --cov=capabilities --cov=observability --cov=router --cov=subagent_registry --cov=skill_runtime --cov=tts_server --cov=typed_actions --cov=verifiers --cov=whereisit --cov-report=term-missing --cov-report=html
+    
+    - name: Upload coverage report
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: coverage-report
+        path: htmlcov/
+
+  lint:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.10"
+    
+    - name: Install dependencies
+      run: |
+        pip install --upgrade pip
+        pip install ruff black
+    
+    - name: Run ruff
+      run: |
+        ruff check .
+        ruff format --check .
