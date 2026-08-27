@@ -6055,7 +6055,11 @@ def show_mode_status():
     frames, color = anims.get(MODE, (_A_PLAN, Y))
     play_anim(frames, delay=0.12, color=color)
     contract = MODE_CONTRACTS.get(MODE, {})
-    selected_model = PINNED_MODEL or "AUTO"
+    if PINNED_MODEL:
+        selected_model = PINNED_MODEL
+    else:
+        _last = globals().get("_LAST_MODEL") or ""
+        selected_model = f"AUTO→{_last}" if _last else "AUTO"
     print(f"  {C}Mode: {mode_label()}  ·  Model: {W}{selected_model}{C}  —  {contract.get('tagline','')}{X}\n")
     # Always print the full contract so switching modes never leaves an
     # older mode's hint as the last visible text in scrollback.
@@ -6073,7 +6077,7 @@ def run_tutorial():
         ("Modes: Plan / Review / Auto",
          "mode plan    → concrete execution plan first (default, no execution)\nmode review  → ask before every command (per-action confirm)\nmode auto    → run commands without asking (destructive still pauses)"),
         ("Memory",
-         "remember: I prefer dark mode\n  → teaches me a fact to keep across sessions\nforget: dark mode\n  → removes matching facts\nmemory\n  → shows all stored facts\nRAG index\n  → repo context from ~/projects is auto-injected for local turns"),
+         "remember: I prefer dark mode\n  → teaches me a fact to keep across sessions\nforget: dark mode\n  → removes matching facts\nmemory\n  → shows all stored facts"),
         ("Voice Input",
          "Type 'v' and press Enter to record your voice.\nI'll transcribe and send it.\nType 'r 10' to record for 10 seconds."),
         ("Projects",
@@ -6111,6 +6115,168 @@ def run_tutorial():
 def _model_catalog():
     return {m.lower(): m for m, _ in MODEL_MENU}
 
+# OpenRouter's real catalog is hundreds of models; MODEL_MENU only curates
+# ~6 named ones. `model or search <term>` fetches+caches the live list so
+# any of them can be picked by exact id, not just the curated shortlist.
+_OPENROUTER_MODELS_CACHE = Path.home() / ".master_ai_openrouter_models_cache.json"
+_OPENROUTER_MODELS_TTL = 24 * 3600
+
+def _openrouter_model_catalog():
+    """Returns [(id, name, is_free), ...] for every model OpenRouter
+    currently serves. is_free is True when OpenRouter's own pricing.prompt
+    is "0" — the authoritative signal, not just an ":free" suffix guess.
+    Cached to disk for a day; falls back to a stale cache (or an empty
+    list) if the live fetch fails."""
+    def _read_cache():
+        try:
+            return json.loads(_OPENROUTER_MODELS_CACHE.read_text())
+        except Exception:
+            return None
+
+    cached = _read_cache()
+    if cached and time.time() - cached.get("ts", 0) < _OPENROUTER_MODELS_TTL:
+        return [(m["id"], m.get("name", ""), bool(m.get("free"))) for m in cached.get("models", [])]
+
+    try:
+        headers = {"User-Agent": "master-ai/1.0"}
+        key = KEYS.get("openrouter")
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        req = urllib.request.Request("https://openrouter.ai/api/v1/models", headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read())
+        models = [
+            {"id": m.get("id", ""), "name": m.get("name", ""),
+             "free": str(m.get("pricing", {}).get("prompt", "")) == "0"}
+            for m in data.get("data", []) if m.get("id")
+        ]
+        _OPENROUTER_MODELS_CACHE.write_text(json.dumps({"ts": time.time(), "models": models}))
+        return [(m["id"], m["name"], m["free"]) for m in models]
+    except Exception as e:
+        log(f"OPENROUTER_MODELS_FETCH_ERROR: {e}")
+        if cached:
+            return [(m["id"], m.get("name", ""), bool(m.get("free"))) for m in cached.get("models", [])]
+        return []
+
+def print_openrouter_search(query, free_only=False):
+    catalog = _openrouter_model_catalog()
+    if not catalog:
+        print(f"  {Y}couldn't fetch OpenRouter's model list — no key configured or network issue.{X}")
+        return
+    if free_only:
+        catalog = [(mid, name, free) for mid, name, free in catalog if free]
+    q = (query or "").strip().lower()
+    matches = catalog if not q else [
+        (mid, name, free) for mid, name, free in catalog if q in mid.lower() or q in (name or "").lower()
+    ]
+    if not matches:
+        scope = "free " if free_only else ""
+        print(f"  {Y}no {scope}OpenRouter models match '{query}'.{X}")
+        return
+    label = "free OpenRouter models" if free_only and not query else f"OpenRouter models matching '{query}'"
+    print(f"\n  {C}{label}{X}  ({len(matches)} of {len(catalog)}{' free' if free_only else ''} total):")
+    for mid, name, free in matches[:40]:
+        marker = f"{G}🆓 free{X}" if free else f"{Y}💰 paid{X}"
+        print(f"    {W}{mid:<45}{X} {marker}  {D}{name}{X}")
+    if len(matches) > 40:
+        print(f"  {D}...and {len(matches) - 40} more — narrow your search.{X}")
+    print(f"\n  {D}pin one with: model <exact-id>   (use 'model or free' to see only 🆓 models){X}\n")
+
+# ── Live model picker — every configured key, arrow keys + Enter ──────
+# Per Elijah 2026-08-20: "whenever I select model ... it should open up a
+# model catalog for every API key I have logged. I need to scroll up and
+# down and press enter to select it just like every other CLI." Wired
+# into sensei_tui's existing "/" completion menu (same arrow-key/Enter
+# mechanism already used for the command menu) via model_catalog_fn —
+# see SenseiApp(model_catalog_fn=...) in main().
+_NVIDIA_MODELS_CACHE = Path.home() / ".master_ai_nvidia_models_cache.json"
+_CEREBRAS_MODELS_CACHE = Path.home() / ".master_ai_cerebras_models_cache.json"
+_PROVIDER_MODELS_TTL = 24 * 3600
+
+def _provider_model_catalog(cache_file, url, key):
+    """Generic OpenAI-style /v1/models fetch+cache for a single-endpoint
+    provider (NVIDIA, Cerebras — no per-model pricing to track, just ids)."""
+    try:
+        cached = json.loads(cache_file.read_text())
+        if time.time() - cached.get("ts", 0) < _PROVIDER_MODELS_TTL:
+            return list(cached.get("models", []))
+    except Exception:
+        cached = None
+    if not key:
+        return []
+    try:
+        req = urllib.request.Request(url, headers={
+            "Authorization": f"Bearer {key}", "User-Agent": "master-ai/1.0",
+        })
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read())
+        models = sorted(m.get("id", "") for m in data.get("data", []) if m.get("id"))
+        cache_file.write_text(json.dumps({"ts": time.time(), "models": models}))
+        return models
+    except Exception as e:
+        log(f"PROVIDER_MODELS_FETCH_ERROR [{url}]: {e}")
+        return list(cached.get("models", [])) if cached else []
+
+def _nvidia_model_catalog():
+    return _provider_model_catalog(_NVIDIA_MODELS_CACHE,
+        "https://integrate.api.nvidia.com/v1/models", KEYS.get("nvidia"))
+
+def _cerebras_model_catalog():
+    return _provider_model_catalog(_CEREBRAS_MODELS_CACHE,
+        "https://api.cerebras.ai/v1/models", KEYS.get("cerebras"))
+
+_OLLAMA_LOCAL_CACHE = {"ts": 0.0, "models": []}
+_OLLAMA_LOCAL_TTL = 30
+
+def _ollama_local_models():
+    if time.time() - _OLLAMA_LOCAL_CACHE["ts"] < _OLLAMA_LOCAL_TTL:
+        return _OLLAMA_LOCAL_CACHE["models"]
+    try:
+        req = urllib.request.Request("http://127.0.0.1:11434/api/tags")
+        with urllib.request.urlopen(req, timeout=2) as r:
+            data = json.loads(r.read())
+        models = [m.get("name", "") for m in data.get("models", []) if m.get("name")]
+    except Exception:
+        models = []
+    _OLLAMA_LOCAL_CACHE["ts"] = time.time()
+    _OLLAMA_LOCAL_CACHE["models"] = models
+    return models
+
+def live_model_completions(query):
+    """Every model reachable through a key actually present in
+    ~/.master_ai_keys, plus local Ollama — one merged, queryable list for
+    the TUI's live picker. OpenRouter is free-only here (paid needs the
+    explicit `model or search` path); NVIDIA/Cerebras have no per-model
+    pricing split so all of theirs show — both are flat-rate/included
+    with the key, not metered-per-model like OpenRouter's gateway.
+
+    NVIDIA and Cerebras model ids also follow "org/model-name" and can
+    collide with OpenRouter's own id space for the same underlying model
+    (e.g. "nvidia/nemotron-3-ultra-550b-a55b" exists as a distinct, paid
+    id on OpenRouter too) — pin_value carries an explicit "nvidia::" /
+    "cerebras::" tag so routing never mistakes a direct-API pick for an
+    OpenRouter one; display is the clean id shown in the dropdown.
+
+    Returns [(pin_value, display, hint), ...], local first, then by provider.
+    """
+    q = (query or "").strip().lower()
+    rows = []  # (pin_value, display, hint)
+    for m in _ollama_local_models():
+        rows.append((m, m, "LOCAL"))
+    if KEYS.get("cerebras"):
+        for m in _cerebras_model_catalog():
+            rows.append((f"cerebras::{m}", m, "cerebras"))
+    if KEYS.get("nvidia"):
+        for m in _nvidia_model_catalog():
+            rows.append((f"nvidia::{m}", m, "nvidia"))
+    if KEYS.get("openrouter"):
+        for mid, name, free in _openrouter_model_catalog():
+            if free:
+                rows.append((mid, mid, f"openrouter 🆓 {name}"))
+    if not q:
+        return rows
+    return [(pin, disp, hint) for pin, disp, hint in rows if q in disp.lower() or q in hint.lower()]
+
 def _resolve_model_choice(choice):
     """Map a direct `model <name>` choice to a pin target.
 
@@ -6123,19 +6289,53 @@ def _resolve_model_choice(choice):
     low = re.sub(r"\s+", " ", raw.lower())
     if low.startswith("model "):
         low = low[6:].strip()
+        raw = raw[6:].strip()
     if low in MODEL_COMMAND_ALIASES:
         return MODEL_COMMAND_ALIASES[low]
     catalog = _model_catalog()
     if low in catalog:
         return catalog[low]
+    # Explicit direct-API pick from the live picker (live_model_completions)
+    # — "nvidia::"/"cerebras::" is the authoritative signal here, not "/"
+    # (Cerebras model ids like "gpt-oss-120b" don't contain one at all).
+    if low.startswith("nvidia::") or low.startswith("cerebras::"):
+        return raw
+    # Any locally-pulled Ollama model, not just the handful hardcoded into
+    # MODEL_MENU — picked via the live picker, which lists `ollama list`
+    # directly. Exact match against the live list (cheap, cached 30s),
+    # not a shape guess, since Ollama names have no distinguishing prefix.
+    if raw in _ollama_local_models():
+        return raw
+    # OpenRouter catalog id typed directly (e.g. "model anthropic/claude-3.5-sonnet"),
+    # found via `model or search ...` — not in the curated menu above.
+    # Trust the shape; OpenRouter's API is the real validator.
+    if "/" in raw and " " not in raw:
+        return raw
     return ""
 
 def _is_key_backed_model(model):
-    """Name-based check: does this model slot normally require an API key?"""
-    return (model or "").lower() in CLOUD_MODEL_NAMES
+    m = (model or "").lower()
+    # "nvidia::"/"cerebras::" = an explicit direct-API pick from the live
+    # picker (live_model_completions) — disambiguated from OpenRouter's
+    # own "/"-shaped ids, which collide with NVIDIA/Cerebras id space for
+    # the same underlying model (e.g. "nvidia/nemotron-3-ultra-550b-a55b"
+    # exists as a distinct, paid id on OpenRouter too).
+    if m.startswith("nvidia::") or m.startswith("cerebras::"):
+        return True
+    # Bare "/"-shaped ids are OpenRouter's own catalog convention
+    # (provider/model-name) — hundreds of models we don't hardcode into
+    # CLOUD_MODEL_NAMES, picked via `model or search <term>`.
+    return m in CLOUD_MODEL_NAMES or "/" in m
 
 def _model_required_key(model):
-    return CLOUD_MODEL_KEYS.get((model or "").lower(), "")
+    m = (model or "").lower()
+    if m.startswith("nvidia::"):
+        return "nvidia"
+    if m.startswith("cerebras::"):
+        return "cerebras"
+    if m in CLOUD_MODEL_KEYS:
+        return CLOUD_MODEL_KEYS[m]
+    return "openrouter" if "/" in m else ""
 
 def _pin_model_choice(choice):
     global PINNED_MODEL
@@ -6151,10 +6351,26 @@ def _pin_model_choice(choice):
     msg = f"{G}✅ Selected model: {W}{resolved}{X}"
     key_name = _model_required_key(resolved)
     if key_name:
-        if keys_now_valid().get(key_name, False):
+        keys_now = load_keys()
+        if (keys_now.get(key_name) or "").strip():
             msg += f"  {D}key:{key_name} ready{X}"
         else:
             msg += f"  {Y}key:{key_name} not saved; calls will fail until `keys` is set{X}"
+    # Any OpenRouter id picked directly (not one of the curated ":free"
+    # named lanes, and not an explicit nvidia::/cerebras:: direct-API
+    # pick — those never touch OpenRouter's pricing at all) may be a paid
+    # model — warn instead of silently letting real-money calls happen.
+    # Per Elijah 2026-08-20: "I want to choose the free models — I don't
+    # know if I'm being billed or not."
+    _direct_api_pick = resolved.startswith("nvidia::") or resolved.startswith("cerebras::")
+    if "/" in resolved and resolved not in CLOUD_MODEL_NAMES and not _direct_api_pick:
+        catalog = {mid: free for mid, _, free in _openrouter_model_catalog()}
+        is_free = catalog.get(resolved)
+        if is_free is False:
+            msg += f"\n  {R}⚠ this is a PAID OpenRouter model — real-money calls if your account has a balance.{X}"
+            msg += f"\n  {D}see free options: model or free{X}"
+        elif is_free is None:
+            msg += f"\n  {Y}⚠ couldn't confirm free/paid for this id — check: model or search {resolved.split('/')[-1]}{X}"
     return True, msg
 
 def _model_usage_rows(limit=12):
@@ -6176,7 +6392,6 @@ def _model_usage_rows(limit=12):
 
 def format_model_monitor():
     keys_now = load_keys()
-    _keys_ok = keys_now_valid()
     local = [m for m, d in MODEL_MENU if not _is_key_backed_model(m)]
     cloud = [m for m, d in MODEL_MENU if _is_key_backed_model(m)]
     lines = ["Model monitor"]
@@ -6185,7 +6400,7 @@ def format_model_monitor():
     keyed = []
     for m in cloud:
         k = _model_required_key(m)
-        status = "ok" if k and _keys_ok.get(k, False) else "missing"
+        status = "ok" if k and (keys_now.get(k) or "").strip() else "missing"
         keyed.append(f"{m}({k}:{status})")
     lines.append("   key-backed: " + ", ".join(keyed))
     usage = _model_usage_rows()
@@ -6228,7 +6443,8 @@ def show_model_menu():
     else:
         print(f"{BC}  ║{X}  {C}Routing: {G}AUTO{X}  {D}(smart routing by task type){X}")
     print(f"{BC}  ╚{'═'*width}╝{X}")
-    print(f"\n  {D}Direct commands: model local · model groq · model cerebras · model deepseek-r1 · model stats · model auto{X}\n")
+    print(f"\n  {D}Direct commands: model local · model groq · model cerebras · model deepseek-r1 · model stats · model auto{X}")
+    print(f"  {D}Full OpenRouter catalog: model or search <term>  (then: model <exact-id> to pin it){X}\n")
     choice = input(f"  {C}Select (1-{len(MODEL_MENU)} or auto): {X}").strip().lower()
     if choice in ("auto", "a", ""):
         ok, msg = _pin_model_choice("auto")
@@ -6499,7 +6715,7 @@ def show_autotips(slide_delay=4.0):
             "Letter keys (n/b/q) > arrows — RustDesk eats Esc",
             "Drag-select in tmux → copies to phone (needs xclip)",
             "'tts on' → replies spoken aloud",
-            "'/' opens the command palette",
+            "', ; . /' are worth pressing",
             "'last' → re-print last AI reply inline",
         ]),
     ]
@@ -6730,7 +6946,7 @@ def show_help():
             ("<text> + Enter",       "send message directly — no prefix needed"),
             ("Tab / Shift+Tab",      "complete forward/backward through choices"),
             ("PageUp / PageDown",    "scroll output by one visible page"),
-            ("/",                    "open the command palette"),
+            (", ; . /",              "punctuation buckets to explore"),
             ("↑ / ↓",               "scroll command history"),
             ("← →",                 "move cursor within line"),
             ("i <path>",             "analyze an image file"),
@@ -6827,7 +7043,7 @@ def show_help():
             ("help hide <name>",     "hide a slide (e.g. 'help hide SCROLL')"),
             ("help show <name>",     "re-enable a hidden slide"),
             ("help reset",           "show every slide again"),
-            ("help buckets",         "show the slash-command teaser"),
+            ("help buckets",         "show the punctuation teaser"),
             ("x",                    "exit Master AI"),
         ]),
     ]
@@ -6924,8 +7140,8 @@ def show_tips():
     blank()
     row("General/code",    "→ master-ai (one local primary brain)")
     row("Fast local",      "→ qwen2.5:3b (quick brief answers)")
-    row("Complex / analysis","→ qwen3.5:397b-cloud (397B — deep thinking)")
-    row("Vision / images", "→ kimi-k2.5:cloud (1T — best vision, requires pull)")
+    row("Complex / analysis","→ qwen3.5:cloud (397B — deep thinking)")
+    row("Vision / images", "→ kimi-k2.5:cloud (1T — best vision)")
     row("Reasoning / math","→ DeepSeek R1 (cloud)")
     row("Web / news",      "→ Gemini + DuckDuckGo search")
     row("type 'model'",    "open picker — select any model manually")
@@ -6990,8 +7206,8 @@ def show_tips():
 
     section("POWER TIPS")
     blank()
-    row("Tab",             "auto-complete any / command; slash palette narrows faster")
-    row("Shift+Tab",       "reverse completion; empty input cycles plan → review → auto")
+    row("Tab",             "auto-complete any command; punctuation buckets narrow faster")
+    row("Shift+Tab",       "reverse completion; empty input opens settings bucket")
     row("PageUp/PageDown", "scroll the Sensei output by one visible page")
     row("↑ / ↓",          "scroll through command history")
     row("file mentions",   "AI auto-reads files you name in your message")
@@ -7010,38 +7226,30 @@ def show_commands():
     """Simple first-screen command card for normal users."""
     rows = [
         ("Just type", "Ask for anything in plain English"),
-        ("/", "open the full command palette"),
-        ("/help", "quick reference"),
-        ("/commands", "full command card"),
-        ("/controls", "terminal + browser control standards"),
-        ("/tips", "practical command tips"),
-        ("/mode plan", "Think first. Nothing runs until you approve"),
-        ("/mode review", "Ask before each file edit or command"),
-        ("/mode auto", "Work faster. Safe blocks still apply"),
-        ("/mode local", "Local-only routing"),
-        ("/mode connected", "Cloud-first routing"),
+        ("hub / menu / home", "open the full command menu"),
+        ("help", "quick reference"),
+        ("controls", "terminal + browser control standards"),
+        ("tips", "practical command tips"),
+        ("mode plan", "Think first. Nothing runs until you approve"),
+        ("mode review", "Ask before each file edit or command"),
+        ("mode auto", "Work faster. Safe blocks still apply"),
+        ("mode local", "Local-only routing"),
+        ("mode connected", "Cloud-first routing"),
         ("reason: <question>", "Quick deep answer"),
         ("max: <question>", "Strongest local reasoning loop"),
         ("agent: <task>", "Plan, execute, critique, retry"),
         ("fast: <message>", "Quick cloud answer when Groq is configured"),
         ("image: <prompt>", "Submit a local PNG job"),
         ("image status <id>", "Fetch/show the completed PNG artifact"),
-        ("/project ~/path", "Use a folder as context"),
+        (", ; . /", "Explore the punctuation buckets"),
+        ("project ~/path", "Use a folder as context"),
         ("remember: <fact>", "Save something to memory"),
-        ("/doctor", "Check services, models, URLs, and warnings"),
-        ("/update", "Update Master AI safely"),
-        ("/copy chat", "Export this conversation"),
-        ("/refresh", "soft-reload the screen/engine"),
-        ("/kick", "force restart if stuck"),
-        ("/schedule <cmd> HH:MM daily", "run a slash command on a schedule"),
-        ("/schedules", "list active schedules"),
-        ("/schedule stop", "stop the scheduler daemon"),
-        ("/schedule start", "start the scheduler daemon"),
-        ("/rag rebuild", "rebuild the canonical RAG index"),
-        ("/email", "triage last 3 days across accounts"),
-        ("/email delete", "approve and execute all DELETE-tagged emails"),
-        ("/skill \"Name\" \"Desc.\" body", "create a Hermes skill from this CLI"),
-        ("/skills", "list auto-generated skills"),
+        ("doctor", "Check services, models, URLs, and warnings"),
+        ("update", "Update Master AI safely"),
+        ("copy chat", "Export this conversation"),
+        ("help buckets", "Show the punctuation teaser"),
+        ("refresh / reload", "soft-reload the screen/engine"),
+        ("kick / restart", "force restart if stuck"),
     ]
     width = 66
     print(f"\n{BC}  ╔{'═' * width}╗{X}")
@@ -7061,8 +7269,8 @@ def show_controls():
     rows = [
         ("Sensei", "terminal/TUI controls; respects tmux and terminal copy/paste"),
         ("Pupil", "browser controls; normal HTML, right-click, touch, Tab order"),
-        ("Tab", "complete slash commands / move through visible terminal choices"),
-        ("Shift+Tab", "move backward in choices; empty input cycles plan → review → auto"),
+        ("Tab", "complete commands / move through visible terminal choices"),
+        ("Shift+Tab", "move backward in choices; empty input opens settings bucket"),
         ("PageUp/PageDown", "scroll Sensei output by one visible page"),
         ("Home/End", "jump Sensei output to top / bottom"),
         ("Up/Down", "input command history in Sensei"),
@@ -7084,25 +7292,21 @@ def show_controls():
     print(f"  {D}Rule: do not reinvent platform controls; use the standard surface behavior.{X}\n")
 
 def show_buckets():
-    """Quick reference for the slash-command palette."""
+    """Quick reference for the punctuation command buckets."""
     rows = [
-        ("/", "open the command palette"),
-        ("/help", "quick reference"),
-        ("/commands", "full command card"),
-        ("/model", "pick active model"),
-        ("/mode plan", "plan mode"),
-        ("/doctor", "system health"),
-        ("/chats", "browse saved sessions"),
-        ("/x", "exit"),
+        (",", "general actions"),
+        (";", "settings: mode, model, keys, tts, hints"),
+        (".", "navigation + status"),
+        ("/", "payload commands"),
     ]
     width = 66
     print(f"\n{BC}  ╔{'═' * width}╗{X}")
-    print(f"{BC}  ║{X}  {BW}Slash Commands{X}{' ' * (width - 16)}{BC}║{X}")
+    print(f"{BC}  ║{X}  {BW}Punctuation Buckets{X}{' ' * (width - 20)}{BC}║{X}")
     print(f"{BC}  ╠{'═' * width}╣{X}")
     for key, desc in rows:
-        print(f"{BC}  ║{X}  {Y}{key:<12}{X} {C}{desc:<50}{X}{BC}║{X}")
+        print(f"{BC}  ║{X}  {Y}{key:<2}{X} {C}{desc:<54}{X}{BC}║{X}")
     print(f"{BC}  ╚{'═' * width}╝{X}")
-    print(f"  {D}Tip: type '/' then letters (example: /mo) to narrow fast.{X}\n")
+    print(f"  {D}Tip: type punctuation + letters (example: /im or ;mod) to narrow fast.{X}\n")
 
 # ── SAFETY BLOCK ─────────────────────────────────────────────
 BLOCKED_PATTERNS = [
@@ -7144,6 +7348,42 @@ def _blocked_shell_issue(cmd):
 
 def is_blocked(cmd):
     return _blocked_shell_issue(cmd) is not None
+
+# 2026-08-24: caught in the audit log — two RUN: directives fused into one
+# command string with no separator ('...2>/devRUN: find ...') and raw
+# conversational text (question marks, emoji) leaking into a shell argument
+# ('-iname *deep learning weekly? open that up in the thread. \U0001F9E1*').
+# Neither is a real shell command; both ran anyway and logged "completed"
+# while doing nothing useful — typed_actions.parse_reply() only shadow-
+# parses for audit, nothing gates dispatch on it. This is the smallest
+# possible pre-dispatch check: catch the two observed corruption
+# signatures before confirm_run/confirm_runterm act on them.
+_EMBEDDED_DIRECTIVE_RE = re.compile(
+    r'(?<=[^\s\'"` ])(RUN|RUNTERM|READ|CREATE|EDIT|SEND_EMAIL|REMEMBER):',
+    re.IGNORECASE,
+)
+_STRAY_EMOJI_RE = re.compile(
+    '['
+    '\U0001F300-\U0001FAFF'
+    '\U00002600-\U000027BF'
+    '\U0001F1E6-\U0001F1FF'
+    ']'
+)
+
+def _directive_corruption_issue(cmd):
+    """Return a refusal reason if `cmd` looks like a corrupted/concatenated
+    directive rather than a real shell command, else None."""
+    if not cmd:
+        return None
+    m = _EMBEDDED_DIRECTIVE_RE.search(cmd)
+    if m:
+        return (
+            f"embedded '{m.group(1).upper()}:' glued mid-command — "
+            "looks like two directives got concatenated with no separator"
+        )
+    if _STRAY_EMOJI_RE.search(cmd):
+        return "emoji/conversational text embedded in command"
+    return None
 
 _CLEANUP_PROTECTED_PATHS = (
     "~/Downloads", "$HOME/Downloads", "/home/user/Downloads",
