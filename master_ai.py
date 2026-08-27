@@ -78,28 +78,32 @@ try:
     atexit.register(readline.write_history_file, _HIST)
 
     _COMPLETIONS = [
-        # slash-palette canonical commands (classic / non-TUI mode)
-        "/", "/help", "/commands", "/controls", "/tips", "/model", "/model auto", "/model local",
-        "/model stats", "/model master-ai", "/model qwen2.5:3b", "/model llava",
-        "/model groq", "/model deepseek-r1", "/model qwen3-coder", "/model gemini",
-        "/mode plan", "/mode review", "/mode auto", "/mode local", "/mode connected", "/mode",
-        "/memory", "remember:", "forget:", "/task", "/task add ", "/task list", "/task done ",
-        "/task clear", "/tasks", "/save session", "/load summary", "/copy chat", "/copy session",
-        "/load session", "/clear", "/clear history", "/clear cache", "/clear approved", "/clear chats",
-        "/chats", "/doctor", "/health", "/standards", "/agent standards", "/refresh", "/reload", "/restart", "/kick",
-        "/up", "/down", "/top", "/bottom", "/last",
-        "/mouse remote", "/mouse local", "/mouse status",
-        "/projects", "/apps", "/autotips", "/slideshow", "/tour",
-        "/keys", "/approved", "/cache", "/harvest", "/router", "/perms", "/tutorial", "/hints on", "/hints off",
-        "/tts on", "/tts off", "/tts",
-        "/project", "/attach ", "/search ", "/dl ", "image: ", "image status ", "image latest",
-        "/git", "/git status", "/git diff", "/git log", "git commit ", "/go", "/cancel", "/accessibility", "/x",
-        "/how", "/how we work", "/hww", "agent:", "max:",
+        "hub", "menu", "home", "help", "controls", "shortcuts", "tips", "model", "model auto", "model local", "model stats",
+        "model master-ai", "model qwen", "model qwen2.5:3b", "model llava",
+        "model groq", "model fireworks", "model cerebras", "model deepseek-r1", "model hermes-405b",
+        "model gpt-oss-120b", "model nemotron", "model qwen3-coder", "model gemini",
+        "model openrouter", "model openai", "model anthropic",
+        "mode plan", "mode review", "mode auto",
+        "mode local", "mode connected",
+        "mode", "memory", "remember:", "forget:", "task", "task add ", "task list",
+        "task done ", "task clear", "tasks", "save session", "load summary", "copy chat", "copy session",
+        "load session", "clear", "clear history", "clear cache", "clear approved", "clear chats",
+        "chats", "doctor", "health", "standards", "agent standards", "refresh", "reload", "restart", "kick",
+        "up", "down", "top", "bottom", "last",
+        "mouse remote", "mouse local", "mouse status",
+        "projects", "apps", "autotips", "slideshow", "tour",
+        "keys", "approved", "cache", "harvest", "router", "perms", "tutorial", "hints on", "hints off",
+        "commands", "controls", "shortcuts", "?",
+        "tts on", "tts off", "tts",
+        "hints", "project", "attach ", "search ", "dl ", "image: ", "image status ", "image latest",
+        "git", "git status",
+        "git diff", "git log", "git commit ", "go", "cancel", "accessibility", "x",
+        "how", "how we work", "hww", "agent:", "max:",
         # P1.3 / P1.5 / P1.7 new surfaces — make them discoverable via tab
-        "/stats", "/agents", "/agents list", "agents inspect ", "agents run ",
+        "stats", "agents", "agents list", "agents inspect ", "agents run ",
         "reason: ", "reason fast: ", "reason standard: ", "reason deep: ", "reason max: ",
         # P1.4 hooks REPL (2026-05-11)
-        "/hooks", "/hooks list", "hooks enable ", "hooks disable ", "/hooks reload",
+        "hooks", "hooks list", "hooks enable ", "hooks disable ", "hooks reload",
     ]
     def _completer(text, state):
         matches = [c for c in _COMPLETIONS if c.startswith(text)]
@@ -125,7 +129,11 @@ except Exception:
 if _SENSEI_ENABLED:
     try:
         from sensei_tui import SenseiApp
-        _SENSEI_APP = SenseiApp()
+        # Lambda, not the function itself — live_model_completions is defined
+        # later in this module; the lambda only resolves the name when the
+        # completer actually calls it (interactive use, long after module
+        # load finishes), so the forward reference is safe.
+        _SENSEI_APP = SenseiApp(model_catalog_fn=lambda q: live_model_completions(q))
     except Exception as _e:
         _SENSEI_APP = None
         _SENSEI_ENABLED = False
@@ -257,20 +265,15 @@ MODELS = {
     # senior-engineer habits, and save-path taxonomy are KV-cached once — no
     # per-turn prompt cost. Rebuild after editing the Modelfile:
     #   ollama create master-ai -f ~/scripts/Modelfile-master-ai
-    "fast":    "qwen2.5:3b",        # spark — briefings, idle, quick answers
-    "master":  "master-ai",         # primary — qwen2.5:7b + baked senior-engineer behavior
-    "vision":  "llava",             # eyes — scrap scanner, apothecary
-    "coder":   "master-ai",         # shared with master (same 7B base + rules)
+    "fast":    "qwen2.5:3b",       # spark — briefings, idle, quick answers
+    "master":  "master-ai",        # primary — qwen2.5:7b + baked senior-engineer behavior
+    "vision":  "llava",            # eyes — scrap scanner, apothecary
+    "coder":   "master-ai",        # shared with master (same 7B base + rules)
     "general": "master-ai",
-    "heavy":   "llava",             # text-capable local fallback
-    "qwen3":   "qwen3.5:397b-cloud",# cloud-composite — complex analysis
-    "kimi":    "kimi-k2.5:cloud",   # cloud — best vision when online (NOT PULLED — run `ollama pull kimi-k2.5:cloud`)
+    "heavy":   "llava",            # text-capable local fallback
+    "qwen3":   "qwen3.5:cloud",    # cloud — complex analysis
+    "kimi":    "kimi-k2.5:cloud",  # cloud — best vision when online
 }
-
-# Fallback used when the custom master-ai model or an optional cloud tag is not
-# actually pulled on this machine. Keeps the local-first promise without
-# requiring a fresh `ollama create` after every install.
-_LOCAL_FALLBACK_MODEL = "qwen2.5:7b"
 
 # All models with labels for the picker menu
 MODEL_MENU = [
@@ -278,36 +281,30 @@ MODEL_MENU = [
     ("master-ai",          "LOCAL  · Sensei primary · qwen2.5:7b + baked rules"),
     ("qwen2.5:3b",         "LOCAL  · 3B · spark · instant · briefings · quick answers"),
     ("llava",              "LOCAL  · multimodal · vision + chat · scanner"),
-    ("qwen3.5:397b-cloud", "LOCAL  · 397B · thinking · tools · vision"),
-    ("kimi-k2.5:cloud",    "LOCAL  · 1T params · deep reasoning · vision · requires pull"),
-    # ── CLOUD (free tiers — tokens tracked) ──
-    ("groq",               "☁ FREE · Llama 3.3 70B — fastest"),
-    ("fireworks",          "☁ BYOK · DeepSeek V3.1 — Fireworks"),
-    ("cerebras",           "☁ FREE · Qwen3-235B preview — Cerebras direct"),
-    ("deepseek-r1",        "☁ FREE · DeepSeek R1 — reasoning"),
-    ("hermes-405b",        "☁ FREE · Hermes 405B — biggest free model"),
-    ("gpt-oss-120b",       "☁ FREE · GPT-OSS 120B — OpenAI open source"),
-    ("nemotron",           "☁ FREE · Nemotron 120B — NVIDIA reasoning"),
-    ("qwen3-coder",        "☁ FREE · Qwen3 Coder — cloud code upgrade"),
-    ("gemini",             "☁ FREE · Gemini 2.0 Flash — research + web"),
-    ("openrouter",         "☁ KEY  · OpenRouter default — Llama 3.3 70B"),
-    ("openai",             "☁ KEY  · OpenAI — configured key provider"),
-    ("anthropic",          "☁ KEY  · Anthropic — configured key provider"),
+    ("qwen3.5:cloud",      "LOCAL  · 397B · thinking · tools · vision"),
+    ("kimi-k2.5:cloud",    "LOCAL  · 1T params · deep reasoning · vision"),
+    # ── CLOUD (2026-08-27: restricted to the three keys operator actually
+    #    uses — OpenRouter /free models only, OpenCode's keyless free
+    #    relay, NVIDIA direct. groq/fireworks/cerebras/deepseek-direct/
+    #    gemini/openai/anthropic-direct keys are ones he no longer uses.
+    #    deepseek-r1/gpt-oss-120b/qwen3-coder used to be distinct OpenRouter
+    #    free slugs; all three 404'd out of the catalog the same day and
+    #    got rerouted to the one working nemotron slug, so keeping them as
+    #    separate menu entries would just be three names for one model —
+    #    dropped rather than left misleading.) ──
+    ("opencode",           "☁ FREE · OpenCode Zen — keyless, laguna-s-2.1-free"),
+    ("nvidia",             "☁ KEY  · NVIDIA NIM direct — Nemotron 3 Super 120B"),
+    ("nemotron",           "☁ FREE · OpenRouter /free — Nemotron 3 Super 120B"),
+    ("hermes-405b",        "☁ FREE · OpenRouter /free — Nemotron 3 Ultra 550B (larger, slower)"),
+    ("openrouter",         "☁ FREE · OpenRouter /free — auto (tries 120B, then 550B)"),
 ]
 
 CLOUD_MODEL_KEYS = {
-    "groq": "groq",
-    "fireworks": "fireworks",
-    "cerebras": "cerebras",
-    "deepseek-r1": "openrouter",
-    "hermes-405b": "openrouter",
-    "gpt-oss-120b": "openrouter",
+    "opencode": "opencode",
+    "nvidia": "nvidia",
     "nemotron": "openrouter",
-    "qwen3-coder": "openrouter",
-    "gemini": "gemini",
+    "hermes-405b": "openrouter",
     "openrouter": "openrouter",
-    "openai": "openai",
-    "anthropic": "anthropic",
 }
 CLOUD_MODEL_NAMES = frozenset(CLOUD_MODEL_KEYS)
 MODEL_COMMAND_ALIASES = {
@@ -332,8 +329,6 @@ MODEL_COMMAND_ALIASES = {
     "gptoss": "gpt-oss-120b",
     "gpt-oss": "gpt-oss-120b",
     "qwen coder": "qwen3-coder",
-    "qwen3": "qwen3.5:397b-cloud",
-    "qwen3.5": "qwen3.5:397b-cloud",
 }
 
 PINNED_MODEL = None  # set by 'model' command to override auto-routing
@@ -501,11 +496,26 @@ def print_thread_box_bottom():
 
 def print_legend():
     """Plain legend line — TYPE these commands at the prompt."""
-    print(f"  {D}⌨ type:{X}  {BC}/help{X} · {BC}/model{X} · {BC}/mode plan{X} · {BC}/chats{X} · {BC}/tts{X} · {BC}e{X}=edit label · {BC}/x{X}=exit")
+    print(f"  {D}⌨ type:{X}  {BC}hub{X} · {BC}help{X} · {BC}tips{X} · {BC}model{X} · {BC}mode plan{X} · {BC}chats{X} · {BC}tts{X} · {BC}e{X}=edit label · {BC}x{X}=exit")
 
 # ── Auto-label: after N exchanges, suggest a label if none is set ──
 _AUTO_LABEL_LOCK = threading.Lock()
 _AUTO_LABEL_TRIED = False  # per-session flag so we only auto-fire once
+
+def _ask_cloud_for_label(messages):
+    """Try whichever cloud key is actually live, not a single hardcoded
+    provider — groq's key in the keychain has been a dead placeholder for
+    months, which silently broke auto-labeling (AUTO_LABEL_ERROR, never
+    surfaced). Tries openrouter first (confirmed live), falls back to
+    groq/gemini in case those get fixed later."""
+    for asker in (ask_cloud_openrouter, ask_cloud_groq, ask_cloud_gemini):
+        try:
+            result = asker(messages)
+            if result:
+                return result
+        except Exception:
+            continue
+    return None
 
 def _auto_label_bg(history_snapshot):
     """Background: generate a kebab-case label from recent exchanges, save it."""
@@ -515,7 +525,7 @@ def _auto_label_bg(history_snapshot):
         transcript = "\n".join(f"{m['role']}: {m['content'][:200]}" for m in msgs)
         prompt = (f"Give a 2-4 word kebab-case label for this conversation "
                   f"(lowercase, hyphens, no punctuation). Output ONLY the label.\n\n{transcript}")
-        suggested = ask_cloud_groq([{"role": "user", "content": prompt}]) or ""
+        suggested = _ask_cloud_for_label([{"role": "user", "content": prompt}]) or ""
         suggested = re.sub(r'[^a-z0-9\-]+', '-', suggested.strip().split("\n")[0].strip().lower()).strip('-')[:40]
         if suggested and not load_thread_label():
             save_thread_label(suggested)
@@ -585,17 +595,6 @@ def _awaiting_confirm(fn):
 # routing code above reads via KEYS.get(...). ANTHROPIC_API_KEY is
 # deliberately never mapped here — only ANTHROPIC_CONSOLE_KEY is, per the
 # Max-OAuth/Console key separation documented in KEYCHAIN.md.
-_KEY_PREFIXES = {
-    "groq": ("gsk_",),
-    "openrouter": ("sk-or-", "sk-or-v1-"),
-    "openai": ("sk-",),
-    "anthropic": ("sk-ant-",),
-    "gemini": ("AIzaSy",),
-    "fireworks": ("fk-",),
-    "cerebras": ("csk-",),
-    "deepseek": ("sk-d-", "sk-"),
-}
-
 _KV_KEY_MAP = {
     "OPENROUTER_API_KEY": "openrouter",
     "GROQ_API_KEY": "groq",
@@ -607,7 +606,26 @@ _KV_KEY_MAP = {
     "DEEPSEEK_API_KEY": "deepseek",
     "HUGGINGFACE_TOKEN": "huggingface",
     "HF_TOKEN": "huggingface",
+    "NVIDIA_API_KEY": "nvidia",
 }
+
+def _looks_like_real_key(val):
+    """Reject corrupted/placeholder key values before they ever reach a
+    request. 2026-08-24: every key in the keychain had been overwritten
+    with a redaction placeholder ('«redacted:gsk_…»' style text) instead of
+    the real secret. Real API keys are plain ASCII tokens; a placeholder
+    or any other non-ASCII value crashes urllib/http.client deep inside
+    urlopen() with a raw UnicodeEncodeError instead of failing cleanly,
+    which looks like a hang as the router retries every provider in a
+    loop. Treat non-ASCII or bracketed values as absent so callers take
+    the normal 'key not configured' path instead."""
+    if not val:
+        return False
+    if any(ord(c) > 127 for c in val):
+        return False
+    if val.startswith(("<", "[", "«", "REDACTED", "redacted")):
+        return False
+    return True
 
 def _parse_kv_keys(text):
     out = {}
@@ -618,24 +636,9 @@ def _parse_kv_keys(text):
         name, _, val = line.partition("=")
         name, val = name.strip(), val.strip()
         short = _KV_KEY_MAP.get(name)
-        if short and val and short not in out:
+        if short and val and short not in out and _looks_like_real_key(val):
             out[short] = val
     return out
-
-def _key_looks_valid(provider, value):
-    """Return True only if the stored key has the provider's real prefix.
-
-    Placeholder / redacted / empty strings must not count as "having a key"
-    because the orchestrator routes chat to Groq/OpenRouter based on these
-    booleans, and a fake key causes silent cloud failures or wrong model
-    selection."""
-    v = (value or "").strip()
-    if not v or "redacted" in v.lower() or "«" in v or "»" in v or v.lower() in ("none", "null", "placeholder"):
-        return False
-    prefixes = _KEY_PREFIXES.get(provider)
-    if not prefixes:
-        return True
-    return any(v.startswith(p) for p in prefixes)
 
 def load_keys():
     try:
@@ -643,14 +646,10 @@ def load_keys():
     except Exception:
         return {}
     try:
-        return json.loads(text)
+        raw = json.loads(text)
+        return {k: v for k, v in raw.items() if _looks_like_real_key(v)}
     except Exception:
         return _parse_kv_keys(text)
-
-def keys_now_valid():
-    """Same shape as load_keys() but values are bools: does this provider have a real key?"""
-    raw = load_keys()
-    return {k: _key_looks_valid(k, v) for k, v in raw.items()}
 
 KEYS = load_keys()
 
@@ -1640,7 +1639,7 @@ def detect_route(text, has_image=False):
     if _matches_terms(t, words, REASONING_WORDS):
         return "cloud", "deepseek-r1", "reasoning → DeepSeek R1"
     if _matches_terms(t, words, COMPLEX_WORDS):
-        return "local", MODELS["qwen3"], "complex → qwen3.5:397b-cloud (397B)"
+        return "local", MODELS["qwen3"], "complex → qwen3.5:cloud (397B)"
     return "local", MODELS["master"], f"general → {MODELS['master']}"
 
 # ── SMART ORCHESTRATOR ───────────────────────────────────────
@@ -2315,7 +2314,9 @@ def _json_object_from_text(text):
 
 
 def _fast_classifier_enabled():
-    flag = os.environ.get("SENSEI_FAST_CLASSIFIER", "1").strip().lower()
+    # 2026-08-27: Fast classifier disabled — it uses Ollama and times out at 4s,
+    # adding dead latency to every request. The rule-based router handles routing fine.
+    flag = os.environ.get("SENSEI_FAST_CLASSIFIER", "0").strip().lower()
     return flag not in {"0", "false", "off", "no"}
 
 
@@ -2426,7 +2427,7 @@ def orchestrate(history, user_text, image_path=None):
 
     Explicit prefixes (always win, regardless of mode):
       fast:    → Groq (opt-in speed)
-      deep:    → DeepSeek-R1 or qwen3.5:397b-cloud (opt-in reasoning)
+      deep:    → DeepSeek-R1 or qwen3.5:cloud (opt-in reasoning)
       local:   → force local 7b (explicit privacy)
       private: → same as local:, intent-flagged
     """
@@ -2488,16 +2489,16 @@ def orchestrate(history, user_text, image_path=None):
 
     run_mode = _read_run_mode()
     keys_now = load_keys()
-    keys_valid = keys_now_valid()
-    have_groq   = keys_valid.get('groq', False)
-    have_fireworks = keys_valid.get('fireworks', False)
-    have_cerebras = keys_valid.get('cerebras', False)
-    have_or     = keys_valid.get('openrouter', False)
-    have_gemini = keys_valid.get('gemini', False)
-    have_deepseek = keys_valid.get('deepseek', False)
+    # 2026-08-27: Groq disabled — API key invalid.
+    have_groq   = False  # bool((keys_now.get('groq') or '').strip())
+    # 2026-08-27: Fireworks disabled — deepseek-v3p1 model ID returns 404.
+    have_fireworks = False  # bool((keys_now.get('fireworks') or '').strip())
+    have_cerebras = bool((keys_now.get('cerebras') or '').strip())
+    have_or     = bool((keys_now.get('openrouter') or '').strip())
+    have_gemini = bool((keys_now.get('gemini') or '').strip())
     # Cerebras is intentionally opt-in for now (`cerebras:` / `model cerebras`),
     # not part of the automatic cloud fallback policy.
-    any_cloud   = have_groq or have_fireworks or have_or or have_gemini or have_deepseek
+    any_cloud   = have_groq or have_fireworks or have_or or have_gemini
 
     # 1. Context pressure — save & refresh before we blow context
     total_chars = sum(len(m.get("content", "") or "") for m in history)
@@ -2541,7 +2542,7 @@ def orchestrate(history, user_text, image_path=None):
                     "reason": "explicit 'deep:' → DeepSeek-R1"}
         return {"route": "cloud_deep", "model": MODELS["qwen3"],
                 "stripped_text": _strip_prefix(5),
-                "reason": "explicit 'deep:' → qwen3.5:397b-cloud"}
+                "reason": "explicit 'deep:' → qwen3.5:cloud"}
     if user_section_low.startswith("local:") or user_section_low.startswith("private:"):
         # "private:" is 8 chars, "local:" is 6. The previous code used 7
         # for "private:" which left a stray ":" in the stripped text.
@@ -2741,7 +2742,7 @@ def orchestrate(history, user_text, image_path=None):
             return _choose_route([
                 {"route": "cloud_deep", "model": MODELS["qwen3"],
                  "task_type": "deep", "base_score": 84,
-                 "reason": "peacetime alter/code/deep → qwen3.5:397b-cloud"},
+                 "reason": "peacetime alter/code/deep → qwen3.5:cloud"},
                 {"route": "local", "model": "qwen2.5:14b" if _have_14b() else MODELS["master"],
                  "task_type": "deep", "base_score": 72,
                  "reason": "local deep fallback"},
@@ -2787,11 +2788,13 @@ def orchestrate(history, user_text, image_path=None):
              "task_type": "chat", "base_score": 62,
              "reason": "chat → local master fallback"},
         ], reason_prefix="chat scored")
-    if is_chat_class and have_fireworks:
+    # 2026-08-27: OpenRouter /free models only. Route chat to the fastest
+    # verified free slug (nvidia/nemotron-3-super-120b-a12b:free, ~0.7s).
+    if is_chat_class:
         return _choose_route([
-            {"route": "cloud", "model": "fireworks",
+            {"route": "cloud", "model": "openrouter",
              "task_type": "chat", "base_score": 80,
-             "reason": "chat → Fireworks (content-routed)"},
+             "reason": "chat → OpenRouter /free (content-routed)"},
             {"route": "local", "model": MODELS["master"],
              "task_type": "chat", "base_score": 62,
              "reason": "chat → local master fallback"},
@@ -3772,6 +3775,8 @@ def ask_local(messages, model=None, image_path=None):
                            task_type="local", ok=bool(response_text),
                            latency_s=round(time.time() - _t0, 3),
                            chars=len(response_text or ""))
+            if response_text:
+                globals()["_LAST_MODEL"] = f"local/{model}"
             return response_text
     except Exception as e:
         log(f"OLLAMA_ERROR: {e}")
@@ -4075,6 +4080,8 @@ def ask_local_stream(messages, model=None, image_path=None):
                        task_type="local_stream", ok=bool(result),
                        latency_s=round(time.time() - _t0, 3),
                        chars=len(result or ""))
+        if result:
+            globals()["_LAST_MODEL"] = f"local/{model}"
         return result if result else None
     except Exception as e:
         local_thinking_stop(_anim)
