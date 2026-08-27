@@ -12505,7 +12505,7 @@ def summarize_session(history):
         "Format: • bullet\n• bullet\n• bullet\n• bullet\n\n" + transcript
     )
     try:
-        result = (ask_cloud_groq([{"role": "user", "content": prompt}])
+        result = (_ask_cloud_for_label([{"role": "user", "content": prompt}])
                   or ask_local([{"role": "user", "content": prompt}], model=MODELS["general"]))
         return result.strip() if result else None
     except Exception:
@@ -12658,16 +12658,6 @@ def main():
         import setup_wizard
         setup_wizard.run_setup_explicit()
         sys.exit(0)
-
-    # Headless / delegated task mode — allows another AI or script to invoke
-    # master-ai-cli like Claude Code CLI (`master-ai --task "..." --headless`).
-    # This branch intentionally runs before the interactive startup sequence so
-    # it never opens the TUI or blocks on stdin.
-    headless_args = [arg for arg in sys.argv[1:]
-                     if arg in ("--headless", "--task", "-t", "--task-file", "--max-turns", "--json")]
-    if headless_args or any(arg.startswith("--task=") or arg.startswith("-t=") for arg in sys.argv[1:]):
-        import headless_runner
-        sys.exit(headless_runner.main())
 
     # Startup key gate — require at least one API key or a local Ollama
     # server before anything else runs. If neither exists, this launches
@@ -12881,15 +12871,24 @@ def main():
 
         lo = cmd.lower()
 
-        # Single slash-command namespace: a bare "/" opens the palette.
-        # Anything else with a leading "/" strips it and falls through to
-        # the same dispatcher that already handles the bare form.
-        if lo == "/":
-            show_commands()
-            continue
+        # P1.5/P1.7 follow-up: accept a single leading "/" so /stats,
+        # /agents, /reason:, /hub, etc. all route the same as the bare
+        # form. Codex flagged the slash-prefix variant on 2026-05-11.
+        # Strip only ONE leading slash, not greedy — preserves intent
+        # of any command that legitimately needs slashes elsewhere.
         if lo.startswith("/") and len(lo) > 1:
             cmd = cmd[1:]
             lo = cmd.lower()
+
+        # Voice dictation (Groq Whisper) appends sentence punctuation
+        # Elijah never typed — "unload." / "free ram," / "drain models;" —
+        # which broke the exact-phrase command matching below since none
+        # of the recognized command words/phrases ever contain .,; anyway.
+        # Command *recognition* only needs the bare phrase, so normalize
+        # `lo` here once for every check downstream. `cmd` (used for chat
+        # fallback and prefix-slicing like "agent:"/"image:") is untouched.
+        lo = re.sub(r'[.,;]+', ' ', lo)
+        lo = re.sub(r'\s+', ' ', lo).strip()
 
         # ── Exit ──────────────────────────────────────────────
         if lo == "x":
@@ -13002,81 +13001,6 @@ def main():
             show_controls()
             continue
 
-        # ── Scheduler slash commands ──────────────────────────
-        if lo.startswith("schedule"):
-            parts = cmd.split(None, 2)
-            if lo in ("schedules", "schedule list"):
-                _show_schedules()
-                _start_scheduler_daemon()
-                continue
-            if lo.startswith("schedule start") or lo == "scheduler start":
-                _start_scheduler_daemon()
-                continue
-            if lo.startswith("schedule stop") or lo == "scheduler stop":
-                _stop_scheduler_daemon()
-                continue
-            if lo.startswith("schedule remove") or lo.startswith("unschedule"):
-                target = ""
-                if lo.startswith("schedule remove"):
-                    target = cmd.split(None, 2)[2] if len(parts) > 2 else ""
-                else:
-                    target = cmd.split(None, 1)[1] if len(parts) > 1 else ""
-                n = _remove_schedule(target)
-                print(f"  {G}removed {n} schedule(s){X}")
-                continue
-            # /schedule "command" 09:00 daily
-            m = re.match(r'schedule\s+"([^"]+)"\s+(\d{1,2}:\d{2})\s+(hourly|daily|weekly|monthly)', cmd, re.I)
-            if not m:
-                m = re.match(r"schedule\s+(\S+)\s+(\d{1,2}:\d{2})\s+(hourly|daily|weekly|monthly)", cmd, re.I)
-            if m:
-                command, when, cadence = m.group(1), m.group(2), m.group(3).lower()
-                sid = _add_schedule(command, when, cadence)
-                print(f"  {G}scheduled {sid}: {command} @ {when} ({cadence}){X}")
-                _start_scheduler_daemon()
-            else:
-                print(f"  {Y}usage: /schedule <command> HH:MM <hourly|daily|weekly|monthly>{X}")
-                print(f"  {D}example: /schedule /rag rebuild 02:00 daily{X}")
-            continue
-
-        # ── Email triage slash command ────────────────────────
-        if lo in ("email", "triage", "inbox") or lo.startswith("email ") or lo.startswith("triage "):
-            import subprocess, sys
-            base = [sys.executable, str(Path.home() / "scripts" / "triage_emails.py")]
-            if lo in ("email", "triage", "inbox"):
-                args = ["--days", "3"]
-            elif lo.startswith("email delete") or lo.startswith("triage delete"):
-                args = ["--days", "3", "--delete-approvals", "ALL"]
-            else:
-                args = ["--days", "3"]
-            print(f"  {C}triaging email...{X}")
-            proc = subprocess.run(base + args, capture_output=True, text=True, timeout=300)
-            if proc.stdout:
-                for line in proc.stdout.splitlines()[:200]:
-                    print(f"  {line}")
-            if proc.stderr:
-                print(f"  {R}{proc.stderr[:500]}{X}")
-            continue
-
-        # ── Skill authoring slash command ─────────────────────
-        if lo.startswith("skill"):
-            if lo in ("skills", "skill list"):
-                skills = _list_auto_skills()
-                print(f"\n{BC}  Auto-generated skills:{X} {skills or 'none'}")
-                continue
-            # /skill "name" "description" body...
-            m = re.match(r'skill\s+"([^"]+)"\s+"([^"]+)"\s*(.*)', cmd, re.I | re.S)
-            if m:
-                name, desc, body = m.group(1).strip(), m.group(2).strip(), m.group(3).strip()
-                path, err = _create_skill(name, desc, body)
-                if err:
-                    print(f"  {R}skill error: {err}{X}")
-                else:
-                    print(f"  {G}created skill: {path}{X}")
-            else:
-                print(f"  {Y}usage: /skill \"Name\" \"One-line description.\" body markdown{X}")
-                print(f"  {D}example: /skill \"Email Triage\" \"Triage my email inbox.\" Use existing scripts/triage_emails.py; run with --review default.{X}")
-            continue
-
         if lo == "help":
             maybe_msg = show_help()
             if maybe_msg:
@@ -13108,10 +13032,18 @@ def main():
                 show_model_menu()
             else:
                 choice = cmd[6:].strip()
+                choice_lo = choice.lower()
+                _free_prefixes = ("free", "or free", "openrouter free")
+                _search_prefixes = ("search ", "or search ", "openrouter search ")
+                _matched_prefix = next((p for p in _search_prefixes if choice_lo.startswith(p)), None)
                 if choice.lower() in ("stats", "stat", "usage", "monitor", "monitoring"):
                     print(f"\n  {C}{format_model_monitor()}{X}\n")
                 elif choice.lower() in ("keys", "key"):
                     print(f"\n  {C}{format_model_monitor()}{X}\n")
+                elif choice_lo in _free_prefixes:
+                    print_openrouter_search("", free_only=True)
+                elif _matched_prefix is not None:
+                    print_openrouter_search(choice[len(_matched_prefix):].strip())
                 else:
                     ok, msg = _pin_model_choice(choice)
                     print(f"  {msg}")
@@ -13622,12 +13554,15 @@ def main():
         # process. New blank history — ready to type, memory of the
         # current conversation is gone. Aliases cover every natural
         # way Elijah might say "start over" (2026-04-22).
+        # 2026-08-27: added "new" and "clear" aliases so NEW/CLEAR/RESTART all
+        # do the same session reset + engine restart.
         if lo in ("save refresh", "save and refresh", "save+refresh", "savory refresh"):
             handle_save_refresh(history)  # execvp — never returns
             continue  # unreachable
 
         if lo in (
-            "refresh", "reload", "restart",
+            "new", "clear", "restart",
+            "refresh", "reload",
             "abort", "cancel", "override", "reset",
             "new task", "new chat", "new session", "start over",
             "wipe", "blank slate",
@@ -13658,37 +13593,27 @@ def main():
             os.execvp(sys.executable, [sys.executable, str(Path.home() / "scripts/master_ai.py")])
             continue  # unreachable
 
-        # ── RAG rebuild ────────────────────────────────────────
-        if lo.startswith("rag rebuild") or lo == "rag refresh":
-            import subprocess, sys
-            build_script = Path.home() / "projects" / "master-ai-context" / ".rag" / "build.py"
-            if not build_script.exists():
-                build_script = Path("/tmp/build_rag.py")
-            print(f"  {C}rebuilding RAG index...{X}")
-            proc = subprocess.Popen(
-                [sys.executable, str(build_script)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            for line in proc.stdout:
-                line = line.rstrip()
-                if line:
-                    print(f"  {D}{line[:200]}{X}")
-            proc.wait()
-            print(f"  {G}RAG rebuild finished (exit {proc.returncode}){X}")
-            continue
-
         # ── Clear variants ─────────────────────────────────────
-        if lo in ("clear", "clear history"):
+        # 2026-08-27: "clear" and "clear history" now handled above with the
+        # NEW/RESTART aliases. Keep this block for any future clear-* variants.
+        if lo in ("clear approved", "clear cache", "clear chats"):
             history = [h for h in history if h.get("role") == "system"]
+            if lo == "clear approved":
+                _APPROVALS_WITH_TTL.clear()
+                print(f"  {G}✅ approvals cleared.{X}")
+            elif lo == "clear cache":
+                if _CONVERSATION_CACHE is not None:
+                    _CONVERSATION_CACHE.clear()
+                print(f"  {G}✅ cache cleared.{X}")
+            elif lo == "clear chats":
+                _CHATS.clear()
+                print(f"  {G}✅ chat list cleared.{X}")
             if _SENSEI_APP is not None:
                 try:
                     _SENSEI_APP.clear_output()
                 except Exception:
                     pass
             _clear_tmux_scrollback("clear")
-            print(f"  {G}✅ Conversation cleared.{X}")
             _request_auto_save(history)
             continue
 
@@ -13716,7 +13641,7 @@ def main():
                 transcript = "\n".join(f"{m['role']}: {m['content'][:200]}" for m in msgs)
                 prompt = (f"Give a 2-4 word kebab-case label for this conversation "
                           f"(lowercase, hyphens, no punctuation). Output ONLY the label.\n\n{transcript}")
-                suggested = ask_cloud_groq([{"role": "user", "content": prompt}]) or ""
+                suggested = _ask_cloud_for_label([{"role": "user", "content": prompt}]) or ""
                 suggested = re.sub(r'[^a-z0-9\-]+', '-', suggested.strip().split("\n")[0].strip().lower()).strip('-')[:40]
                 if suggested:
                     save_thread_label(suggested)
@@ -13755,7 +13680,7 @@ def main():
                 transcript = "\n".join(f"{m['role']}: {m['content'][:200]}" for m in msgs)
                 prompt = (f"Give a 2-4 word kebab-case label for this conversation "
                           f"(lowercase, hyphens, no punctuation). Output ONLY the label.\n\n{transcript}")
-                suggested = ask_cloud_groq([{"role": "user", "content": prompt}]) or ""
+                suggested = _ask_cloud_for_label([{"role": "user", "content": prompt}]) or ""
                 suggested = suggested.strip().split("\n")[0].strip().lower()
                 suggested = re.sub(r'[^a-z0-9\-]+', '-', suggested).strip('-')[:40]
                 if suggested:
@@ -14791,17 +14716,30 @@ def _run_with_tui():
 
     if worker_err and isinstance(worker_err[0], SystemExit):
         sys.exit(worker_err[0].code)
+    # Ctrl-C caught raw (not via the TUI's "c-c" keybinding — e.g. it
+    # landed while a subprocess had the terminal, or elsewhere prompt_toolkit
+    # wasn't the one reading it) lands here as a KeyboardInterrupt, not a
+    # SystemExit, so the check above misses it. Without this, the process
+    # falls through with the default exit code 0, and launch_master_ai.sh's
+    # supervisor treats ANY non-99/42 exit as a crash and silently
+    # relaunches after 3s — exactly why "Ctrl-C doesn't stop it." Per
+    # Elijah 2026-08-21.
+    if worker_err and isinstance(worker_err[0], KeyboardInterrupt):
+        sys.exit(99)
 
 
 if __name__ == "__main__":
-    # Headless / delegated task mode must be detected before the TUI is
-    # constructed, otherwise interactive mode swallows the terminal.
-    if any(arg in ("--headless", "--task", "-t", "--task-file") for arg in sys.argv[1:]) \
-       or any(arg.startswith("--task=") or arg.startswith("-t=") for arg in sys.argv[1:]):
-        import headless_runner
-        sys.exit(headless_runner.main())
-
-    if _SENSEI_ENABLED and _SENSEI_APP is not None:
-        _run_with_tui()
-    else:
-        main()
+    try:
+        if _SENSEI_ENABLED and _SENSEI_APP is not None:
+            _run_with_tui()
+        else:
+            main()
+    except KeyboardInterrupt:
+        # Final safety net — same reasoning as above, for any Ctrl-C that
+        # reaches all the way up here uncaught (plain non-TUI mode, or a
+        # code path the two handlers above don't cover).
+        try:
+            save_session(GLOBAL_HISTORY, silent=True)
+        except Exception:
+            pass
+        sys.exit(99)
