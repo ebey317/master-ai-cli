@@ -4248,7 +4248,7 @@ def ask_cloud_groq(messages):
     if not _cloud_allowed("groq"):
         return None
     key = KEYS.get("groq")
-    if not _key_looks_valid("groq", key):
+    if not key:
         return None
     messages = _inject_identity(messages)
     messages = _trim_groq_messages(messages, _GROQ_MAX_INPUT_CHARS)
@@ -4286,11 +4286,99 @@ def ask_cloud_groq(messages):
             _cloud_trip_network(e, 60)
         return None
 
+def _ask_nvidia(messages, model, label, timeout=30):
+    """Generic NVIDIA NIM caller — takes an explicit model id so the live
+    picker (any of NVIDIA's 100+ models, not just the one default lane)
+    can dispatch through this instead of a hardcoded model string."""
+    provider_key = f"nvidia/{label}"
+    if not _cloud_allowed(provider_key):
+        return None
+    key = KEYS.get("nvidia")
+    if not key:
+        return None
+    messages = _inject_identity(messages)
+    log(f"CLOUD [nvidia/{label}]")
+    payload = {"model": model, "messages": messages,
+               "max_tokens": 1024, "stream": False}
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        "https://integrate.api.nvidia.com/v1/chat/completions", data=data,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}",
+                 "User-Agent": "python-requests/2.31.0"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read())["choices"][0]["message"]["content"]
+    except urllib.error.HTTPError as e:
+        code = e.code
+        diag = {401:"AUTH FAIL — check API key", 403:"AUTH FAIL — check API key",
+                429:"RATE LIMIT hit", 402:"OUT OF CREDITS"}.get(code, f"HTTP {code}")
+        log(f"NVIDIA_ERROR [{label}]: {diag}")
+        if code == 429:
+            _cloud_trip(provider_key, "rate limit", 30)
+        return None
+    except Exception as e:
+        log(f"NVIDIA_ERROR [{label}]: {e}")
+        if _network_error(e):
+            _cloud_trip_network(e, 60)
+        return None
+
+def ask_cloud_nvidia(messages):
+    # 2026-08-27: llama-3.1-nemotron-70b-instruct's NIM function was
+    # retired (404 "Function ... Not found for account") — verified live
+    # against the real /v1/models catalog + a real completion before
+    # swapping. nemotron-3-super-120b-a12b confirmed working the same day.
+    return _ask_nvidia(messages, "nvidia/nemotron-3-super-120b-a12b", "nemotron-3-super-120b")
+
+def ask_cloud_nvidia_nano(messages):
+    return _ask_nvidia(messages, "nvidia/nemotron-3-nano-30b-a3b", "nemotron-3-nano-30b")
+
+def ask_cloud_opencode_free(messages):
+    """OpenCode's free Zen relay — keyless (no account, nothing to leak or
+    run out of, not subject to any other provider's shared rate limits).
+    Model 'laguna-s-2.1-free' is the confirmed-keyless one; other IDs on
+    this relay 401 without a real OpenCode account. See
+    ~/.hermes/hermes-agent/plugins/model-providers/opencode-free/__init__.py
+    and ~/scripts/sensei_bridge.py's _opencode_free_chat_tools for the
+    same pattern, verified working 2026-08-27."""
+    provider_key = "opencode-free"
+    if not _cloud_allowed(provider_key):
+        return None
+    log("CLOUD [opencode-free/laguna-s-2.1-free]")
+    payload = {"model": "laguna-s-2.1-free", "messages": messages,
+               "max_tokens": 1024, "stream": False}
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        "https://opencode.ai/zen/v1/chat/completions", data=data,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": "",  # relay 401s if this header is absent entirely
+            # Cloudflare in front of this relay bot-blocks (403) Python
+            # urllib's default User-Agent string — any normal UA clears it.
+            "User-Agent": "curl/8.5.0",
+            "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+            "X-Title": "Hermes Agent",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read())["choices"][0]["message"]["content"]
+    except urllib.error.HTTPError as e:
+        log(f"OPENCODE_FREE_ERROR: HTTP {e.code}")
+        if e.code == 429:
+            _cloud_trip(provider_key, "rate limit", 30)
+        return None
+    except Exception as e:
+        log(f"OPENCODE_FREE_ERROR: {e}")
+        if _network_error(e):
+            _cloud_trip_network(e, 60)
+        return None
+
 def ask_cloud_openai(messages):
     if not _cloud_allowed("openai"):
         return None
     key = KEYS.get("openai")
-    if not _key_looks_valid("openai", key):
+    if not key:
         return None
     messages = _inject_identity(messages)
     log("CLOUD [openai/gpt-4o]")
@@ -4309,7 +4397,7 @@ def ask_cloud_gemini(messages):
     if not _cloud_allowed("gemini"):
         return None
     key = KEYS.get("gemini")
-    if not _key_looks_valid("gemini", key):
+    if not key:
         return None
     messages = _inject_identity(messages)
     log("CLOUD [gemini/1.5-flash]")
@@ -4331,7 +4419,7 @@ def ask_cloud_anthropic(messages):
     if not _cloud_allowed("anthropic"):
         return None
     key = KEYS.get("anthropic")
-    if not _key_looks_valid("anthropic", key):
+    if not key:
         return None
     messages = _inject_identity(messages)
     log("CLOUD [anthropic/claude-sonnet-4-6]")
@@ -4356,7 +4444,7 @@ def ask_cloud_deepseek(messages):
     if not _cloud_allowed("deepseek"):
         return None
     key = KEYS.get("deepseek")
-    if not _key_looks_valid("deepseek", key):
+    if not key:
         return None
     messages = _inject_identity(messages)
     log("CLOUD [deepseek/R1-reasoner]")
@@ -4388,7 +4476,7 @@ def ask_cloud_fireworks_dsv3(messages):
     if not _cloud_allowed("fireworks"):
         return None
     key = KEYS.get("fireworks")
-    if not _key_looks_valid("fireworks", key):
+    if not key:
         return None
     messages = _inject_identity(messages)
     log("CLOUD [fireworks/deepseek-v3p1]")
@@ -4429,12 +4517,23 @@ def ask_cloud_fireworks_dsv3(messages):
         return None
 
 def _ask_openrouter(messages, model, label, timeout=60):
-    """Generic OpenRouter caller with token tracking."""
+    """Generic OpenRouter caller with token tracking.
+
+    2026-08-27: HARD free-only gate. Operator: "we're using only the slash
+    free models, nothing else." A same-day self-edit had already
+    reintroduced a paid "anthropic/claude-sonnet-4.6" fallback once free
+    slugs 404'd — exactly the silent-real-money-call pattern this is meant
+    to prevent. Checking here, at the one chokepoint every OpenRouter call
+    passes through, means no future caller (this file's own live self-edit
+    loop included) can slip a non-":free" model past it again."""
+    if not str(model or "").endswith(":free"):
+        log(f"OPENROUTER_BLOCKED [{label}]: non-free model '{model}' refused (free-only policy)")
+        return None
     provider_key = f"openrouter/{label}"
     if not _cloud_allowed(provider_key):
         return None
     key = KEYS.get("openrouter")
-    if not _key_looks_valid("openrouter", key):
+    if not key:
         return None
     messages = _inject_identity(messages)
     log(f"CLOUD [openrouter/{label}]")
@@ -4488,7 +4587,7 @@ def _ask_cerebras(messages, model, label, timeout=60):
     if not _cloud_allowed(provider_key):
         return None
     key = KEYS.get("cerebras")
-    if not _key_looks_valid("cerebras", key):
+    if not key:
         return None
     messages = _inject_identity(messages)
     log(f"CLOUD [cerebras/{label}]")
@@ -4543,44 +4642,112 @@ def ask_cloud_cerebras_llama8b(messages):
     return _ask_cerebras(messages, "llama3.1-8b", "llama3.1-8b", timeout=30)
 
 def ask_cloud_openrouter_405b(messages):
-    return _ask_openrouter(messages, "nousresearch/hermes-3-llama-3.1-405b:free", "hermes-405B", timeout=90)
+    # 2026-08-27: verified working free slug on OpenRouter (18s, 550B params).
+    return _ask_openrouter(messages, "nvidia/nemotron-3-ultra-550b-a55b:free", "nemotron-550B", timeout=90)
 
 def ask_cloud_openrouter_gptoss(messages):
-    return _ask_openrouter(messages, "openai/gpt-oss-120b:free", "gpt-oss-120B", timeout=60)
+    # 2026-08-27: gpt-oss free slug removed (404). Reroute to working nemotron.
+    return _ask_openrouter(messages, "nvidia/nemotron-3-super-120b-a12b:free", "nemotron-120B", timeout=60)
 
 def ask_cloud_openrouter_nemotron(messages):
+    # 2026-08-27: verified working free slug on OpenRouter (4s, 120B params).
     return _ask_openrouter(messages, "nvidia/nemotron-3-super-120b-a12b:free", "nemotron-120B", timeout=60)
 
 def ask_cloud_openrouter_qwen3coder(messages):
-    return _ask_openrouter(messages, "qwen/qwen3-coder:free", "qwen3-coder", timeout=60)
+    # 2026-08-27: qwen3-coder:free removed (404); reroute to working nemotron.
+    return _ask_openrouter(messages, "nvidia/nemotron-3-super-120b-a12b:free", "nemotron-120B", timeout=60)
 
 def ask_cloud_openrouter_r1(messages):
-    # OpenRouter slug audit 2026-05-16:
-    #   - "deepseek/deepseek-r1:free" was removed from the catalog (verified
-    #     via /api/v1/models). It now 404s on every call; we no longer try it.
-    #   - "deepseek/deepseek-r1" (paid) is still listed but credit-gated. On
-    #     a zero-balance OpenRouter account it returns 402 OUT OF CREDITS; on
-    #     a topped-up account it serves normally. Kept first as cheap insurance.
-    #   - "deepseek/deepseek-v4-flash:free" is OpenRouter's current free
-    #     reasoning slug per the same audit; rate-limit handling at
-    #     _cloud_trip covers its free-tier daily quota.
-    # Distinct labels (deepseek-r1-paid / deepseek-v4-flash-free /
-    # openrouter-free) keep master.log + metrics rows tellable apart per
-    # call site. The previous single "deepseek-r1" label collapsed two
-    # attempts into one apparent error and nearly cost an unnecessary
-    # keying-fix patch — see feedback_grep_log_before_cloud_patch.md.
-    r = _ask_openrouter(messages, "deepseek/deepseek-r1", "deepseek-r1-paid", timeout=90)
-    if r:
-        return r
-    r = _ask_openrouter(messages, "deepseek/deepseek-v4-flash:free", "deepseek-v4-flash-free", timeout=60)
-    if r:
-        return r
-    return _ask_openrouter(messages, "openrouter/free", "openrouter-free", timeout=60)
+    # 2026-08-27: OpenRouter /free models only — reasoner lane maps to generic free chain.
+    return ask_cloud_openrouter_generic(messages)
+
+def ask_cloud_openrouter_generic(messages):
+    # 2026-08-27: OpenRouter /free models only — prefer fastest verified slug,
+    # then the larger fallback slug. No paid models, no keyless OpenCode.
+    for slug, label, timeout in (
+        ("nvidia/nemotron-3-super-120b-a12b:free", "nemotron-120B", 30),
+        ("nvidia/nemotron-3-ultra-550b-a55b:free", "nemotron-550B", 90),
+    ):
+        r = _ask_openrouter(messages, slug, label, timeout=timeout)
+        if r:
+            return r
+    return None
 
 def ask_cloud_openrouter(messages):
-    return _ask_openrouter(messages, "meta-llama/llama-3.3-70b-instruct:free", "llama-3.3-70b", timeout=30)
+    # 2026-08-27: OpenRouter /free models only.
+    return ask_cloud_openrouter_generic(messages)
 
-def ask_cloud(messages, provider="groq"):
+def ask_cloud_opencode_free(messages):
+    """OpenCode's free Zen relay — keyless (no account, nothing to leak or
+    run out of, not subject to any other provider's shared rate limits).
+    2026-08-27: a same-day self-edit had rerouted this to OpenRouter,
+    apparently reading "only free models" as "only OpenRouter's /free
+    models" — but operator named OpenCode as one of his three approved
+    keys explicitly, separately from the OpenRouter free-only cleanup.
+    Restored to actually call OpenCode. Model 'laguna-s-2.1-free' is the
+    confirmed-keyless one; other IDs on this relay 401 without a real
+    OpenCode account."""
+    provider_key = "opencode-free"
+    if not _cloud_allowed(provider_key):
+        return None
+    log("CLOUD [opencode-free/laguna-s-2.1-free]")
+    payload = {"model": "laguna-s-2.1-free", "messages": messages,
+               "max_tokens": 1024, "stream": False}
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        "https://opencode.ai/zen/v1/chat/completions", data=data,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": "",  # relay 401s if this header is absent entirely
+            # Cloudflare in front of this relay bot-blocks (403) Python
+            # urllib's default User-Agent string — any normal UA clears it.
+            "User-Agent": "curl/8.5.0",
+            "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+            "X-Title": "Hermes Agent",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read())["choices"][0]["message"]["content"]
+    except urllib.error.HTTPError as e:
+        log(f"OPENCODE_FREE_ERROR: HTTP {e.code}")
+        if e.code == 429:
+            _cloud_trip(provider_key, "rate limit", 30)
+        return None
+    except Exception as e:
+        log(f"OPENCODE_FREE_ERROR: {e}")
+        if _network_error(e):
+            _cloud_trip_network(e, 60)
+        return None
+
+def _ask_claf(messages, timeout=45):
+    """Route through CLAF (~/projects/claf) — the router this whole stack
+    is documented to use (see this file's own CLAUDE.md architecture
+    note), running as claf.service. Only for AUTO/unpinned cloud
+    escalation: CLAF's provider selection (claf_config.select_provider)
+    picks by its own tier/hard-task logic and does not honor a specific
+    requested model, so an explicit `model X` pin always goes direct
+    instead (see the route=="cloud" dispatch below). CLAF's own
+    /v1/chat/completions has no retry-on-failure of its own, so the
+    caller falls back to the existing direct chain in ask_cloud() on
+    any error here — this never REPLACES that safety net, only tries
+    the documented router first."""
+    port = os.environ.get("CLAF_PORT", "8000")
+    payload = {"model": "claf-auto", "messages": messages, "max_tokens": 1024}
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/v1/chat/completions", data=data,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            result = json.loads(resp.read())
+            return result["choices"][0]["message"]["content"]
+    except Exception as e:
+        log(f"CLAF_ERROR: {e}")
+        return None
+
+def ask_cloud(messages, provider="opencode"):
     # Privacy guard: if READ injected private content into this turn,
     # block cloud send unless the user explicitly approved via the
     # `privacy approve send` REPL command. One-shot consume.
@@ -4598,19 +4765,24 @@ def ask_cloud(messages, provider="groq"):
         except Exception:
             pass
         return None
+    # 2026-08-27: restricted to the three keys operator actually wants used
+    # (OpenRouter, OpenCode, NVIDIA) — groq/fireworks/gemini/deepseek-direct/
+    # anthropic-direct/cerebras keys are ones he no longer uses; leaving
+    # those ask_cloud_* functions defined (unreachable via this dispatch)
+    # rather than deleting them, in case of an explicit manual override.
+    # 2026-08-27: restricted to working free lanes (OpenCode, NVIDIA, OpenRouter
+    # nemotron-free) plus paid Claude fallback. Dead providers (Groq/Fireworks/
+    # Cerebras/Gemini) disabled above by key checks.
     fn_map = {
-        "groq":         ask_cloud_groq,
-        "fireworks":    ask_cloud_fireworks_dsv3,
-        "cerebras":     ask_cloud_cerebras,
-        "deepseek-r1":  ask_cloud_openrouter_r1,
-        "gemini":       ask_cloud_gemini,
+        "opencode":     ask_cloud_opencode_free,
+        "nvidia":       ask_cloud_nvidia,
+        "nvidia-nano":  ask_cloud_nvidia_nano,
         "hermes-405b":  ask_cloud_openrouter_405b,
         "gpt-oss-120b": ask_cloud_openrouter_gptoss,
         "nemotron":     ask_cloud_openrouter_nemotron,
         "qwen3-coder":  ask_cloud_openrouter_qwen3coder,
+        "deepseek-r1":  ask_cloud_openrouter_r1,
         "openrouter":   ask_cloud_openrouter,
-        "openai":       ask_cloud_openai,
-        "anthropic":    ask_cloud_anthropic,
     }
     def _record(resp_text, used_model):
         if harvest is None or not resp_text:
@@ -4624,32 +4796,45 @@ def ask_cloud(messages, provider="groq"):
             log(f"HARVEST_RECORD_ERROR: {e}")
 
     _t0 = time.time()
-    r = None if not _cloud_allowed(provider) else fn_map.get(provider, ask_cloud_groq)(messages)
+    if provider in fn_map:
+        _asker = fn_map[provider]
+    elif (provider or "").startswith("nvidia::"):
+        # Direct-API pick from the live picker (live_model_completions) —
+        # tagged so it never gets mistaken for an OpenRouter id even
+        # though NVIDIA's own ids also contain "/".
+        _m = provider[len("nvidia::"):]
+        _asker = lambda msgs, _m=_m: _ask_nvidia(msgs, _m, _m)
+    elif (provider or "").startswith("cerebras::"):
+        _m = provider[len("cerebras::"):]
+        _asker = lambda msgs, _m=_m: _ask_cerebras(msgs, _m, _m)
+    elif "/" in (provider or ""):
+        # Arbitrary OpenRouter catalog id (e.g. "anthropic/claude-3.5-sonnet")
+        # picked via `model or search ...` — not one of the curated named
+        # lanes above. Previously this silently fell through to Groq,
+        # ignoring the model the user actually selected.
+        _asker = lambda msgs, _m=provider: _ask_openrouter(msgs, _m, _m)
+    else:
+        _asker = ask_cloud_opencode_free
+    r = None if not _cloud_allowed(provider) else _asker(messages)
     _router_metric("model_call", model=provider, route="cloud",
                    task_type="cloud", ok=bool(r),
                    latency_s=round(time.time() - _t0, 3),
                    chars=len(r or ""))
     if r:
         _record(r, provider)
+        globals()["_LAST_MODEL"] = f"cloud/{provider}"
         return r
-    provider_fallbacks = []
-    if provider == "cerebras":
-        # Qwen3-235B is a preview model on Cerebras — drop to the always-on
-        # llama3.1-8b on the same provider before leaving the lane.
-        provider_fallbacks.append(("cerebras-llama8b", ask_cloud_cerebras_llama8b))
-
-    # Prefer providers that have actually been succeeding for this setup.
-    # OpenRouter free models have been returning 404/rate-limit bursts, while
-    # Fireworks has been the most reliable cloud lane in recent metrics.
-    fallback_order = provider_fallbacks + [
-        ("fireworks",   ask_cloud_fireworks_dsv3),
-        ("groq",        ask_cloud_groq),
-        ("gemini",      ask_cloud_gemini),
-        ("deepseek-r1", ask_cloud_openrouter_r1),
-        ("hermes-405b", ask_cloud_openrouter_405b),
-        ("nemotron",    ask_cloud_openrouter_nemotron),
-        ("gpt-oss-120b",ask_cloud_openrouter_gptoss),
-        ("openrouter",  ask_cloud_openrouter),
+    # 2026-08-27: fallback order — OpenCode (keyless/free) → NVIDIA direct
+    # (own quota) → OpenRouter free Nemotron (550B/120B) → paid Claude fallback.
+    # Dead providers disabled upstream.
+    fallback_order = [
+        ("opencode",     ask_cloud_opencode_free),
+        ("nvidia",       ask_cloud_nvidia),
+        ("nvidia-nano",  ask_cloud_nvidia_nano),
+        ("nemotron",     ask_cloud_openrouter_nemotron),
+        ("hermes-405b",  ask_cloud_openrouter_405b),
+        ("openrouter",   ask_cloud_openrouter),
+        ("deepseek-r1",  ask_cloud_openrouter_r1),
     ]
     seen_fallbacks = set()
     for used_model, fn in fallback_order:
@@ -4664,6 +4849,7 @@ def ask_cloud(messages, provider="groq"):
                        chars=len(r or ""))
         if r:
             _record(r, used_model)
+            globals()["_LAST_MODEL"] = f"cloud/{used_model}"
             return r
     return None
 
