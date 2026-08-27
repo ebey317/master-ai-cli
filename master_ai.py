@@ -5426,243 +5426,25 @@ def _timeout_fallback_system_prompt(cloud_system: str) -> str:
     head = (cloud_system or "").split("[MEMORY]", 1)[0].rstrip()
     return head + "\n\n[MEMORY]\n(omitted for timeout fallback; answer only the current user request)"
 
-# ── SCHEDULER ──────────────────────────────────────────────────
-def _scheduler_path():
-    return Path.home() / ".master_ai_schedules.json"
-
-def _scheduler_log():
-    return Path.home() / ".master_ai_scheduler.log"
-
-def _scheduler_pid():
-    return Path.home() / ".master_ai_scheduler.pid"
-
-def _load_schedules():
-    try:
-        p = _scheduler_path()
-        if not p.exists():
-            return []
-        data = json.loads(p.read_text())
-        return data if isinstance(data, list) else []
-    except Exception as e:
-        log(f"SCHEDULER_LOAD_ERROR: {e}")
-        return []
-
-def _save_schedules(schedules):
-    try:
-        _scheduler_path().write_text(json.dumps(schedules, indent=2))
-    except Exception as e:
-        log(f"SCHEDULER_SAVE_ERROR: {e}")
-
-def _scheduler_running():
-    pid_file = _scheduler_pid()
-    if not pid_file.exists():
-        return False
-    try:
-        import os
-        pid = int(pid_file.read_text().strip())
-        os.kill(pid, 0)
-        return True
-    except Exception:
-        pid_file.unlink(missing_ok=True)
-        return False
-
-def _start_scheduler_daemon():
-    import subprocess, sys
-    scheduler = Path.home() / "scripts" / "master_ai_scheduler.py"
-    if not scheduler.exists():
-        print("scheduler script not found; run from repo first.")
-        return False
-    if _scheduler_running():
-        print(f"{G}scheduler already running{X}")
-        return True
-    # start detached
-    proc = subprocess.Popen(
-        [sys.executable, str(scheduler), "start"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-    # wait a moment for pid file
-    import time
-    for _ in range(10):
-        if _scheduler_running():
-            print(f"{G}scheduler started{X}")
-            return True
-        time.sleep(0.2)
-    print(f"{Y}scheduler start pending — check log{X}")
-    return True
-
-def _stop_scheduler_daemon():
-    import subprocess, sys
-    scheduler = Path.home() / "scripts" / "master_ai_scheduler.py"
-    if not scheduler.exists():
-        return False
-    subprocess.run([sys.executable, str(scheduler), "stop"], capture_output=True, text=True)
-    pid_file = _scheduler_pid()
-    if pid_file.exists():
-        try:
-            import os
-            pid = int(pid_file.read_text().strip())
-            os.kill(pid, 9)
-        except Exception:
-            pass
-        pid_file.unlink(missing_ok=True)
-    print(f"{G}scheduler stopped{X}")
-    return True
-
-def _add_schedule(command, when, cadence):
-    schedules = _load_schedules()
-    sid = f"sched_{int(__import__('time').time())}"
-    schedules.append({
-        "id": sid,
-        "command": command,
-        "when": when,
-        "cadence": cadence,
-        "enabled": True,
-        "created": __import__('datetime').datetime.now().isoformat(),
-    })
-    _save_schedules(schedules)
-    return sid
-
-def _remove_schedule(sid):
-    schedules = _load_schedules()
-    before = len(schedules)
-    schedules = [s for s in schedules if s.get("id") != sid]
-    _save_schedules(schedules)
-    return before - len(schedules)
-
-def _list_schedules():
-    return _load_schedules()
-
-def _show_schedules():
-    rows = [(s.get("id"), s.get("when"), s.get("cadence"), s.get("command"), s.get("enabled", True)) for s in _load_schedules()]
-    if not rows:
-        print(f"  {D}no schedules set{X}")
-        return
-    print(f"\n{BC}  ╔{'═'*70}╗{X}")
-    print(f"{BC}  ║{X}  {BW}Schedules{' '*61}{BC}║{X}")
-    print(f"{BC}  ╠{'═'*70}╣{X}")
-    for sid, when, cadence, cmd, enabled in rows:
-        flag = f"{G}on{X}" if enabled else f"{R}off{X}"
-        print(f"{BC}  ║{X}  {Y}{sid:<16}{X} {flag:<8} {C}{when:<6} {cadence:<8}{X} {cmd:<24}{BC}║{X}")
-    print(f"{BC}  ╚{'═'*70}╝{X}\n")
-
-# ── SKILL AUTHORING ─────────────────────────────────────────────
-def _skill_dir(name: str):
-    return Path.home() / ".hermes" / "skills" / "master-ai-cli" / name
-
-def _slugify(s: str) -> str:
-    return re.sub(r"[^a-z0-9_-]+", "-", s.lower()).strip("-").replace("--", "-")
-
-def _create_skill(name: str, description: str, body: str):
-    """Create a user-local Hermes skill from a master-ai-cli slash command."""
-    import yaml
-    slug = _slugify(name)
-    if not slug:
-        return None, "invalid skill name"
-    if len(description) > 60:
-        description = description[:57].rstrip() + "."
-    if not description.endswith("."):
-        description += "."
-    skill_dir = _skill_dir(slug)
-    skill_dir.mkdir(parents=True, exist_ok=True)
-    skill_path = skill_dir / "SKILL.md"
-    content = f"""---
-name: {slug}
-description: {description}
-version: 0.1.0
-author: Master AI CLI, Hermes Agent
-license: MIT
-platforms: [linux]
-metadata:
-  hermes:
-    tags: [master-ai-cli, auto-generated]
----
-
-# {name}
-
-{body}
-"""
-    skill_path.write_text(content)
-    return str(skill_path), None
-
-def _list_auto_skills():
-    root = Path.home() / ".hermes" / "skills" / "master-ai-cli"
-    if not root.exists():
-        return []
-    return [d.name for d in root.iterdir() if (d / "SKILL.md").is_file()]
-
-def _query_rag(user_text, top_k=3, max_chars=3000):
-    """Fetch relevant repo context from the canonical RAG index."""
-    try:
-        import json, math, sqlite3, requests
-        db_path = Path.home() / "projects" / "master-ai-context" / ".rag" / "index.sqlite3"
-        if not db_path.exists() or not user_text:
-            return ""
-        resp = requests.post(
-            "http://localhost:11434/api/embed",
-            json={"model": "nomic-embed-text:v1.5", "input": [user_text]},
-            timeout=60,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        emb = data.get("embeddings") or data.get("embedding") or []
-        if isinstance(emb, list) and emb and isinstance(emb[0], list):
-            emb = emb[0]
-        if not emb:
-            return ""
-        e_norm = math.sqrt(sum(x * x for x in emb)) or 1.0
-        conn = sqlite3.connect(str(db_path))
-        rows = conn.execute(
-            "SELECT source, repo, start_line, end_line, text, embedding FROM chunks"
-        ).fetchall()
-        scored = []
-        for source, repo, sl, el, txt, emb_blob in rows:
-            if not emb_blob:
-                continue
-            try:
-                vec = json.loads(emb_blob.decode("utf-8"))
-            except Exception:
-                continue
-            if not vec or len(vec) != len(emb):
-                continue
-            v_norm = math.sqrt(sum(x * x for x in vec)) or 1.0
-            sim = sum(a * b for a, b in zip(emb, vec)) / (e_norm * v_norm)
-            scored.append((sim, source, repo, sl, el, txt))
-        conn.close()
-        scored.sort(reverse=True)
-        out = []
-        total = 0
-        for sim, source, repo, sl, el, txt in scored[:top_k]:
-            chunk = f"[{repo} {source}:{sl}-{el}]\n{txt}"
-            if total + len(chunk) > max_chars:
-                break
-            out.append(chunk)
-            total += len(chunk)
-        return "\n\n".join(out)
-    except Exception as e:
-        log(f"RAG_QUERY_ERROR: {e}")
-        return ""
-
 def select_memory_context(user_text, max_chars=6000, mode="default"):
-    """Compact durable memory + canonical RAG repo context for local-model turns.
+    """Compact durable memory for local-model turns.
 
     Local routes intentionally skip a dynamic system prompt so Ollama can keep
     the baked Modelfile prefix hot. Without putting memory anywhere else,
     though, the normal master-ai lane never sees ~/.master_ai_memory. Keep a
     bounded, relevant slice in the user turn so fixes and durable facts stick
     without flooding the 4k context window.
-
-    v1.9: also queries the canonical RAG index built from ~/projects/ so repo
-    facts, CLAUDE.md notes, and prior project state ride along automatically.
     """
-    rag = _query_rag(user_text)
     memory = load_memory()
+    if not memory:
+        return ""
     lines = [
         ln.rstrip()
-        for ln in (memory or "").splitlines()
+        for ln in memory.splitlines()
         if ln.strip() and not _is_memory_marker_line(ln)
     ]
+    if not lines:
+        return ""
 
     words = {
         w.lower()
