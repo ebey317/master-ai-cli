@@ -8837,6 +8837,14 @@ def confirm_run(cmd):
         _record_blocked_action("run", cmd, "empty/no-op RUN payload", "RUN-EMPTY")
         return None
 
+    corruption_issue = _directive_corruption_issue(cmd)
+    if corruption_issue:
+        print(_pill("BLOCKED", f"{D}{corruption_issue}: {cmd[:60]}{X}"))
+        log(f"RUN-BLOCK-CORRUPTION: {corruption_issue}: {cmd}")
+        _audit("RUN-BLOCK-CORRUPTION", cmd)
+        _record_blocked_action("run", cmd, corruption_issue, "RUN-BLOCK-CORRUPTION")
+        return None
+
     policy_issue = _agent_policy_issue_for_command(cmd)
     if policy_issue:
         print(_pill("BLOCKED", f"{D}{policy_issue}{X}"))
@@ -9015,6 +9023,14 @@ def confirm_runterm(cmd):
         log(f"EMPTY-RUNTERM: {cmd!r}")
         _audit("RUNTERM-EMPTY", cmd)
         _record_blocked_action("runterm", cmd, "empty/no-op RUNTERM payload", "RUNTERM-EMPTY")
+        return None
+
+    corruption_issue = _directive_corruption_issue(cmd)
+    if corruption_issue:
+        print(_pill("BLOCKED", f"{D}{corruption_issue}: {cmd[:60]}{X}"))
+        log(f"RUNTERM-BLOCK-CORRUPTION: {corruption_issue}: {cmd}")
+        _audit("RUNTERM-BLOCK-CORRUPTION", cmd)
+        _record_blocked_action("runterm", cmd, corruption_issue, "RUNTERM-BLOCK-CORRUPTION")
         return None
 
     policy_issue = _agent_policy_issue_for_command(cmd)
@@ -10726,7 +10742,17 @@ def draw_status_bar():
             return 0
     mem = _count(MEMORY_FILE)
     tasks = active_task_count()
-    model_label = PINNED_MODEL if PINNED_MODEL else "AUTO"
+    # 2026-08-24: PINNED_MODEL only reflects an explicit `model <name>` pin —
+    # in AUTO (the common case) this used to just print the literal word
+    # "AUTO" forever, never saying which model actually answered. _LAST_MODEL
+    # is now set by ask_local/ask_local_stream/ask_cloud on every successful
+    # call, so AUTO mode shows the real resolved backend (e.g.
+    # "AUTO→cloud/openrouter") instead of leaving Elijah guessing.
+    if PINNED_MODEL:
+        model_label = PINNED_MODEL
+    else:
+        _last = globals().get("_LAST_MODEL") or ""
+        model_label = f"AUTO→{_last}" if _last else "AUTO"
     tts_on = os.path.exists(Path.home() / ".master_ai_tts_on")
 
     parts = [f"MODE:{MODE.upper()}"]
@@ -11055,7 +11081,8 @@ def handle_tight_reasoning(user_text, query, history, depth="deep"):
     # Fast and max bypass the cloud one-shot path. Fast wants local-fast
     # TTFB; max needs the second-critic-pass that only the local loop has.
     use_cloud = depth in ("standard", "deep")
-    if use_cloud and keys_now_valid().get("openrouter", False):
+    keys_now = load_keys()
+    if use_cloud and (keys_now.get("openrouter") or "").strip():
         print(f"  {BC}[thinking: tight reasoning ({depth}) → DeepSeek-R1]{X}")
         system = (
             "You are Sensei's tight reasoning lane. Answer the user's hard "
@@ -11309,13 +11336,13 @@ def handle(user_text, history, image_path=None, context_policy=None):
             and ctx_meta.get('whole_file_requested')
             and ctx_meta.get('inject_chars', 0) > _WHOLE_FILE_CLOUD_BIAS_AT):
         try:
-            _keys_ok = keys_now_valid()
-            _any_cloud_now = any(_keys_ok.get(k, False)
+            _keys_now = load_keys()
+            _any_cloud_now = any((_keys_now.get(k) or '').strip()
                                  for k in ('groq', 'fireworks', 'openrouter', 'gemini'))
         except Exception:
-            _keys_ok, _any_cloud_now = {}, False
+            _keys_now, _any_cloud_now = {}, False
         if _any_cloud_now and _read_run_mode() == "peacetime":
-            _cloud_model = "groq" if _keys_ok.get('groq', False) else "fireworks"
+            _cloud_model = "opencode"  # was groq/fireworks — both dead, OpenCode is keyless+free
             decision = {
                 "route": "cloud_fast",
                 "model": _cloud_model,
@@ -11464,7 +11491,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
             "      → cloud answer via Groq (needs key from menu 11)" if not have_groq
                 else "      → quick cloud answer via Groq",
             f"  deep: {q}",
-            "      → qwen3.5:397b-cloud (free, no key needed) or DeepSeek-R1",
+            "      → qwen3.5:cloud (free, no key needed) or DeepSeek-R1",
             f"  search {q}",
             "      → retry web search",
             "",
@@ -11492,7 +11519,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
     elif decision["route"] == "cloud" and decision.get("model"):
         # _choose_route can return a plain cloud provider (Fireworks/Gemini/etc.)
         # after scoring. Honor that decision; falling back to detect_route() here
-        # can accidentally route deep turns through Ollama's qwen3.5:397b-cloud lane,
+        # can accidentally route deep turns through Ollama's qwen3.5:cloud lane,
         # which is an HTTP endpoint and can fail independently of BYOK providers.
         route, model, reason = "cloud", decision["model"], decision["reason"]
         print(f"  {BC}[thinking: cloud → {model}]{X}")
@@ -11500,26 +11527,25 @@ def handle(user_text, history, image_path=None, context_policy=None):
         route, model, reason = "vision", decision["model"], decision["reason"]
     elif decision["route"] == "cloud_deep":
         # deepseek-r1 is OpenRouter (true cloud) → route='cloud'.
-        # qwen3.5:397b-cloud is Ollama-proxied. Its lane has been returning HTTP 403
+        # qwen3.5:cloud is Ollama-proxied. Its lane has been returning HTTP 403
         # on every call, so when a real cloud key exists, route through
         # ask_cloud()'s fallback chain instead of dying on the dead Ollama lane.
         # No cloud key → fall back to local master-ai (still useful) rather than
-        # the qwen3.5:397b-cloud dead end.
+        # the qwen3.5:cloud dead end.
         if decision["model"] == "deepseek-r1":
             route, model, reason = "cloud", "deepseek-r1", decision["reason"]
             print(f"  {BC}[thinking: deep → DeepSeek-R1]{X}")
         elif decision["model"] == MODELS["qwen3"]:
-            _keys_ok = keys_now_valid()
+            keys_now = load_keys()
             cloud_pref = next((m for k, m in (
-                ("fireworks",  "fireworks"),
+                ("openrouter", "deepseek-r1"),  # fireworks/groq/gemini disabled 2026-08-27
                 ("groq",       "groq"),
                 ("gemini",     "gemini"),
-                ("openrouter", "deepseek-r1"),
-            ) if _keys_ok.get(k, False)), None)
+            ) if keys_now.get(k)), None)
             if cloud_pref:
                 route, model, reason = "cloud", cloud_pref, (
-                    decision["reason"] + f" → qwen3.5:397b-cloud unavailable, using {cloud_pref}")
-                print(f"  {BC}[thinking: deep → {cloud_pref} (qwen3.5:397b-cloud fallback)]{X}")
+                    decision["reason"] + f" → qwen3.5:cloud unavailable, using {cloud_pref}")
+                print(f"  {BC}[thinking: deep → {cloud_pref} (qwen3.5:cloud fallback)]{X}")
             else:
                 route, model, reason = "local", MODELS["master"], (
                     decision["reason"] + " → no cloud keys, using local master-ai")
@@ -11616,7 +11642,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "critic + finalizer chain (commit c7586d4). `reason:` output is INERT prose (no "
         "directive execution); the user reads it, then issues a new turn for the action. "
         "Cloud lanes can also pick this up via `tight:`/`think:` shortcuts when DeepSeek-R1 "
-        "or qwen3.5:397b-cloud is configured. When asked 'can you reason / think deeper / take "
+        "or qwen3.5:cloud is configured. When asked 'can you reason / think deeper / take "
         "your time?' — yes, that surface exists. DO NOT say you can't reason.\n\n"
         "IDENTITY (DO NOT BREAK CHARACTER): You ARE Master AI — the whole product, not the "
         "language model that animates you. Master AI is the brand around Sensei (she/her — "
@@ -12301,14 +12327,22 @@ def handle(user_text, history, image_path=None, context_policy=None):
 
     elif route == "cloud":
         _spin = local_thinking_start()
-        reply = ask_cloud(history, provider=model)
+        if PINNED_MODEL:
+            # Explicit `model X` pick — CLAF's provider selection ignores
+            # the client's requested model entirely, so it can't honor a
+            # specific pin. Goes direct, same as before.
+            reply = ask_cloud(history, provider=model)
+        else:
+            # AUTO/unpinned — try CLAF (the documented router) first,
+            # fall back to the direct chain if it's down or errors.
+            reply = _ask_claf(history) or ask_cloud(history, provider=model)
         local_thinking_stop(_spin)
         if not reply:
             reply = ("Cloud providers are unavailable right now. "
                      "I skipped the slow local fallback to avoid another freeze.")
 
     elif route == "vision":
-        print(f"{D}  [kimi-k2.5:cloud — vision (not pulled)]{X}")
+        print(f"{D}  [kimi-k2.5:cloud — vision]{X}")
         reply = ask_local_stream(history, model=MODELS["kimi"], image_path=image_path)
         if not reply:
             reply = ask_local_stream(history, model=MODELS["master"], image_path=image_path)
