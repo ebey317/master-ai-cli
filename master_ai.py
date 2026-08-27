@@ -8827,6 +8827,153 @@ def _normalize_ollama_systemctl_scope(cmd):
         rewritten.insert(0, "sudo")
     return " ".join(shlex.quote(p) for p in rewritten)
 
+# ── BROWSER_* DISPATCH ───────────────────────────────────────
+# 2026-08-27: the system prompt has taught the model the full BROWSER_*
+# vocabulary for a long time ("the dispatcher parses bare directive
+# lines" — see the FORMAT DISCIPLINE block) but no code anywhere in this
+# file ever executed one; grep for `kind == "BROWSER` or an
+# /extension/queue POST turned up nothing. The model was promised a tool
+# that didn't exist. This wires it to the exact same bridge queue
+# sensei_mcp_server.py's _push()/_await_result()/_dispatch() already use
+# successfully (that's what backs this Claude Code session's own
+# mcp__sensei__* tools) — same mechanism, different caller.
+_SENSEI_BRIDGE_URL = "http://127.0.0.1:8791"
+
+# Mirrors side_panel.js's READONLY_BROWSER_KINDS — these observe, they
+# don't change page state, so they skip the confirm gate even in
+# review/plan mode. Everything else (NAV/CLICK/FILL/SUBMIT/UPLOAD_FILE/
+# CLOSE_TAB/JS/CDP_*) is gated like RUN: auto-mode dispatches directly,
+# review/plan mode asks first.
+_BROWSER_READONLY_KINDS = {
+    "BROWSER_READ", "BROWSER_READ_PAGE", "BROWSER_OBSERVE", "BROWSER_SCREENSHOT",
+    "BROWSER_WAIT", "BROWSER_SCROLL", "BROWSER_FIND", "BROWSER_EXTRACT_LIST",
+    "BROWSER_DRIVE_INSPECT_FOLDER", "BROWSER_CONSOLE", "BROWSER_NETWORK",
+}
+
+_BROWSER_DIRECTIVE_RE = re.compile(r'^\s*(BROWSER_[A-Z_]+):\s*(.+)$')
+_BROWSER_SEP_RE = re.compile(r'\s*(?:::|=>|:=)\s*')
+
+
+def _extract_browser_actions(lines):
+    """Pull {kind, target, value} out of BROWSER_*: lines, same shape as
+    sensei_bridge.py's parse_directives(). Separator matches what the
+    system prompt already documents for BROWSER_FILL/BROWSER_UPLOAD_FILE
+    (:: or => or :=) — no prompt change needed, just wiring execution
+    behind a vocabulary the model already knows."""
+    actions = []
+    for line in lines:
+        m = _BROWSER_DIRECTIVE_RE.match(line.strip())
+        if not m:
+            continue
+        kind, payload = m.group(1), m.group(2).strip()
+        if not payload:
+            continue
+        parts = _BROWSER_SEP_RE.split(payload, maxsplit=1)
+        target = parts[0].strip()
+        value = parts[1].strip() if len(parts) > 1 else ""
+        actions.append({"kind": kind, "target": target, "value": value})
+    return actions
+
+
+class _BrowserResult:
+    """Adapts the bridge's JSON result to what _action_ok()/
+    _format_tool_result() already expect (an object with .ok, stringified
+    for output) without changing either of those shared functions."""
+    def __init__(self, ok, data):
+        self.ok = ok
+        self.data = data
+
+    def __str__(self):
+        if isinstance(self.data, (dict, list)):
+            try:
+                return json.dumps(self.data)[:4000]
+            except Exception:
+                pass
+        return str(self.data)
+
+
+def _sensei_bridge_alive():
+    try:
+        req = urllib.request.Request(f"{_SENSEI_BRIDGE_URL}/health")
+        with urllib.request.urlopen(req, timeout=3) as r:
+            return bool(json.loads(r.read()).get("ok"))
+    except Exception:
+        return False
+
+
+def _dispatch_browser_action(kind, target, value, session_id="master-ai-cli", wait_seconds=25):
+    """Push one action to sensei_bridge's /extension/queue and poll
+    /extension/result for the outcome — the identical push/await shape
+    sensei_mcp_server.py's _push()/_await_result() use. Chrome + the
+    Sensei side panel must actually be open for this to do anything;
+    if the bridge is unreachable or nothing drains the queue, this
+    returns a clean ok=False rather than hanging past wait_seconds."""
+    action = {"kind": kind, "target": target, "value": value}
+    body = json.dumps({"session_id": session_id, "actions": [action]}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{_SENSEI_BRIDGE_URL}/extension/queue", data=body,
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            push = json.loads(r.read())
+    except Exception as e:
+        return _BrowserResult(False, {"reason": f"bridge_unreachable: {e}"})
+    action_id = push.get("action_id") or (push.get("action_ids") or [None])[0]
+    if not action_id:
+        return _BrowserResult(False, {"reason": "push_failed", "detail": push})
+    deadline = time.time() + wait_seconds
+    while time.time() < deadline:
+        try:
+            r_req = urllib.request.Request(
+                f"{_SENSEI_BRIDGE_URL}/extension/result?session_id={session_id}&action_id={action_id}"
+            )
+            with urllib.request.urlopen(r_req, timeout=3) as r:
+                j = json.loads(r.read())
+            if j.get("ok") and j.get("result") is not None:
+                result = j["result"]
+                ok = not (isinstance(result, dict) and result.get("error"))
+                return _BrowserResult(ok, result)
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return _BrowserResult(False, {"reason": "timeout", "action_id": action_id})
+
+
+@_awaiting_confirm
+def confirm_browser_action(kind, target, value):
+    label = f"{kind}: {target}" + (f" :: {value}" if value else "")
+    if kind in _BROWSER_READONLY_KINDS:
+        _audit("BROWSER", label)
+        return _dispatch_browser_action(kind, target, value)
+    if not _sensei_bridge_alive():
+        print(_pill("BLOCKED", f"{D}Sensei bridge unreachable — open Chrome, pin the Sensei side panel{X}"))
+        log(f"BROWSER-BLOCK-BRIDGE-DOWN: {label}")
+        _record_blocked_action("browser", label, "sensei bridge unreachable", "BROWSER-BLOCK-BRIDGE-DOWN")
+        return None
+    if globals().get("MODE", "plan") == "auto":
+        print(f"{C}  ⚡ auto-flow: {Y}{label}{X}")
+        _audit("BROWSER-AUTO", label)
+        return _dispatch_browser_action(kind, target, value)
+    print(f"\n{D}╔══════════════════════════════════════════════════════╗{X}")
+    print(f"{D}║  🥷 {BOLD}AI wants to control the browser:{X}")
+    print(f"{D}║  {Y}  {label}{X}")
+    print(f"{D}╠══════════════════════════════════════════════════════╣{X}")
+    print(f"{D}║  {BTN_G} 1) Yes     — do it once                   {X}")
+    print(f"{D}║  {BTN_R} 2) No      — skip                          {X}")
+    print(f"{D}╚══════════════════════════════════════════════════════╝{X}")
+    choice = _safe_input(f"  {BOLD}Choose (1/2): {X}", audit_cmd=label)
+    if choice is None:
+        _record_blocked_action("browser", label, "no live terminal for confirmation", "BROWSER-BLOCK-NO-TTY")
+        return None
+    _check_kick_escape(choice)
+    if choice != "1":
+        _record_blocked_action("browser", label, "user declined", "BROWSER-BLOCK-DECLINED")
+        return None
+    _audit("BROWSER", label)
+    return _dispatch_browser_action(kind, target, value)
+
+
 # ── 4-OPTION CONFIRM ─────────────────────────────────────────
 @_awaiting_confirm
 def confirm_run(cmd):
@@ -9776,6 +9923,10 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
     send_email_specs = [s for s in (_parse_send_email_spec(l)
                         for l in lines if _real_directive(l, "SEND_EMAIL")) if s]
 
+    # 2026-08-27: BROWSER_* — see _extract_browser_actions()/confirm_browser_action()
+    # above confirm_run. Long taught to the model, never executed until now.
+    browser_actions = _extract_browser_actions(lines)
+
     # 2026-05-11: REMEMBER: <fact> — model-emitted memory write. Same
     # extraction shape as RUN/READ, BUT block-aware: REMEMBER lines that
     # appear INSIDE a <<<CONTENT>>>CONTENT / <<<FIND>>>FIND /
@@ -10484,6 +10635,23 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             tool_result_feedback.append(
                 f"[SEND_EMAIL RESULT]\nTo: {spec.get('to','')}\nSubject: {spec.get('subject','')}\nStatus: sent"
             )
+
+    # BROWSER_* — dispatched through sensei_bridge.py's queue (same one
+    # sensei_mcp_server.py's mcp__sensei__* tools use). Chain-aborts on
+    # failure like RUN/RUNTERM so the model doesn't narrate a browser
+    # action it never actually performed.
+    for action in browser_actions:
+        kind, target, value = action["kind"], action["target"], action["value"]
+        label = f"{kind}: {target}"
+        result = confirm_browser_action(kind, target, value)
+        if not _action_ok(result):
+            if _append_tool_blocked_feedback("BROWSER", label):
+                return None
+            print(_pill("BLOCKED", f"{D}{label} failed or was refused{X}"))
+            log(f"CHAIN_ABORT: BROWSER action failed: {label}")
+            return reply
+        if continue_after_tools:
+            tool_result_feedback.append(_format_tool_result(kind, label, result))
 
     if tool_result_feedback:
         history.append({
