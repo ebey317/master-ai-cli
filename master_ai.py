@@ -86,7 +86,7 @@ try:
         "mode plan", "mode review", "mode auto",
         "mode local", "mode connected",
         "mode", "memory", "remember:", "forget:", "task", "task add ", "task list",
-        "task done ", "task clear", "tasks", "save session", "load summary", "copy chat", "copy session",
+        "task done ", "task clear", "tasks", "save session", "compact", "load summary", "copy chat", "copy session",
         "load session", "clear", "clear history", "clear cache", "clear approved", "clear chats",
         "chats", "doctor", "health", "standards", "agent standards", "refresh", "reload", "restart", "kick",
         "up", "down", "top", "bottom", "last",
@@ -6997,6 +6997,7 @@ def show_help():
         ]),
         ("SESSIONS & CACHE", [
             ("save session",         "save full chat + auto-generate summary now"),
+            ("compact",              "save + summarize + restart with compacted history, on demand"),
             ("load summary",         "inject last session summary into context"),
             ("load session",         "inject full last session transcript"),
             ("clear history",        "wipe conversation context"),
@@ -13354,6 +13355,17 @@ def main():
         # ── Save / Load session ───────────────────────────────
         if lo == "save session":
             save_session(history)
+            continue
+
+        # 2026-08-27: operator — "I need to be able to compact." The real
+        # compact mechanism (save + 4-bullet summary + soft re-exec, see
+        # handle_save_refresh) already existed and worked, but only fired
+        # automatically once history crossed CONTEXT_WATERMARK inside
+        # orchestrate()'s routing check — there was no way to trigger it on
+        # demand. This is the same call the automatic path makes, just
+        # user-invoked instead of threshold-triggered.
+        if lo in ("compact", "compact history", "compact session"):
+            handle_save_refresh(history)  # execvp — never returns
             continue
 
         if lo in ("log", "show log", "open log"):
