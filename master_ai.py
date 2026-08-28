@@ -87,8 +87,8 @@ try:
         "mode local", "mode connected",
         "mode", "memory", "remember:", "forget:", "task", "task add ", "task list",
         "task done ", "task clear", "tasks", "save session", "compact", "load summary", "copy chat", "copy session",
-        "load session", "clear", "clear history", "clear cache", "clear approved", "clear chats",
-        "chats", "doctor", "health", "standards", "agent standards", "refresh", "reload", "restart", "kick",
+        "load session", "new", "clear", "clear history", "clear cache", "clear approved", "clear chats",
+        "chats", "doctor", "health", "standards", "agent standards", "kick",
         "up", "down", "top", "bottom", "last",
         "mouse remote", "mouse local", "mouse status",
         "projects", "apps", "autotips", "slideshow", "tour",
@@ -6481,7 +6481,8 @@ def _build_idle_tips():
         out = [
             ("hub",     "18-action control panel"),
             ("help",    "full command reference"),
-            ("refresh / reload", "soft-restart if screen glitches"),
+            ("new",     "full session reset + engine restart"),
+            ("clear",   "full session reset + engine restart (synonym for new)"),
             ("",        "Your AI. Every entry point. Your hardware."),
         ]
     return out
@@ -6706,8 +6707,8 @@ def show_autotips(slide_delay=4.0):
             "'project <path>' → inject file tree to AI",
         ]),
         ("Recovery (if stuck)", [
-            "'refresh / reload' → soft-restart engine in place",
-            "'kick / restart' → supervisor-loop hard restart",
+            "'new' or 'clear' → full session reset + engine restart",
+            "'kick' → supervisor-loop hard restart",
             "~/scripts/master_ai_refresh.sh → from any shell",
             "~/scripts/master_ai_kick.sh    → full tmux rebuild",
         ]),
@@ -6776,8 +6777,9 @@ def show_hub():
         ("chats",        "browse saved sessions"),
         ("save session", "save session + summary now"),
         ("doctor",       "live health + productivity check"),
-        ("refresh / reload", "redraw screen + reload engine"),
-        ("kick / restart",   "force-restart engine"),
+        ("new",          "full session reset + engine restart"),
+        ("clear",        "full session reset + engine restart (synonym for new)"),
+        ("kick",         "force-restart engine if stuck"),
         ("clear cache",  "wipe cached responses"),
         ("keys",         "API key status"),
         ("tts",          "voice toggle / status"),
@@ -7029,8 +7031,9 @@ def show_help():
         ("RECOVERY", [
             ("doctor",               "live health card: services, URLs, mode, mouse, task"),
             ("standards",            "agent-readiness gap report"),
-            ("refresh / reload",     "soft-restart engine in place (screen glitch)"),
-            ("kick / restart",       "force-restart via supervisor (engine stuck)"),
+            ("new",                  "full session reset + engine restart"),
+            ("clear",                "full session reset + engine restart (synonym for new)"),
+            ("kick",                 "force-restart via supervisor (engine stuck)"),
             ("~/scripts/master_ai_kick.sh", "from any shell: rebuild tmux session"),
         ]),
         ("SYSTEM", [
@@ -7188,8 +7191,9 @@ def show_tips():
     blank()
     row("doctor",          "live health card — URLs, services, mode, mouse, task")
     row("standards",       "agent-readiness gap report — no toy shortcuts hidden")
-    row("refresh / reload","restart engine in place — use when screen glitches")
-    row("kick / restart",   "force-restart engine via supervisor loop (use when stuck/hung)")
+    row("new",             "full session reset + engine restart")
+    row("clear",           "full session reset + engine restart (synonym for new)")
+    row("kick",            "force-restart engine via supervisor loop (use when stuck/hung)")
     row("tts on / tts off","toggle voice — replies spoken aloud (saved across restarts)")
     row("tts",             "show current voice status")
     row("mouse remote",    "phone/RustDesk scrolling + taps")
@@ -7249,8 +7253,9 @@ def show_commands():
         ("update", "Update Master AI safely"),
         ("copy chat", "Export this conversation"),
         ("help buckets", "Show the punctuation teaser"),
-        ("refresh / reload", "soft-reload the screen/engine"),
-        ("kick / restart", "force restart if stuck"),
+        ("new", "full session reset + engine restart"),
+        ("clear", "full session reset + engine restart (synonym for new)"),
+        ("kick", "force restart if stuck"),
     ]
     width = 66
     print(f"\n{BC}  ╔{'═' * width}╗{X}")
@@ -7345,6 +7350,14 @@ def _blocked_shell_issue(cmd):
         return "recursive/world-writable chmod on root blocked"
     if re.search(r"\bchown\b[^;&|]*\s-r\s+[^;&|]*(?:\s/|\s/\s|$)", low):
         return "recursive chown on root blocked"
+    # 2026-08-27: asked to "read the thread" (its own conversation), the
+    # model hallucinated `tmux capture-pane -t master-ai ...` — shelling out
+    # to screenshot its own terminal. That pane's own box-drawing borders
+    # got fed back and printed inside themselves, corrupting the TUI's own
+    # rendering. Pointless too: the full conversation is already in
+    # `history`/context — no tool call is needed to "read" it.
+    if re.search(r"\btmux\s+capture-pane\b", low) and re.search(r"-t\s*['\"]?master-ai\b", low):
+        return "self-capture of own tmux pane blocked — the conversation is already in your context, answer directly"
     return None
 
 def is_blocked(cmd):
@@ -7794,15 +7807,18 @@ def _first_shell_word(part):
 
 
 def _is_web_grep_no_match(cmd, exit_code=None):
-    """True when grep's exit 1 means a web/RSS probe simply found no hits."""
+    """True when grep's exit 1 means the search simply found no hits, not
+    that the command failed. Applies to any producer piped into a
+    grep-family tool (grep/egrep/fgrep/rg) — not just curl/wget — since
+    exit 1 is that tool's own well-defined "no matches" code regardless of
+    what feeds it. Only checks the LAST pipe stage so an unrelated earlier
+    failure (that happens to also exit 1) isn't misread as a clean no-match."""
     if exit_code not in (1, "1"):
         return False
     parts = _split_top_level_pipes(cmd)
     if len(parts) < 2:
         return False
-    if _first_shell_word(parts[0]) not in {"curl", "wget"}:
-        return False
-    return any(_first_shell_word(part) in {"grep", "egrep", "fgrep", "rg"} for part in parts[1:])
+    return _first_shell_word(parts[-1]) in {"grep", "egrep", "fgrep", "rg"}
 
 
 def _is_informational_cmd(cmd, exit_code=None):
@@ -7833,6 +7849,13 @@ def _is_informational_cmd(cmd, exit_code=None):
     if s == "which" or s.startswith("which ") or s.startswith("which\t"):
         return True
     if s.startswith("command -v ") or s.startswith("command -V "):
+        return True
+    # pkill/killall exit 1 means "no process matched that name" — the
+    # correct answer to 'stop X' when X isn't running (e.g. `tts off` ->
+    # `pkill -f piper` when TTS already isn't using piper), not a failure.
+    # Exit 2 (syntax error) and 3 (fatal error) still fall through and block.
+    if exit_code in (1, "1") and (s == "pkill" or s.startswith("pkill ")
+                                   or s == "killall" or s.startswith("killall ")):
         return True
     return False
 
@@ -8901,7 +8924,7 @@ def _sensei_bridge_alive():
         return False
 
 
-def _dispatch_browser_action(kind, target, value, session_id="master-ai-cli", wait_seconds=25):
+def _dispatch_browser_action(kind, target, value, session_id="mcp-default", wait_seconds=25):
     """Push one action to sensei_bridge's /extension/queue and poll
     /extension/result for the outcome — the identical push/await shape
     sensei_mcp_server.py's _push()/_await_result() use. Chrome + the
@@ -11883,6 +11906,14 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "~/.sensei_tool_inventory.json. 'do I have a video player' → RUN: "
         "command -v vlc mpv totem celluloid xine; ls /usr/share/applications/ "
         "2>/dev/null | grep -iE 'video|media|player' | head -10.\n\n"
+        "SELF-REFERENTIAL REQUESTS: when the user asks you to 'read the thread', "
+        "'check the conversation', 'check the chat', 'read this thread', or "
+        "anything else about YOUR OWN conversation with them, just answer from "
+        "the conversation history already in your context — it's right here, "
+        "you don't need a tool call. NEVER shell out to tmux/screen/capture-pane "
+        "to inspect your own terminal session; that's pointless (you already "
+        "have the transcript) and it corrupts your own rendering by feeding "
+        "your pane's box-drawing borders back into themselves.\n\n"
         "DIRECTIVES — use these to act on the machine:\n\n"
         "RUN: <bash command>        — captured output (ls, git, pytest, apt, curl)\n"
         "RUNTERM: <bash command>    — spawns in a new graphical terminal (visual/TTY scripts)\n"
@@ -12055,6 +12086,10 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "Composing a bug report with the most recent screenshot.\n"
         "SEND_EMAIL: to=support@whatever subject=\"Bug — 404 on password reset\" body=\"Hi team,\\n\\nI encountered a 404 on the password reset page just now. URL: <fill from context>. Timestamp: <now>. Browser: Chrome on Linux.\\n\\nA screenshot is attached.\\n\\nBest,\\nElijah\" attach=~/.master_ai_screenshots/latest.png\n"
         "If the user just says \"send\" without a recipient, ASK: send to which address? Don't guess.\n\n"
+        "EMAIL CHECK / CLEANUP DISCIPLINE — the user has two purpose-built scripts for email. NEVER launch the Thunderbird GUI (`thunderbird &`) for either of these — everything happens in this thread as text output:\n"
+        " - CHECK/REVIEW (\"check my emails\", \"check my inbox\", \"what's in my email\", \"any new emails\") → RUN: python3 ~/scripts/triage_emails.py (add --days N, --account gmail|aol|outlook, or --unread as the request implies; default is last 7 days, all accounts). It categorizes messages across AOL/Gmail/Outlook into decision buckets so the user can pick what to do. Summarize the categorized output in plain language; don't dump raw text unless asked. If the user then says which categories to clear, RUN it again with --delete-approvals TAG1,TAG2 (or ALL).\n"
+        " - CLEANUP/DELETE (\"clean up my emails\", \"clear out the spam\", \"delete the junk\") → RUN: python3 ~/scripts/clean_all_emails.py — deletes spam across all accounts directly, no review step. Only reach for this when the user explicitly asks to delete/clean, not for a plain check.\n"
+        " - Both print plain text to stdout — relay that output directly in the thread. Do not open any GUI mail client for either request.\n\n"
         "BROWSER DIRECTIVE RULES — when working through the Chrome extension:\n"
         " - PAGE-CONTEXT GROUNDING: when a [BROWSER PAGE CONTEXT] block is present in the\n"
         "   conversation, it is GROUND TRUTH for what's on the active tab. Selectors you emit\n"
@@ -13372,6 +13407,33 @@ def main():
                 try: _SENSEI_APP.set_mode(new_mode)
                 except Exception: pass
             continue
+        # Cycle plan → review → auto → plan — Elijah 2026-08-27: "cycle
+        # through my modes from review, plan, and auto" instead of typing
+        # the full "mode <name>" each time. Same banner/persist/repaint
+        # path as an explicit mode switch, just rotates instead of naming.
+        if lo in ("cycle", "cycle mode", "mode cycle", "mode next", "next mode"):
+            _CYCLE_ORDER = ("plan", "review", "auto")
+            old_mode = MODE if MODE in _CYCLE_ORDER else "plan"
+            new_mode = _CYCLE_ORDER[(_CYCLE_ORDER.index(old_mode) + 1) % len(_CYCLE_ORDER)]
+            globals()['MODE'] = new_mode
+            save_mode(new_mode)
+            _HANDSHAKE = {
+                ("plan",   "review"): (C, "Plan → Review — per-step confirms ready"),
+                ("plan",   "auto"):   (G, "Plan → Auto — flow mode engaged"),
+                ("review", "auto"):   (G, "Review → Auto — trust earned, full flow"),
+                ("review", "plan"):   (R, "Review → Plan — back to thinking"),
+                ("auto",   "review"): (C, "Auto → Review — stepping back for per-step confirms"),
+                ("auto",   "plan"):   (R, "Auto → Plan — back to thinking"),
+            }
+            banner = _HANDSHAKE.get((old_mode, new_mode))
+            if banner:
+                color, text = banner
+                print(f"\n{color}  ▶ handoff: {text}{X}")
+            show_mode_status()
+            if _SENSEI_APP is not None:
+                try: _SENSEI_APP.set_mode(new_mode)
+                except Exception: pass
+            continue
         if lo == "mode":
             show_mode_status()
             continue
@@ -13729,24 +13791,27 @@ def main():
                 print(f"  {Y}not in tmux.{X}")
             continue
 
-        # ── Refresh / abort / new task — full override. ──────────────
+        # ── New / Clear — full session reset + engine restart. ──────
         # Saves session silently, clears screen, exec's a fresh Python
         # process. New blank history — ready to type, memory of the
-        # current conversation is gone. Aliases cover every natural
-        # way Elijah might say "start over" (2026-04-22).
-        # 2026-08-27: added "new" and "clear" aliases so NEW/CLEAR/RESTART all
-        # do the same session reset + engine restart.
-        if lo in ("save refresh", "save and refresh", "save+refresh", "savory refresh"):
+        # current conversation is gone. Two canonical commands.
+        if lo in ("save new", "save clear"):
             handle_save_refresh(history)  # execvp — never returns
             continue  # unreachable
 
-        if lo in (
-            "new", "clear", "restart",
-            "refresh", "reload",
-            "abort", "cancel", "override", "reset",
-            "new task", "new chat", "new session", "start over",
-            "wipe", "blank slate",
-        ):
+        # ── Refresh — soft reload, preserves conversation ────────────
+        # Referenced in three separate hints ("Type `refresh` so Sensei
+        # relaunches...", "`refresh` for UI redraw", hub menu's "soft
+        # reload") and backed by handle_save_refresh() for the internal
+        # context-pressure auto-refresh — but the literal word "refresh"
+        # was never actually wired to it. Elijah 2026-08-27: "does refresh
+        # clear it" — no, it did nothing at all. Distinct from "new"/
+        # "clear" below, which is a full wipe; this keeps history.
+        if lo == "refresh":
+            handle_save_refresh(history)  # execvp — never returns
+            continue  # unreachable
+
+        if lo in ("new", "clear"):
             try:
                 RESUME_FLAG.unlink()
             except FileNotFoundError:
@@ -13773,9 +13838,9 @@ def main():
             os.execvp(sys.executable, [sys.executable, str(Path.home() / "scripts/master_ai.py")])
             continue  # unreachable
 
-        # ── Clear variants ─────────────────────────────────────
-        # 2026-08-27: "clear" and "clear history" now handled above with the
-        # NEW/RESTART aliases. Keep this block for any future clear-* variants.
+        # ── Clear variants (approved/cache/chats) ───────────────────
+        # 2026-08-27: "clear" alone is handled above (full reset).
+        # These are specialized clears that keep the session alive.
         if lo in ("clear approved", "clear cache", "clear chats"):
             history = [h for h in history if h.get("role") == "system"]
             if lo == "clear approved":
@@ -14502,7 +14567,14 @@ def main():
         _ut_lower = _ut_stripped.lower()
 
         # ── New topic / reset context — isolate the next turn from stale memory + auto-context ──
-        if _ut_lower in ("new topic", "newtopic", "reset context", "resetcontext"):
+        # "restart"/"restart session" and "clear history" are aliases onto the
+        # same mechanism — Elijah 2026-08-27: "restart is supposed to start a
+        # new session," and it turned out neither had a real handler: "restart"
+        # fell through to the LLM (which just talked about it instead of doing
+        # it), and "clear history" was advertised in the help menu/completions
+        # but had no dispatch at all.
+        if _ut_lower in ("new topic", "newtopic", "reset context", "resetcontext",
+                          "restart", "restart session", "clear history"):
             marker = _topic_marker_line("NEW TOPIC")
             _append_memory_marker(marker)
             _NEXT_TURN_CONTEXT_POLICY = {"suppress_auto_context": True, "memory_mode": "new_topic"}
