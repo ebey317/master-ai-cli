@@ -7609,9 +7609,16 @@ def _hallucination_warn(cmd):
         return True
     # Shell builtins and common control words — shutil.which won't find
     # these but they're valid. Subset focused on what models actually emit.
+    # 2026-08-27: `command -v rg` (the exact pattern this codebase's own
+    # prompts teach the model to run before using rg/other optional tools)
+    # got BLOCKED in auto mode because `command` itself wasn't on this list
+    # — the hallucination guard was blocking its own recommended check.
     BUILTINS = {"cd", "echo", "export", "set", "unset", "source", ".", "exec",
                 "if", "then", "else", "fi", "for", "while", "do", "done",
-                "true", "false", ":", "test", "[", "alias", "eval"}
+                "true", "false", ":", "test", "[", "[[", "alias", "eval",
+                "command", "type", "read", "local", "readonly", "declare",
+                "printf", "shift", "case", "esac", "until", "function",
+                "let", "time", "return", "pwd"}
     if first in BUILTINS:
         return True
     if _shutil.which(first):
@@ -11914,6 +11921,22 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "to inspect your own terminal session; that's pointless (you already "
         "have the transcript) and it corrupts your own rendering by feeding "
         "your pane's box-drawing borders back into themselves.\n\n"
+        "SEARCHING FILES: for any text search wider than a single known "
+        "directory (searching the home directory, 'find every file that "
+        "mentions X', name/identity lookups, etc.), use `rg` (ripgrep), NOT "
+        "`grep -r` — but tool choice alone is NOT enough here: ~ has "
+        "639,000+ files (verified 2026-08-27), and ~/triage-build alone is "
+        "223,000 of them — it's a full extracted Linux ISO build "
+        "(squashfs_root, an entire root-owned root filesystem copy, 11GB) "
+        "for an ISO project, not user documents. Walking it (with grep OR "
+        "rg OR find — all three were timed and hang the same way) reliably "
+        "eats the whole 5-minute RUN timeout and aborts the turn (BLOCKED) "
+        "with nothing to show for it. ALWAYS exclude it explicitly: "
+        "`rg -i \"term\" ~ --glob '!triage-build' --glob '!.venvs'`. If you "
+        "don't know whether rg is installed, `command -v rg` first; if "
+        "missing, scope grep to a specific likely subdirectory (~/Documents, "
+        "~/projects, ~/scripts, etc.) instead of all of ~, and still skip "
+        "triage-build and .venvs.\n\n"
         "DIRECTIVES — use these to act on the machine:\n\n"
         "RUN: <bash command>        — captured output (ls, git, pytest, apt, curl)\n"
         "RUNTERM: <bash command>    — spawns in a new graphical terminal (visual/TTY scripts)\n"
