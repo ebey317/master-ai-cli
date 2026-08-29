@@ -7819,11 +7819,19 @@ def _is_web_grep_no_match(cmd, exit_code=None):
     grep-family tool (grep/egrep/fgrep/rg) — not just curl/wget — since
     exit 1 is that tool's own well-defined "no matches" code regardless of
     what feeds it. Only checks the LAST pipe stage so an unrelated earlier
-    failure (that happens to also exit 1) isn't misread as a clean no-match."""
+    failure (that happens to also exit 1) isn't misread as a clean no-match.
+
+    2026-08-28: also covers a bare grep-family command with no pipe at all
+    (e.g. `grep pattern file`). This used to require len(parts) >= 2 and
+    fall through to a hard BLOCKED for the standalone case, even though
+    exit 1 means the exact same thing there — no match, not failure. grep's
+    own exit codes don't change based on whether it's piped: 0=match,
+    1=no-match, 2=usage/file error (still correctly falls through below,
+    since only exit 1 is treated as informational)."""
     if exit_code not in (1, "1"):
         return False
     parts = _split_top_level_pipes(cmd)
-    if len(parts) < 2:
+    if not parts:
         return False
     return _first_shell_word(parts[-1]) in {"grep", "egrep", "fgrep", "rg"}
 
@@ -13845,6 +13853,16 @@ def main():
                 save_session(list(history), silent=True)
             except Exception:
                 pass
+            # 2026-08-28: THREAD_FILE (~/.master_ai_thread) is a single
+            # global sticky label with no automatic lifecycle of its own —
+            # maybe_auto_label() only ever fires once and only if this file
+            # is empty, so a stale label survives forever otherwise. Elijah
+            # hit this directly: a label from days earlier was still
+            # showing after starting over on a completely different topic.
+            # "new"/"clear" already means "blank history, start fresh" —
+            # the label needs to reset here too so the next 3+ messages can
+            # get a label that actually matches the new conversation.
+            save_thread_label("")
             print(f"  {C}🔄 Refreshing Master AI — screen reset + engine restart...{X}", flush=True)
             if _SENSEI_APP is not None:
                 try:
