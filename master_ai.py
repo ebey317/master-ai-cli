@@ -12810,9 +12810,14 @@ def handle(user_text, history, image_path=None, context_policy=None):
                 # continuation loop at turns=0, so the user got a bare
                 # FOUND/RAN pill and no closing answer. Synthesizing the
                 # answer never needs to leave the machine, so fall back to
-                # local instead of giving up.
-                print(f"  {D}🔒 private tool output — answering locally instead of cloud{X}")
-                return ask_local_stream(history, model=MODELS["master"]), True
+                # local instead of giving up. Use the fast 3B tier, not the
+                # 7B master-ai brain — this box is CPU-only and master-ai
+                # took 5+ minutes (and once outright hung) just to relay a
+                # one-line "found it" result; the job here is restating a
+                # known tool result in plain language, not reasoning, so the
+                # 3B model's speed matters far more than its extra depth.
+                print(f"  {D}🔒 private tool output — answering locally (fast tier) instead of cloud{X}")
+                return ask_local_stream(history, model=MODELS["fast"]), True
             _spin2 = local_thinking_start()
             provider = "gemini" if route == "web" else (model if model in CLOUD_MODEL_NAMES else "groq")
             try:
