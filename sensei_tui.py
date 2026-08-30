@@ -59,7 +59,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.styles import Style
-from prompt_toolkit.widgets import Frame, TextArea
+from prompt_toolkit.widgets import Frame, TextArea, RadioList, Box, Dialog
 
 
 HISTORY_FILE = str(Path.home() / ".master_ai_history")
@@ -296,39 +296,21 @@ class SlashCommandCompleter(Completer):
     text or hint. The inserted text replaces the slash so the existing command
     dispatcher in master_ai.py receives the same words as manual typing.
 
-    "/model <query>" is special-cased: instead of the ~20 static "model *"
-    hint entries, it shows a live picker across every provider key that's
-    actually configured (plus local Ollama) — scroll/arrow-keys + Enter,
-    same as this menu already does for everything else. model_catalog_fn
-    is injected from master_ai.py (keeps the HTTP/caching logic there, out
-    of this UI-only module); falls back to the static entries when it's
-    None or returns nothing.
+    2026-08-30: "/model" used to be special-cased here as a type-to-filter
+    live dropdown. Operator, explicitly: "I'm not typing... remove it from
+    my software." /model is now intercepted before it ever reaches this
+    completer (see _submit in _build_keys()) and opens a pure arrow-key
+    modal picker (_open_model_picker) instead — provider list, then that
+    provider's full model list, no typing at any step. This class no
+    longer needs a model_catalog_fn at all; it only serves the static
+    command palette now.
     """
-
-    def __init__(self, model_catalog_fn=None):
-        self._model_catalog_fn = model_catalog_fn
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         if "\n" in text or not _menu_prefix(text):
             return
         narrow = _term_size().columns < 100
-        after_slash = text[1:]
-        if self._model_catalog_fn and after_slash.lower().startswith("model "):
-            query = after_slash[len("model "):]
-            try:
-                live = self._model_catalog_fn(query)
-            except Exception:
-                live = []
-            if live:
-                for pin_value, display, hint in live:
-                    yield Completion(
-                        f"model {pin_value}",
-                        start_position=-len(text),
-                        display=display,
-                        display_meta="" if narrow else hint,
-                    )
-                return
         for command in _menu_command_matches(text):
             hint = "" if narrow else COMMAND_MENU_HINTS.get(command, "")
             yield Completion(
@@ -528,7 +510,7 @@ class SenseiApp:
             # still growing for pasted prompts.
             height=Dimension(min=1, max=5, preferred=2),
             history=FileHistory(HISTORY_FILE),
-            completer=SlashCommandCompleter(self._model_catalog_fn),
+            completer=SlashCommandCompleter(),
             complete_while_typing=True,
             focusable=True,
             # User-typed text stays the terminal's default color — no blue.
@@ -637,6 +619,18 @@ class SenseiApp:
             self._output_frame,
             self._frame,
         ])
+        # Modal /model picker — pure arrow-key + Enter navigation, no typing
+        # at any step (see _open_model_picker). Floats full-screen above
+        # everything else when active; a placeholder Window the rest of the
+        # time so it costs nothing when hidden.
+        self._picker_visible = False
+        self._picker_radio = None       # currently-shown RadioList
+        self._picker_on_select = None   # callback(value) fired on Enter
+        self._picker_container = ConditionalContainer(
+            Window(width=0, height=0),
+            filter=Condition(lambda: self._picker_visible),
+        )
+
         root = FloatContainer(
             content=root,
             floats=[
@@ -644,6 +638,10 @@ class SenseiApp:
                     xcursor=True,
                     ycursor=True,
                     content=CompletionsMenu(max_height=8, display_arrows=True),
+                ),
+                Float(
+                    left=0, top=0, right=0, bottom=0,
+                    content=self._picker_container,
                 ),
             ],
         )
@@ -909,10 +907,51 @@ class SenseiApp:
     def _build_keys(self) -> KeyBindings:
         kb = KeyBindings()
 
+        # Modal picker (/model): app-level bindings so Enter/Escape stay
+        # active for as long as self._picker_visible is True, regardless
+        # of which widget technically has focus inside the picker.
+        # RadioList's own control already handles up/down for moving the
+        # highlight and toggling current_value — this just reads that
+        # value on Enter and closes the picker. Both firing on one Enter
+        # is harmless: RadioList's handler only updates current_value,
+        # which is exactly what gets read here.
+        @kb.add("enter", filter=Condition(lambda: self._picker_visible))
+        def _picker_confirm(event):
+            radio = self._picker_radio
+            on_select = self._picker_on_select
+            self._close_picker()
+            if radio is not None and on_select is not None:
+                on_select(radio.current_value)
+
+        @kb.add("escape", filter=Condition(lambda: self._picker_visible))
+        @kb.add("c-c", filter=Condition(lambda: self._picker_visible))
+        def _picker_cancel(event):
+            self._close_picker()
+
         @kb.add("enter", filter=has_focus(self._input))
         def _submit(event):
+            # /model (no trailing text) opens the arrow-key modal picker —
+            # provider list, then that provider's full model list, no
+            # typing at either step. Operator, explicit: "I'm not typing.
+            # I'm going to do slash model... arrow and enter key."
+            _bare = self._input.text.strip().lower()
+            if _bare in ("/model", "model"):
+                self._input.text = ""
+                self._open_model_picker()
+                return
+
             menu_command = self._active_comma_completion()
             if menu_command:
+                # Same interception, reached via the completion dropdown
+                # (arrow/Tab to highlight "model", then Enter) instead of
+                # typing the full word out — must not fall through to
+                # normal dispatch, or this bypasses the picker exactly
+                # like typing "/model" and pressing Enter directly does.
+                if menu_command.strip().lower() == "model":
+                    self._input.buffer.cancel_completion()
+                    self._input.text = ""
+                    self._open_model_picker()
+                    return
                 self._input.buffer.cancel_completion()
                 if self._insert_payload_command(menu_command):
                     return
@@ -1142,6 +1181,92 @@ class SenseiApp:
     def run_in_terminal(self, fn: Callable[[], object]):
         """Suspend the TUI, run a classic stdin/stdout block, then redraw."""
         return self._app.run_in_terminal(fn, in_executor=False)
+
+    def _close_picker(self):
+        """Hide the modal /model picker and return focus/keys to the main input."""
+        self._picker_visible = False
+        self._picker_container.content = Window(width=0, height=0)
+        self._picker_radio = None
+        self._picker_on_select = None
+        try:
+            self._app.layout.focus(self._input)
+        except Exception:
+            pass
+        try:
+            self._app.invalidate()
+        except Exception:
+            pass
+
+    def _show_picker(self, values, title, on_select):
+        """Show one step of the modal picker: a RadioList of (label, value)
+        pairs. Arrow keys move the highlight (RadioList's own bindings),
+        Enter confirms (app-level binding in _build_keys(), filtered on
+        self._picker_visible — reads self._picker_radio), Escape/Ctrl-C
+        cancels. No typing at any step."""
+        radio = RadioList(values=values)
+        dialog = Dialog(
+            title=title,
+            body=HSplit([Box(radio, padding=0)]),
+            buttons=[],
+            width=Dimension(preferred=74),
+            with_background=True,
+        )
+        self._picker_radio = radio
+        self._picker_on_select = on_select
+        self._picker_container.content = dialog
+        self._picker_visible = True
+        try:
+            self._app.layout.focus(radio)
+        except Exception:
+            pass
+        try:
+            self._app.invalidate()
+        except Exception:
+            pass
+
+    def _open_model_picker(self):
+        """Open the two-step arrow-key /model picker: provider list, then
+        that provider's full model catalog. Everything runs inside this
+        one long-lived Application — no nested Application, no
+        run_in_terminal (that method doesn't exist on prompt_toolkit's
+        Application in the installed version here — 3.0.52 — calling it
+        used to surface as a "Press ENTER to continue..." loop from
+        prompt_toolkit's own internals, before this was rewritten)."""
+        if not self._model_catalog_fn:
+            return
+        try:
+            providers = self._model_catalog_fn("", mode="providers")
+        except Exception:
+            providers = []
+        if not providers:
+            self.write(f"\n{Y}No provider keys configured — nothing to pick from.{X}\n")
+            return
+
+        def _after_model(model_id):
+            if not model_id:
+                return
+            text = f"model {model_id}"
+            self.write(f"\n\033[1m> {text}\033[0m\n")
+            if self._on_submit:
+                t = threading.Thread(target=self._safe_dispatch, args=(text,), daemon=True)
+                t.start()
+
+        def _after_provider(provider):
+            if not provider:
+                return
+            try:
+                models = self._model_catalog_fn(provider) or []
+            except Exception:
+                models = []
+            if not models:
+                self._close_picker()
+                self.write(f"\n{Y}No models found for provider '{provider}'.{X}\n")
+                return
+            model_values = [(pin, f"{disp}  {hint}" if hint else disp) for pin, disp, hint in models]
+            self._show_picker(model_values, f" {provider.upper()} Models ", _after_model)
+
+        provider_values = [(key, f"{label}  {hint}" if hint else label) for key, label, hint in providers]
+        self._show_picker(provider_values, " Select Provider ", _after_provider)
 
     def scroll(self, direction: str, n: int = 10) -> None:
         if direction == "up":

@@ -133,7 +133,10 @@ if _SENSEI_ENABLED:
         # later in this module; the lambda only resolves the name when the
         # completer actually calls it (interactive use, long after module
         # load finishes), so the forward reference is safe.
-        _SENSEI_APP = SenseiApp(model_catalog_fn=lambda q: live_model_completions(q))
+        _SENSEI_APP = SenseiApp(model_catalog_fn=lambda q, mode=None: (
+            live_provider_completions(q, mode=mode) if mode == "providers"
+            else live_model_completions(q)
+        ))
     except Exception as _e:
         _SENSEI_APP = None
         _SENSEI_ENABLED = False
@@ -6348,51 +6351,67 @@ def _ollama_local_models():
     _OLLAMA_LOCAL_CACHE["models"] = models
     return models
 
-def live_model_completions(query):
-    """Every model reachable through a key actually present in
-    ~/.master_ai_keys, plus local Ollama — one merged, queryable list for
-    the TUI's live picker (arrow keys + Enter, same mechanism every other
-    "/" command already uses via SlashCommandCompleter).
+_PROVIDER_PICKER_ORDER = ("local", "openrouter", "nvidia", "cerebras", "groq")
 
-    2026-08-30: was OpenRouter-free-only by default — operator, three days
-    running on this: "I don't want to be limited to small models. I want
-    to test models and use different models... quit deviating from what
-    I'm asking." Paid models (Claude Opus, Grok, DeepSeek-V4-Pro, Qwen
-    Max, etc.) were completely invisible from this list; you had to
-    already know the exact id and type `model <exact-id>` blind. Now
-    every model from every configured provider shows, paid included,
-    marked so you can tell at a glance.
-
-    NVIDIA and Cerebras model ids also follow "org/model-name" and can
-    collide with OpenRouter's own id space for the same underlying model
-    (e.g. "nvidia/nemotron-3-ultra-550b-a55b" exists as a distinct, paid
-    id on OpenRouter too) — pin_value carries an explicit "nvidia::" /
-    "cerebras::" / "groq::" tag so routing never mistakes a direct-API
-    pick for an OpenRouter one; display is the clean id shown in the
-    dropdown.
-
-    Returns [(pin_value, display, hint), ...], local first, then by provider.
-    """
-    q = (query or "").strip().lower()
-    rows = []  # (pin_value, display, hint)
-    for m in _ollama_local_models():
-        rows.append((m, m, "LOCAL"))
-    if KEYS.get("cerebras"):
-        for m in _cerebras_model_catalog():
-            rows.append((f"cerebras::{m}", m, "cerebras 💰"))
-    if KEYS.get("nvidia"):
-        for m in _nvidia_model_catalog():
-            rows.append((f"nvidia::{m}", m, "nvidia 💰"))
-    if KEYS.get("groq"):
-        for m in _groq_model_catalog():
-            rows.append((f"groq::{m}", m, "groq 💰"))
+def live_provider_completions(query="", mode=None):
+    """Providers with a key configured (or local Ollama actually running)
+    — step 1 of the modal /model picker (sensei_tui._open_model_picker).
+    `query`/`mode` are accepted so this matches the shape SenseiApp calls
+    with (self._model_catalog_fn("", mode="providers")) but are otherwise
+    unused — the picker doesn't type-filter, it navigates.
+    Returns [(provider_key, display, hint), ...]."""
+    rows = []
+    local = _ollama_local_models()
+    if local:
+        rows.append(("local", "Local (Ollama)", f"{len(local)} models"))
     if KEYS.get("openrouter"):
-        for mid, name, free in _openrouter_model_catalog():
-            marker = "🆓" if free else "💰"
-            rows.append((mid, mid, f"openrouter {marker} {name}"))
-    if not q:
-        return rows
-    return [(pin, disp, hint) for pin, disp, hint in rows if q in disp.lower() or q in hint.lower()]
+        rows.append(("openrouter", "OpenRouter", "paid + free"))
+    if KEYS.get("nvidia"):
+        rows.append(("nvidia", "NVIDIA NIM", "paid"))
+    if KEYS.get("cerebras"):
+        rows.append(("cerebras", "Cerebras", "paid"))
+    if KEYS.get("groq"):
+        rows.append(("groq", "Groq", "paid"))
+    return rows
+
+def live_model_completions(provider):
+    """Every model for exactly ONE provider — step 2 of the modal /model
+    picker, called with a bare provider key ("local"/"openrouter"/
+    "nvidia"/"cerebras"/"groq") from live_provider_completions()'s list,
+    never a free-text search query (no typing at any picker step).
+
+    2026-08-30: was a single flat OpenRouter-free-only list with substring
+    search — operator, three days running on this: "I don't want to be
+    limited to small models. I want to test models and use different
+    models... quit deviating from what I'm asking." Paid flagship models
+    (Claude Opus, Grok, DeepSeek-V4-Pro, Qwen Max, etc.) were invisible;
+    you had to already know the exact id and type `model <exact-id>`
+    blind. This is now precise per-provider filtering (not substring
+    search) — substring search on display text was tried first and
+    rejected: an OpenRouter model literally named "nvidia/nemotron-..."
+    would substring-match a "nvidia" filter and leak into the NVIDIA NIM
+    list, which isn't what "select the NVIDIA provider" means.
+
+    NVIDIA/Cerebras/Groq model ids also follow "org/model-name" and can
+    collide with OpenRouter's own id space for the same underlying model
+    — pin_value carries an explicit "nvidia::" / "cerebras::" / "groq::"
+    tag so routing never mistakes a direct-API pick for an OpenRouter one.
+
+    Returns [(pin_value, display, hint), ...] for that one provider only.
+    """
+    provider = (provider or "").strip().lower()
+    if provider == "local":
+        return [(m, m, "") for m in _ollama_local_models()]
+    if provider == "openrouter":
+        return [(mid, mid, ("🆓 " if free else "💰 ") + name)
+                for mid, name, free in _openrouter_model_catalog()]
+    if provider == "nvidia":
+        return [(f"nvidia::{m}", m, "💰") for m in _nvidia_model_catalog()]
+    if provider == "cerebras":
+        return [(f"cerebras::{m}", m, "💰") for m in _cerebras_model_catalog()]
+    if provider == "groq":
+        return [(f"groq::{m}", m, "💰") for m in _groq_model_catalog()]
+    return []
 
 def _resolve_model_choice(choice):
     """Map a direct `model <name>` choice to a pin target.
