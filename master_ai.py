@@ -6182,6 +6182,65 @@ def print_openrouter_search(query, free_only=False):
         print(f"  {D}...and {len(matches) - 40} more — narrow your search.{X}")
     print(f"\n  {D}pin one with: model <exact-id>   (use 'model or free' to see only 🆓 models){X}\n")
 
+def print_full_model_catalog(query=""):
+    """Every model reachable through every configured key, unfiltered —
+    paid and free, local and cloud, one screen per provider.
+
+    2026-08-30: operator — "I don't want to be limited to small models.
+    I want to test models and use different models." The existing
+    'model search <term>' only covered OpenRouter, and even there
+    defaulted toward free-tier framing. This is the actual "everything I
+    have access to" view: no free_only filter, every provider with a key
+    present, so a real top-tier paid model is just as visible as a free
+    3B one. Selection stays simple — pin the exact id with `model <id>`."""
+    q = (query or "").strip().lower()
+    sections = []
+
+    local = _ollama_local_models()
+    if local:
+        rows = [m for m in local if q in m.lower()] if q else local
+        if rows:
+            sections.append(("LOCAL / OLLAMA", [(m, "", "local") for m in rows]))
+
+    if KEYS.get("openrouter"):
+        catalog = _openrouter_model_catalog()
+        rows = [(mid, name, "🆓 free" if free else "💰 paid")
+                for mid, name, free in catalog
+                if not q or q in mid.lower() or q in (name or "").lower()]
+        if rows:
+            sections.append(("OPENROUTER", rows))
+
+    if KEYS.get("nvidia"):
+        rows = [(m, "", "💰 paid") for m in _nvidia_model_catalog() if not q or q in m.lower()]
+        if rows:
+            sections.append(("NVIDIA NIM", rows))
+
+    if KEYS.get("cerebras"):
+        rows = [(m, "", "💰 paid") for m in _cerebras_model_catalog() if not q or q in m.lower()]
+        if rows:
+            sections.append(("CEREBRAS", rows))
+
+    if KEYS.get("groq"):
+        rows = [(m, "", "💰 paid") for m in _groq_model_catalog() if not q or q in m.lower()]
+        if rows:
+            sections.append(("GROQ", rows))
+
+    if not sections:
+        print(f"  {Y}no models found — no provider keys configured, or network/API errors on all of them.{X}")
+        return
+
+    total = sum(len(rows) for _, rows in sections)
+    label = f"matching '{query}'" if query else "— everything reachable through your keys, unfiltered"
+    print(f"\n  {C}Full model catalog{X} {label}  ({total} total):")
+    for section_label, rows in sections:
+        print(f"\n  {BW}{section_label}{X}  ({len(rows)}):")
+        for mid, name, marker in rows[:40]:
+            name_part = f"  {D}{name}{X}" if name else ""
+            print(f"    {W}{mid:<45}{X} {marker}{name_part}")
+        if len(rows) > 40:
+            print(f"  {D}...and {len(rows) - 40} more in {section_label} — narrow with: model all <term>{X}")
+    print(f"\n  {D}pin one with: model <exact-id>{X}\n")
+
 # ── Live model picker — every configured key, arrow keys + Enter ──────
 # Per Elijah 2026-08-20: "whenever I select model ... it should open up a
 # model catalog for every API key I have logged. I need to scroll up and
@@ -6224,6 +6283,12 @@ def _nvidia_model_catalog():
 def _cerebras_model_catalog():
     return _provider_model_catalog(_CEREBRAS_MODELS_CACHE,
         "https://api.cerebras.ai/v1/models", KEYS.get("cerebras"))
+
+_GROQ_MODELS_CACHE = Path.home() / ".master_ai_groq_models_cache.json"
+
+def _groq_model_catalog():
+    return _provider_model_catalog(_GROQ_MODELS_CACHE,
+        "https://api.groq.com/openai/v1/models", KEYS.get("groq"))
 
 _OLLAMA_LOCAL_CACHE = {"ts": 0.0, "models": []}
 _OLLAMA_LOCAL_TTL = 30
@@ -6456,7 +6521,8 @@ def show_model_menu():
         print(f"{BC}  ║{X}  {C}Routing: {G}AUTO{X}  {D}(smart routing by task type){X}")
     print(f"{BC}  ╚{'═'*width}╝{X}")
     print(f"\n  {D}Direct commands: model local · model groq · model cerebras · model deepseek-r1 · model stats · model auto{X}")
-    print(f"  {D}Full OpenRouter catalog: model or search <term>  (then: model <exact-id> to pin it){X}\n")
+    print(f"  {D}This list is a shortlist. Full catalog, every provider, unfiltered (paid + free): {W}model all{D}  or  {W}model all <term>{X}")
+    print(f"  {D}OpenRouter only: model search <term>   (then: model <exact-id> to pin it){X}\n")
     choice = input(f"  {C}Select (1-{len(MODEL_MENU)} or auto): {X}").strip().lower()
     if choice in ("auto", "a", ""):
         ok, msg = _pin_model_choice("auto")
@@ -13414,6 +13480,8 @@ def main():
                     print(f"\n  {C}{format_model_monitor()}{X}\n")
                 elif choice_lo in _free_prefixes:
                     print_openrouter_search("", free_only=True)
+                elif choice_lo == "all" or choice_lo.startswith("all "):
+                    print_full_model_catalog(choice[3:].strip())
                 elif _matched_prefix is not None:
                     print_openrouter_search(choice[len(_matched_prefix):].strip())
                 else:
