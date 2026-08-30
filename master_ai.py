@@ -4286,6 +4286,44 @@ def ask_cloud_groq(messages):
             _cloud_trip_network(e, 60)
         return None
 
+def _ask_groq(messages, model, label, timeout=30):
+    """Generic Groq caller — takes an explicit model id so the live picker
+    (any of Groq's models, not just the hardcoded llama-3.3-70b default
+    lane in ask_cloud_groq) can dispatch through this instead."""
+    provider_key = f"groq/{label}"
+    if not _cloud_allowed(provider_key):
+        return None
+    key = KEYS.get("groq")
+    if not key:
+        return None
+    messages = _inject_identity(messages)
+    messages = _trim_groq_messages(messages, _GROQ_MAX_INPUT_CHARS)
+    log(f"CLOUD [groq/{label}]")
+    payload = {"model": model, "messages": messages,
+               "max_tokens": 1024, "stream": False}
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        "https://api.groq.com/openai/v1/chat/completions", data=data,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}",
+                 "User-Agent": "python-requests/2.31.0"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read())["choices"][0]["message"]["content"]
+    except urllib.error.HTTPError as e:
+        code = e.code
+        diag = {401:"AUTH FAIL — check API key", 403:"AUTH FAIL — check API key",
+                429:"RATE LIMIT hit", 402:"OUT OF CREDITS"}.get(code, f"HTTP {code}")
+        log(f"GROQ_ERROR [{label}]: {diag}")
+        if code == 429:
+            _cloud_trip(provider_key, "rate limit", 30)
+        return None
+    except Exception as e:
+        log(f"GROQ_ERROR [{label}]: {e}")
+        if _network_error(e):
+            _cloud_trip_network(e, 60)
+        return None
+
 def _ask_nvidia(messages, model, label, timeout=30):
     """Generic NVIDIA NIM caller — takes an explicit model id so the live
     picker (any of NVIDIA's 100+ models, not just the one default lane)
@@ -4807,6 +4845,9 @@ def ask_cloud(messages, provider="opencode"):
     elif (provider or "").startswith("cerebras::"):
         _m = provider[len("cerebras::"):]
         _asker = lambda msgs, _m=_m: _ask_cerebras(msgs, _m, _m)
+    elif (provider or "").startswith("groq::"):
+        _m = provider[len("groq::"):]
+        _asker = lambda msgs, _m=_m: _ask_groq(msgs, _m, _m)
     elif "/" in (provider or ""):
         # Arbitrary OpenRouter catalog id (e.g. "anthropic/claude-3.5-sonnet")
         # picked via `model or search ...` — not one of the curated named
@@ -6310,17 +6351,25 @@ def _ollama_local_models():
 def live_model_completions(query):
     """Every model reachable through a key actually present in
     ~/.master_ai_keys, plus local Ollama — one merged, queryable list for
-    the TUI's live picker. OpenRouter is free-only here (paid needs the
-    explicit `model or search` path); NVIDIA/Cerebras have no per-model
-    pricing split so all of theirs show — both are flat-rate/included
-    with the key, not metered-per-model like OpenRouter's gateway.
+    the TUI's live picker (arrow keys + Enter, same mechanism every other
+    "/" command already uses via SlashCommandCompleter).
+
+    2026-08-30: was OpenRouter-free-only by default — operator, three days
+    running on this: "I don't want to be limited to small models. I want
+    to test models and use different models... quit deviating from what
+    I'm asking." Paid models (Claude Opus, Grok, DeepSeek-V4-Pro, Qwen
+    Max, etc.) were completely invisible from this list; you had to
+    already know the exact id and type `model <exact-id>` blind. Now
+    every model from every configured provider shows, paid included,
+    marked so you can tell at a glance.
 
     NVIDIA and Cerebras model ids also follow "org/model-name" and can
     collide with OpenRouter's own id space for the same underlying model
     (e.g. "nvidia/nemotron-3-ultra-550b-a55b" exists as a distinct, paid
     id on OpenRouter too) — pin_value carries an explicit "nvidia::" /
-    "cerebras::" tag so routing never mistakes a direct-API pick for an
-    OpenRouter one; display is the clean id shown in the dropdown.
+    "cerebras::" / "groq::" tag so routing never mistakes a direct-API
+    pick for an OpenRouter one; display is the clean id shown in the
+    dropdown.
 
     Returns [(pin_value, display, hint), ...], local first, then by provider.
     """
@@ -6330,14 +6379,17 @@ def live_model_completions(query):
         rows.append((m, m, "LOCAL"))
     if KEYS.get("cerebras"):
         for m in _cerebras_model_catalog():
-            rows.append((f"cerebras::{m}", m, "cerebras"))
+            rows.append((f"cerebras::{m}", m, "cerebras 💰"))
     if KEYS.get("nvidia"):
         for m in _nvidia_model_catalog():
-            rows.append((f"nvidia::{m}", m, "nvidia"))
+            rows.append((f"nvidia::{m}", m, "nvidia 💰"))
+    if KEYS.get("groq"):
+        for m in _groq_model_catalog():
+            rows.append((f"groq::{m}", m, "groq 💰"))
     if KEYS.get("openrouter"):
         for mid, name, free in _openrouter_model_catalog():
-            if free:
-                rows.append((mid, mid, f"openrouter 🆓 {name}"))
+            marker = "🆓" if free else "💰"
+            rows.append((mid, mid, f"openrouter {marker} {name}"))
     if not q:
         return rows
     return [(pin, disp, hint) for pin, disp, hint in rows if q in disp.lower() or q in hint.lower()]
@@ -6363,7 +6415,7 @@ def _resolve_model_choice(choice):
     # Explicit direct-API pick from the live picker (live_model_completions)
     # — "nvidia::"/"cerebras::" is the authoritative signal here, not "/"
     # (Cerebras model ids like "gpt-oss-120b" don't contain one at all).
-    if low.startswith("nvidia::") or low.startswith("cerebras::"):
+    if low.startswith("nvidia::") or low.startswith("cerebras::") or low.startswith("groq::"):
         return raw
     # Any locally-pulled Ollama model, not just the handful hardcoded into
     # MODEL_MENU — picked via the live picker, which lists `ollama list`
@@ -6385,7 +6437,7 @@ def _is_key_backed_model(model):
     # own "/"-shaped ids, which collide with NVIDIA/Cerebras id space for
     # the same underlying model (e.g. "nvidia/nemotron-3-ultra-550b-a55b"
     # exists as a distinct, paid id on OpenRouter too).
-    if m.startswith("nvidia::") or m.startswith("cerebras::"):
+    if m.startswith("nvidia::") or m.startswith("cerebras::") or m.startswith("groq::"):
         return True
     # Bare "/"-shaped ids are OpenRouter's own catalog convention
     # (provider/model-name) — hundreds of models we don't hardcode into
@@ -6439,7 +6491,7 @@ def _pin_model_choice(choice):
     # model — warn instead of silently letting real-money calls happen.
     # Per Elijah 2026-08-20: "I want to choose the free models — I don't
     # know if I'm being billed or not."
-    _direct_api_pick = resolved.startswith("nvidia::") or resolved.startswith("cerebras::")
+    _direct_api_pick = resolved.startswith("nvidia::") or resolved.startswith("cerebras::") or resolved.startswith("groq::")
     if "/" in resolved and resolved not in CLOUD_MODEL_NAMES and not _direct_api_pick:
         catalog = {mid: free for mid, _, free in _openrouter_model_catalog()}
         is_free = catalog.get(resolved)
