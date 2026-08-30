@@ -114,6 +114,15 @@ try:
 except ImportError:
     pass
 
+# 2026-08-30: operator — "I need to be able to stop stuff." Shared
+# threading.Event: sensei_tui.py's Ctrl+C handler sets it directly (main
+# event-loop thread, instant) while a turn is actively running; the
+# worker thread executing handle()'s loops polls it between steps and
+# bails out early with a clear message. Cleared at the top of every new
+# turn. See handle()'s continuation loop, ask_cloud()'s fallback loop,
+# and _call_with_hard_timeout() for where it's actually checked.
+_INTERRUPT_EVENT = threading.Event()
+
 # ── SENSEI TUI — full-screen app, default ON; opt out with SENSEI_TUI=0 ──
 _SENSEI_APP = None
 _SENSEI_ENABLED = os.environ.get("SENSEI_TUI", "1") != "0"
@@ -137,7 +146,7 @@ if _SENSEI_ENABLED:
         _SENSEI_APP = SenseiApp(model_catalog_fn=lambda q, mode=None: (
             live_provider_completions(q, mode=mode) if mode == "providers"
             else live_model_completions(q)
-        ))
+        ), on_interrupt=lambda: _INTERRUPT_EVENT.set())
     except Exception as _e:
         _SENSEI_APP = None
         _SENSEI_ENABLED = False
@@ -4829,7 +4838,26 @@ _CLOUD_HARD_TIMEOUT = 90
 def _call_with_hard_timeout(fn, *args, timeout=_CLOUD_HARD_TIMEOUT, **kwargs):
     future = _CLOUD_CALL_EXECUTOR.submit(fn, *args, **kwargs)
     try:
-        return future.result(timeout=timeout)
+        # 2026-08-30: poll in ~1s slices instead of one blocking
+        # future.result(timeout=90) wait, so Ctrl+C (which sets
+        # _INTERRUPT_EVENT directly from the main thread) actually cuts
+        # an in-flight call short instead of the interrupt sitting
+        # unnoticed for up to the full 90s. Same "can't kill the stuck
+        # OS thread" limitation as before — a zombie worker may linger —
+        # but the caller (and the TUI) gets control back immediately.
+        deadline = time.time() + timeout
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                raise concurrent.futures.TimeoutError()
+            try:
+                return future.result(timeout=min(1.0, remaining))
+            except concurrent.futures.TimeoutError:
+                if _INTERRUPT_EVENT.is_set():
+                    log(f"CLOUD_CALL_INTERRUPTED: {getattr(fn, '__name__', fn)} — "
+                        f"Ctrl+C, abandoning before the {timeout}s outer bound")
+                    return None
+                continue
     except concurrent.futures.TimeoutError:
         log(f"CLOUD_HARD_TIMEOUT: {getattr(fn, '__name__', fn)} exceeded {timeout}s "
             f"outer bound (its own internal timeout didn't fire) — giving up, moving on")
@@ -4944,6 +4972,9 @@ def ask_cloud(messages, provider="opencode"):
     ]
     seen_fallbacks = set()
     for used_model, fn in fallback_order:
+        if _INTERRUPT_EVENT.is_set():
+            log("CLOUD_FALLBACK_INTERRUPTED: Ctrl+C — stopping the fallback chain")
+            return None
         if used_model in seen_fallbacks:
             continue
         seen_fallbacks.add(used_model)
@@ -11742,6 +11773,7 @@ def handle_image_status(user_text, arg, history):
 def handle(user_text, history, image_path=None, context_policy=None):
     _reset_turn_privacy()
     globals()["_LAST_TURN_RENDERED"] = False
+    _INTERRUPT_EVENT.clear()
     context_policy = context_policy or {}
     suppress_auto_context = bool(context_policy.get("suppress_auto_context", False))
     memory_mode = (context_policy.get("memory_mode") or "default").strip().lower()
@@ -13114,6 +13146,11 @@ def handle(user_text, history, image_path=None, context_policy=None):
     continuation_turns = 0
     max_continuation_turns = 20
     while result is None and continuation_turns < max_continuation_turns:
+        if _INTERRUPT_EVENT.is_set():
+            print(_pill("STOPPED", f"{D}interrupted — {continuation_turns} step(s) already ran{X}"))
+            log(f"CHAIN_INTERRUPTED: turns={continuation_turns} route={route} model={model}")
+            result = reply  # whatever text exists so far still gets shown/kept
+            break
         repair_turn = bool(history and history[-1].get("role") == "user"
                            and str(history[-1].get("content", "")).startswith("[Directive repair]"))
         reply2, streamed2 = _continue_model_turn(repair_turn=repair_turn)

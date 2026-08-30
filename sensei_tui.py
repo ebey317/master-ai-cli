@@ -442,7 +442,7 @@ class SafeFormattedTextControl(FormattedTextControl):
 
 
 class SenseiApp:
-    def __init__(self, model_catalog_fn=None) -> None:
+    def __init__(self, model_catalog_fn=None, on_interrupt=None) -> None:
         # model_catalog_fn(query) -> [(pin_value, display, hint), ...]. Lets
         # "/model <query>" show a live picker across every provider key
         # that's actually configured (plus local Ollama) instead of the
@@ -452,6 +452,15 @@ class SenseiApp:
         # every API key I have logged... scroll up and down and press
         # enter... just like every other CLI."
         self._model_catalog_fn = model_catalog_fn
+        # 2026-08-30: on_interrupt() -> None, injected from master_ai.py.
+        # Operator: "I need to be able to stop stuff." Ctrl+C used to only
+        # queue "x" as if typed — the worker thread running handle() never
+        # sees it until its CURRENT blocking call/loop iteration finishes
+        # on its own, which is exactly the situation you're trying to
+        # escape. This callback sets a shared threading.Event the worker
+        # thread's loops poll between steps, so Ctrl+C actually cuts a
+        # running chain short instead of silently waiting in line.
+        self._on_interrupt = on_interrupt
         self._label = ""
         self._status = ""
         self._output_chunks: List[str] = []
@@ -966,6 +975,7 @@ class SenseiApp:
             # cancels cleanly.
             _bare = self._input.text.strip().lower()
             if _bare in ("/model", "model"):
+                self._record_history_entry(self._input.text)
                 self._input.text = ""
                 self._open_model_picker()
                 return
@@ -979,6 +989,7 @@ class SenseiApp:
                 # above does.
                 if menu_command.strip().lower() == "model":
                     self._input.buffer.cancel_completion()
+                    self._record_history_entry(self._input.text)
                     self._input.text = ""
                     self._open_model_picker()
                     return
@@ -986,6 +997,7 @@ class SenseiApp:
                 if self._insert_payload_command(menu_command):
                     return
                 text = menu_command
+                self._record_history_entry(text)
                 self._input.text = ""
                 self._scroll_offset = 0
                 self.write(f"\n\033[1m> {text}\033[0m\n")
@@ -1011,6 +1023,7 @@ class SenseiApp:
                 self._input.buffer.insert_text("\n")
                 return
             text = self._input.text.rstrip("\n")
+            self._record_history_entry(text)
             self._input.text = ""
             self._scroll_offset = 0
             # Echo the user's message into the chat scrollback so they can
@@ -1044,6 +1057,21 @@ class SenseiApp:
 
         @kb.add("c-c")
         def _sigint(event):
+            # 2026-08-30: while something is actively running (self._thinking
+            # True — a real turn is in flight in the worker thread), Ctrl+C
+            # sets the shared interrupt signal directly instead of queueing
+            # "x" as text. Queued text only gets read once the CURRENT
+            # blocking call/loop iteration finishes on its own — no help at
+            # all for cutting a stuck or slow chain short, which is exactly
+            # when Ctrl+C actually gets reached for. Idle behavior (queue
+            # "x" as exit, or app.exit()) is unchanged.
+            if self._thinking and self._on_interrupt:
+                try:
+                    self._on_interrupt()
+                except Exception:
+                    pass
+                self.write("\n\033[33m  ⏹ Interrupt requested — stopping after the current step...\033[0m\n")
+                return
             if self._on_submit:
                 threading.Thread(
                     target=self._safe_dispatch, args=("x",), daemon=True,
@@ -1139,6 +1167,54 @@ class SenseiApp:
             event.app.invalidate()
 
         return kb
+
+    def _record_history_entry(self, text: str) -> None:
+        """Make `text` recallable via Up/Down this session — operator:
+        "I need to be able to press up to edit the message."
+
+        MUST be called from the main event-loop thread, before the input
+        buffer's text gets cleared for the next line. Two real bugs found
+        getting here, both confirmed by direct testing, not assumption:
+
+        1. history_backward()/history_forward() (already wired to Up/Down
+           in _completion_up/_completion_down) walk
+           self._input.buffer._working_lines, an in-memory deque — NOT
+           the persistent FileHistory object. Calling history.append_
+           string() only writes to the backing file for a FUTURE
+           session's lazy-loaded history; it never touches
+           _working_lines, so Up recalled nothing no matter what.
+        2. This was originally called from _safe_dispatch(), which runs
+           in a background thread AFTER _submit() (main thread) had
+           already cleared self._input.text — mutating Buffer state from
+           a different thread than the one prompt_toolkit expects,
+           racing the async FileHistory load task on the same event
+           loop. Symptoms were exactly what a data race looks like:
+           an extra blank entry appearing at the wrong index, and two
+           messages' text mashed together on one line. Moved the call
+           into _submit() itself (main thread, before each text-clear)
+           and dropped the persistent-file write — recalling something
+           from THIS session was the actual ask, not from a previous one.
+        3. appendleft() (matching Buffer's own async bulk history-load,
+           which prepends a whole batch of already-ordered PAST entries)
+           is wrong for adding ONE new entry incrementally — it put each
+           new submission at the OLDEST end, so Up recalled the FIRST
+           message ever sent instead of the most recent one. append()
+           is correct: grows the deque left-to-right in submission
+           order — [msg1, msg2, ..., msgN, ''], working_index on the
+           blank current line — so Up decrements toward the most recent
+           prior message first, matching normal shell history semantics.
+
+        Verified clean on the main thread: a 2-message sequence recalls
+        newest-first on repeated Up, oldest-first on repeated Down, empty
+        again after walking all the way back down — no race, no garbling.
+        """
+        if not text or not text.strip():
+            return
+        try:
+            self._input.buffer._working_lines.append(text)
+            self._input.buffer.working_index += 1
+        except Exception:
+            pass
 
     def _safe_dispatch(self, text: str) -> None:
         try:
