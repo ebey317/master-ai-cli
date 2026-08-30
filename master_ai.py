@@ -4828,6 +4828,18 @@ def _call_with_hard_timeout(fn, *args, timeout=_CLOUD_HARD_TIMEOUT, **kwargs):
     except concurrent.futures.TimeoutError:
         log(f"CLOUD_HARD_TIMEOUT: {getattr(fn, '__name__', fn)} exceeded {timeout}s "
             f"outer bound (its own internal timeout didn't fire) — giving up, moving on")
+        # 2026-08-30: a single call being bounded to 90s isn't enough on its
+        # own — ask_cloud()'s fallback loop tries up to 7 providers in
+        # sequence, and if the hang is a broad network issue rather than
+        # one provider's problem, EACH fallback can individually eat its
+        # own 90s before giving up: 7 × 90s = 10.5 minutes worst case,
+        # which is exactly the multi-minute freeze reproduced live tonight
+        # even after the per-call cap landed. Trip the existing network
+        # circuit breaker here so _cloud_allowed() — which every _ask_*
+        # function already checks internally — makes the REST of this
+        # turn's fallback attempts skip near-instantly instead of each
+        # queueing up its own full timeout.
+        _cloud_trip_network(f"hard timeout in {getattr(fn, '__name__', fn)}", 60)
         return None
     except Exception as e:
         log(f"CLOUD_CALL_ERROR: {getattr(fn, '__name__', fn)}: {e}")
