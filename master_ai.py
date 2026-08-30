@@ -60,6 +60,7 @@
 
 import os, sys, json, subprocess, tempfile, urllib.request, urllib.error, socket, shlex
 import base64, re, time, shutil, hashlib, platform, atexit, signal, threading, queue
+import concurrent.futures
 from datetime import datetime
 from pathlib import Path
 from url_grounding import resolve_open_target_url
@@ -4793,6 +4794,45 @@ def _ask_claf(messages, timeout=45):
         log(f"CLAF_ERROR: {e}")
         return None
 
+# 2026-08-30: hard outer timeout for every cloud call. Every _ask_* /
+# ask_cloud_* function already passes its own timeout= to urlopen(), but
+# on this network that timeout isn't reliable — a connection can go
+# silently dead (established, then zero bytes forever, no RST/FIN) and
+# urllib's socket timeout doesn't always fire for that exact failure
+# mode. Confirmed live: an OpenRouter call hung 24+ minutes past its own
+# 60-90s urlopen timeout with the whole TUI blocked and unusable the
+# entire time. Same underlying network behavior as the GGUF download
+# stalls fixed earlier tonight with curl's --speed-limit/--speed-time —
+# same fix shape here: bound the call from OUTSIDE with something that
+# can't be fooled by a connection that looks alive but isn't.
+# ThreadPoolExecutor.result(timeout=) can't kill the stuck OS thread
+# (Python can't forcibly kill threads), so a zombie thread may linger,
+# but the caller gets control back and the TUI stays responsive — that's
+# what actually matters for the user, not whether the orphaned thread
+# eventually notices. max_workers=32, not a small number: each hang that
+# never resolves permanently occupies one worker for the life of the
+# process (this app runs for days between restarts), so a small pool
+# would slowly exhaust itself and start silently queueing NEW calls
+# behind dead ones — exactly the bug this is fixing, just delayed.
+# Threads blocked on a stalled socket read cost a little memory, not
+# CPU, so a generous pool is cheap insurance.
+_CLOUD_CALL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=32, thread_name_prefix="cloud-call"
+)
+_CLOUD_HARD_TIMEOUT = 90
+
+def _call_with_hard_timeout(fn, *args, timeout=_CLOUD_HARD_TIMEOUT, **kwargs):
+    future = _CLOUD_CALL_EXECUTOR.submit(fn, *args, **kwargs)
+    try:
+        return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        log(f"CLOUD_HARD_TIMEOUT: {getattr(fn, '__name__', fn)} exceeded {timeout}s "
+            f"outer bound (its own internal timeout didn't fire) — giving up, moving on")
+        return None
+    except Exception as e:
+        log(f"CLOUD_CALL_ERROR: {getattr(fn, '__name__', fn)}: {e}")
+        return None
+
 def ask_cloud(messages, provider="opencode"):
     # Privacy guard: if READ injected private content into this turn,
     # block cloud send unless the user explicitly approved via the
@@ -4864,7 +4904,7 @@ def ask_cloud(messages, provider="opencode"):
         _asker = lambda msgs, _m=provider: _ask_openrouter(msgs, _m, _m)
     else:
         _asker = ask_cloud_opencode_free
-    r = None if not _cloud_allowed(provider) else _asker(messages)
+    r = None if not _cloud_allowed(provider) else _call_with_hard_timeout(_asker, messages)
     _router_metric("model_call", model=provider, route="cloud",
                    task_type="cloud", ok=bool(r),
                    latency_s=round(time.time() - _t0, 3),
@@ -4891,7 +4931,7 @@ def ask_cloud(messages, provider="opencode"):
             continue
         seen_fallbacks.add(used_model)
         _t0 = time.time()
-        r = fn(messages)
+        r = _call_with_hard_timeout(fn, messages)
         _router_metric("model_call", model=used_model, route="cloud",
                        task_type="fallback", ok=bool(r),
                        latency_s=round(time.time() - _t0, 3),
