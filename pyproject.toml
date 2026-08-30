@@ -15,8 +15,8 @@ testpaths = ["tests"]
 # Ignore directories
 norecursedirs = [".git", "__pycache__", "build", "dist", "*.egg-info"]
 
-# Do not collect files that are not tests
-python_paths = ["."]
+# Ensure the repo-local master_ai.py is imported, not ~/scripts/master_ai.py
+pythonpath = ["."]
 
 # Disable warnings
 filterwarnings = [

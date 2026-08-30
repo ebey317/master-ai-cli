@@ -2,10 +2,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Master AI — API key setup (bash onboarding prompt)
 #
-# Interactive prompt for pasting provider API keys. Keys are stored in
-# ~/.master_ai_keys (JSON, chmod 600) — the same file master_ai.py reads at
-# startup via load_keys(). Routing (detect_route) auto-detects which
-# providers you configured and picks the best lane:
+# Paste any provider API key — it's auto-detected from its prefix and filed
+# under the right name in ~/.master_ai_keys (JSON, chmod 600), the same file
+# master_ai.py reads at startup via load_keys(). Routing (detect_route)
+# auto-detects which providers you configured and picks the best lane:
 #
 #   no keys at all   -> local Ollama lane (CLAF local-first)
 #   groq key         -> fast cloud lane (llama-3.3-70b)
@@ -15,7 +15,7 @@
 #   cerebras key     -> opt-in ultra-fast lane (`fast:` prefix)
 #
 # Usage:
-#   bash setup_keys.sh                 interactive prompt
+#   bash setup_keys.sh                 interactive prompt (paste any key)
 #   bash setup_keys.sh --check         verify stored keys against live APIs
 #   bash setup_keys.sh --list          show which providers are configured
 #   bash setup_keys.sh --remove NAME   delete one key from the store
@@ -25,12 +25,20 @@ set -euo pipefail
 KEYS_FILE="${MASTER_AI_KEYS_FILE:-$HOME/.master_ai_keys}"
 
 # provider:display name:signup URL:validation method
+# (signup URL / validation only used by --check and --list; detection below
+#  is prefix-based so any of these — or an unlisted provider — can be pasted)
 PROVIDERS=(
+    "openrouter|OpenRouter (free + paid models, one key unlocks many)|https://openrouter.ai/settings/keys|bearer:https://openrouter.ai/api/v1/auth/key"
     "groq|Groq (free, fast)|https://console.groq.com/keys|bearer:https://api.groq.com/openai/v1/models"
-    "openrouter|OpenRouter (free models)|https://openrouter.ai/settings/keys|bearer:https://openrouter.ai/api/v1/auth/key"
     "gemini|Google Gemini (free tier)|https://aistudio.google.com/apikey|query:https://generativelanguage.googleapis.com/v1beta/models"
-    "fireworks|Fireworks AI|https://fireworks.io/api-keys|bearer:https://api.fireworks.ai/inference/v1/models"
+    "anthropic|Anthropic (paid — Claude)|https://console.anthropic.com/settings/keys|bearer:https://api.anthropic.com/v1/models"
+    "openai|OpenAI (paid — gpt-4o)|https://platform.openai.com/api-keys|bearer:https://api.openai.com/v1/models"
+    "fireworks|Fireworks AI|https://fireworks.ai/account/api-keys|bearer:https://api.fireworks.ai/inference/v1/models"
     "cerebras|Cerebras (ultra-fast)|https://cloud.cerebras.ai/platform|bearer:https://api.cerebras.ai/v1/models"
+    "deepseek|DeepSeek (paid — R1 reasoning)|https://platform.deepseek.com/api_keys|bearer:https://api.deepseek.com/v1/models"
+    "huggingface|HuggingFace|https://huggingface.co/settings/tokens|bearer:https://huggingface.co/api/whoami-v2"
+    "xai|xAI (Grok)|https://console.x.ai|bearer:https://api.x.ai/v1/models"
+    "nvidia|NVIDIA NIM (Llama/Nemotron catalog)|https://build.nvidia.com|bearer:https://integrate.api.nvidia.com/v1/models"
     "brave|Brave Search (web lane)|https://api-dashboard.search.brave.com/app/keys|header:https://api.search.brave.com/res/v1/web/search?q=test:X-Subscription-Token"
     "serper|Serper (Google search)|https://serper.dev/api-key|post:https://google.serper.dev/search:X-API-KEY"
 )
@@ -45,49 +53,104 @@ store_read() {   # print current JSON (or {})
     if [[ -f "$KEYS_FILE" ]]; then cat "$KEYS_FILE"; else echo "{}"; fi
 }
 
+# KEYS_FILE is normally a symlink into the canonical KV keychain
+# (~/Desktop/Projects/keychain/master_ai_keys, see KEYCHAIN.md) — KEY=VALUE,
+# not JSON, and shared with other consumers (CLAF, keychain.sh). These
+# helpers write through to the resolved target in KV form when that's what
+# it already is, instead of replacing the symlink with a JSON blob.
+_KV_MAP_PY='
+_KV_KEY_MAP = {
+    "OPENROUTER_API_KEY": "openrouter", "GROQ_API_KEY": "groq",
+    "GEMINI_API_KEY": "gemini", "ANTHROPIC_CONSOLE_KEY": "anthropic",
+    "CEREBRAS_API_KEY": "cerebras", "FIREWORKS_API_KEY": "fireworks",
+    "OPENAI_API_KEY": "openai", "DEEPSEEK_API_KEY": "deepseek",
+    "HUGGINGFACE_TOKEN": "huggingface", "HF_TOKEN": "huggingface",
+    "NVIDIA_API_KEY": "nvidia",
+}
+_CANONICAL_NAME = {v: k for k, v in _KV_KEY_MAP.items() if k != "HF_TOKEN"}
+
+def _resolve(path):
+    return os.path.realpath(path) if os.path.islink(path) else path
+
+def _load(target):
+    if not os.path.exists(target):
+        return {}, ""
+    text = open(target).read()
+    try:
+        return json.loads(text), text
+    except Exception:
+        pass
+    out = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, val = line.partition("=")
+        short = _KV_KEY_MAP.get(name.strip())
+        if short and val.strip():
+            out[short] = val.strip()
+    return out, text
+'
+
 store_set() {    # store_set <name> <value>
     need_python
-    python3 - "$KEYS_FILE" "$1" "$2" <<'PY'
+    python3 - "$KEYS_FILE" "$1" "$2" <<PY
 import json, os, sys
+$_KV_MAP_PY
 path, name, value = sys.argv[1], sys.argv[2], sys.argv[3]
-data = {}
-if os.path.exists(path):
-    try: data = json.load(open(path))
-    except Exception: data = {}
-data[name] = value
-tmp = path + ".tmp"
-with open(tmp, "w") as f: json.dump(data, f, indent=2)
-os.chmod(tmp, 0o600)
-os.replace(tmp, path)
-print(f"  saved '{name}' -> {path} (0600)")
+target = _resolve(path)
+data, text = _load(target)
+canonical = _CANONICAL_NAME.get(name)
+if canonical and text.strip() and not text.lstrip().startswith("{"):
+    lines = text.splitlines()
+    replaced = False
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if s and not s.startswith("#") and "=" in s and s.split("=", 1)[0].strip() == canonical:
+            lines[i] = f"{canonical}={value}"
+            replaced = True
+    if not replaced:
+        lines.append(f"{canonical}={value}")
+    open(target, "w").write("\n".join(lines) + "\n")
+else:
+    data[name] = value
+    open(target, "w").write(json.dumps(data, indent=2) + "\n")
+os.chmod(target, 0o600)
+print(f"  saved '{name}' -> {target} (0600)")
 PY
 }
 
 store_del() {    # store_del <name>
     need_python
-    python3 - "$KEYS_FILE" "$1" <<'PY'
+    python3 - "$KEYS_FILE" "$1" <<PY
 import json, os, sys
+$_KV_MAP_PY
 path, name = sys.argv[1], sys.argv[2]
-try: data = json.load(open(path))
-except Exception: data = {}
-if name in data:
-    del data[name]
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f: json.dump(data, f, indent=2)
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
-    print(f"  removed '{name}'")
-else:
+target = _resolve(path)
+data, text = _load(target)
+if name not in data:
     print(f"  '{name}' not present")
+else:
+    canonical = _CANONICAL_NAME.get(name)
+    if canonical and text.strip() and not text.lstrip().startswith("{"):
+        lines = [l for l in text.splitlines()
+                 if not (l.strip() and not l.strip().startswith("#") and "=" in l.strip()
+                         and l.strip().split("=", 1)[0].strip() == canonical)]
+        open(target, "w").write("\n".join(lines) + "\n")
+    else:
+        del data[name]
+        open(target, "w").write(json.dumps(data, indent=2) + "\n")
+    os.chmod(target, 0o600)
+    print(f"  removed '{name}'")
 PY
 }
 
 store_get() {    # store_get <name> -> value or empty
-    python3 - "$KEYS_FILE" "$1" 2>/dev/null <<'PY' || true
+    python3 - "$KEYS_FILE" "$1" 2>/dev/null <<PY || true
 import json, os, sys
-try: d = json.load(open(sys.argv[1]))
-except Exception: d = {}
-v = d.get(sys.argv[2], "")
+$_KV_MAP_PY
+data, _ = _load(_resolve(sys.argv[1]))
+v = data.get(sys.argv[2], "")
 print(v if isinstance(v, str) else "")
 PY
 }
@@ -95,6 +158,26 @@ PY
 mask() {         # mask a key for display: first4****last4
     local v="$1"
     if [[ ${#v} -le 8 ]]; then echo "****"; else echo "${v:0:4}****${v: -4}"; fi
+}
+
+# detect_provider <key> -> provider name on stdout, or empty if unrecognized
+detect_provider() {
+    python3 - "$1" <<'PY'
+import sys
+key = sys.argv[1]
+if key.startswith("gsk_"):        print("groq")
+elif key.startswith("sk-ant-"):   print("anthropic")
+elif key.startswith("sk-or-v1-"): print("openrouter")
+elif key.startswith("sk-proj-"):  print("openai")
+elif key.startswith("hf_"):       print("huggingface")
+elif key.startswith("AIzaSy"):    print("gemini")
+elif key.startswith("xai-"):      print("xai")
+elif key.startswith("csk-"):      print("cerebras")
+elif key.startswith("fw_"):       print("fireworks")
+elif key.startswith("nvapi-"):    print("nvidia")
+elif key.startswith("sk-"):       print("deepseek")
+else: print("")
+PY
 }
 
 validate_key() { # validate_key <name> <value> -> returns 0 if live
@@ -165,23 +248,25 @@ cmd_interactive() {
     echo "${c_bld}Master AI — API key setup${c_rst}"
     echo "Keys are stored in ${c_bld}$KEYS_FILE${c_rst} (mode 0600, never uploaded anywhere)."
     echo "At least one cloud key OR a local Ollama install is required to run."
-    echo "Press Enter to skip any provider.${c_rst}"
+    echo "Paste any provider key — groq, openrouter, gemini, anthropic, openai,"
+    echo "fireworks, cerebras, deepseek, huggingface, xai, nvidia — it's auto-detected"
+    echo "from its prefix and filed under the right name. Enter with nothing to finish.${c_rst}"
     echo
-    local spec name display url v
-    for spec in "${PROVIDERS[@]}"; do
-        IFS='|' read -r name display url _ <<< "$spec"
-        local existing; existing=$(store_get "$name")
-        if [[ -n "$existing" ]]; then
-            read -rp "  $display — already set ($(mask "$existing")). Replace? [y/N] " ans
-            [[ "$ans" != "y" && "$ans" != "Y" ]] && continue
-        fi
-        read -rp "  Paste $display key (${c_dim}$url${c_rst}): " v
+    local v provider
+    while true; do
+        read -rp "  Paste a key (or Enter to finish): " v
         v="${v//[$'\t\r\n ']/}"
-        [[ -z "$v" ]] && { echo "    ${c_dim}skipped${c_rst}"; continue; }
-        store_set "$name" "$v"
-        code=$(validate_key "$name" "$v"; true)
-        if [[ $? -eq 0 ]]; then echo "    ${c_grn}✓ valid${c_rst}"
-        else echo "    ${c_ylw}⚠ saved but could not validate (HTTP $code) — check it later with --check${c_rst}"; fi
+        [[ -z "$v" ]] && break
+        provider=$(detect_provider "$v")
+        if [[ -z "$provider" ]]; then
+            echo "    ${c_ylw}? couldn't identify this key's provider from its prefix — skipped${c_rst}"
+            continue
+        fi
+        store_set "$provider" "$v"
+        code=$(validate_key "$provider" "$v"; true)
+        if [[ $? -eq 0 ]]; then echo "    ${c_grn}✓ $provider — valid${c_rst}"
+        else echo "    ${c_ylw}⚠ $provider — saved but could not validate (HTTP $code) — check later with --check${c_rst}"; fi
+        echo
     done
     echo
     cmd_list

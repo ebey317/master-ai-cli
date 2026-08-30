@@ -1,10 +1,11 @@
 """Startup key gate for Master AI.
 
 master_ai requires either (a) at least one provider API key in
-``~/.master_ai_keys`` or (b) a running local Ollama server. If neither is
-present, ``ensure_ready()`` prints a banner and launches the interactive
-bash key prompt (``setup_keys.sh``) in the current terminal, then re-checks.
-Still nothing -> exit 1 with instructions.
+``~/.master_ai_keys`` — paste any key and setup_keys.sh auto-detects which
+provider it belongs to — or (b) a running local Ollama server. If neither
+is present, ``ensure_ready()`` prints a banner and launches the interactive
+bash key prompt (``setup_keys.sh``) in the current terminal, then
+re-checks. Still nothing -> exit 1 with instructions.
 
 Routing itself stays in ``master_ai.detect_route()``: it reads the same
 keys file and auto-picks the best lane (groq fast lane, openrouter deep
@@ -29,9 +30,41 @@ KEYS_FILE = Path(os.environ.get("MASTER_AI_KEYS_FILE", Path.home() / ".master_ai
 OLLAMA_URL = "http://localhost:11434"
 
 # Cloud providers the router actually consumes (see master_ai.detect_route).
-CLOUD_PROVIDERS = ("groq", "openrouter", "gemini", "fireworks", "cerebras")
+CLOUD_PROVIDERS = ("groq", "openrouter", "gemini", "fireworks", "cerebras", "nvidia")
 # Optional extras that enrich routing but are never required to run.
 OPTIONAL_PROVIDERS = ("brave", "serper", "firecrawl")
+
+# ~/.master_ai_keys is normally a symlink to the canonical keychain
+# (~/Desktop/Projects/keychain/master_ai_keys, see KEYCHAIN.md), which is
+# KEY=VALUE, not JSON. ANTHROPIC_API_KEY is deliberately never mapped —
+# only ANTHROPIC_CONSOLE_KEY is, per the Max-OAuth/Console separation rule.
+_KV_KEY_MAP = {
+    "OPENROUTER_API_KEY": "openrouter",
+    "GROQ_API_KEY": "groq",
+    "GEMINI_API_KEY": "gemini",
+    "ANTHROPIC_CONSOLE_KEY": "anthropic",
+    "CEREBRAS_API_KEY": "cerebras",
+    "FIREWORKS_API_KEY": "fireworks",
+    "OPENAI_API_KEY": "openai",
+    "DEEPSEEK_API_KEY": "deepseek",
+    "HUGGINGFACE_TOKEN": "huggingface",
+    "HF_TOKEN": "huggingface",
+    "NVIDIA_API_KEY": "nvidia",
+}
+
+
+def _parse_kv_keys(text: str) -> dict:
+    out = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, val = line.partition("=")
+        name, val = name.strip(), val.strip()
+        short = _KV_KEY_MAP.get(name)
+        if short and val and short not in out:
+            out[short] = val
+    return out
 
 def _find_setup_script() -> Path | None:
     """Locate setup_keys.sh: beside this module, in ~/scripts (install.sh
@@ -49,9 +82,13 @@ def _find_setup_script() -> Path | None:
 
 def _load_keys() -> dict:
     try:
-        return json.loads(KEYS_FILE.read_text())
+        text = KEYS_FILE.read_text()
     except Exception:
         return {}
+    try:
+        return json.loads(text)
+    except Exception:
+        return _parse_kv_keys(text)
 
 
 def _ollama_alive(timeout: float = 2.0) -> bool:
@@ -134,7 +171,7 @@ def ensure_ready() -> None:
 
     print("\n  \033[31m✗ Master AI cannot start without an API key or local Ollama.\033[0m")
     print("    Fix it with one of:")
-    print("      bash setup_keys.sh          # paste a provider key (Groq/OpenRouter are free)")
+    print("      bash setup_keys.sh          # paste any provider key — auto-detected")
     print("      curl -fsSL https://ollama.com/install.sh | sh   # local models, no key")
     print("      master-ai --setup           # full interactive setup wizard")
     sys.exit(1)

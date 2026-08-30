@@ -3830,7 +3830,7 @@ LOCAL_DIRECTIVE_HINT = (
     "Reason in ONE short prose sentence describing the choice. The sentence must contain\n"
     "NO colon-suffixed directive words at all — those are reserved keywords the parser\n"
     "matches verbatim. Then on the NEXT LINE, at column 0, emit the directive itself.\n"
-    "Available directive keywords: read, run, runterm, create, edit, ask, done, remember,\n"
+    "Available directive keywords: read, run, runterm, create, edit, ask, done, remember, search,\n"
     "browser_click, browser_fill, browser_read, browser_nav, browser_screenshot — each followed by a colon,\n"
     "only on its own line, never inside a sentence.\n\n"
     "Available directive shapes (use each on its OWN line, never inline in prose):\n"
@@ -6342,12 +6342,24 @@ def _pin_model_choice(choice):
     resolved = _resolve_model_choice(choice)
     if resolved is None:
         globals()['PINNED_MODEL'] = None
+        # 2026-08-29: persist so the pin (or its absence) survives a restart —
+        # was in-memory only, so every restart silently reset to auto-route
+        # and clobbered the user's chosen model. Empty file = untouched on
+        # load per _load_active_from_gate(), matching "smart routing" here.
+        try:
+            ACTIVE_MODEL_FILE.write_text("")
+        except Exception:
+            pass
         return True, f"{G}✅ Smart routing restored.{X}"
     if not resolved:
         names = ", ".join(m for m, _ in MODEL_MENU[:8])
         return False, f"{Y}Unknown model. Try: model auto, model local, model groq, or model {names}{X}"
 
     globals()['PINNED_MODEL'] = resolved
+    try:
+        ACTIVE_MODEL_FILE.write_text(resolved)
+    except Exception:
+        pass
     msg = f"{G}✅ Selected model: {W}{resolved}{X}"
     key_name = _model_required_key(resolved)
     if key_name:
@@ -9766,6 +9778,16 @@ def _skill_state_reply(state, history):
         _append_skill_session_marker(history, state)
         return "\n".join(pending)
     if getattr(state, "done", False):
+        # 2026-08-29: state.data was being dropped here — every skill's actual
+        # result (the "message" a step's report-style final step sets via
+        # state_update) never reached the model, which then had nothing to
+        # relay but a bare "DONE" line. Surface it when present.
+        result_msg = (getattr(state, "data", {}) or {}).get("message")
+        if result_msg:
+            return (
+                f"[SKILL RESULT — {getattr(state, 'skill_name', 'unknown')}]\n"
+                f"{result_msg}"
+            )
         return f"DONE: skill {getattr(state, 'skill_name', 'unknown')} completed"
     if getattr(state, "aborted", False):
         reason = (getattr(state, "data", {}) or {}).get("_reason") or getattr(state, "interrupt_reason", "") or "aborted"
@@ -9939,6 +9961,15 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                     for l in lines if _real_directive(l, "RUN")) if c]
     runterm_cmds = [c for c in (_extract_directive(l, "RUNTERM")
                     for l in lines if _real_directive(l, "RUNTERM")) if c]
+
+    # 2026-08-29: SEARCH: <query> — lightweight live-info lookup via
+    # web_search(), no Chrome/tab required. Added because the model's only
+    # taught tool for "find out X" was BROWSER_NAV — it kept opening a
+    # Google Images tab and screenshotting it for plain lookups, which fails
+    # outright whenever Chrome/the Sensei side panel isn't open. See
+    # SEARCH_VS_BROWSER_SYSTEM_ADDITION for the usage split taught to the model.
+    search_queries = [q for q in (_extract_directive(l, "SEARCH")
+                      for l in lines if _real_directive(l, "SEARCH")) if q]
 
     # 2026-05-17: SEND_EMAIL: to=<addr> subject="..." body="..." attach=<path>
     # Parses to a dict spec; dispatcher calls confirm_send_email which gates
@@ -10656,6 +10687,20 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             return reply
         if continue_after_tools:
             tool_result_feedback.append(_format_tool_result("RUNTERM", cmd, result))
+
+    # SEARCH: <query> — read-only live lookup, no confirmation gate needed
+    # (same reasoning as _BROWSER_READONLY_KINDS: nothing on disk or the
+    # network's write side changes). web_search() never raises — it
+    # degrades to "Search unavailable: ..." when every engine is down —
+    # so this always has something to feed back, never a chain-abort.
+    for query in search_queries:
+        _audit("SEARCH", query)
+        print(f"\n  {BC}[thinking: SEARCH — {query}]{X}")
+        results = web_search(query)
+        if continue_after_tools:
+            tool_result_feedback.append(_format_tool_result("SEARCH", query, results))
+        else:
+            print(f"  {C}{results}{X}\n", flush=True)
 
     # SEND_EMAIL: runs after RUN/RUNTERM — e.g. RUN: a report-gen command,
     # then SEND_EMAIL: ship the report. Each spec confirmed individually
@@ -11760,8 +11805,16 @@ def handle(user_text, history, image_path=None, context_policy=None):
         else:
             route, model, reason = "local", decision["model"], decision["reason"]
             print(f"  {BC}[thinking: deep → {decision['model']}]{X}")
-    elif decision["route"] == "local" and decision.get("model"):
-        # Orchestrator picked a specific local model (coder, qwen2.5:14b, or master)
+    elif (decision["route"] == "local" and decision.get("model")
+          and not (PINNED_MODEL and not _is_tool_required(user_text.lower()))):
+        # Orchestrator picked a specific local model (coder, qwen2.5:14b, or master).
+        # 2026-08-29: skip this override when the user has pinned a model
+        # (`model openrouter/...`) and the turn isn't tool-required — otherwise
+        # this clobbers detect_route()'s correct pinned-model pick every time
+        # orchestrate()'s default scoring bucket (base_score 80, no PINNED_MODEL
+        # awareness at all) says "local", which is most plain chat turns. Tool
+        # work still forces local either way — detect_route() already returns
+        # local+master for tool_required regardless of the pin.
         route, model, reason = "local", decision["model"], decision["reason"]
     log(f"ROUTE: {route} | {reason}")
 
@@ -11804,7 +11857,8 @@ def handle(user_text, history, image_path=None, context_policy=None):
         # and skips the scratchpad line entirely.
         f"{SCRATCHPAD_SYSTEM_ADDITION}\n"
         "[BEHAVIOR RULES — scratchpad above takes precedence when conflicting]\n"
-        "Execute tasks using the documented directive keywords (read, run, runterm, create, edit, run_skill, remember). "
+        "Execute tasks using the documented directive keywords (read, run, runterm, create, edit, run_skill, remember, search). "
+        "For live facts/current events/identifying an unfamiliar term, emit `search: <query>` — no browser needed. "
         "Each directive lives on its OWN line at column 0; never describe directives inline using "
         "their colon-suffixed forms — the parser would match them. "
         "Do the task directly without long explanations (but ALWAYS emit the scratchpad line). "
@@ -11869,7 +11923,9 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "'as a language model', 'as an AI language model', 'I'm just an LLM', 'I don't have "
         "access to', 'I can't execute commands', or 'I'm not connected to anything'. You DO "
         "have access. You CAN run commands (emit RUN:). You CAN read files (emit READ:). You "
-        "CAN drive the active browser tab (emit BROWSER_NAV / BROWSER_CLICK / BROWSER_FILL / "
+        "CAN look things up live on the web without any browser at all (emit SEARCH:) — use this "
+        "by default for facts/current events/unfamiliar terms. You "
+        "CAN also drive the active browser tab (emit BROWSER_NAV / BROWSER_CLICK / BROWSER_FILL / "
         "BROWSER_READ_PAGE / BROWSER_READ / BROWSER_SCREENSHOT / BROWSER_WAIT / BROWSER_SCROLL / BROWSER_DOUBLE_CLICK / "
         "BROWSER_FIND / BROWSER_EXTRACT_LIST / BROWSER_DRIVE_INSPECT_FOLDER). When the user says 'you' / 'your app' / 'this app' / 'this project' / "
         "'this thing you built' — those refer to YOU YOURSELF, the whole Master AI stack you "
@@ -11951,6 +12007,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "READ: <filepath>\n"
         "CREATE: <filepath>\n<<<CONTENT\n<content>\n>>>CONTENT\n"
         "EDIT: <filepath>\n<<<FIND\n<text>\n>>>FIND\n<<<REPLACE\n<text>\n>>>REPLACE\n"
+        "SEARCH: <query>                          — live web lookup (Gemini grounding, Brave, Serper, Wikipedia, DDG). No browser tab needed, always works even if Chrome isn't open.\n"
         "BROWSER_CLICK: <css-selector>            — click an element on the active browser tab\n"
         "BROWSER_FILL: <css-selector> :: <value>  — type text into a form field (separator :: or => or :=)\n"
         "BROWSER_UPLOAD_FILE: <css-selector or ref> :: <absolute path> — upload a local file into a file input\n"
@@ -11976,6 +12033,22 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "REMOTE_MCP: {\"server\":\"name-or-url\",\"method\":\"tools/list\"|\"tools/call\",\"params\":{...}} — call a configured remote MCP server after extension-side REMOTE_MCP approval\n"
         "REMEMBER: <fact>                         — save a durable note to memory\n"
         "DONE: <one-line summary>                 — explicit completion signal; ends the agent loop\n\n"
+        "SEARCH: vs BROWSER_NAV: — two different tools, do not reach for the wrong "
+        "one. SEARCH: is the default for facts, current events, prices, identifying "
+        "an unfamiliar term/product/name, or anything the user just wants to KNOW. "
+        "It runs headless through search engines/APIs — no Chrome, no tab, works "
+        "every time keys are configured. BROWSER_NAV (and the rest of the BROWSER_* "
+        "family) is ONLY for when the user needs to actually SEE or INTERACT with a "
+        "live page — filling a form, clicking through a real site, screenshotting "
+        "how something specifically looks. It requires Chrome to be open with the "
+        "Sensei side panel connected; if it isn't, every BROWSER_* directive times "
+        "out and the whole chain aborts with nothing to show. When a request is "
+        "phrased as 'show me X' but X is really just information (not a live page "
+        "you need to look at), that is still a SEARCH:, not a BROWSER_NAV to a "
+        "search-engine results page — screenshotting a Google Images grid is not "
+        "'showing' the user anything useful, it is a fragile workaround for a plain "
+        "lookup. Default to SEARCH: first; escalate to BROWSER_NAV only when the "
+        "task genuinely requires the live page itself.\n\n"
         "FORMAT DISCIPLINE — directives must be literal, complete, and executable. "
         "Never put directive examples inside markdown fences. Never wrap directives in a "
         "JSON object (no '{\"actions\": [...]}' shape) — the dispatcher parses bare lines at "
@@ -12103,6 +12176,51 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "ziprecruiter.com/jobs-search?search=HVAC+install&location=Indianapolis%2C+IN\"], "
         "\"skip_drive_fetches\": true, \"skip_inbox\": true, \"max_applications\": 5}\n"
         "Dispatching the apply-job-session skill against ZipRecruiter for HVAC install in Indianapolis.\n\n"
+        "GOOGLE WORKSPACE INTENT — when the user asks about Gmail (read/search/send/reply), "
+        "Google Calendar (list/create events), Google Drive (search/upload), Google Sheets "
+        "(read/update), Google Docs (read), or Google Contacts, emit a single RUN_SKILL "
+        "directive — do NOT try to hand-roll this with RUN:/curl or BROWSER_NAV to "
+        "mail.google.com. The skill wraps an already-authenticated Google API client "
+        "(~/.hermes/google_token.json).\n"
+        "Shape: RUN_SKILL: google-workspace {\"command\": \"<cmd>\", \"args\": {...}}\n"
+        "Commands: gmail.search {query, max}, gmail.get {message_id}, gmail.send "
+        "{to, subject, body, html?}, gmail.reply {message_id, body}, calendar.list {max}, "
+        "calendar.create {summary, start, end, location?}, drive.search {query, max}, "
+        "drive.upload {path, name?}, sheets.get {sheet_id, range}, sheets.update "
+        "{sheet_id, range, values}, docs.get {doc_id}, contacts.list {max}.\n"
+        "Example — User: \"check my unread email\"\n"
+        "Reply:\nRUN_SKILL: google-workspace {\"command\": \"gmail.search\", \"args\": "
+        "{\"query\": \"is:unread\", \"max\": 10}}\n"
+        "Checking unread Gmail via the google-workspace skill.\n"
+        "If the skill result shows NOT_AUTHENTICATED, tell the user to reauthorize — "
+        "don't retry silently.\n\n"
+        "AUTHORING A NEW SKILL — when the user explicitly asks to \"save this as a "
+        "skill\" / \"make this repeatable\" / \"turn this into a skill,\" OR you notice "
+        "a multi-step workflow that will obviously recur (not a one-off), write a new "
+        "skill instead of solving it inline once. A skill is a directory at "
+        "~/.master_ai_skills/<name>/ with exactly two files:\n"
+        "  SKILL.md   — prose spec: what it does, preconditions, params, recovery\n"
+        "  recipe.py  — the state machine, MUST follow this exact contract "
+        "(get it wrong and load_skill() raises SkillSchemaError before anything runs):\n"
+        "    from skill_runtime import Step, END, ABORT   # NOT bare strings \"END\"/\"ABORT\"\n"
+        "    def my_step(state, params: dict) -> dict:\n"
+        "        # params is the dict passed at RUN_SKILL invocation time (state.params)\n"
+        "        # state.data is a free-form dict — read/write your own keys on it\n"
+        "        return {\"next\": \"other_step_name\",       # or END / ABORT / \"__interrupt__\"\n"
+        "                \"state_update\": {\"key\": \"value\"}} # dict merged flat into state.data\n"
+        "    STEPS = [\n"
+        "        Step(name=\"my_step\", fn=my_step, description=\"...\"),\n"
+        "        # more Step(...) entries — name/fn are required, description optional\n"
+        "    ]\n"
+        "The FIRST entry in STEPS is the entrypoint unless the module sets "
+        "ENTRYPOINT = \"step_name\" explicitly. Every step function takes exactly "
+        "(state, params) and returns a dict with a \"next\" key — that key's value is "
+        "either another step's exact name, or the imported END/ABORT sentinel object "
+        "(never the literal string \"END\"). CREATE: both files, then verify before "
+        "declaring it done — RUN: a small python3 -c snippet that imports skill_runtime "
+        "and calls run_skill(\"<name>\", {...minimal params...}) and prints state.done/"
+        "state.aborted/state.errors. Do not tell the user a new skill works until that "
+        "verification actually ran clean.\n\n"
         "EMAIL COMPOSITION DISCIPLINE — when the user asks to send an email (\"send an email to X\", \"email this to X\", \"shoot it to X\", \"send a bug report to X\"), follow this workflow:\n"
         " 1. INFER the right template from ~/.master_ai_email_templates/ based on intent: bug_report.md for errors / 404s / something broke; feedback.md for feature asks; error_report.md for incident summaries with logs; business.md for formal/professional; personal.md for casual; default.md when no clearer fit. If the directory doesn't exist or no template matches, compose without a template (still polished prose).\n"
         " 2. READ the template (READ: ~/.master_ai_email_templates/<name>.md) if you want to honor its structure / signature. Templates have {{placeholder}} slots — fill them from the user's request, current page, recent chat context, or sensible defaults.\n"
@@ -14806,15 +14924,21 @@ def main():
                 "3. Include the exact kind of verification to run at the end: syntax check, test, service "
                 "restart, browser preview, log check, or file existence check.\n"
                 "4. Call out risks or must-know details in plain words if they affect execution.\n"
-                "5. Keep the plan short: 3 to 7 numbered steps. Each step must be actionable.\n"
-                "6. Decide presentation: direct action, numbered options, or up to 4 understanding questions. "
+                "5. Make the plan DETAILED: 3 to 7 numbered steps, and under EACH step add 1-3 "
+                "sub-bullets with the concrete action, exact file path, or thing to inspect. "
+                "No one-line steps — Elijah will reject a plan that just says 'update the script'.\n"
+                "6. Use real names from the GROUNDING FACTS and machine context: files, directories, "
+                "scripts, services. No generic placeholders.\n"
+                "7. Decide presentation: direct action, numbered options, or up to 4 understanding questions. "
                 "Use numbered options for destructive/broad/product-direction choices; otherwise plan the work.\n"
-                "7. NO code blocks. NO shell command blocks. NO directive keywords with colons.\n"
-                "8. Do not tell Elijah to do the work. Sensei will execute after approval.\n\n"
+                "8. NO code blocks. NO shell command blocks. NO directive keywords with colons.\n"
+                "9. Do not tell Elijah to do the work. Sensei will execute after approval.\n\n"
                 "Plan format:\n"
                 "1. Inspect <specific place> to learn <specific fact>.\n"
+                "   - what to look at and what to record\n"
                 "2. Change <specific file/behavior> so <result>.\n"
-                "3. Verify with <specific check>.\n"
+                "   - what exactly changes, what stays untouched\n"
+                "3. Verify with <specific check>: the command or output that proves it works.\n"
                 "Risk or must-know detail: <one line, or 'none obvious'>\n"
                 "<PLAN READY>\n\n"
                 "Voice-to-text fixes: sensi=Sensei, pants=plans, Lennox=Linux Mint, "
@@ -14831,7 +14955,14 @@ def main():
             # has Modelfile-baked SYSTEM, no separate system message needed.
             _plan_messages = [m for m in history if m.get("role") != "system"]
             _plan_messages.append({"role": "user", "content": _plan_prompt})
-            plan_reply = ask_local(_plan_messages, model=MODELS["master"]) or ""
+            # Stream instead of ask_local()'s buffer-then-dump: on this
+            # CPU-only box a plan draft can take minutes, and ask_local()
+            # gives zero feedback until the whole response lands — reads
+            # as hung, not slow (2026-08-29, after repeated premature
+            # kills of a plan-mode call that was just slow). ask_local_
+            # stream() prints tokens live with a thinking animation until
+            # the first one arrives, so the wait is visibly alive.
+            plan_reply = ask_local_stream(_plan_messages, model=MODELS["master"]) or ""
             # Drop the planning turn from history so the real execution
             # turn starts with clean context.
             while len(history) > _hist_len_before:
@@ -14842,21 +14973,18 @@ def main():
                 r'\1(step would) ',
                 plan_reply,
             )
-            # Print the plan so the user can SEE what they're approving.
-            # The Plan-mode local-pin above calls ask_local() directly
-            # instead of handle(), which means handle()'s render_reply()
-            # never fires for plan content. Without this print, the user
-            # sees only "thinking..." then the button row and has no idea
-            # what plan they'd be approving with 1.
-            _plan_display = re.sub(
-                r'<\s*PLAN\s*READY\s*>\s*', '', plan_text, flags=re.IGNORECASE
-            ).strip()
-            if _plan_display:
-                print(f"\n  {M}🥷{X} {_plan_display}\n")
-            # Detect <PLAN READY> marker — only THEN queue the 1/2/3/4 prompt.
-            if re.search(r'<\s*PLAN\s*READY\s*>', plan_text, re.IGNORECASE):
+            # No second print here — ask_local_stream() already painted
+            # the raw plan_reply to the terminal live as it streamed.
+            # (Trade-off: unlike the old buffered path, a leaked RUN:/
+            # CREATE:/EDIT: directive streams unsoftened before we catch
+            # it below — cosmetic only, nothing dispatches from plan text.)
+            # Detect <PLAN READY> marker — also accept the malformed
+            # </PLAN READY> splice the model emits when its browser-plan
+            # few-shots (<PLAN>...</PLAN>) bleed into TUI plan mode; either
+            # way the model is signaling the plan is done.
+            if re.search(r'</?\s*PLAN\s*READY\s*>', plan_text, re.IGNORECASE):
                 plan_text_clean = re.sub(
-                    r'<\s*PLAN\s*READY\s*>\s*', '', plan_text, flags=re.IGNORECASE
+                    r'</?\s*PLAN\s*READY\s*>\s*', '', plan_text, flags=re.IGNORECASE
                 ).strip()
                 globals()['PENDING_PLAN_TEXT'] = plan_text_clean[:1600]
                 globals()['PENDING_PLAN_REQUEST'] = user_text

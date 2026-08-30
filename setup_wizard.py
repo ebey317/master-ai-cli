@@ -71,16 +71,18 @@ Rules:
 - Never claim to be connected after setup ends.
 """
 
+# Display metadata only — detection below is prefix-based, so pasting a key
+# for any of these (or an unlisted provider) files it under the right name.
 PROVIDERS = {
-    "groq": {
-        "label": "Groq (free tier — Llama 3.3 70B, fast)",
-        "key_name": "groq",
-        "url": "https://console.groq.com/keys",
-    },
     "openrouter": {
         "label": "OpenRouter (free + paid models, one key unlocks many)",
         "key_name": "openrouter",
         "url": "https://openrouter.ai/settings/keys",
+    },
+    "groq": {
+        "label": "Groq (free tier — Llama 3.3 70B, fast)",
+        "key_name": "groq",
+        "url": "https://console.groq.com/keys",
     },
     "gemini": {
         "label": "Google Gemini (free tier — 2.0 Flash, vision + web)",
@@ -112,7 +114,49 @@ PROVIDERS = {
         "key_name": "deepseek",
         "url": "https://platform.deepseek.com/api_keys",
     },
+    "huggingface": {
+        "label": "HuggingFace",
+        "key_name": "huggingface",
+        "url": "https://huggingface.co/settings/tokens",
+    },
+    "xai": {
+        "label": "xAI (Grok)",
+        "key_name": "xai",
+        "url": "https://console.x.ai",
+    },
+    "nvidia": {
+        "label": "NVIDIA NIM (Llama/Nemotron catalog)",
+        "key_name": "nvidia",
+        "url": "https://build.nvidia.com",
+    },
 }
+
+
+def _detect_provider(key: str) -> str | None:
+    """Guess the provider from an API key's prefix, same map install.sh uses."""
+    if key.startswith("gsk_"):
+        return "groq"
+    if key.startswith("sk-ant-"):
+        return "anthropic"
+    if key.startswith("sk-or-v1-"):
+        return "openrouter"
+    if key.startswith("sk-proj-"):
+        return "openai"
+    if key.startswith("hf_"):
+        return "huggingface"
+    if key.startswith("AIzaSy"):
+        return "gemini"
+    if key.startswith("xai-"):
+        return "xai"
+    if key.startswith("csk-"):
+        return "cerebras"
+    if key.startswith("fw_"):
+        return "fireworks"
+    if key.startswith("nvapi-"):
+        return "nvidia"
+    if key.startswith("sk-"):
+        return "deepseek"
+    return None
 
 
 def _print(text: str = "") -> None:
@@ -131,11 +175,72 @@ def _yes_no(prompt: str, default_no: bool = True) -> bool:
     return raw.startswith("y")
 
 
+# ~/.master_ai_keys is normally a symlink to the canonical keychain
+# (~/Desktop/Projects/keychain/master_ai_keys, see KEYCHAIN.md), which is
+# KEY=VALUE, not JSON — the single source of truth other consumers (CLAF,
+# keychain.sh) also read. ANTHROPIC_API_KEY is deliberately never mapped —
+# only ANTHROPIC_CONSOLE_KEY is, per the Max-OAuth/Console separation rule.
+_KV_KEY_MAP = {
+    "OPENROUTER_API_KEY": "openrouter",
+    "GROQ_API_KEY": "groq",
+    "GEMINI_API_KEY": "gemini",
+    "ANTHROPIC_CONSOLE_KEY": "anthropic",
+    "CEREBRAS_API_KEY": "cerebras",
+    "FIREWORKS_API_KEY": "fireworks",
+    "OPENAI_API_KEY": "openai",
+    "DEEPSEEK_API_KEY": "deepseek",
+    "HUGGINGFACE_TOKEN": "huggingface",
+    "HF_TOKEN": "huggingface",
+    "NVIDIA_API_KEY": "nvidia",
+}
+_CANONICAL_NAME = {v: k for k, v in _KV_KEY_MAP.items() if k != "HF_TOKEN"}
+
+
+def _parse_kv_keys(text: str) -> dict:
+    out = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, val = line.partition("=")
+        name, val = name.strip(), val.strip()
+        short = _KV_KEY_MAP.get(name)
+        if short and val and short not in out:
+            out[short] = val
+    return out
+
+
 def _write_keys(keys: dict) -> None:
-    tmp = KEYS_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(keys, indent=2) + "\n")
-    os.chmod(tmp, 0o600)
-    tmp.replace(KEYS_FILE)
+    """Write keys back. If KEYS_FILE is a symlink into the canonical KV
+    keychain, update it in place (KEY=VALUE, preserving other lines/
+    comments) instead of replacing the symlink with a JSON blob — that
+    would orphan it from every other consumer (CLAF, keychain.sh)."""
+    target = KEYS_FILE.resolve() if KEYS_FILE.is_symlink() else KEYS_FILE
+    existing_text = target.read_text() if target.exists() else ""
+    is_kv = bool(existing_text.strip()) and not existing_text.lstrip().startswith("{")
+
+    if is_kv or (target != KEYS_FILE and not existing_text.strip()):
+        lines = existing_text.splitlines()
+        seen = set()
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            name = stripped.split("=", 1)[0].strip()
+            for short, val in keys.items():
+                if _CANONICAL_NAME.get(short) == name:
+                    lines[i] = f"{name}={val}"
+                    seen.add(short)
+        for short, val in keys.items():
+            if short in seen:
+                continue
+            canonical = _CANONICAL_NAME.get(short)
+            if canonical:
+                lines.append(f"{canonical}={val}")
+        target.write_text("\n".join(lines) + "\n")
+    else:
+        target.write_text(json.dumps(keys, indent=2) + "\n")
+    os.chmod(target, 0o600)
 
 
 def _load_keys() -> dict:
@@ -146,9 +251,8 @@ def _load_keys() -> dict:
         return {}
     try:
         return json.loads(text)
-    except Exception as e:
-        _print(f"{C['red']}✗ Could not read {KEYS_FILE}: {e}{C['reset']}")
-        return {}
+    except Exception:
+        return _parse_kv_keys(text)
 
 
 def _ollama_present() -> bool:
@@ -197,29 +301,24 @@ def _github_models_chat(messages: list[dict], token: str) -> str | None:
         return None
 
 
-def _collect_key(provider_id: str) -> str | None:
-    cfg = PROVIDERS[provider_id]
-    _print(f"\n{C['cyan']}  {cfg['label']}{C['reset']}")
-    _print(f"  Get a key: {C['dim']}{cfg['url']}{C['reset']}")
-    if not _yes_no("Enable this provider?", default_no=True):
-        return None
-    key = getpass.getpass(f"  Paste {provider_id} key (hidden): ").strip()
-    if not key:
-        _print(f"{C['yellow']}  Skipped — no key entered.{C['reset']}")
-        return None
-    return key
-
-
 def _manual_key_collection(keys: dict) -> dict:
-    _print(f"\n{C['bold']}Provider setup — add any free/paid keys you want.{C['reset']}")
-    _print(f"{C['dim']}Press Enter or type 'n' to skip any provider.{C['reset']}\n")
+    _print(f"\n{C['bold']}Provider setup — paste any key, it's auto-detected.{C['reset']}")
+    _print(f"{C['dim']}Recognizes: " + ", ".join(PROVIDERS) + f"{C['reset']}")
+    _print(f"{C['dim']}Enter with nothing to finish.{C['reset']}\n")
     for pid in PROVIDERS:
         if keys.get(PROVIDERS[pid]["key_name"]):
             _print(f"{C['green']}  ✓ {pid} already configured{C['reset']}")
+    while True:
+        key = getpass.getpass("  Paste a key (hidden, Enter to finish): ").strip()
+        if not key:
+            break
+        provider = _detect_provider(key)
+        if not provider:
+            _print(f"{C['yellow']}  ? couldn't identify this key's provider from its prefix — skipped{C['reset']}")
             continue
-        val = _collect_key(pid)
-        if val:
-            keys[PROVIDERS[pid]["key_name"]] = val
+        keys[provider] = key
+        label = PROVIDERS.get(provider, {}).get("label", provider)
+        _print(f"{C['green']}  ✓ {provider} — {label}{C['reset']}")
     return keys
 
 

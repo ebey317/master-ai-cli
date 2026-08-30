@@ -295,13 +295,40 @@ class SlashCommandCompleter(Completer):
     Typing '/' opens the palette. Typing after the slash filters commands by
     text or hint. The inserted text replaces the slash so the existing command
     dispatcher in master_ai.py receives the same words as manual typing.
+
+    "/model <query>" is special-cased: instead of the ~20 static "model *"
+    hint entries, it shows a live picker across every provider key that's
+    actually configured (plus local Ollama) — scroll/arrow-keys + Enter,
+    same as this menu already does for everything else. model_catalog_fn
+    is injected from master_ai.py (keeps the HTTP/caching logic there, out
+    of this UI-only module); falls back to the static entries when it's
+    None or returns nothing.
     """
+
+    def __init__(self, model_catalog_fn=None):
+        self._model_catalog_fn = model_catalog_fn
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         if "\n" in text or not _menu_prefix(text):
             return
         narrow = _term_size().columns < 100
+        after_slash = text[1:]
+        if self._model_catalog_fn and after_slash.lower().startswith("model "):
+            query = after_slash[len("model "):]
+            try:
+                live = self._model_catalog_fn(query)
+            except Exception:
+                live = []
+            if live:
+                for pin_value, display, hint in live:
+                    yield Completion(
+                        f"model {pin_value}",
+                        start_position=-len(text),
+                        display=display,
+                        display_meta="" if narrow else hint,
+                    )
+                return
         for command in _menu_command_matches(text):
             hint = "" if narrow else COMMAND_MENU_HINTS.get(command, "")
             yield Completion(
@@ -432,7 +459,16 @@ class SafeFormattedTextControl(FormattedTextControl):
 
 
 class SenseiApp:
-    def __init__(self) -> None:
+    def __init__(self, model_catalog_fn=None) -> None:
+        # model_catalog_fn(query) -> [(pin_value, display, hint), ...]. Lets
+        # "/model <query>" show a live picker across every provider key
+        # that's actually configured (plus local Ollama) instead of the
+        # ~20 static "model *" hint entries. Injected from master_ai.py
+        # (keeps HTTP/caching logic there, out of this UI-only module).
+        # Per Elijah 2026-08-20: "it should open up a model catalog for
+        # every API key I have logged... scroll up and down and press
+        # enter... just like every other CLI."
+        self._model_catalog_fn = model_catalog_fn
         self._label = ""
         self._status = ""
         self._output_chunks: List[str] = []
@@ -492,7 +528,7 @@ class SenseiApp:
             # still growing for pasted prompts.
             height=Dimension(min=1, max=5, preferred=2),
             history=FileHistory(HISTORY_FILE),
-            completer=SlashCommandCompleter(),
+            completer=SlashCommandCompleter(self._model_catalog_fn),
             complete_while_typing=True,
             focusable=True,
             # User-typed text stays the terminal's default color — no blue.

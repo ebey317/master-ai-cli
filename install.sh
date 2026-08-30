@@ -327,6 +327,7 @@ elif key.startswith("sk-"):      field = "deepseek"
 elif key.startswith("hf_"):      field = "huggingface"
 elif key.startswith("AIzaSy"):   field = "gemini"
 elif key.startswith("xai-"):     field = "xai"
+elif key.startswith("nvapi-"):   field = "nvidia"
 if not field:
     print("  ? couldn't identify key prefix — skipped"); sys.exit(0)
 path = os.path.expanduser("~/.master_ai_keys")
