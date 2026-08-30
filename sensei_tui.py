@@ -53,6 +53,7 @@ from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import (
     ConditionalContainer, Float, FloatContainer, HSplit, Window, WindowAlign,
+    to_container,
 )
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl, UIContent
 from prompt_toolkit.layout.dimension import Dimension
@@ -910,47 +911,77 @@ class SenseiApp:
         # Modal picker (/model): app-level bindings so Enter/Escape stay
         # active for as long as self._picker_visible is True, regardless
         # of which widget technically has focus inside the picker.
-        # RadioList's own control already handles up/down for moving the
-        # highlight and toggling current_value — this just reads that
-        # value on Enter and closes the picker. Both firing on one Enter
-        # is harmless: RadioList's handler only updates current_value,
-        # which is exactly what gets read here.
-        @kb.add("enter", filter=Condition(lambda: self._picker_visible))
+        #
+        # 2026-08-30: eager=True is load-bearing here — traced it: without
+        # it, this handler never fires at all when the RadioList has focus.
+        # prompt_toolkit resolves a key against the focused control's own
+        # bindings first; RadioList already binds "enter" locally (moves
+        # _selected_index into current_value), and that wins outright over
+        # a non-eager app-level binding for the same key — this one simply
+        # never ran. eager=True gives this handler priority instead.
+        # That in turn means RadioList's own enter handler (the thing that
+        # syncs current_value from _selected_index) never gets a chance to
+        # run either — so don't read radio.current_value here, it can be
+        # stale from construction if the user arrowed but never triggered
+        # RadioList's own enter. Read the highlighted index directly.
+        @kb.add("enter", filter=Condition(lambda: self._picker_visible), eager=True)
         def _picker_confirm(event):
             radio = self._picker_radio
             on_select = self._picker_on_select
+            value = None
+            if radio is not None:
+                try:
+                    value = radio.values[radio._selected_index][0]
+                except Exception:
+                    value = radio.current_value
             self._close_picker()
-            if radio is not None and on_select is not None:
-                on_select(radio.current_value)
+            if value is not None and on_select is not None:
+                on_select(value)
 
-        @kb.add("escape", filter=Condition(lambda: self._picker_visible))
-        @kb.add("c-c", filter=Condition(lambda: self._picker_visible))
+        @kb.add("escape", filter=Condition(lambda: self._picker_visible), eager=True)
+        @kb.add("c-c", filter=Condition(lambda: self._picker_visible), eager=True)
         def _picker_cancel(event):
             self._close_picker()
 
         @kb.add("enter", filter=has_focus(self._input))
         def _submit(event):
-            # 2026-08-30: /model auto-trigger DISABLED — the RadioList/
-            # Dialog modal picker (_open_model_picker) reproducibly hangs
-            # on prompt_toolkit's own "Press ENTER to continue..." recovery
-            # loop when actually exercised (confirmed via headless repro,
-            # root cause not yet isolated). Falling back to the old
-            # (non-crashing, if unsatisfying) `model`/`models` dispatch
-            # path in master_ai.py until this is properly fixed and
-            # tested — do not re-enable without a clean headless repro
-            # first. See _open_model_picker's docstring for the design;
-            # the bug is real, not a false alarm from stale process state.
-            # _bare = self._input.text.strip().lower()
-            # if _bare in ("/model", "model"):
-            #     self._input.text = ""
-            #     self._open_model_picker()
-            #     return
+            # /model (no trailing text) opens the arrow-key modal picker —
+            # provider list, then that provider's full model list, no
+            # typing at either step.
+            #
+            # 2026-08-30: re-enabled after root-causing and headlessly
+            # verifying the two real bugs that made this crash/hang every
+            # time: (1) ConditionalContainer.content only runs to_container()
+            # inside __init__, not on later reassignment — assigning a
+            # Dialog directly (a widget wrapper, not itself a Container)
+            # blew up on the next screen draw with 'Dialog' object has no
+            # attribute 'write_to_screen', which prompt_toolkit's own
+            # asyncio exception handler turned into the "Press ENTER to
+            # continue..." loop. Fixed with to_container() in _show_picker.
+            # (2) the app-level Enter handler for the picker never fired at
+            # all when the RadioList had focus — RadioList's own local
+            # "enter" binding won by default; needed eager=True. Verified
+            # end-to-end headlessly: provider list -> arrow down -> Enter
+            # -> model list -> Enter -> correct dispatch, and Escape
+            # cancels cleanly.
+            _bare = self._input.text.strip().lower()
+            if _bare in ("/model", "model"):
+                self._input.text = ""
+                self._open_model_picker()
+                return
 
             menu_command = self._active_comma_completion()
             if menu_command:
-                # Picker auto-trigger disabled here too — see the matching
-                # note above. menu_command == "model" now falls through to
-                # normal dispatch (old numbered menu) instead of the picker.
+                # Reached via the completion dropdown (arrow/Tab to
+                # highlight "model", then Enter) instead of typing the full
+                # word out — must not fall through to normal dispatch, or
+                # this bypasses the picker exactly like the bare-text path
+                # above does.
+                if menu_command.strip().lower() == "model":
+                    self._input.buffer.cancel_completion()
+                    self._input.text = ""
+                    self._open_model_picker()
+                    return
                 self._input.buffer.cancel_completion()
                 if self._insert_payload_command(menu_command):
                     return
@@ -1212,7 +1243,18 @@ class SenseiApp:
         )
         self._picker_radio = radio
         self._picker_on_select = on_select
-        self._picker_container.content = dialog
+        # 2026-08-30: the actual bug — ConditionalContainer normalizes its
+        # `content` via to_container() ONLY inside __init__ (verified by
+        # reading prompt_toolkit's source). A runtime reassignment like
+        # this one skips that step entirely, so an unconverted widget
+        # wrapper (Dialog isn't itself a Container — it exposes one via
+        # __pt_container__()) blew up on the next screen draw with
+        # `AttributeError: 'Dialog' object has no attribute
+        # 'write_to_screen'`, which prompt_toolkit's own top-level asyncio
+        # exception handler caught and turned into the "Press ENTER to
+        # continue..." loop that killed the session. to_container() here
+        # does what __init__ does automatically.
+        self._picker_container.content = to_container(dialog)
         self._picker_visible = True
         try:
             self._app.layout.focus(radio)
