@@ -4091,6 +4091,11 @@ def ask_local_stream(messages, model=None, image_path=None):
                        chars=len(result or ""))
         if result:
             globals()["_LAST_MODEL"] = f"local/{model}"
+            # Tokens already printed live above as they streamed — this IS
+            # the render, distinct from render_reply(). Mark it so handle()'s
+            # end-of-turn fallback (added 2026-08-30) doesn't reprint
+            # already-shown text a second time.
+            globals()["_LAST_TURN_RENDERED"] = True
         return result if result else None
     except Exception as e:
         local_thinking_stop(_anim)
@@ -5715,6 +5720,7 @@ def render_reply(text, prefix=None, suffix=None):
     capture width is capped by SENSEI_REPLY_WRAP so long single-line replies
     still arrive top-down instead of as one terminal-wide splash.
     """
+    globals()["_LAST_TURN_RENDERED"] = True
     if prefix:
         print(prefix, end="", flush=True)
 
@@ -11735,6 +11741,7 @@ def handle_image_status(user_text, arg, history):
 
 def handle(user_text, history, image_path=None, context_policy=None):
     _reset_turn_privacy()
+    globals()["_LAST_TURN_RENDERED"] = False
     context_policy = context_policy or {}
     suppress_auto_context = bool(context_policy.get("suppress_auto_context", False))
     memory_mode = (context_policy.get("memory_mode") or "default").strip().lower()
@@ -13120,6 +13127,25 @@ def handle(user_text, history, image_path=None, context_policy=None):
     if result is None:
         print(_pill("WARN", f"{D}continuation limit reached or model unavailable after tool output{X}"))
         log(f"CHAIN_CONTINUATION_STOP: turns={continuation_turns} route={route} model={model}")
+
+    # 2026-08-30: root-caused a real bug — operator watched a live turn
+    # end with tool pills visible but no closing answer at all, the app
+    # just went idle. process_reply() only calls render_reply() when it
+    # decides a reply's non-directive "narrative" portion is non-empty
+    # (see its `if narrative and not streamed` / `elif not has_directives`
+    # gate) — nothing downstream of that GUARANTEES the user actually saw
+    # something. If the final continuation's reply got classified as
+    # directive-only (has_directives=True, narrative empty — e.g. the
+    # model's closing text got misparsed as directive-shaped, or it
+    # genuinely emitted no surrounding prose), reply still holds real
+    # content, gets silently appended to history for future context, and
+    # is never once shown on screen. _LAST_TURN_RENDERED is set inside
+    # render_reply() itself and reset at the top of this function — if
+    # it's still False here and there's real text to show, this is the
+    # last chance to show it.
+    if not globals().get("_LAST_TURN_RENDERED") and (reply or "").strip():
+        log("CLOSING_ANSWER_FALLBACK: process_reply never rendered the final reply — showing it directly")
+        render_reply(reply, prefix=f"\n{M}  🥋{X} ", suffix="")
 
     history.append({"role": "assistant", "content": reply})
 
