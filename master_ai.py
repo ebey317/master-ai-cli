@@ -10031,9 +10031,63 @@ def _resume_skill_reply_from_turn(user_text, history):
 
 
 # ── REPLY PROCESSOR ──────────────────────────────────────────
+_DIRECTIVE_KEYWORDS_RE = re.compile(
+    # No leading \b: models observed cramming directives together with
+    # zero separator at all once the <tool_call> tag between them is
+    # stripped (e.g. "3000BROWSER_WAIT:") — \b doesn't fire between a
+    # digit and a letter (both are \w), so a leading boundary check missed
+    # this exact case. The trailing (?=\s|$) after the colon already
+    # disambiguates real directives from prose sharing a substring.
+    r'(RUN_SKILL|RUNTERM|RUN|READ|CREATE|EDIT|ASK|DONE|REMEMBER|SEARCH|'
+    r'SEND_EMAIL|REMOTE_MCP|BROWSER_[A-Z_]+):(?=\s|$)'
+)
+_TOOL_CALL_TAG_RE = re.compile(r'</?\s*tool_call\s*>', re.IGNORECASE)
+
+def _normalize_directive_lines(reply):
+    """Give every parser downstream (_extract_directive, split-on-newline
+    per-line matchers, _extract_browser_actions's line.strip()-anchored
+    regex) what they all assume: one directive per line, at column 0.
+
+    2026-08-30: some models (confirmed live on z-ai/glm-5.2:free, a
+    typical failure mode for models trained on native <tool_call>
+    XML-wrapped tool-calling) ignore the "each directive on its OWN
+    line" instruction entirely — they emit prose glued directly to
+    BROWSER_NAV:/SEARCH:/etc., multiple directives crammed onto one
+    physical line, wrapped in <tool_call> tags nobody asked for. Two
+    silent failure modes result, not just an ugly render:
+      - _extract_browser_actions requires BROWSER_*: to be the first
+        thing on the (stripped) line — a directive glued onto the end
+        of a sentence, or prefixed with a leftover <tool_call> tag,
+        never matches at all. Silently dropped, not partially run.
+      - _extract_directive splits each line on the FIRST directive
+        keyword only — a second directive crammed onto the same line
+        gets swallowed whole as part of the first one's argument
+        (e.g. a garbled URL containing literal "<tool_call>SEARCH: ...").
+    Strip the tags (pure noise, not part of this app's directive
+    grammar) and force a newline before every directive keyword that
+    isn't already at the start of a line, so every existing per-line
+    parser sees what it already assumes it's getting. The backtick-parity
+    guard (even number of backticks before the match on that line) skips
+    keyword-shaped text quoted inline in prose, matching the same
+    convention _real_directive_line already uses elsewhere."""
+    text = _TOOL_CALL_TAG_RE.sub("", reply or "")
+    out = []
+    pos = 0
+    for m in _DIRECTIVE_KEYWORDS_RE.finditer(text):
+        start = m.start()
+        line_start = text.rfind("\n", 0, start) + 1
+        before_on_line = text[line_start:start]
+        if before_on_line.strip() and before_on_line.count("`") % 2 == 0:
+            out.append(text[pos:start])
+            out.append("\n")
+            pos = start
+    out.append(text[pos:])
+    return "".join(out)
+
 def process_reply(reply, history, streamed=False, continue_after_tools=False):
     """Parse RUN: / READ: / CREATE: directives from AI reply and execute."""
     globals()["_CHAIN_SUDO_ACKS"] = 0
+    reply = _normalize_directive_lines(reply)
     raw_lines = reply.splitlines()
 
     def _join_shell_continuations(src_lines):
