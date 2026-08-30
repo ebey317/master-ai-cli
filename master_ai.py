@@ -13084,8 +13084,16 @@ def handle(user_text, history, image_path=None, context_policy=None):
     # READ:, directive repair, blocked-tool feedback, or tool output was injected
     # into history — keep asking the same lane until it synthesizes an answer or
     # hits the bounded continuation cap.
+    # 2026-08-30: was 5 — operator: "increase my continuation." Real chains
+    # watched live tonight (a grant search alone ran 10+ SEARCH calls before
+    # synthesizing an answer) blow straight through 5 and die with the
+    # generic "continuation limit reached" WARN mid-task. Each turn is
+    # already bounded individually (90s hard cloud-call timeout, added
+    # earlier tonight), so a higher ceiling here just means more room for
+    # a legitimately long chain to finish, not a longer hang on any single
+    # stuck call.
     continuation_turns = 0
-    max_continuation_turns = 5
+    max_continuation_turns = 20
     while result is None and continuation_turns < max_continuation_turns:
         repair_turn = bool(history and history[-1].get("role") == "user"
                            and str(history[-1].get("content", "")).startswith("[Directive repair]"))
