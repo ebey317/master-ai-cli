@@ -930,28 +930,27 @@ class SenseiApp:
 
         @kb.add("enter", filter=has_focus(self._input))
         def _submit(event):
-            # /model (no trailing text) opens the arrow-key modal picker —
-            # provider list, then that provider's full model list, no
-            # typing at either step. Operator, explicit: "I'm not typing.
-            # I'm going to do slash model... arrow and enter key."
-            _bare = self._input.text.strip().lower()
-            if _bare in ("/model", "model"):
-                self._input.text = ""
-                self._open_model_picker()
-                return
+            # 2026-08-30: /model auto-trigger DISABLED — the RadioList/
+            # Dialog modal picker (_open_model_picker) reproducibly hangs
+            # on prompt_toolkit's own "Press ENTER to continue..." recovery
+            # loop when actually exercised (confirmed via headless repro,
+            # root cause not yet isolated). Falling back to the old
+            # (non-crashing, if unsatisfying) `model`/`models` dispatch
+            # path in master_ai.py until this is properly fixed and
+            # tested — do not re-enable without a clean headless repro
+            # first. See _open_model_picker's docstring for the design;
+            # the bug is real, not a false alarm from stale process state.
+            # _bare = self._input.text.strip().lower()
+            # if _bare in ("/model", "model"):
+            #     self._input.text = ""
+            #     self._open_model_picker()
+            #     return
 
             menu_command = self._active_comma_completion()
             if menu_command:
-                # Same interception, reached via the completion dropdown
-                # (arrow/Tab to highlight "model", then Enter) instead of
-                # typing the full word out — must not fall through to
-                # normal dispatch, or this bypasses the picker exactly
-                # like typing "/model" and pressing Enter directly does.
-                if menu_command.strip().lower() == "model":
-                    self._input.buffer.cancel_completion()
-                    self._input.text = ""
-                    self._open_model_picker()
-                    return
+                # Picker auto-trigger disabled here too — see the matching
+                # note above. menu_command == "model" now falls through to
+                # normal dispatch (old numbered menu) instead of the picker.
                 self._input.buffer.cancel_completion()
                 if self._insert_payload_command(menu_command):
                     return
