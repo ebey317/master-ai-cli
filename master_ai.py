@@ -10741,8 +10741,12 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             "role": "user",
             "content": (
                 "\n\n".join(tool_result_feedback)
-                + "\n\nContinue from the tool output. If the task is complete, "
-                  "give the final answer. If more inspection is needed, emit the next directive."
+                + "\n\nContinue from the tool output. If more inspection is needed, "
+                  "emit the next directive. If the task is complete, give the final "
+                  "answer as 1-3 short plain sentences: state the direct result "
+                  "(found it / done / not found / here's the number), skip restating "
+                  "the tool output back to the user, and if there's an obvious next "
+                  "step end with a one-line yes/no question offering it."
             ),
         })
         log(f"CHAIN_CONTINUE_AFTER_TOOL_RESULT: {len(tool_result_feedback)} tool result(s)")
@@ -12799,6 +12803,16 @@ def handle(user_text, history, image_path=None, context_policy=None):
 
     def _continue_model_turn(repair_turn=False):
         if route in ("cloud", "web"):
+            if _is_turn_private():
+                # 2026-08-29: a privacy-flagged tool result (e.g. a RUN over
+                # a private path) used to hit ask_cloud() here, which prints
+                # its block message and returns None — that killed the whole
+                # continuation loop at turns=0, so the user got a bare
+                # FOUND/RAN pill and no closing answer. Synthesizing the
+                # answer never needs to leave the machine, so fall back to
+                # local instead of giving up.
+                print(f"  {D}🔒 private tool output — answering locally instead of cloud{X}")
+                return ask_local_stream(history, model=MODELS["master"]), True
             _spin2 = local_thinking_start()
             provider = "gemini" if route == "web" else (model if model in CLOUD_MODEL_NAMES else "groq")
             try:
