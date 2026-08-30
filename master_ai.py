@@ -1623,12 +1623,17 @@ def detect_route(text, has_image=False):
     t = text.lower()
     words = set(t.split())
 
-    # Manual model selection overrides chat/reasoning, but never tool work. If the user
-    # asks to create/edit/run files, Sensei must stay on the local directive
-    # lane even when the header says MODEL:CLOUD.
+    # Manual model selection is authoritative, tool-required turns included.
+    # 2026-08-30: this used to force local master-ai on any tool-required
+    # turn even with a model explicitly pinned via the picker — operator,
+    # explicit: "don't escalate it to local. let whatever model's handling
+    # it, handle it." The override was backwards anyway: it existed
+    # because vanilla local models are the ones that struggle to emit
+    # RUN:/READ:/etc. directive syntax reliably, not cloud ones — a pinned
+    # OpenRouter/NVIDIA/Cerebras/Groq model is typically MORE capable at
+    # following that syntax than the local 7B it was silently swapped in
+    # for. Whatever's pinned now handles tool-required turns too.
     if PINNED_MODEL:
-        if _is_tool_required(t):
-            return "local", MODELS["master"], "tool-required overrides selected model → master-ai"
         if _is_key_backed_model(PINNED_MODEL):
             return "cloud", PINNED_MODEL, f"selected → {PINNED_MODEL}"
         return "local", PINNED_MODEL, f"selected → {PINNED_MODEL}"
@@ -11946,16 +11951,16 @@ def handle(user_text, history, image_path=None, context_policy=None):
         else:
             route, model, reason = "local", decision["model"], decision["reason"]
             print(f"  {BC}[thinking: deep → {decision['model']}]{X}")
-    elif (decision["route"] == "local" and decision.get("model")
-          and not (PINNED_MODEL and not _is_tool_required(user_text.lower()))):
+    elif decision["route"] == "local" and decision.get("model") and not PINNED_MODEL:
         # Orchestrator picked a specific local model (coder, qwen2.5:14b, or master).
-        # 2026-08-29: skip this override when the user has pinned a model
-        # (`model openrouter/...`) and the turn isn't tool-required — otherwise
-        # this clobbers detect_route()'s correct pinned-model pick every time
-        # orchestrate()'s default scoring bucket (base_score 80, no PINNED_MODEL
-        # awareness at all) says "local", which is most plain chat turns. Tool
-        # work still forces local either way — detect_route() already returns
-        # local+master for tool_required regardless of the pin.
+        # 2026-08-29: skip this override whenever a model is pinned
+        # (`model openrouter/...`) — otherwise this clobbers detect_route()'s
+        # correct pinned-model pick every time orchestrate()'s default scoring
+        # bucket (base_score 80, no PINNED_MODEL awareness at all) says
+        # "local", which is most turns.
+        # 2026-08-30: previously still applied for tool-required turns even
+        # with a pin ("let whatever model's handling it, handle it" —
+        # removed along with detect_route()'s matching override).
         route, model, reason = "local", decision["model"], decision["reason"]
     log(f"ROUTE: {route} | {reason}")
 
@@ -12086,6 +12091,15 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "should look like. Keep them specific, numbered, and answerable. Otherwise discover. Final reports state action taken, evidence/verification, and "
         "what was intentionally not touched. If verification did not happen, say staged/not verified, "
         "not done.\n\n"
+        "CLOSING SUMMARY — every completed task ends with a plain 2-3 sentence "
+        "summary, no exceptions: state the direct result (found it / done / here's "
+        "the number / not found), skip restating raw tool output or directive "
+        "syntax back to the user, and if there's an obvious next step end with a "
+        "one-line offer of it. This applies to EVERY task — plain chat answers, "
+        "single RUN/READ lookups, multi-step directive chains, browser work, "
+        "everything — not just DONE-gated agent loops. Elijah works hands-free "
+        "via voice-to-text; a wall of tool output with no closing sentence is not "
+        "a finished answer.\n\n"
         "RECALL DISCIPLINE: When resuming after a history compaction, continue the current subject directly. "
         "Do not enumerate past topics, summarize previous conversation, or recap what was discussed unless "
         "Elijah asks with a phrase like 'where were we', 'catch me up', 'what was I doing', 'where are we'. "
