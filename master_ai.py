@@ -794,7 +794,7 @@ W    = '\033[1m'     # bold (readable on any background)
 D    = '\033[0m'     # terminal default (black on light bg, white on dark)
 X    = '\033[0m'     # reset
 BOLD = '\033[1m'
-BC   = '\033[1;34m'  # bold blue  — banner + INFO / scratchpad lines
+BC   = '\033[1;34m'  # bold blue  — banner + INFO lines
 BG   = '\033[1;32m'  # bold green — banner accent + AI VOICE (conversational prose)
 BW   = '\033[97m'    # bright white — banner labels
 BY   = '\033[1;33m'  # bold yellow — PLAN / numbered steps / RUN: EDIT: CREATE:
@@ -3805,7 +3805,7 @@ def ask_local(messages, model=None, image_path=None):
         return None
 
 # ── LOCAL AI STREAMING ───────────────────────────────────────
-# ── REPLY LINE CLASSIFIER + SCRATCHPAD ────────────────────────
+# ── REPLY LINE CLASSIFIER + REPLY SHAPES ──────────────────────
 # Paints every complete reply line one of four Master AI brand colors
 # based on what shape it is. The AI's stream still streams at the
 # character level; color snaps in at newline boundaries. Lines get one
@@ -3814,20 +3814,9 @@ def ask_local(messages, model=None, image_path=None):
 #
 # Hooked from ask_local_stream and ask_cloud_stream — both buffer tokens
 # until "\n" and call _paint_line() to wrap the assembled line.
-SCRATCHPAD_SYSTEM_ADDITION = (
-    "\n\n[SCRATCHPAD]\n"
-    "For any non-trivial question, emit ONE short line in this exact "
-    "shape before your answer:\n"
-    "  [scratchpad: <one-sentence weighing of the approach>]\n"
-    "Then a blank line, then your answer. For trivial questions "
-    "(greetings, one-word replies, obvious commands) skip the "
-    "scratchpad. Keep it to one line — never a chain-of-thought dump.\n"
-    "EXCEPTION — PLAN-AS-BLOCK CONTRACT: when the Chrome-extension turn "
-    "needs 3+ BROWSER_* actions (see the PLAN-AS-BLOCK CONTRACT block in "
-    "this same system prompt), the `<PLAN>…</PLAN>` block REPLACES the "
-    "scratchpad as the opening element. Do not emit both — the PLAN "
-    "block IS the reasoning surface for that turn.\n"
-    "\n"
+REPLY_SHAPES_SYSTEM_ADDITION = (
+    "\n\n[REPLY SHAPES]\n"
+    "Start your answer immediately — no preamble, no scratchpad line.\n"
     "Structure your answer in these shapes so the UI can color-code:\n"
     "  - PLAN lines: numbered steps ('1.', '2.') or directive lines (read/run/runterm/create/edit, each on its own line at column 0)\n"
     "  - CAUTION lines: start with '⚠' when something destructive or\n"
@@ -12143,16 +12132,13 @@ def handle(user_text, history, image_path=None, context_policy=None):
     )
     LOCAL_SYSTEM = (
         f"You are Master AI on your-machine ({os_info}).\n\n"
-        # Scratchpad rule goes FIRST and overrides the "no explanations"
-        # rule below — otherwise the model obeys the stricter directive
-        # and skips the scratchpad line entirely.
-        f"{SCRATCHPAD_SYSTEM_ADDITION}\n"
-        "[BEHAVIOR RULES — scratchpad above takes precedence when conflicting]\n"
+        f"{REPLY_SHAPES_SYSTEM_ADDITION}\n"
+        "[BEHAVIOR RULES]\n"
         "Execute tasks using the documented directive keywords (read, run, runterm, create, edit, run_skill, remember, search). "
         "For live facts/current events/identifying an unfamiliar term, emit `search: <query>` — no browser needed. "
         "Each directive lives on its OWN line at column 0; never describe directives inline using "
         "their colon-suffixed forms — the parser would match them. "
-        "Do the task directly without long explanations (but ALWAYS emit the scratchpad line). "
+        "Do the task directly without long explanations. "
         "NEVER emit: rm -rf / | mkfs | dd if=\n\n"
         "[SELF-TEACHING] You can write one-line lessons to your own memory "
         "with `REMEMBER: <one-line lesson>`. Use it sparingly — only for "
@@ -12755,10 +12741,8 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "BROWSER_* actions on the same page. Count the directives you are about to "
         "emit BEFORE you start the reply. If 3+, this contract fires.\n"
         "REPLY SHAPE when the contract fires — strict:\n"
-        " 1. The VERY FIRST line of your reply is `<PLAN>` at column 0. This "
-        "overrides the [SCRATCHPAD] rule for this single turn — the PLAN block IS "
-        "the reasoning surface for multi-step browser work, so the scratchpad line "
-        "is skipped.\n"
+        " 1. The VERY FIRST line of your reply is `<PLAN>` at column 0. The "
+        "PLAN block IS the reasoning surface for multi-step browser work.\n"
         " 2. Inside the block, three labels in this order: `Sites:` (space-separated "
         "origins or \"this page\"), then `Steps:` (numbered 1., 2., …, one short "
         "line each), then `Irreversible:` (either \"none\" or one line naming the "
@@ -12769,7 +12753,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "the directives are what execute.\n"
         "When the contract does NOT fire (single-step asks: one click, one fill, "
         "one screenshot, one read, two-step mixed tools): emit the directive "
-        "directly with the usual scratchpad. No PLAN block.\n"
+        "directly. No PLAN block.\n"
         "`<PLAN>` (this Anthropic-spec plan block, rendered as one Approve-All card "
         "by the Chrome extension) is DIFFERENT from `<PLAN READY>` (Sensei TUI "
         "plan-mode end-of-plan marker). Both can appear in the same conversation; "
@@ -12848,11 +12832,11 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "handle or fabricate a repo name.\n\n"
         "Rules: DO the task. One [PLAN] line for multi-step. [DONE] when complete. "
         "READ before editing. Full working code. No placeholders. "
-        "ALWAYS start non-trivial replies with the [scratchpad:] line — see scratchpad rule below.\n\n"
+        "Start your answer immediately — no preamble, no scratchpad line.\n\n"
         "[PLAN MODE RULE] When MODE is 'plan', every step in your reply must be a "
         "directive (one of the documented keywords on its own line) — not prose instructions. "
         "The user types 'go' and your directives fire in order.\n\n"
-        f"{SCRATCHPAD_SYSTEM_ADDITION}"
+        f"{REPLY_SHAPES_SYSTEM_ADDITION}"
         f"{_behavior_block}"
         f"[HOW WE WORK]\n{how_we_work}\n\n"
         f"[MEMORY]\n{memory_content}"

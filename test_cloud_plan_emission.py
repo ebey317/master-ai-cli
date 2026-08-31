@@ -75,7 +75,7 @@ USER_PROMPT = (
 
 
 # The PLAN-AS-BLOCK CONTRACT block as committed to CLOUD_SYSTEM in
-# master_ai.py at line 10979+ (commit 4246ef8). Pasted verbatim so the
+# master_ai.py (PLAN-AS-BLOCK CONTRACT section). Pasted verbatim so the
 # test stays decoupled from f-string assembly details — if the
 # committed teaching changes, update this constant.
 PLAN_AS_BLOCK_CONTRACT = (
@@ -84,10 +84,8 @@ PLAN_AS_BLOCK_CONTRACT = (
     "BROWSER_* actions on the same page. Count the directives you are about to "
     "emit BEFORE you start the reply. If 3+, this contract fires.\n"
     "REPLY SHAPE when the contract fires — strict:\n"
-    " 1. The VERY FIRST line of your reply is `<PLAN>` at column 0. This "
-    "overrides the [SCRATCHPAD] rule for this single turn — the PLAN block IS "
-    "the reasoning surface for multi-step browser work, so the scratchpad line "
-    "is skipped.\n"
+    " 1. The VERY FIRST line of your reply is `<PLAN>` at column 0. The "
+    "PLAN block IS the reasoning surface for multi-step browser work.\n"
     " 2. Inside the block, three labels in this order: `Sites:` (space-separated "
     "origins or \"this page\"), then `Steps:` (numbered 1., 2., …, one short "
     "line each), then `Irreversible:` (either \"none\" or one line naming the "
@@ -98,7 +96,7 @@ PLAN_AS_BLOCK_CONTRACT = (
     "the directives are what execute.\n"
     "When the contract does NOT fire (single-step asks: one click, one fill, "
     "one screenshot, one read, two-step mixed tools): emit the directive "
-    "directly with the usual scratchpad. No PLAN block.\n"
+    "directly. No PLAN block.\n"
     "`<PLAN>` (this Anthropic-spec plan block, rendered as one Approve-All card "
     "by the Chrome extension) is DIFFERENT from `<PLAN READY>` (Sensei TUI "
     "plan-mode end-of-plan marker). Both can appear in the same conversation; "
