@@ -123,6 +123,17 @@ except ImportError:
 # and _call_with_hard_timeout() for where it's actually checked.
 _INTERRUPT_EVENT = threading.Event()
 
+# 2026-08-31: kick/new/clear/refresh all queue through the same _iq the
+# worker's main() loop reads with a blocking input()/queue.get() — if
+# main() is stuck inside a single non-interruptible cloud call (observed:
+# 2+ minutes on a slow fallback model), these sit invisibly behind it with
+# zero feedback. Each restart handler below sets this the instant it
+# actually starts running; _on_submit()'s watchdog uses it to tell
+# "genuinely in progress" (even if handle_save_refresh's own 3s pause is
+# still running) from "never dequeued at all" — only the latter gets
+# force-escalated. Cleared at the top of every restart-command submit.
+_RESTART_STARTED = threading.Event()
+
 # ── SENSEI TUI — full-screen app, default ON; opt out with SENSEI_TUI=0 ──
 _SENSEI_APP = None
 _SENSEI_ENABLED = os.environ.get("SENSEI_TUI", "1") != "0"
@@ -9043,6 +9054,7 @@ def run_in_terminal(cmd):
 def _check_kick_escape(choice):
     lo = (choice or "").strip().lower()
     if lo in ("kick", "force restart", "hard restart"):
+        _RESTART_STARTED.set()
         print(f"\n  {R}💥 kick at confirm prompt — restarting engine in 3s...{X}", flush=True)
         # os._exit — sys.exit raises SystemExit, which the TUI's daemon-thread
         # dispatcher (sensei_tui.py:_safe_dispatch) either swallows silently
@@ -13109,9 +13121,22 @@ def handle(user_text, history, image_path=None, context_policy=None):
             _spin2 = local_thinking_start()
             provider = "gemini" if route == "web" else (model if model in CLOUD_MODEL_NAMES else "groq")
             try:
-                return ask_cloud(history, provider=provider), False
+                cloud_reply = ask_cloud(history, provider=provider)
             finally:
                 local_thinking_stop(_spin2)
+            if cloud_reply:
+                return cloud_reply, False
+            # 2026-08-31: sibling of the 2026-08-29 privacy-branch fix above —
+            # ask_cloud() can also come back empty/None on a plain API error,
+            # timeout, or empty completion (not just a privacy block). That
+            # used to propagate straight up: the continuation loop saw a
+            # falsy reply2, broke at turns=0, and the user got nothing but
+            # the generic "continuation limit reached" WARN — same silent-
+            # stop symptom as the privacy case, different trigger. Fall back
+            # to local synthesis here too instead of giving up.
+            log(f"CLOUD_CONTINUATION_EMPTY: provider={provider} — falling back to local synthesis")
+            print(f"  {D}⚠ cloud continuation came back empty — answering locally instead{X}")
+            return ask_local_stream(history, model=MODELS["fast"]), True
         if repair_turn:
             return ask_local_stream(history, model=MODELS["master"]), True
         return ask_local_stream(history, model=model), True
@@ -13285,6 +13310,7 @@ def _query_worker(history_ref):
 
 def handle_save_refresh(history):
     """Snapshot session, flag a full-history resume, soft re-exec. Mirrors L2831-2843 refresh."""
+    _RESTART_STARTED.set()
     print(f"\n  {BO}════════════════════════════════════════════════════{X}")
     print(f"  {BO}🥷  SAVE + REFRESH{X}")
     print(f"  {BO}════════════════════════════════════════════════════{X}")
@@ -14242,6 +14268,7 @@ def main():
 
         # ── Kick: force crash so supervisor loop restarts us ─────────
         if lo in ("kick", "force restart", "hard restart"):
+            _RESTART_STARTED.set()
             try: save_session(list(history), silent=True)
             except Exception: pass
             print(f"  {R}💥 Kicking engine — supervisor will restart in 3 sec...{X}", flush=True)
@@ -14302,6 +14329,7 @@ def main():
             continue  # unreachable
 
         if lo in ("new", "clear"):
+            _RESTART_STARTED.set()
             try:
                 RESUME_FLAG.unlink()
             except FileNotFoundError:
@@ -15410,11 +15438,50 @@ def _run_with_tui():
     sys.stdout = TUIStdout(_SENSEI_APP, _orig_stdout)
     sys.stderr = TUIStdout(_SENSEI_APP, _orig_stderr)
 
+    _RESTART_COMMANDS = {
+        "kick", "force restart", "hard restart",
+        "new", "clear", "refresh", "save new", "save clear",
+    }
+
     def _on_submit(text: str):
         # Route to the confirm queue only while a confirm is actively waiting.
         # Otherwise this is a normal user question — goes in the type-ahead queue.
+        lo = (text or "").strip().lower()
         if _AWAITING_CONFIRM.is_set():
             _CONFIRM_IQ.put(text)
+        elif lo in _RESTART_COMMANDS:
+            # 2026-08-31: kick/new/clear/refresh queue through the same _iq
+            # main()'s blocking input()/queue.get() reads — if main() is
+            # stuck inside one non-interruptible cloud call (observed: 2+
+            # min on a slow fallback model), these sat invisible behind it
+            # with zero feedback. Queue normally so the existing, correct
+            # save/reset logic in main() still runs untouched — but arm a
+            # 5s watchdog: if main() never actually reaches that handler
+            # (never sets _RESTART_STARTED) in that window, it's stuck
+            # elsewhere and gets force-escalated to the same hard exit
+            # 'kick' already uses. Supervisor relaunches within 3s either
+            # way — this just bounds the worst case to "immediate or
+            # within 5 seconds" instead of unbounded.
+            _RESTART_STARTED.clear()
+            _INTERRUPT_EVENT.set()
+            _iq.put(text)
+
+            def _watchdog(_label=lo):
+                for _ in range(25):  # 25 * 0.2s = 5s
+                    if _RESTART_STARTED.is_set():
+                        return  # graceful path took it — done here
+                    time.sleep(0.2)
+                if not _RESTART_STARTED.is_set():
+                    try:
+                        if _SENSEI_APP is not None:
+                            _SENSEI_APP.write(
+                                f"\n  {R}💥 '{_label}' was stuck queued 5s — forcing restart...{X}\n"
+                            )
+                    except Exception:
+                        pass
+                    os._exit(42)
+
+            threading.Thread(target=_watchdog, daemon=True).start()
         else:
             _iq.put(text)
 
