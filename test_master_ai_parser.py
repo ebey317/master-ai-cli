@@ -660,27 +660,37 @@ class DirectiveParserTests(unittest.TestCase):
     def test_agent_standards_reports_gaps_without_certifying(self):
         # P2.3 flipped read-path-fence + output-caps to PASS by shipping
         # _read_path_ok + documenting the existing 8000/12000-char caps.
-        # 2026-09-01 (Phase 1.1): typed tool boundary flipped WARN->PASS too
-        # -- run_command/run_in_terminal now construct + finalize a real
+        # 2026-09-01 (Phase 1.1): typed tool boundary flipped WARN->PASS --
+        # run_command/run_in_terminal now construct + finalize a real
         # TypedAction on every RUN/RUNTERM execution (live probe: the check
         # itself calls run_command("true") and verifies the lifecycle
-        # record), not just a shadow parse of raw text. Sandbox boundary
-        # is the one WARN left, honest-claim held per
-        # feedback_real_fixes_not_option_menus.md pending Phase 1.2.
+        # record), not just a shadow parse of raw text.
+        # 2026-09-01 (Phase 1.2): sandbox boundary flipped WARN->PASS too --
+        # run_command now routes through a systemd-run cgroup scope
+        # (TasksMax/MemoryMax) + unshare mount/PID namespace with
+        # ~/.ssh/~/.aws/~/.master_ai_keys hidden inside. Live probe: the
+        # check runs a trivial command AND confirms ~/.master_ai_keys reads
+        # as 0 bytes from inside despite genuinely existing outside. Both
+        # former WARNs are now real checks, not unconditional holds -- see
+        # ~/master-ai-cli/ROADMAP.md Phase 1 for the full history including
+        # the two roadmap-vs-reality deviations found while building this
+        # (network-namespace `-n` would have broken daily curl/wget use;
+        # `prlimit --nproc` is a per-UID limit, not per-subtree, so it's
+        # cgroup TasksMax doing the real containment instead).
         report = master_ai.format_agent_standards()
         self.assertIn("Not an Anthropic certification", report)
         self.assertIn("SCORE", report)
         self.assertIn("no Matrix command shim", report)
         self.assertIn("terminal visuals use normal tool lane", report)
         self.assertRegex(report, r"(?m)^PASS\s+typed tool boundary:", msg=report)
-        self.assertRegex(report, r"(?m)^WARN\s+sandbox boundary:", msg=report)
+        self.assertRegex(report, r"(?m)^PASS\s+sandbox boundary:", msg=report)
         self.assertRegex(report, r"(?m)^PASS\s+read path fence:", msg=report)
         self.assertRegex(report, r"(?m)^PASS\s+output caps:", msg=report)
         self.assertRegex(report, r"(?m)^PASS\s+approval expiry:", msg=report)
         self.assertNotRegex(report, r"(?mi)^FAIL.*score", msg=report)
         score = master_ai.agent_standards_score()
-        self.assertGreaterEqual(score, 95)
-        self.assertLessEqual(score, 99)
+        self.assertGreaterEqual(score, 97)
+        self.assertLessEqual(score, 100)
 
     def test_standards_score_function_is_named(self):
         self.assertTrue(callable(master_ai.agent_standards_score))

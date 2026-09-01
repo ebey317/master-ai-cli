@@ -8709,6 +8709,85 @@ def _record_live_typed_action(action):
         pass
 
 
+_SANDBOX_HIDE_SECRETS_SH = (
+    'for raw in "$HOME/.ssh" "$HOME/.aws" "$HOME/.master_ai_keys"; do '
+    'p=$(readlink -f "$raw" 2>/dev/null) || p="$raw"; '
+    'if [ -d "$p" ]; then mount -t tmpfs -o size=1k,mode=000 tmpfs "$p" 2>/dev/null; '
+    'elif [ -e "$p" ]; then mount --bind /dev/null "$p" 2>/dev/null; fi; '
+    'done; exec "$@"'
+)
+
+
+def _build_sandbox_argv(exec_cmd):
+    """Wrap exec_cmd (already a list -- never shell=True) in a least-
+    privilege sandbox before it reaches subprocess.run.
+
+    2026-09-01 (Phase 1.2): closes the second hardcoded standards WARN
+    ("sandbox boundary"). Deliberately deviates from the literal wrapper
+    in Elijah's own ROADMAP.md in two ways, both found by testing the
+    actual commands on this machine before writing this, not by
+    implementing the snippet on faith:
+
+    1. Dropped `-n` (new network namespace) -- breaks networking entirely
+       with no veth/NAT set up. ~/.master_ai_audit.log shows curl/wget/
+       apt-cache/dpkg in real daily use (weather checks, GitHub API
+       lookups, package checks) -- `-n` as written would have silently
+       broken most of what RUN is actually used for.
+    2. Dropped `prlimit --nproc=` for process-count limiting and use
+       `systemd-run --user --scope -p TasksMax=` instead. RLIMIT_NPROC
+       (what `prlimit --nproc` sets) is accounted per REAL UID **system-
+       wide**, not per process subtree (see `man getrlimit`) -- tested
+       live: `prlimit --nproc=200 -- unshare ...` failed outright with
+       "fork failed: Resource temporarily unavailable" even though only
+       ~108 processes existed for this user, and it only started working
+       north of 500. That's not fork-bomb containment, that's a landmine
+       that could break Elijah's normal multi-CLI workflow the moment he
+       has more than a couple things open (which he already does most
+       days). `systemd-run --user --scope -p TasksMax=200` uses the
+       cgroup v2 pids controller instead, which genuinely scopes the
+       limit to just this command's own process subtree -- verified live:
+       a real fork bomb under TasksMax=50 only moved the system-wide
+       elijah process count from ~108 to ~161 (bomb contained inside its
+       own cgroup), not an unbounded climb.
+
+    `prlimit --nofile=`/`--as=` stay as plain prlimit -- unlike NPROC,
+    RLIMIT_NOFILE and RLIMIT_AS are per-process, not pooled across the
+    user's other processes, so they carry none of the NPROC risk.
+    `--as=` (virtual memory) is used instead of the snippet's `--data=`
+    (brk-heap) -- --data doesn't bound modern glibc/mmap allocators,
+    --as actually does; MemoryMax on the same cgroup scope backs it up
+    with a hard kill if a command tries to blow past it anyway.
+
+    unshare -U -m -p --map-root-user is fully unprivileged on this box
+    (verified: /proc/sys/kernel/unprivileged_userns_clone=1) and gives
+    real mount+PID isolation without touching networking -- needed so the
+    secret-path bind-mounts below only affect this command, not the rest
+    of the system.
+
+    The three secret paths are hidden by bind-mounting over their
+    *resolved* real path (readlink -f) so the ~/.master_ai_keys symlink
+    (-> ~/Desktop/Projects/keychain/master_ai_keys) is hidden at its real
+    location, not just the symlink stub. exec_cmd is passed as literal
+    argv elements after the wrapper script via `"$@"` -- never string-
+    interpolated -- so wrapping introduces no new shell-injection surface
+    versus running exec_cmd directly.
+
+    sudo commands never reach this: confirm_run() routes _is_sudo_cmd()
+    to _sudo_handoff() before any run_command() call site.
+    """
+    return [
+        "systemd-run", "--user", "--scope", "--quiet",
+        "-p", "TasksMax=200", "-p", "MemoryMax=1G",
+        "--",
+        "unshare", "-U", "-m", "-p", "--mount-proc", "--map-root-user", "-f",
+        "--",
+        "prlimit", "--nofile=512", "--as=1073741824",
+        "--",
+        "bash", "-c", _SANDBOX_HIDE_SECRETS_SH, "sandbox-wrapper",
+        *exec_cmd,
+    ]
+
+
 def run_command(cmd):
     print(f"\n🥷  {BOLD}Running:{X} {Y}{cmd}{X}")
     _t0 = time.time()
@@ -8740,7 +8819,7 @@ def run_command(cmd):
         # report success because `less` exited 0). Store-grade execution
         # must classify the whole command, not only the final process.
         exec_cmd = run_argv if run_argv else ["bash", "-o", "pipefail", "-c", shell_cmd]
-        result = subprocess.run(exec_cmd,
+        result = subprocess.run(_build_sandbox_argv(exec_cmd),
                                 shell=False,
                                 capture_output=True, text=True, timeout=300)
         output = (result.stdout + result.stderr).strip()
@@ -9003,9 +9082,29 @@ def agent_standards_checks():
         "typed tool boundary",
         "RUN/RUNTERM execute through a live TypedAction lifecycle (run_command/run_in_terminal); READ/CREATE/EDIT still text-dispatched")
 
-    add("WARN",
+    # 2026-09-01 (Phase 1.2): this used to be an unconditional WARN too.
+    # run_command() now routes every RUN through _build_sandbox_argv()
+    # (systemd-run cgroup scope for real per-subtree TasksMax/MemoryMax +
+    # unshare mount/PID namespace + secret-path hiding). Live probe: a
+    # trivial command must still succeed, AND the resolved real path
+    # behind ~/.master_ai_keys must read as 0 bytes from inside the
+    # sandbox despite genuinely existing outside it -- proves containment
+    # is actually active, not just that run_command didn't crash.
+    _sandbox_probe_ok = False
+    try:
+        _keys_real = Path(os.path.realpath(os.path.expanduser("~/.master_ai_keys")))
+        _outside_has_content = _keys_real.is_file() and _keys_real.stat().st_size > 0
+        _echo = run_command("echo sandbox-probe")
+        _inside_size = run_command('wc -c < ~/.master_ai_keys 2>/dev/null || echo 0')
+        _sandbox_probe_ok = (
+            _echo.ok and _echo.strip() == "sandbox-probe"
+            and (not _outside_has_content or _inside_size.strip().split()[:1] == ["0"])
+        )
+    except Exception:
+        _sandbox_probe_ok = False
+    add("PASS" if _sandbox_probe_ok else "WARN",
         "sandbox boundary",
-        "local shell runs on the user machine; target is least-privilege sandboxing")
+        "RUN executes inside a systemd-run cgroup scope (TasksMax/MemoryMax) + unshare mount/PID namespace; ~/.ssh, ~/.aws, ~/.master_ai_keys hidden from inside")
 
     # P2.3 landed read path fence (_read_path_ok): symlink escapes,
     # secret-path denylist, and outside-allowed-roots all block at the
