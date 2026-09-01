@@ -1128,19 +1128,30 @@ class SenseiApp:
             else:
                 event.current_buffer.history_backward()
 
-        # Global Up/Down handling: when chat pane is focused, scroll one line;
-        # otherwise the input-history handlers above take over.
-        @kb.add("down")
+        # Global Up/Down handling: scroll chat one line — ONLY when chat is
+        # focused. 2026-09-01: this used to be unconditional (filter=True,
+        # no-op internally unless _chat_focused), which looked harmless but
+        # wasn't: an unconditional "down"/"up" binding matches even while
+        # input is focused with the completion menu open, and it won the
+        # resolution over _completion_down/_completion_up above (both
+        # filtered to has_focus(self._input)) - so THOSE never fired.
+        # Reproduced live with real piped keystrokes: typing "/m" then
+        # pressing Down left complete_index at None every time - the
+        # completion menu never actually navigated, and Up/Down history
+        # recall was silently broken the same way. Elijah: "if i press m,
+        # anything that starts with m presses up... it's not correct."
+        # Filtering these to chat-focus-only lets the input-focused
+        # bindings above own Down/Up again, and these still own chat
+        # scrolling exactly like before.
+        @kb.add("down", filter=Condition(lambda: self._chat_focused))
         def _global_down(event):
-            if self._chat_focused:
-                self._scroll_offset = max(0, self._scroll_offset - 1)
-                event.app.invalidate()
+            self._scroll_offset = max(0, self._scroll_offset - 1)
+            event.app.invalidate()
 
-        @kb.add("up")
+        @kb.add("up", filter=Condition(lambda: self._chat_focused))
         def _global_up(event):
-            if self._chat_focused:
-                self._scroll_offset += 1
-                event.app.invalidate()
+            self._scroll_offset += 1
+            event.app.invalidate()
 
         @kb.add("c-c")
         def _sigint(event):
