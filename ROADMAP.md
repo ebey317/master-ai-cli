@@ -95,8 +95,13 @@ Verified: new `test_sandbox_escape.py` (8 tests: real network access preserved, 
 
 **Fast-follow, not yet done:** RUNTERM (`run_in_terminal()`) isn't sandboxed — it opens a real visible terminal window Elijah watches interactively; PID/mount-namespacing a GUI-spawned session is a different problem (terminal emulators fork detached) that deserves its own pass.
 
-### 1.3 Read Path Fence + TTL
-- Existing `_read_path_ok` (fence: allowlist + secret-path denylist + symlink-escape denial) and `is_approved()` (TTL: 24h default, cwd-scoped) both already exist and both show PASS on the live self-test — but **not yet verified whether TTL is actually wired into the READ path specifically**, or only into RUN's approval flow. Needs a direct check before claiming this phase done; don't assume it from the standards-check PASS alone (that check only asserts `_read_path_ok` exists, not that it enforces TTL).
+### 1.3 Read Path Fence + TTL — verified 2026-09-01, no gap to close
+
+Checked directly (not assumed from the standards-check PASS): `_read_path_ok()` has exactly one call site (in `process_reply()`'s READ handling) and zero concept of approval or TTL — it's a pure stateless fence, re-evaluated fresh on every single READ, no memory of prior decisions either way. There is no "approve this read, remember it" flow for READ to have a TTL on in the first place: secret paths (`.ssh`, `.gnupg`, `.aws/credentials`, `.master_ai_keys`, `.netrc`, `/etc/shadow` etc., `/root`, `/proc`, `/sys`) are hard-denied unconditionally with no override, and everything else under the allowed roots (`$HOME`, `/tmp`, `/var/log`) is allowed unconditionally with no re-confirmation needed. Same finding for CREATE/EDIT: no `is_approved()`/`save_approved()` usage anywhere for either — every write gets a fresh fence check (`_cwd_fence_ok`), no persisted approval memory.
+
+`is_approved()`/`save_approved()` (the actual TTL system, 24h default, cwd-scoped) is correctly used in exactly the two places that need a "remember my choice" convenience: `confirm_run()`'s "Always" option and `confirm_runterm()`'s equivalent — both real, risky, repeatable actions where re-asking every time would be pure friction. Verified both call sites directly.
+
+**Conclusion: the original Phase 1.3 wording ("wire TTL into every read gate," "approval expires and re-asks") describes an approval-based READ flow that doesn't exist in the current codebase — same pattern as the Phase 2 finding (roadmap drafted from stale historical notes, not current code).** Building a new TTL/approval system for READ specifically would be a regression, not a fix: it would reintroduce the exact "stale approval grants permanent access" risk the original ask was worried about, where today's stateless fence has none (nothing to go stale). Not scoping any code change here.
 
 ---
 
