@@ -11121,6 +11121,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             action_failed = True
 
     if action_failed:
+        _fed_back = False
         denied = globals().get("_LAST_DENIED_ACTION") or {}
         if denied:
             kind = denied.get("kind") or "action"
@@ -11130,6 +11131,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             msg = f"[User declined {kind}{': ' + details if details else ''}] Do not repeat that action unless the user explicitly asks."
             history.append({"role": "user", "content": msg})
             globals()["_LAST_DENIED_ACTION"] = {}
+            _fed_back = True
         # P1.4: surface hook blocks the same way denied actions surface —
         # so the next model turn sees the [HOOK BLOCKED] feedback and can
         # repair instead of marching forward assuming success.
@@ -11163,10 +11165,39 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                 log(f"ON_BLOCKED_HOOK_ERROR: {e}")
             globals()["_LAST_HOOK_BLOCK"] = {}
             log(f"CHAIN_HOOK_BLOCK_FEEDBACK: appended [HOOK BLOCKED] for {hkind} {hpath}")
+            _fed_back = True
         if run_cmds or runterm_cmds:
             print(_pill("BLOCKED", f"{D}CREATE/EDIT failed or was denied — skipped downstream RUN/RUNTERM for this turn{X}"))
             log("CHAIN_ABORT: skipped RUN/RUNTERM after failed CREATE/EDIT")
-        return reply
+        # 2026-09-01: this used to `return reply` unconditionally here, even
+        # in the two branches above that DO append real feedback to
+        # history - so the model never got a follow-up turn to actually
+        # respond to that feedback, same dead-end bug as the RUN/RUNTERM/
+        # SEND_EMAIL/BROWSER exec-failure branches (see
+        # _append_exec_failure_feedback). Confirmed live in the exact
+        # thread this session was debugging: a CREATE hit a real
+        # syntax-check hook block, printed the BLOCKED pill, and the turn
+        # just stopped - no closing answer. Neither denied nor hook_block
+        # fired that time (a plain confirm_edit() failure, e.g. a bad
+        # find/replace that matched nothing), so NOTHING was appended to
+        # history at all - the fallback below covers that case too.
+        if not _fed_back:
+            history.append({
+                "role": "user",
+                "content": (
+                    "[TOOL FAILED]\n"
+                    "CREATE/EDIT was refused or failed (not a hook block, "
+                    "not a user denial - likely a bad find/replace match "
+                    "or a fence/policy refusal with no structured detail "
+                    "captured).\n"
+                    "Give the user a short, honest closing answer: say what "
+                    "failed, and either re-read the file and retry with a "
+                    "corrected directive or ask for guidance. Do not "
+                    "silently stop."
+                ),
+            })
+            log("CHAIN_EXEC_FAIL_FEEDBACK: appended [TOOL FAILED] for CREATE/EDIT (no structured detail)")
+        return None
 
     if (run_cmds or runterm_cmds) and not create_files and not edit_ops and _creation_expected():
         missing = []
