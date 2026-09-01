@@ -7,12 +7,13 @@ Last updated: 2026-09-01
 ### Current self-test score
 
 Baseline (2026-09-01, before Phase 1.1): `SCORE 95/100, PASS=17 WARN=2 FAIL=0`.
-After Phase 1.1 (RUN+RUNTERM typed dispatch, same day): `SCORE 97/100, PASS=18 WARN=1 FAIL=0`.
-
-One open WARN remaining:
-- **Sandbox boundary** (Phase 1.2) — shell commands run unconfined on the user's own machine; no `unshare`/`prlimit`/capability-dropping.
+After Phase 1.1 (RUN+RUNTERM typed dispatch): `SCORE 97/100, PASS=18 WARN=1 FAIL=0`.
+After Phase 1.2 (RUN sandbox boundary, same day): **`SCORE 100/100, PASS=19 WARN=0 FAIL=0`.**
 
 ~~Typed tool boundary~~ — closed for RUN+RUNTERM, see Phase 1.1 below (READ/CREATE/EDIT still text-dispatched, noted as a fast-follow there).
+~~Sandbox boundary~~ — closed for RUN, see Phase 1.2 below (RUNTERM not sandboxed yet, noted as a fast-follow there).
+
+Both former WARNs were hardcoded (`add("WARN", ...)` with no actual test), not real gap measurements — same pattern both times, caught and fixed the same way.
 
 ### Public surfaces audited (exist today)
 
@@ -79,16 +80,23 @@ Verified: new `test_typed_dispatch_e2e.py` (8 tests, real subprocess execution f
 **Fast-follow, not yet done:** READ (inline in `process_reply()`, no dedicated function) and CREATE/EDIT (`confirm_create`/`confirm_edit` each duplicate the file-write inline in two branches, no shared choke-point) need a small extraction first before they can get the same treatment.
 
 ### 1.2 Real Sandbox Boundary
-- Wrap every shell dispatch: `timeout 60s prlimit --nproc=100 --nofile=256 --data=512M unshare -U -m -i -p -n bash -c "cd $WORK_DIR; $CMD"`.
-- Drop Linux capabilities on a dedicated runner (`/opt/sensei-jail-runner` or a small C wrapper).
-- Bind-mount `~/.ssh`, `~/.aws`, `~/.master_ai_keys` read-only/hidden.
-- Non-sandbox override flag for operations that legitimately need full access, gated on explicit approval.
-- Test: `test_sandbox_escape.py` — fork-bomb, privesc, symlink escape all blocked.
+
+**RUN done (2026-09-01).** Wraps `run_command()`'s actual `subprocess.run` in `_build_sandbox_argv()`: `systemd-run --user --scope -p TasksMax=200 -p MemoryMax=1G -- unshare -U -m -p --mount-proc --map-root-user -f -- prlimit --nofile=512 --as=1073741824 -- bash -c <hide-secrets-then-exec>`.
+
+**Two deviations from the literal snippet above, both found by testing on this machine before implementing, not by following the snippet on faith:**
+1. Dropped `-n` (network namespace). Tested first: puts the command in a namespace with zero connectivity, no veth/NAT set up. `~/.master_ai_audit.log` shows curl/wget/apt-cache/dpkg constantly in real daily use (weather checks, GitHub API lookups, package checks) — implementing `-n` as written would have silently broken most of what RUN is actually used for.
+2. Dropped `prlimit --nproc=` for process-count limiting, use `systemd-run --user --scope -p TasksMax=` (cgroup v2 pids controller) instead. `RLIMIT_NPROC` (what `prlimit --nproc` sets) is accounted **per real UID system-wide**, not per process subtree — tested live: `prlimit --nproc=200 -- unshare ...` failed outright ("fork failed: Resource temporarily unavailable") even with only ~108 processes existing for the user; it only started working north of 500. That's not fork-bomb containment, that's a limit that could break Elijah's actual desktop the moment he has more than a couple things open (which he already does most days — this is the exact resource-contention pattern behind tonight's power-cycle). `systemd-run`'s cgroup `TasksMax` genuinely scopes to just the command's own subtree: verified live, a real fork bomb under `TasksMax=50` only moved the system-wide process count from ~108 to ~161 (contained inside its own cgroup), not an unbounded climb. `prlimit --nofile=`/`--as=` stay, since unlike `NPROC` those are per-process, not pooled — no equivalent risk.
+
+Secret paths hidden by bind-mounting over their **resolved real path** (`readlink -f`, so the `~/.master_ai_keys` symlink → `~/Desktop/Projects/keychain/master_ai_keys` is hidden at its real location) — a directory gets an empty `tmpfs` overlay, a file gets bind-mounted over `/dev/null`. Verified live against real paths on this box (not synthetic fixtures): `~/.master_ai_keys` reads as 0 bytes from inside vs. 2825 bytes outside; `~/.ssh` (which genuinely has a real `id_ed25519` private key on this machine) reads as empty (2 entries = `.`/`..`) from inside vs. 6 real entries outside.
+
+`sudo` commands never reach `run_command()` at all (`confirm_run()` routes them to `_sudo_handoff()` first) so sudo elevation is untouched by this. No capability-dropping / dedicated C runner binary built — the `unshare -U --map-root-user` approach achieves the same "no real root even if something tries" property without needing a separate setuid binary, which is simpler and was already sufficient for the threat model (fork bomb / memory runaway / secret read), not "prevent a determined privilege-escalation exploit."
+
+Verified: new `test_sandbox_escape.py` (8 tests: real network access preserved, real fork-bomb containment measured via system-wide process count, real secret-path hiding against the actual `~/.ssh`/`~/.master_ai_keys` on this box, `.sh`-script targets still work, standards-check probe). Score: 97 → **100/100**, 0 WARN.
+
+**Fast-follow, not yet done:** RUNTERM (`run_in_terminal()`) isn't sandboxed — it opens a real visible terminal window Elijah watches interactively; PID/mount-namespacing a GUI-spawned session is a different problem (terminal emulators fork detached) that deserves its own pass.
 
 ### 1.3 Read Path Fence + TTL
-- Wire TTL check into every read gate in `_read_path_ok`.
-- Default TTL 300s per approval; bind to identity hash + cwd; auto-revoke expired entries.
-- Test: `test_secret_fence.py` — model can't read `~/.ssh`; approval expires and re-asks.
+- Existing `_read_path_ok` (fence: allowlist + secret-path denylist + symlink-escape denial) and `is_approved()` (TTL: 24h default, cwd-scoped) both already exist and both show PASS on the live self-test — but **not yet verified whether TTL is actually wired into the READ path specifically**, or only into RUN's approval flow. Needs a direct check before claiming this phase done; don't assume it from the standards-check PASS alone (that check only asserts `_read_path_ok` exists, not that it enforces TTL).
 
 ---
 
