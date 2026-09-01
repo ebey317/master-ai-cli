@@ -120,9 +120,14 @@ Checked directly (not assumed from the standards-check PASS): `_read_path_ok()` 
 
 ## Phase 3 — Framework Expansion: Hermes Parity
 
-### 3.1 Provider/Model Abstraction Layer
-- `providers.py`: loads keys from `~/.master_ai_keys` by provider, tracks per-provider latency/error rates, implements fallback chain with retry/backoff. Supports Ollama, Groq, OpenRouter, Anthropic, Gemini, Fireworks, Cerebras.
-- Moves CLAF from a simple router to a Hermes-style provider-agnostic engine.
+### 3.1 Provider/Model Abstraction Layer — mostly already done, health tracking closed 2026-09-01
+
+Checked `~/projects/claf` directly (not a new `providers.py` on faith) — two of the three asks already existed and work:
+- **Credential pools from `~/.master_ai_keys`**: real, per-provider, already in `orchestrator.py:62-139` (loads JSON or KEY=VALUE, maps to per-provider env vars, each cloud peer independently gated). The ask just never opened that file.
+- **Fallback chain with retry**: real, already the exact shape asked for. `next_cloud_peer()` (`claf_config.py`) does a 429-aware tier-ordered walk, used by `orchestrator.py`'s dispatch loop precisely as its own docstring describes.
+- **Per-provider health/latency tracking**: this one was genuinely missing — closed now. Added a lightweight in-memory circuit breaker (`record_provider_outcome`/`is_provider_healthy`, 3 consecutive failures → 30s cooldown, any success resets immediately) wired into `_pick_cloud_peer`/`next_cloud_peer`/`pick_cloud_peer` via one shared exclusion helper, fail-open if every peer looks unhealthy at once. New `test_provider_health.py` (8 cases). Commit `e976f21` in the `claf` repo (separate repo from this one).
+
+No new `providers.py` module built — would have reimplemented two things that already work. Supports whichever providers are configured in `claf_config.py`'s `PROVIDERS` list already (currently OpenRouter free/paid tiers, DeepSeek, OpenAI, Gemini; Cerebras/Groq/Fireworks suspended pending billing/key fixes — unrelated to this session's work, pre-existing state).
 
 ### 3.2 Profiles & Isolation
 - Finish `~/.master_ai_profiles/<name>/`: per-profile chats, tasks, memory, cache, permissions. Shared keys only where flagged.
