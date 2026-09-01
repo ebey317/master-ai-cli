@@ -12817,7 +12817,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "(read/update), Google Docs (read), or Google Contacts, emit a single RUN_SKILL "
         "directive — do NOT try to hand-roll this with RUN:/curl or BROWSER_NAV to "
         "mail.google.com. The skill wraps an already-authenticated Google API client "
-        "(~/.hermes/google_token.json).\n"
+        "(~/.master_ai_skills/google-workspace/scripts/google_token.json).\n"
         "Shape: RUN_SKILL: google-workspace {\"command\": \"<cmd>\", \"args\": {...}}\n"
         "Commands: gmail.search {query, max}, gmail.get {message_id}, gmail.send "
         "{to, subject, body, html?}, gmail.reply {message_id, body}, calendar.list {max}, "
