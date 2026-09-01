@@ -593,11 +593,16 @@ class SenseiApp:
             modal=False,
         )
 
-        # Click on the chat output window sets focus to chat pane.
+        # Click on the chat output window sets focus to chat pane. Only
+        # claim MOUSE_UP (the click) — anything else, notably SCROLL_UP/
+        # SCROLL_DOWN, must fall through to Window._mouse_handler so the
+        # _scroll_up/_scroll_down overrides above still fire. Returning
+        # None here unconditionally was swallowing wheel events outright.
         def _chat_mouse_handler(mouse_event):
             if mouse_event.event_type == MouseEventType.MOUSE_UP:
                 self._focus_chat()
-            return None
+                return None
+            return NotImplemented
         self._output_control.mouse_handler = _chat_mouse_handler
 
         self._status_control = FormattedTextControl(text=self._render_status)
