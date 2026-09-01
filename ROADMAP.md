@@ -129,9 +129,11 @@ Checked `~/projects/claf` directly (not a new `providers.py` on faith) — two o
 
 No new `providers.py` module built — would have reimplemented two things that already work. Supports whichever providers are configured in `claf_config.py`'s `PROVIDERS` list already (currently OpenRouter free/paid tiers, DeepSeek, OpenAI, Gemini; Cerebras/Groq/Fireworks suspended pending billing/key fixes — unrelated to this session's work, pre-existing state).
 
-### 3.2 Profiles & Isolation
-- Finish `~/.master_ai_profiles/<name>/`: per-profile chats, tasks, memory, cache, permissions. Shared keys only where flagged.
-- Add `sensei --profile <name>`.
+### 3.2 Profiles & Isolation — closed 2026-09-01
+
+Checked first: almost all of this already existed (`master_ai.py:174-229`) — `_pfile()` already correctly routed chats/tasks/memory/cache/approvals/permissions per profile, `KEYS_FILE` already explicitly shared across profiles by design. The one real gap: `_ACTIVE_PROFILE_FILE` was read but **never written anywhere** — a named profile could never actually be activated. Same "complete plumbing, missing faucet" shape as the cron fix earlier tonight.
+
+Built: `--profile <name>`/`--profile=<name>` CLI flag (checked at module scope, before `main()`'s own argv handling — the profile-path constants are already frozen by the time `main()` runs), plus in-session `profile <name>`/`profiles` commands reusing `refresh`'s existing `os.execvp` restart rather than inventing live-reload. Verified for real: a brand-new profile is genuinely isolated (wrote to one profile's memory, confirmed a different new profile can't see it), `KEYS_FILE` stays identical regardless of active profile, and the passive safety path (stale pointer to a deleted profile) still falls back to default correctly. Commit `5a620cb`.
 
 ### 3.3 Persistent Memory & Skills
 - Skills not currently discoverable/loadable at runtime the way Hermes skills are.
@@ -147,10 +149,11 @@ No new `providers.py` module built — would have reimplemented two things that 
 
 **2026-09-01 note (Elijah):** he likes that this session drops into an explicit plan/confirm step (Claude Code's plan mode) before touching anything risky or with a lot of surface area, and wants an equivalent on Sensei's own side — a pause-and-confirm gate before Sensei makes serious/risky changes to itself, not just the existing per-command RUN/CREATE/EDIT confirm dialogs. Not scoped into any phase above yet; needs its own design pass (what counts as "serious," where the gate lives, how it differs from the existing auto-mode destructive-command pause).
 
-### 3.4 MCP Server Catalog
-- Catalog local MCP servers in `~/.master_ai_mcp/`.
-- `mcp add`, `mcp list`, `mcp remove`, `mcp enable/disable`.
-- Support stdio and SSE transports; validate tool schemas before exposing to the model.
+### 3.4 MCP Server Catalog — closed 2026-09-01
+
+Delegated to Hermes (in parallel with 3.2, per Elijah's explicit request to split work instead of doing everything serially) and independently re-verified rather than trusted at face value — same discipline as the earlier TTS delegation. New `sensei_mcp_client.py`: Sensei can now act as an MCP *client* — discover/add/remove/enable/disable/validate other MCP servers, mirroring what Hermes does for itself via `hermes mcp`. Both stdio and SSE transports. Probe-before-trust is the core rule: nothing is enabled without a live `initialize`→`tools/list` round-trip passing schema validation; `add_server` probes before enabling, `set_enabled` re-probes and refuses if broken. New `mcp`/`mcp list`/`mcp add`/`mcp remove`/`mcp enable`/`mcp disable`/`mcp validate`/`mcp tools` commands.
+
+Independently re-verified: re-ran the real smoke check (a real server, "sensei-self", registered with all 38 real tools validated), confirmed `py_compile` clean, confirmed the schema-validation rejection claim with real malformed test servers (both transports), and confirmed the full regression suite still passes. Commit `5a620cb`.
 
 ### 3.5 Headless / Daemon Mode
 - `sensei daemon` / `sensei --headless`: Unix socket or HTTP API, accepts jobs, returns job IDs, logs to `~/.master_ai_logs/`, optional webhook callbacks.
