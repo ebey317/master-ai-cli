@@ -1,8 +1,34 @@
 #!/usr/bin/env python3
-import subprocess, tempfile, os, json, shutil
+import json, os, shutil, subprocess, sys, tempfile
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
+# Follow the ai-controller's active voice instead of a hardcoded static voice.
+# Same resolution pattern as ai-controller/scripts/hermes_tts_generate.py:
+# voice_toggle.load_voice() / get_voice() decide what is active; the active
+# voice pack's .onnx model is used when it exists, otherwise fall back to the
+# original stock lessac model.
 PIPER_MODEL = os.path.expanduser("~/scripts/voices/en_US-lessac-medium.onnx")
+
+AI_CONTROLLER_SCRIPTS = os.path.expanduser("~/ai-controller/scripts")
+
+def _resolve_active_piper_model(default=PIPER_MODEL):
+    """Return the .onnx model path for the ai-controller's active voice.
+
+    Falls back to `default` when the controller state is unreadable, the
+    active voice is not a piper voice, or its model file is missing.
+    """
+    try:
+        if AI_CONTROLLER_SCRIPTS not in sys.path:
+            sys.path.insert(0, AI_CONTROLLER_SCRIPTS)
+        import voice_toggle  # noqa: PLC0415 - deliberate lazy import
+        voice = voice_toggle.get_voice(voice_toggle.load_voice())
+        model = (voice or {}).get("model")
+        if (voice or {}).get("engine") == "piper" and model and os.path.isfile(model):
+            return model
+    except Exception:
+        pass
+    return default
+
 PIPER_BIN = shutil.which("piper") or os.path.expanduser("~/.local/bin/piper")
 APLAY_BIN = shutil.which("aplay")
 
@@ -29,7 +55,11 @@ class TTSHandler(BaseHTTPRequestHandler):
                     self.end_headers()
                     self.wfile.write(b'missing text')
                     return
-                if not os.path.exists(PIPER_BIN) or not os.path.exists(PIPER_MODEL):
+                # Resolved per-request (not once at import time) so a voice
+                # switch via voice_manager.py takes effect on the very next
+                # /speak call, no server restart needed.
+                piper_model = _resolve_active_piper_model()
+                if not os.path.exists(PIPER_BIN) or not os.path.exists(piper_model):
                     self.send_response(503)
                     self.end_headers()
                     self.wfile.write(b'piper unavailable')
@@ -40,7 +70,7 @@ class TTSHandler(BaseHTTPRequestHandler):
                 try:
                     # Piper CLI flag is `-f` (was `--output_file` in older builds).
                     proc = subprocess.run(
-                        [PIPER_BIN, '-m', PIPER_MODEL, '-f', tmp.name],
+                        [PIPER_BIN, '-m', piper_model, '-f', tmp.name],
                         input=text.encode(), capture_output=True, timeout=30
                     )
                     if proc.returncode != 0 or not os.path.getsize(tmp.name):
