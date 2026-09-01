@@ -12471,7 +12471,25 @@ def handle(user_text, history, image_path=None, context_policy=None):
 
     # ── Fall through to existing route/model pick, with orchestrator overrides ─
     route, model, reason = detect_route(user_text, has_image=bool(image_path))
-    if decision["route"] == "cloud_fast":
+    # Vision is a hard capability requirement, not a preference guess -
+    # override even a pinned text model, since it literally can't see the
+    # image. Checked first and unconditionally, before the PINNED_MODEL
+    # guard below.
+    if decision["route"] == "cloud_vision":
+        route, model, reason = "vision", decision["model"], decision["reason"]
+    # 2026-09-01: cloud_fast/cloud/cloud_deep never had the `not PINNED_MODEL`
+    # guard the local branch below got on 2026-08-29 — orchestrate()'s
+    # content-based peacetime scoring (REASONING_WORDS/CODE_WORDS/etc., or
+    # its "peacetime default -> DeepSeek-R1" catch-all when nothing else
+    # matched) has zero PINNED_MODEL awareness, so any turn landing in these
+    # branches silently clobbered detect_route()'s already-correct pinned
+    # pick. Confirmed live: `model z-ai/glm-5.2:free` pinned, then every
+    # single turn - including plain chat like "what model is this?" - still
+    # showed "[thinking: deep -> DeepSeek-R1]". Elijah: "i got selected glm
+    # 5.2, but it's saying thinkin' deep with deep seek."
+    elif PINNED_MODEL:
+        pass
+    elif decision["route"] == "cloud_fast":
         route, model, reason = "cloud", "groq", decision["reason"]
         print(f"  {BC}[thinking: cloud-fast → Groq]{X}")
     elif decision["route"] == "cloud" and decision.get("model"):
@@ -12481,8 +12499,6 @@ def handle(user_text, history, image_path=None, context_policy=None):
         # which is an HTTP endpoint and can fail independently of BYOK providers.
         route, model, reason = "cloud", decision["model"], decision["reason"]
         print(f"  {BC}[thinking: cloud → {model}]{X}")
-    elif decision["route"] == "cloud_vision":
-        route, model, reason = "vision", decision["model"], decision["reason"]
     elif decision["route"] == "cloud_deep":
         # deepseek-r1 is OpenRouter (true cloud) → route='cloud'.
         # qwen3.5:cloud is Ollama-proxied. Its lane has been returning HTTP 403
