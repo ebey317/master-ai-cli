@@ -105,6 +105,9 @@ try:
         "reason: ", "reason fast: ", "reason standard: ", "reason deep: ", "reason max: ",
         # P1.4 hooks REPL (2026-05-11)
         "hooks", "hooks list", "hooks enable ", "hooks disable ", "hooks reload",
+        # MCP client catalog (2026-09-01) — Sensei consuming other MCP servers
+        "mcp", "mcp list", "mcp add ", "mcp remove ", "mcp enable ", "mcp disable ",
+        "mcp validate ", "mcp tools ",
     ]
     def _completer(text, state):
         matches = [c for c in _COMPLETIONS if c.startswith(text)]
@@ -172,18 +175,72 @@ if _SENSEI_ENABLED:
 # across profiles (per profile.json's "keys": true sharing flag).
 # If a future profile wants private keys, that's a later toggle.
 _ACTIVE_PROFILE_FILE = Path.home() / ".master_ai_active_profile"
+
+# 2026-09-01 (Phase 3.2): _ACTIVE_PROFILE_FILE used to be read-only -- every
+# _pfile()-routed path below (chats/memory/tasks/approvals/perms/cache) has
+# worked correctly per-profile for a while, but nothing ever WROTE this
+# file, so a named profile could never actually be activated. This is the
+# missing write path: --profile <name> / --profile=<name> on argv. Must be
+# checked here at module scope (sys already imported at line 61) -- by the
+# time main()'s own argv handling runs (--help/--setup/--uninstall), the
+# constants below are already frozen as module-level globals.
+_profile_arg = None
+for _i, _a in enumerate(sys.argv[1:]):
+    if _a == "--profile" and _i + 2 < len(sys.argv):
+        _profile_arg = sys.argv[_i + 2]
+        break
+    if _a.startswith("--profile="):
+        _profile_arg = _a.split("=", 1)[1]
+        break
+
 _PROFILE_NAME = ""
-try:
-    if _ACTIVE_PROFILE_FILE.exists():
-        _PROFILE_NAME = _ACTIVE_PROFILE_FILE.read_text().strip()
-except Exception:
-    _PROFILE_NAME = ""
+if _profile_arg:
+    # Explicit flag: authoritative, creates the profile if it's new, and
+    # persists as the sticky default for future plain `sensei` launches --
+    # same convention as MODE_FILE below ("persists last-selected mode
+    # across sessions").
+    _PROFILE_NAME = _profile_arg.strip()
+    try:
+        (Path.home() / ".master_ai_profiles" / _PROFILE_NAME).mkdir(parents=True, exist_ok=True)
+        _ACTIVE_PROFILE_FILE.write_text(_PROFILE_NAME)
+    except Exception:
+        pass
+else:
+    # Passive path (no flag): only honor a profile whose directory still
+    # exists. Guards against a stale pointer surviving a manually-deleted
+    # profile dir -- silently falls back to default rather than
+    # resurrecting it. This safety behavior is unchanged from before.
+    try:
+        if _ACTIVE_PROFILE_FILE.exists():
+            _PROFILE_NAME = _ACTIVE_PROFILE_FILE.read_text().strip()
+    except Exception:
+        _PROFILE_NAME = ""
 
 if _PROFILE_NAME and (Path.home() / ".master_ai_profiles" / _PROFILE_NAME).is_dir():
     _PROFILE_ROOT = Path.home() / ".master_ai_profiles" / _PROFILE_NAME
 else:
     _PROFILE_ROOT = Path.home()         # legacy / default profile
     _PROFILE_NAME = ""
+
+
+def _activate_profile(name):
+    """Create (if new) + persist `name` as the active profile. Shared by
+    the --profile argv path above and the in-session `profile <name>`
+    command so the two can't drift out of sync."""
+    name = (name or "").strip()
+    if not name:
+        return False
+    (Path.home() / ".master_ai_profiles" / name).mkdir(parents=True, exist_ok=True)
+    _ACTIVE_PROFILE_FILE.write_text(name)
+    return True
+
+
+def _list_profiles():
+    """Return sorted profile names under ~/.master_ai_profiles/, plus
+    'default' always first."""
+    root = Path.home() / ".master_ai_profiles"
+    names = sorted(p.name for p in root.iterdir() if p.is_dir()) if root.is_dir() else []
+    return ["default"] + names
 
 def _pfile(name):
     """Per-profile dotfile path.
@@ -5691,6 +5748,24 @@ def _show_schedules():
         print(f"{BC}  ║{X}  {Y}{sid:<16}{X} {flag:<8} {C}{when:<6} {cadence:<8}{X} {cmd:<24}{BC}║{X}")
     print(f"{BC}  ╚{'═'*70}╝{X}\n")
 
+# ── MCP SERVERS — Sensei as MCP CLIENT ─────────────────────────
+# 2026-09-01. Sensei was always an MCP SERVER (sensei_mcp_server.py in
+# ~/projects/master-ai speaks JSON-RPC 2.0 over stdio to other agents) but
+# had no way to CONSUME other MCP servers. This mirrors what Hermes Agent
+# does for itself (`hermes mcp` + mcp_servers: in ~/.hermes/config.yaml):
+# a JSON catalog at ~/.master_ai_mcp/servers.json + probe-before-trust
+# validation. Pattern/structure follows the SCHEDULER section directly
+# above (flat JSON in $HOME, helper fns, dispatch later in main()).
+# Client implementation lives in sensei_mcp_client.py (stdlib only):
+# stdio + SSE transports, initialize→tools/list probe, per-tool schema
+# validation. A server that fails probing is stored DISABLED with the
+# reason recorded — config is never trusted blindly (same philosophy as
+# the typed_actions validation gate).
+def _mcp_show():
+    import sensei_mcp_client as _mcp
+    print(_mcp.format_catalog(G, R, Y, C, W, D, X))
+
+
 def select_memory_context(user_text, max_chars=6000, mode="default"):
     """Compact durable memory for local-model turns.
 
@@ -7622,6 +7697,10 @@ def show_commands():
         ("remember: <fact>", "Save something to memory"),
         ("schedule <cmd> HH:MM daily", "run a command on a schedule (hourly/daily/weekly/monthly)"),
         ("schedules", "list active schedules; schedule start|stop|remove <id>"),
+        ("profile <name>", "switch to (or create) an isolated profile; restarts"),
+        ("profiles", "list profiles; * marks the active one"),
+        ("mcp add <name> <cmd|url>", "register an MCP server (stdio or sse); probed before it is trusted"),
+        ("mcp list", "show MCP servers + enabled state; also remove|enable|disable|validate|tools"),
         ("doctor", "Check services, models, URLs, and warnings"),
         ("update", "Update Master AI safely"),
         ("copy chat", "Export this conversation"),
@@ -14014,6 +14093,51 @@ def main():
                 print(f"  {D}example: schedule doctor 02:00 daily{X}")
             continue
 
+        # ── MCP servers slash commands (Sensei as MCP client) ──
+        # 2026-09-01. Sub-commands match the hooks/agents pattern:
+        #   mcp [list]                    — show catalog + enabled state
+        #   mcp add <name> <cmd|url> [--transport stdio|sse]
+        #   mcp remove <name>
+        #   mcp enable <name> / disable <name>   (enable re-probes first)
+        #   mcp validate <name>           — re-probe + revalidate schemas
+        #   mcp tools <name>              — show a server's tools
+        # Implementation: sensei_mcp_client.py (added 2026-09-01).
+        if lo == "mcp" or lo.startswith("mcp "):
+            try:
+                import sensei_mcp_client as _mcp
+                _parts = cmd.split()
+                _sub = _parts[1].lower() if len(_parts) > 1 else ""
+                _rest = _parts[2:]
+                if _sub in ("", "list"):
+                    _mcp_show()
+                elif _sub == "add":
+                    _name, _target, _transport = _mcp.parse_add_args(_rest)
+                    if not _name or not _target:
+                        print(f"  {W}usage: mcp add <name> <command|url> [--transport stdio|sse]{X}")
+                        print(f"  {D}example: mcp add sensei 'python3 ~/projects/master-ai/sensei_mcp_server.py'{X}")
+                    else:
+                        _r = _mcp.add_server(_name, _target, _transport)
+                        print(f"  {G if _r['ok'] else Y}{_r['message']}{X}")
+                elif _sub == "remove":
+                    _r = _mcp.remove_server(" ".join(_rest))
+                    print(f"  {G if _r['ok'] else W}{_r['message']}{X}")
+                elif _sub in ("enable", "disable"):
+                    _r = _mcp.set_enabled(" ".join(_rest), _sub == "enable")
+                    print(f"  {G if _r['ok'] else Y}{_r['message']}{X}")
+                elif _sub == "validate":
+                    _r = _mcp.revalidate(" ".join(_rest))
+                    print(f"  {G if _r['ok'] else R}{_r['message']}{X}")
+                elif _sub == "tools":
+                    if not _rest:
+                        print(f"  {W}usage: mcp tools <name>{X}")
+                    else:
+                        print(_mcp.format_tools(" ".join(_rest), G, R, Y, C, W, D, X))
+                else:
+                    print(f"  {W}usage: mcp [list|add <name> <cmd|url> [--transport stdio|sse]|remove <name>|enable <name>|disable <name>|validate <name>|tools <name>]{X}")
+            except Exception as e:
+                print(f"  {W}mcp command error: {e}{X}\n")
+            continue
+
         if lo == "help":
             maybe_msg = show_help()
             if maybe_msg:
@@ -14621,6 +14745,41 @@ def main():
         # "clear" below, which is a full wipe; this keeps history.
         if lo == "refresh":
             handle_save_refresh(history)  # execvp — never returns
+            continue  # unreachable
+
+        # ── Profiles (Phase 3.2, 2026-09-01) ──────────────────
+        if lo in ("profiles", "profile list"):
+            active = _PROFILE_NAME or "default"
+            for p in _list_profiles():
+                mark = f"{G}*{X}" if p == active else " "
+                print(f"  {mark} {p}")
+            continue
+
+        if lo.startswith("profile ") and lo not in ("profile list",):
+            target = cmd.split(None, 1)[1].strip()
+            if not target or target == "default":
+                _ACTIVE_PROFILE_FILE.unlink(missing_ok=True)
+                print(f"  {G}switching to default profile — restarting...{X}", flush=True)
+            else:
+                _activate_profile(target)
+                print(f"  {G}switching to profile '{target}' — restarting...{X}", flush=True)
+            try:
+                save_session(list(history), silent=True)
+            except Exception:
+                pass
+            if _SENSEI_APP is not None:
+                try:
+                    _SENSEI_APP.clear_output()
+                except Exception:
+                    pass
+            _clear_tmux_scrollback("profile")
+            try:
+                subprocess.run(["stty", "sane"], check=False)
+            except Exception:
+                pass
+            sys.stdout.write("\033c\033[2J\033[H")
+            sys.stdout.flush()
+            os.execvp(sys.executable, [sys.executable, str(Path.home() / "scripts/master_ai.py")])
             continue  # unreachable
 
         if lo in ("new", "clear"):
