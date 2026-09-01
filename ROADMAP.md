@@ -36,7 +36,7 @@ Full grounded comparison (checked against both codebases, not marketing copy) li
 | Feature | Status |
 |---|---|
 | Persistent Memory | Partial |
-| Learning Loop (self-improving) | **In progress 2026-09-01** — plan drafted, split + delegated to Hermes (Phase 3.3b), prioritized ahead of 3.5-3.7 |
+| Learning Loop (self-improving) | **Closed 2026-09-01** — Phase 3.3b, both halves done + re-verified |
 | Multi-Platform Gateway (Telegram/Discord/Slack/WhatsApp/Signal) | Gap (dead vendored Discord code in `completion.py`, never wired) |
 | Cron Scheduling | **Fixed 2026-09-01** — was built, silently broken, removed as "unused," now restored + actually working (see below) |
 | Isolated/Concurrent Subagents | Partial — registry exists, dispatch is synchronous |
@@ -44,7 +44,7 @@ Full grounded comparison (checked against both codebases, not marketing copy) li
 | Voice Mode (STT/TTS) | Partial — TTS hardcoded to one static voice |
 | Code Execution | Parity |
 | Tirith-style Security (approval/permission layer) | Parity/deeper |
-| Skill Marketplace (browse/install/audit) | **In progress 2026-09-01** — plan drafted, split + delegated to Hermes (Phase 3.3b), prioritized ahead of 3.5-3.7 |
+| Skill Marketplace (browse/install/audit) | **Closed 2026-09-01** — Phase 3.3b, both halves done + re-verified |
 | Reinforcement Learning | Gap (deliberately deferred — Learning Loop above is supervised self-improvement, not autonomous policy training) |
 | Model Switching | Parity/better (10+ providers wired) |
 | Tool Use (MCP) | Parity — sensei itself is an MCP server Hermes consumes |
@@ -157,7 +157,7 @@ Delegated to Hermes (in parallel with 3.2, per Elijah's explicit request to spli
 
 Independently re-verified: re-ran the real smoke check (a real server, "sensei-self", registered with all 38 real tools validated), confirmed `py_compile` clean, confirmed the schema-validation rejection claim with real malformed test servers (both transports), and confirmed the full regression suite still passes. Commit `5a620cb`.
 
-### 3.3b Skill Marketplace & Learning Loop — plan drafted 2026-09-01, delegated to Hermes
+### 3.3b Skill Marketplace & Learning Loop — closed 2026-09-01
 
 **Elijah's explicit priority call (2026-09-01):** of the remaining real
 Gaps in the parity matrix above, **Skill Marketplace** and **Learning
@@ -167,10 +167,11 @@ Claude builds the two backing modules, Hermes wires the REPL surface and
 independently-testable command flow, Claude re-verifies before closing.
 Full task spec handed to Hermes:
 `hermes_task_skill_marketplace_learning_loop.md` (scratchpad, addressed
-directly to Hermes). Status: **Claude's half built + verified live
-2026-09-01, Hermes' half delegated and queued** — Hermes' `hermes` tmux
-session was mid-task on 3.5 (headless daemon) at delegation time.
-Handoff: `~/MD/handoff_sensei_skill_marketplace_learning_loop_2026-09-01.md`.
+directly to Hermes). Status: **both halves done and independently
+re-verified 2026-09-01** — `skill browse/install/audit/improve` wired
+into `master_ai.py`'s dispatch (Hermes), `confirm_edit()` gate confirmed
+live to correctly refuse an auto-mode write, pytest baseline unchanged.
+Committed `05524df`. Handoff: `~/MD/handoff_sensei_skill_marketplace_learning_loop_2026-09-01.md`.
 
 **Claude's half — done 2026-09-01, verified live (backing modules,
 stdlib-only, mirrors `sensei_mcp_client.py`'s probe-before-trust shape):**
