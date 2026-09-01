@@ -8681,9 +8681,44 @@ def _looks_interactive_run(cmd):
     return first in _INTERACTIVE_RUN_WORDS or low.startswith("tail -f ")
 
 # ── RUN COMMAND ───────────────────────────────────────────────
+_LAST_LIVE_TYPED_ACTIONS = []
+_LIVE_TYPED_ACTIONS_CAP = 200
+
+
+def _record_live_typed_action(action):
+    """Persist one TypedAction's final lifecycle state.
+
+    2026-09-01 (Phase 1.1): the only prior typed-action trail was a
+    post-hoc shadow parse of raw model text (see _audit()/make_audit_record
+    above) — it never saw the actual dispatch decision or outcome, only the
+    parsed intent. This is the real thing: called once a RUN/RUNTERM
+    action has actually finished executing, from the single choke-point
+    function that runs it (run_command/run_in_terminal), so every
+    execution produces a genuine full-lifecycle record. Bounded in memory
+    (last 200) the same way other rolling globals in this file are;
+    persisted in full to AUDIT_LOG_JSONL alongside (not replacing) the
+    existing kind+detail shadow records.
+    """
+    try:
+        d = action.to_dict()
+        _LAST_LIVE_TYPED_ACTIONS.append(d)
+        del _LAST_LIVE_TYPED_ACTIONS[:-_LIVE_TYPED_ACTIONS_CAP]
+        with AUDIT_LOG_JSONL.open("a") as f:
+            f.write(json.dumps(d, sort_keys=True) + "\n")
+    except Exception:
+        pass
+
+
 def run_command(cmd):
     print(f"\n🥷  {BOLD}Running:{X} {Y}{cmd}{X}")
     _t0 = time.time()
+    import typed_actions
+    _typed = typed_actions.TypedAction(
+        kind="RUN", target=cmd, cwd=os.getcwd(),
+        created_by_model=globals().get("_LAST_MODEL", ""),
+        status=typed_actions.Status.EXECUTING,
+    )
+    typed_actions.classify_risk(_typed)
     try:
         # 300s (5 min) covers git clone, npm install, apt update, slow curls —
         # the 30s cap was killing legitimate long-running utility commands.
@@ -8729,6 +8764,9 @@ def run_command(cmd):
                        exit_code=result.returncode,
                        latency_s=round(time.time() - _t0, 3),
                        detail=shell_cmd[:240])
+        _typed.status = typed_actions.Status.COMPLETED if chain_ok else typed_actions.Status.FAILED
+        _typed.extras.update({"exit_code": result.returncode, "duration_s": round(time.time() - _t0, 3)})
+        _record_live_typed_action(_typed)
         return RunResult(output, ok=chain_ok,
                          exit_code=result.returncode, command=shell_cmd)
     except subprocess.TimeoutExpired:
@@ -8736,6 +8774,9 @@ def run_command(cmd):
         _router_metric("execution", action="run", ok=False, error="timeout",
                        latency_s=round(time.time() - _t0, 3),
                        detail=(cmd or "")[:240])
+        _typed.status = typed_actions.Status.FAILED
+        _typed.extras.update({"error": "timeout", "duration_s": round(time.time() - _t0, 3)})
+        _record_live_typed_action(_typed)
         return RunResult("timeout", ok=False, exit_code=124,
                          command=cmd, error="timeout")
     except Exception as e:
@@ -8743,6 +8784,9 @@ def run_command(cmd):
         _router_metric("execution", action="run", ok=False, error=str(e)[:160],
                        latency_s=round(time.time() - _t0, 3),
                        detail=(cmd or "")[:240])
+        _typed.status = typed_actions.Status.FAILED
+        _typed.extras.update({"error": str(e)[:160], "duration_s": round(time.time() - _t0, 3)})
+        _record_live_typed_action(_typed)
         return RunResult(str(e), ok=False, exit_code=1,
                          command=cmd, error=str(e))
 
@@ -8935,11 +8979,29 @@ def agent_standards_checks():
         "full self-test gate",
         str(selftest))
 
-    # Known architectural gap: directives are text parsed, not typed tool
-    # calls. Keep this visible until the executor is refactored.
-    add("WARN",
+    # 2026-09-01 (Phase 1.1): this used to be an unconditional WARN with no
+    # actual check behind it. RUN's execution choke-point (run_command) now
+    # constructs a real TypedAction and records its full lifecycle
+    # (PARSED->EXECUTING->COMPLETED/FAILED) on every invocation -- this is a
+    # live probe, not a shadow parse of raw text, same pattern as the
+    # "command policy gate" check above which also calls its guard live.
+    # RUNTERM has the same treatment (run_in_terminal); READ/CREATE/EDIT
+    # don't have a single choke-point yet (see ROADMAP.md Phase 1.1 fast-
+    # follow note) so this check only covers RUN+RUNTERM for now.
+    _typed_probe_ok = False
+    try:
+        _before = len(_LAST_LIVE_TYPED_ACTIONS)
+        run_command("true")
+        _typed_probe_ok = (
+            len(_LAST_LIVE_TYPED_ACTIONS) == _before + 1
+            and _LAST_LIVE_TYPED_ACTIONS[-1].get("kind") == "RUN"
+            and _LAST_LIVE_TYPED_ACTIONS[-1].get("status") == "completed"
+        )
+    except Exception:
+        _typed_probe_ok = False
+    add("PASS" if _typed_probe_ok else "WARN",
         "typed tool boundary",
-        "current executor still parses text directives; target is typed tool calls")
+        "RUN/RUNTERM execute through a live TypedAction lifecycle (run_command/run_in_terminal); READ/CREATE/EDIT still text-dispatched")
 
     add("WARN",
         "sandbox boundary",
@@ -9172,6 +9234,13 @@ def run_in_terminal(cmd):
     Fallback chain: x-terminal-emulator (Debian alt) → gnome-terminal → xterm.
     Returns a status string; the actual run happens in the spawned window."""
     print(f"\n🥷  {BOLD}Spawning in new terminal:{X} {Y}{cmd}{X}")
+    import typed_actions
+    _typed = typed_actions.TypedAction(
+        kind="RUNTERM", target=cmd, cwd=os.getcwd(),
+        created_by_model=globals().get("_LAST_MODEL", ""),
+        status=typed_actions.Status.EXECUTING,
+    )
+    typed_actions.classify_risk(_typed)
     wrapped = f"{cmd}; echo; read -p 'Press Enter to close...'"
     candidates = [
         ["x-terminal-emulator", "-e", "bash", "-c", wrapped],
@@ -9185,6 +9254,11 @@ def run_in_terminal(cmd):
                              start_new_session=True)
             print(_pill("SPAWNED", f"{D}{argv[0]} · {cmd[:50]}{X}"))
             log(f"PC_RUNTERM: {cmd} via {argv[0]}")
+            # "completed" = spawned; fire-and-forget, we never see the
+            # terminal's own exit code (see docstring above).
+            _typed.status = typed_actions.Status.COMPLETED
+            _typed.extras.update({"spawned_via": argv[0]})
+            _record_live_typed_action(_typed)
             return f"[spawned in {argv[0]}]"
         except FileNotFoundError:
             continue
@@ -9192,6 +9266,9 @@ def run_in_terminal(cmd):
             log(f"RUNTERM_ERROR ({argv[0]}): {e}")
             continue
     print(_pill("ERROR", f"{D}no graphical terminal available (tried x-terminal-emulator, gnome-terminal, xterm){X}"))
+    _typed.status = typed_actions.Status.FAILED
+    _typed.extras.update({"error": "no graphical terminal available"})
+    _record_live_typed_action(_typed)
     return "no-terminal-available"
 
 # ── KICK ESCAPE FROM CONFIRM PROMPTS ─────────────────────────
