@@ -1,6 +1,6 @@
 # Master AI CLI (Sensei) — Roadmap to Hermes Agent Parity
 
-Last updated: 2026-09-01
+Last updated: 2026-09-01 (Phase 3.5 marked closed — code/tests/commit were already done and live, only the ROADMAP write-up was still open when the machine's crash-reboot interrupted the session)
 
 ## Phase 0 — Baseline & Inventory
 
@@ -218,9 +218,43 @@ supervised self-improvement (analyze → propose → human/typed-gate
 confirms → apply), not autonomous policy training — matches the existing
 "Reinforcement Learning: Gap" row in the matrix, which stays open.
 
-### 3.5 Headless / Daemon Mode
-- `sensei daemon` / `sensei --headless`: Unix socket or HTTP API, accepts jobs, returns job IDs, logs to `~/.master_ai_logs/`, optional webhook callbacks.
-- Note: `headless_runner.py` already exists but its model-reply path is a placeholder stub (no real LLM wired in) — this phase needs to actually wire it to a model, not just reuse it as-is.
+### 3.5 Headless / Daemon Mode — closed 2026-09-01
+
+Split the same way as 3.3b/3.4/3.6: Hermes built the daemon (stdlib
+`ThreadingHTTPServer`, house style per `master_ai_scheduler.py`), Claude's
+parallel session landed the real model wiring in `headless_runner.py`
+(the placeholder stub this phase existed to remove) while exercising the
+daemon on port 8799 for its own testing — Hermes' later jobs already
+answer with real model output as a result.
+
+New `headless_daemon.py` (~650 lines): `start`/`status`/`submit`/`list`/
+`job <id>`/`stop` CLI plus `POST /jobs`, `GET /jobs/<id>`, `GET /health`.
+State in `~/.master_ai_jobs.json` (0600, atomic write), pid file, per-job
+`.out`/`.err`/`.log` under `~/.master_ai_logs/`. Status machine
+(pending→running→done|failed) enforced, not just recorded — illegal
+transitions raise (caught a real duplicate-def bug this way before first
+run). 15-minute hard cap per job, max 2 concurrent. Optional
+`callback_url` webhook, best-effort, never crashes the daemon on failure.
+
+**Startup reconciliation, found live not assumed:** the daemon was
+killed mid-job during same-day parallel-session testing and jobs stayed
+`running` forever. `reconcile_stale_jobs()` now runs at boot and marks
+any pending/running jobs failed with "interrupted: daemon stopped or
+restarted mid-job."
+
+Verified for real: job lifecycle over the live HTTP API (pending→
+running→done, exit=0), webhook proven against a local listener
+(`job_1788293278_efa54d`, duration 164.13s, real model result), stale-job
+reconciliation reproduced (4 jobs marked failed at next startup),
+full CLI round-trip (`submit`/`job`/`list`/`status`/`stop`), `py_compile`
+clean, pytest baseline unchanged (10 passed / 4 pre-existing failures,
+zero new). Committed `05524df` (same commit as 3.3b — Hermes landed both
+in one pass). Handoff: `~/MD/handoff_sensei_headless_daemon_2026-09-01.md`.
+
+`headless_runner.py`, `master_ai.py`, `skill_runtime.py`, `sandbox.py`
+untouched by the daemon build. Port pinned via `HEADLESS_DAEMON_PORT` env
+var (both daemon and CLI honor it) so systemd units can avoid flag drift
+if/when this gets its own unit.
 
 ### 3.6 Lightweight Web Dashboard — closed 2026-09-01
 - Built as new panels on the existing pupil.html/stt_server.py surface,
@@ -316,10 +350,11 @@ bash ~/scripts/sensei_selftest.sh
 1. ~~Phase 1 — typed dispatch + sandbox + read-fence TTL~~ — closed 2026-09-01.
 2. ~~Phase 2 — output caps + approval expiry~~ — already satisfied, closed 2026-09-01.
 3. ~~Phase 3.1–3.2, 3.4 — providers, profiles, MCP catalog~~ — closed 2026-09-01.
-4. **Phase 3.3b — Skill Marketplace & Learning Loop — reprioritized to the front 2026-09-01 (Elijah's explicit call).** Delegated/split with Hermes, queued behind Hermes' in-flight 3.5 work at delegation time.
-5. Phase 3.5 headless daemon — already in progress (Hermes, model-wiring in `headless_runner.py`).
-6. Pick 3.6 web dashboard next if wanted.
-7. Save 3.7 messaging gateway for last — biggest operational burden.
+4. ~~Phase 3.3b — Skill Marketplace & Learning Loop~~ — closed 2026-09-01, both halves.
+5. ~~Phase 3.5 — headless daemon~~ — closed 2026-09-01, both halves (daemon + model wiring).
+6. ~~Phase 3.6 — web dashboard~~ — closed 2026-09-01, both halves.
+7. **Next real open item: the `~/scripts/typed_actions.py` vs. repo divergence flagged during 3.6's deploy-drift fix** (845 vs. 601 lines — `~/scripts/` carries five live directive kinds, PLAN/DONE/THINK/RUN_SKILL/SEND_EMAIL, plus a `_is_noop_payload`/`_strip_wrap` legacy-parity layer, that never made it back into this repo). This is the one file 3.6 explicitly declined to symlink either direction because it needs "its own dedicated look" — it's the live daily-driver dispatch parser, so per the standing hard rule this gets a plan-mode pass, not a blind merge, before either direction is picked.
+8. Save 3.7 messaging gateway for last — biggest operational burden.
 
 Related: [[project-hermes-vs-claf-distinction]], `~/MD/handoff_sensei_hermes_parity_2026-08-31.md`, `~/MD/handoff_sensei_hermes_parity_2026-08-20.md`
 
