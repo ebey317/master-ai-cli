@@ -221,8 +221,34 @@ confirms → apply), not autonomous policy training — matches the existing
 - `sensei daemon` / `sensei --headless`: Unix socket or HTTP API, accepts jobs, returns job IDs, logs to `~/.master_ai_logs/`, optional webhook callbacks.
 - Note: `headless_runner.py` already exists but its model-reply path is a placeholder stub (no real LLM wired in) — this phase needs to actually wire it to a model, not just reuse it as-is.
 
-### 3.6 Lightweight Web Dashboard (Optional)
-- Minimal Flask/FastAPI dashboard: chat replay, route/model stats from `observability.py`, task queue, approval queue (`approval_queue.py`), memory/skill browser. Local-only binding + token.
+### 3.6 Lightweight Web Dashboard — closed 2026-09-01
+- Built as new panels on the existing pupil.html/stt_server.py surface,
+  not a separate Flask/FastAPI app (the original "minimal dashboard"
+  framing here was stale — pupil.html already existed as a real web UI).
+  `dashboard_data.py` aggregates observability.summarize(), headless_daemon
+  job queue, approval_queue, skill_marketplace + learning_loop, and
+  ~/.master_ai_chats/*.chat replay into one GET /api/dashboard endpoint
+  (Claude's half, commit `5a7d09e` + fix `f4fc727`); five read-only panels
+  in pupil.html (Hermes' half). Local requests pass without auth (same
+  trust as /chat); remote requests need X-Mesh-Token (same pattern as
+  /ask). Split and re-verification followed the same Claude/Hermes
+  discipline as 3.4 and 3.3b.
+- **Deploy-drift finding, partially fixed:** `~/scripts/` had silently
+  diverged from this repo on multiple files (stt_server.py, pupil.html,
+  sensei_tui.py, dashboard_data.py, typed_actions.py) — some services run
+  `~/scripts/*.py` directly rather than through the `master_ai.py`
+  symlink, so repo commits never reached them without a manual copy.
+  Converted the confirmed-safe files to symlinks matching the existing
+  `master_ai.py` pattern (stt_server.py, pupil.html, sensei_tui.py,
+  dashboard_data.py, headless_daemon.py, skill_marketplace.py,
+  learning_loop.py, sandbox.py, observability.py, approval_queue.py,
+  skill_improve_helpers.py) so this class of bug can't recur for them.
+  **`typed_actions.py` NOT touched** — its `~/scripts/` copy (Aug 23) is
+  actually *ahead* of this repo's copy (Aug 20), with extra directive
+  kinds (PLAN/DONE/THINK/RUN_SKILL/SEND_EMAIL) that were apparently
+  built directly in `~/scripts/` and never merged back to git. Needs its
+  own dedicated look before deciding a sync direction — do not blindly
+  symlink either way.
 
 ### 3.7 Messaging Gateway (Optional)
 - Only if remote trigger capability is wanted. Start with Telegram bot using the Phase 3.5 daemon API.
