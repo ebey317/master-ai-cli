@@ -44,6 +44,7 @@ from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.data_structures import Point
+from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition, has_focus
 from prompt_toolkit.formatted_text import ANSI, FormattedText
@@ -343,6 +344,7 @@ IDLE_TIPS = [
     "'/clear cache' if Sensei is serving the same cached answer",
     "'/doctor' shows URLs, services, mode, mouse, and current task",
     "'/chats' to browse saved sessions",
+    "click the chat to scroll, click the ninja to type",
     "PageUp / PageDown scroll output by a full visible page",
     "'/up' / '/down' scroll output; '/top' / '/bottom' jumps",
     "Shift+Tab cycles plan → review → auto when input is empty",
@@ -523,6 +525,7 @@ class SenseiApp:
             completer=SlashCommandCompleter(),
             complete_while_typing=True,
             focusable=True,
+            focus_on_click=True,
             # User-typed text stays the terminal's default color — no blue.
             style="class:textinput",
         )
@@ -531,9 +534,14 @@ class SenseiApp:
         # a mid-frame race (output thread appending while renderer is
         # measuring) never crashes the render loop. Last-frame content
         # simply blanks the affected line; next frame re-measures fresh.
+        # 2026-08-31: chat pane is now focusable. Tab swaps focus between the
+        # input station and the chat pane. When chat is focused, plain Up/Down
+        # scroll the conversation; when input is focused, Up/Down still walk
+        # input history so users can recall/edit prior messages.
+        self._chat_focused = False
         self._output_control = SafeFormattedTextControl(
             text=self._render_output,
-            focusable=False,
+            focusable=True,
             show_cursor=False,
             get_cursor_position=self._get_output_cursor,
         )
@@ -576,11 +584,21 @@ class SenseiApp:
         # edges. Title is mode-tinted (class:frame picks up the mode accent
         # color). 2026-04-20 per Elijah: "keep everything in frame instead
         # of bleeding out… we get that whole slideshow that comes down."
+        # Clicking the chat frame moves focus to the chat pane; clicking the
+        # input station returns focus there.
         self._output_frame = Frame(
             self._output_window,
             title=" 🥋  chat ",
             style="class:frame",
+            modal=False,
         )
+
+        # Click on the chat output window sets focus to chat pane.
+        def _chat_mouse_handler(mouse_event):
+            if mouse_event.event_type == MouseEventType.MOUSE_UP:
+                self._focus_chat()
+            return None
+        self._output_control.mouse_handler = _chat_mouse_handler
 
         self._status_control = FormattedTextControl(text=self._render_status)
         self._status_window = Window(
@@ -667,10 +685,9 @@ class SenseiApp:
             layout=Layout(root, focused_element=self._input),
             key_bindings=self._build_keys(),
             full_screen=True,
-            # Mouse OFF by default — keeps the input box truly locked at
-            # bottom and lets gnome-terminal handle native click-drag copy.
-            # Opt-in with SENSEI_MOUSE=1 if you want wheel scroll inside the app.
-            mouse_support=os.environ.get("SENSEI_MOUSE", "0") == "1",
+            # Mouse ON by default — click focuses chat or input, wheel scrolls.
+            # Legacy opt-out with SENSEI_MOUSE=0 if native terminal copy is needed.
+            mouse_support=os.environ.get("SENSEI_MOUSE", "1") != "0",
             refresh_interval=0.25,
             style=self._build_style("plan"),
             # Force 24-bit truecolor so hex values like #ef4444 / #dc143c
@@ -820,7 +837,8 @@ class SenseiApp:
 
     def _render_label(self):
         width = max(10, _term_size().columns - 6)
-        lbl = f" ✏ {self._label} " if self._label else " ✏ "
+        focus = "[chat]" if self._chat_focused else "[input]"
+        lbl = f" ✏ {self._label} {focus}" if self._label else f" ✏ {focus}"
         lbl = _fit_text(lbl, min(width, 48 if width >= 80 else width))
         return FormattedText([("class:frame.label", lbl)])
 
@@ -1143,30 +1161,61 @@ class SenseiApp:
         # 2026-04-19: "only want one" + "hold is scroll." Shift is a real
         # modifier, so terminal key-repeat fires continuous Shift+Up
         # events while held → smooth scroll. Tap = one event = 3 lines.
-        # Plain Up/Down stay reserved for input history.
-        @kb.add("s-up")
-        @kb.add("pageup")
-        def _scroll_up(event):
+        # Plain Up/Down stay reserved for input history when input is focused,
+        # and for chat scrolling when the chat pane is focused.
+        @kb.add("s-up", filter=Condition(lambda: not self._chat_focused))
+        @kb.add("pageup", filter=Condition(lambda: not self._chat_focused))
+        def _scroll_up_shift(event):
             self._scroll_offset += max(8, _term_size().lines - 8)
             event.app.invalidate()
 
-        @kb.add("s-down")
-        @kb.add("pagedown")
-        def _scroll_down(event):
+        @kb.add("s-down", filter=Condition(lambda: not self._chat_focused))
+        @kb.add("pagedown", filter=Condition(lambda: not self._chat_focused))
+        def _scroll_down_shift(event):
             self._scroll_offset = max(0, self._scroll_offset - max(8, _term_size().lines - 8))
             event.app.invalidate()
 
-        @kb.add("home")
-        def _scroll_top(event):
+        # Chat-pane focus: plain Up/Down scroll line-by-line.
+        @kb.add("up", filter=Condition(lambda: self._chat_focused))
+        def _chat_scroll_up(event):
+            self._scroll_offset += 1
+            event.app.invalidate()
+
+        @kb.add("down", filter=Condition(lambda: self._chat_focused))
+        def _chat_scroll_down(event):
+            self._scroll_offset = max(0, self._scroll_offset - 1)
+            event.app.invalidate()
+
+        @kb.add("pageup", filter=Condition(lambda: self._chat_focused))
+        def _chat_page_up(event):
+            self._scroll_offset += max(8, _term_size().lines - 8)
+            event.app.invalidate()
+
+        @kb.add("pagedown", filter=Condition(lambda: self._chat_focused))
+        def _chat_page_down(event):
+            self._scroll_offset = max(0, self._scroll_offset - max(8, _term_size().lines - 8))
+            event.app.invalidate()
+
+        @kb.add("home", filter=Condition(lambda: self._chat_focused))
+        def _chat_scroll_top(event):
             self._scroll_offset = 10_000
             event.app.invalidate()
 
-        @kb.add("end")
-        def _scroll_bottom(event):
+        @kb.add("end", filter=Condition(lambda: self._chat_focused))
+        def _chat_scroll_bottom(event):
             self._scroll_offset = 0
             event.app.invalidate()
 
+        # 2026-08-31: Click input to edit. Click chat to scroll. Esc returns
+        # focus to input so keyboard users can recover without reaching for the
+        # mouse. (Removed per follow-up: click-only switching, no Tab fallback.)
+        @kb.add("escape", filter=Condition(lambda: self._chat_focused))
+        def _return_to_input(event):
+            self._focus_input()
+
         return kb
+
+    # ── helpers ────────────────────────────────────────────────
 
     def _record_history_entry(self, text: str) -> None:
         """Make `text` recallable via Up/Down this session — operator:
@@ -1253,6 +1302,30 @@ class SenseiApp:
         self._status = text or ""
         try: self._app.invalidate()
         except Exception: pass
+
+    def _focus_chat(self):
+        """Move focus to the chat pane and switch Up/Down to scrolling."""
+        self._chat_focused = True
+        try:
+            self._app.layout.focus(self._output_window)
+        except Exception:
+            pass
+        try:
+            self._app.invalidate()
+        except Exception:
+            pass
+
+    def _focus_input(self):
+        """Move focus back to the input box and restore Up/Down history."""
+        self._chat_focused = False
+        try:
+            self._app.layout.focus(self._input)
+        except Exception:
+            pass
+        try:
+            self._app.invalidate()
+        except Exception:
+            pass
 
     def write(self, text: str) -> None:
         if not text:
