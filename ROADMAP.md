@@ -295,3 +295,13 @@ bash ~/scripts/sensei_selftest.sh
 7. Save 3.7 messaging gateway for last — biggest operational burden.
 
 Related: [[project-hermes-vs-claf-distinction]], `~/MD/handoff_sensei_hermes_parity_2026-08-31.md`, `~/MD/handoff_sensei_hermes_parity_2026-08-20.md`
+
+### Scroll fix (sensei_tui.py) — operator-confirmed 2026-09-01
+
+Merge commit a83aff3 reconciled two independent click-to-focus/wheel-scroll
+fixes and closed the mouse-event-swallow bug in both. **Elijah confirmed
+live, in a real terminal with real mouse input, that scroll now works.**
+Claude did not and could not independently verify this interactively
+(headless session, no real mouse) — the code-level checks in a83aff3
+(handler return values, Window fallback offset math) are necessary but
+not sufficient proof; operator confirmation is what closes it.
