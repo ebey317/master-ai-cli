@@ -69,7 +69,7 @@ def _skill_browser() -> Dict[str, Any]:
     analysis = learning_loop.analyze_all()
     return {
         "skills_found": len(skills),
-        "adapted": [s.name for s in skills if getattr(s, "adapted", False)],
+        "adapted": [s["name"] for s in skills if s.get("adapted")],
         "learning": {
             name: {
                 "sessions_analyzed": rep.sessions_analyzed,

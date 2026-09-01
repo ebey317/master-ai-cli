@@ -166,7 +166,8 @@
     .mode-buttons button,
     .toolbar button,
     .send-row button,
-    .dialog-actions button {
+    .dialog-actions button,
+    .dash-head button {
       border: 0;
       border-radius: 16px;
       padding: 11px 14px;
@@ -436,6 +437,200 @@
       text-align: center;
     }
 
+    /* ── Dashboard (Phase 3.6, 2026-09-01) — reuses the panel language:
+       same paper/panel palette, --radius accents, --line borders. Five
+       sections stacked below the main layout; all read-only. ── */
+    .dashboard {
+      margin-top: 18px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255, 250, 240, 0.92);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(14px);
+      padding: 16px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .dash-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .dash-head h2 {
+      margin: 0;
+      font-size: 1rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .dash-head .hint {
+      margin-right: auto;
+    }
+
+    .dash-head button {
+      padding: 8px 12px;
+      border-radius: 12px;
+    }
+
+    .dash-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 14px;
+    }
+
+    .dash-panel {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 14px;
+      background: rgba(255, 255, 255, 0.62);
+      min-width: 0;
+    }
+
+    .dash-panel h3 {
+      margin: 0 0 10px;
+      font-size: 1rem;
+    }
+
+    .dash-panel .sub {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin: 0 0 8px;
+    }
+
+    .dash-panel table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+    }
+
+    .dash-panel th,
+    .dash-panel td {
+      text-align: left;
+      padding: 5px 8px;
+      border-bottom: 1px solid var(--line);
+      color: var(--ink);
+    }
+
+    .dash-panel th {
+      color: var(--muted);
+      font-weight: normal;
+      text-transform: uppercase;
+      font-size: 0.78rem;
+      letter-spacing: 0.06em;
+    }
+
+    .dash-panel td.num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      font-family: "Courier New", monospace;
+    }
+
+    .bar-row {
+      display: grid;
+      grid-template-columns: 110px 1fr 3.4em;
+      gap: 8px;
+      align-items: center;
+      margin: 4px 0;
+      font-size: 0.88rem;
+    }
+
+    .bar-track {
+      height: 10px;
+      border-radius: 999px;
+      background: rgba(16, 32, 51, 0.10);
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: var(--blue);
+    }
+
+    .bar-num {
+      text-align: right;
+      color: var(--muted);
+      font-family: "Courier New", monospace;
+      font-size: 0.82rem;
+    }
+
+    .status-pill {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--muted);
+      font-family: "Courier New", monospace;
+    }
+
+    .status-pill.pending { color: var(--review); border-color: var(--review); }
+    .status-pill.running { color: var(--blue-dark); border-color: var(--blue); }
+    .status-pill.done    { color: var(--auto); border-color: var(--auto); }
+    .status-pill.failed  { color: var(--plan); border-color: var(--plan); }
+
+    .dash-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      max-height: 240px;
+      overflow: auto;
+      display: grid;
+      gap: 8px;
+    }
+
+    .dash-list li {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 10px 12px;
+      background: #fff;
+      font-size: 0.9rem;
+      line-height: 1.45;
+    }
+
+    .dash-list .meta {
+      color: var(--muted);
+      font-size: 0.82rem;
+      margin-top: 3px;
+      font-family: "Courier New", monospace;
+    }
+
+    .dash-list .preview {
+      color: var(--ink);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .dash-error {
+      color: var(--plan);
+      font-size: 0.88rem;
+      margin: 4px 0 0;
+    }
+
+    .skill-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 5px 0;
+      border-bottom: 1px solid var(--line);
+      font-size: 0.9rem;
+    }
+
+    .skill-row:last-child {
+      border-bottom: 0;
+    }
+
+    .skill-rate {
+      font-family: "Courier New", monospace;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
     @media (max-width: 860px) {
       .hero,
       .layout {
@@ -534,6 +729,59 @@
           <p>Sensei follows terminal conventions. Pupil follows browser conventions. Same product, correct surface behavior.</p>
         </section>
       </aside>
+    </section>
+
+    <!-- ── Dashboard (Phase 3.6) — read-only visibility over the five
+         aggregation sources. No buttons that write anywhere. ── -->
+    <section class="dashboard" aria-labelledby="dashTitle">
+      <div class="dash-head">
+        <h2 id="dashTitle">Dashboard</h2>
+        <span class="hint" id="dashUpdated">loading…</span>
+        <button type="button" id="dashRefresh">Refresh now</button>
+      </div>
+
+      <div class="dash-grid">
+        <section class="dash-panel" aria-label="Route and model stats">
+          <h3>Route / model stats</h3>
+          <p class="sub" id="rsSub">—</p>
+          <div class="bar-row"><span>route decisions</span><div class="bar-track"><div class="bar-fill" id="barDecisions"></div></div><span class="bar-num" id="numDecisions">0</span></div>
+          <div class="bar-row"><span>model calls</span><div class="bar-track"><div class="bar-fill" id="barCalls"></div></div><span class="bar-num" id="numCalls">0</span></div>
+          <div class="bar-row"><span>executions</span><div class="bar-track"><div class="bar-fill" id="barExec"></div></div><span class="bar-num" id="numExec">0</span></div>
+          <div class="bar-row"><span>blocked</span><div class="bar-track"><div class="bar-fill" id="barBlocked" style="background: var(--plan);"></div></div><span class="bar-num" id="numBlocked">0</span></div>
+          <table aria-label="By route">
+            <thead><tr><th>By route</th><th>n</th></tr></thead>
+            <tbody id="rsByRoute"></tbody>
+          </table>
+          <table aria-label="By model" style="margin-top: 8px;">
+            <thead><tr><th>By model</th><th>n</th></tr></thead>
+            <tbody id="rsByModel"></tbody>
+          </table>
+        </section>
+
+        <section class="dash-panel" aria-label="Task queue">
+          <h3>Task queue</h3>
+          <p class="sub" id="tqSub">—</p>
+          <ul class="dash-list" id="tqList"></ul>
+        </section>
+
+        <section class="dash-panel" aria-label="Approval queue">
+          <h3>Approval queue</h3>
+          <p class="sub" id="aqSub">—</p>
+          <ul class="dash-list" id="aqList"></ul>
+        </section>
+
+        <section class="dash-panel" aria-label="Skill browser">
+          <h3>Skills</h3>
+          <p class="sub" id="skSub">—</p>
+          <div id="skList"></div>
+        </section>
+
+        <section class="dash-panel" aria-label="Chat replay">
+          <h3>Chat replay</h3>
+          <p class="sub" id="crSub">—</p>
+          <ul class="dash-list" id="crList"></ul>
+        </section>
+      </div>
     </section>
   </main>
 
@@ -671,6 +919,126 @@
       source.onerror = () => logEvent("events", "connection issue; browser will retry");
     }
 
+    /* ── Dashboard (Phase 3.6) — fetch + render, strictly read-only.
+       30s interval + manual refresh; this is a polling view, not a
+       live stream. Every panel tolerates a missing/erroring section
+       (renders the error inline, never blanks the whole dashboard). ── */
+    const dashUpdated = document.querySelector("#dashUpdated");
+
+    function esc(text) {
+      const div = document.createElement("div");
+      div.textContent = String(text ?? "");
+      return div.innerHTML;
+    }
+
+    function setBar(fillId, numId, value, max) {
+      const pct = max > 0 ? Math.round((value / max) * 100) : 0;
+      document.querySelector(fillId).style.width = `${pct}%`;
+      document.querySelector(numId).textContent = String(value ?? 0);
+    }
+
+    function fillBars(stats) {
+      const keys = ["route_decisions", "model_calls", "executions"];
+      const max = Math.max(1, ...keys.map((k) => stats[k] ?? 0), stats.blocked?.total ?? 0);
+      setBar("#barDecisions", "#numDecisions", stats.route_decisions, max);
+      setBar("#barCalls", "#numCalls", stats.model_calls, max);
+      setBar("#barExec", "#numExec", stats.executions, max);
+      setBar("#barBlocked", "#numBlocked", stats.blocked?.total ?? 0, max);
+      const routeTbody = document.querySelector("#rsByRoute");
+      routeTbody.innerHTML = Object.entries(stats.by_route || {})
+        .sort((a, b) => b[1] - a[1]).slice(0, 6)
+        .map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${v}</td></tr>`).join("")
+        || `<tr><td colspan="2">no data</td></tr>`;
+      const modelTbody = document.querySelector("#rsByModel");
+      modelTbody.innerHTML = Object.entries(stats.by_model || {})
+        .sort((a, b) => b[1] - a[1]).slice(0, 6)
+        .map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${v}</td></tr>`).join("")
+        || `<tr><td colspan="2">no data</td></tr>`;
+      document.querySelector("#rsSub").textContent =
+        `scanned ${(stats.events_scanned?.router ?? 0)} router + ${(stats.events_scanned?.audit ?? 0)} audit events`;
+    }
+
+    function fmtTime(iso) {
+      if (!iso) return "—";
+      try { return new Date(iso).toLocaleTimeString(); } catch { return iso; }
+    }
+
+    function renderDashboard(d) {
+      const rs = d.route_model_stats || {};
+      if (rs.error) { document.querySelector("#rsSub").textContent = `error: ${rs.error}`; }
+      else { fillBars(rs); }
+
+      const tq = d.task_queue || {};
+      if (tq.error) { tqSub.textContent = `error: ${tq.error}`; tqList.innerHTML = ""; }
+      else {
+        tqSub.textContent = `${tq.total ?? 0} total — ` +
+          Object.entries(tq.by_status || {}).map(([k, v]) => `${k}:${v}`).join(" · ");
+        tqList.innerHTML = (tq.recent || []).slice(0, 8).map((j) =>
+          `<li><span class="status-pill ${esc(j.status)}">${esc(j.status)}</span>
+           <span class="preview">${esc(j.task_preview)}</span>
+           <div class="meta">${esc(j.job_id)} · submitted ${esc(j.submitted_at)}${j.exit_code != null ? ` · exit ${esc(j.exit_code)}` : ""}</div>
+          </li>`).join("") || "<li>no jobs yet</li>";
+      }
+
+      const aq = d.approval_queue || {};
+      if (aq.error) { aqSub.textContent = `error: ${aq.error}`; aqList.innerHTML = ""; }
+      else {
+        aqSub.textContent = `${aq.total ?? 0} total, ${(aq.pending || []).length} pending`;
+        aqList.innerHTML = (aq.pending || []).slice(0, 8).map((e) =>
+          `<li><span class="preview">${esc(e.what || e.summary || e.description || JSON.stringify(e).slice(0, 140))}</span>
+           <div class="meta">${esc(e.why || e.reason || "")}${e.where ? ` · ${esc(e.where)}` : ""}</div></li>`
+        ).join("") || "<li>nothing pending</li>";
+      }
+
+      const sk = d.skill_browser || {};
+      if (sk.error) { skSub.textContent = `error: ${sk.error}`; skList.innerHTML = ""; }
+      else {
+        // NOTE: skill_browser.adapted is always [] upstream (dashboard_data
+        // reads it as an attribute; browse_source returns dicts) — derive the
+        // adapted list from the learning-analysis keys instead, which are
+        // exactly the adapted skills that have run.
+        const learning = sk.learning || {};
+        const adaptedDerived = Object.keys(sk.learning || {});
+        const adaptedShown = (sk.adapted && sk.adapted.length) ? sk.adapted : adaptedDerived;
+        skSub.textContent = `${sk.skills_found ?? 0} in source · ${adaptedShown.length} adapted`;
+        skList.innerHTML = adaptedShown.map((name) => {
+          const l = (sk.learning || {})[name] ||
+            { sessions_analyzed: "—", success_count: "—" };
+          const rate = (typeof l.sessions_analyzed === "number" && l.sessions_analyzed > 0)
+            ? Math.round((l.success_count / l.sessions_analyzed) * 100) : null;
+          return `<div class="skill-row">
+            <span>${esc(name)}</span>
+            <span class="skill-rate">${rate == null ? "—" : `${rate}%`} <span class="hint">(${l.success_count}/${l.sessions_analyzed})</span></span>
+          </div>`;
+        }).join("") || "<p class='sub'>none adapted yet</p>";
+      }
+
+      const cr = d.chat_replay || {};
+      if (cr.error) { crSub.textContent = `error: ${cr.error}`; crList.innerHTML = ""; }
+      else {
+        crSub.textContent = `${cr.total ?? 0} saved sessions`;
+        crList.innerHTML = (cr.recent || []).slice(0, 8).map((c) =>
+          `<li><span class="preview">${esc(c.preview)}</span>
+           <div class="meta">${esc(c.id)} · ${new Date(c.mtime * 1000).toLocaleString()}</div></li>`
+        ).join("") || "<li>no sessions yet</li>";
+      }
+
+      dashUpdated.textContent = `updated ${new Date().toLocaleTimeString()}`;
+    }
+
+    async function loadDashboard() {
+      try {
+        const res = await fetch("/api/dashboard", { cache: "no-store" });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+        renderDashboard(body);
+      } catch (error) {
+        dashUpdated.textContent = `refresh failed: ${error.message}`;
+      }
+    }
+
+    document.querySelector("#dashRefresh").addEventListener("click", loadDashboard);
+
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       const prompt = promptBox.value.trim();
@@ -726,6 +1094,8 @@
     loadStatus();
     connectEvents();
     setInterval(loadStatus, 15000);
+    loadDashboard();
+    setInterval(loadDashboard, 30000);
   </script>
 </body>
 </html>
