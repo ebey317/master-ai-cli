@@ -11288,6 +11288,33 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             f"Output:\n{output}"
         )
 
+    def _append_exec_failure_feedback(kind, cmd, detail):
+        """Genuine runtime failure (the command ran, then failed) — NOT a
+        pre-execution safeguard refusal, so _LAST_BLOCKED_ACTION is never
+        set and _append_tool_blocked_feedback() can't fire for this case.
+        Without this, every exec-fail branch below used to `return reply`
+        with nothing appended to history — the turn dead-ended on the
+        stale pre-execution text and the model never got another turn to
+        produce a real closing answer. Confirmed live 2026-09-01: "make an
+        ai video" -> RUN chain never checked for matplotlib -> generated
+        script crashed with ModuleNotFoundError -> BLOCKED pill printed ->
+        turn just stopped. Question, work, no answer.
+        """
+        history.append({
+            "role": "user",
+            "content": (
+                "[TOOL FAILED]\n"
+                f"{kind} command ran but failed (not a safeguard refusal).\n"
+                f"{detail}\n"
+                "Give the user a short, honest closing answer: say what "
+                "failed and why, and propose a concrete fix (e.g. install "
+                "the missing dependency) or ask before retrying. Do not "
+                "silently stop — the user must see a real response, not "
+                "just the raw failure output."
+            ),
+        })
+        log(f"CHAIN_EXEC_FAIL_FEEDBACK: appended [TOOL FAILED] for: {cmd}")
+
     tool_result_feedback = []
 
     for cmd in run_cmds:
@@ -11325,7 +11352,8 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                 log(f"ON_BLOCKED_HOOK_ERROR (exec-fail): {e}")
             print(_pill("BLOCKED", f"{D}RUN failed or was refused — skipped remaining RUN/RUNTERM for this turn{X}"))
             log(f"CHAIN_ABORT: skipped downstream commands after RUN failure: {cmd}")
-            return reply
+            _append_exec_failure_feedback("RUN", cmd, _format_tool_result("RUN", cmd, result))
+            return None
         if continue_after_tools:
             tool_result_feedback.append(_format_tool_result("RUN", cmd, result))
 
@@ -11350,7 +11378,8 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                 log(f"ON_BLOCKED_HOOK_ERROR (runterm-exec-fail): {e}")
             print(_pill("BLOCKED", f"{D}RUNTERM failed or was refused — skipped remaining RUNTERM for this turn{X}"))
             log(f"CHAIN_ABORT: skipped downstream commands after RUNTERM failure: {cmd}")
-            return reply
+            _append_exec_failure_feedback("RUNTERM", cmd, _format_tool_result("RUNTERM", cmd, result))
+            return None
         if continue_after_tools:
             tool_result_feedback.append(_format_tool_result("RUNTERM", cmd, result))
 
@@ -11379,7 +11408,11 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                 return None
             print(_pill("BLOCKED", f"{D}SEND_EMAIL failed or was refused — {err}{X}"))
             log(f"CHAIN_ABORT: SEND_EMAIL to={spec.get('to','')} err={err}")
-            return reply
+            _append_exec_failure_feedback(
+                "SEND_EMAIL", f"to={spec.get('to','')}",
+                f"To: {spec.get('to','')}\nSubject: {spec.get('subject','')}\nError: {err}",
+            )
+            return None
         if continue_after_tools:
             tool_result_feedback.append(
                 f"[SEND_EMAIL RESULT]\nTo: {spec.get('to','')}\nSubject: {spec.get('subject','')}\nStatus: sent"
@@ -11398,7 +11431,8 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                 return None
             print(_pill("BLOCKED", f"{D}{label} failed or was refused{X}"))
             log(f"CHAIN_ABORT: BROWSER action failed: {label}")
-            return reply
+            _append_exec_failure_feedback("BROWSER", label, _format_tool_result(kind, label, result))
+            return None
         if continue_after_tools:
             tool_result_feedback.append(_format_tool_result(kind, label, result))
 
