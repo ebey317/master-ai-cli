@@ -36,7 +36,7 @@ Full grounded comparison (checked against both codebases, not marketing copy) li
 | Feature | Status |
 |---|---|
 | Persistent Memory | Partial |
-| Learning Loop (self-improving) | Gap |
+| Learning Loop (self-improving) | **In progress 2026-09-01** — plan drafted, split + delegated to Hermes (Phase 3.3b), prioritized ahead of 3.5-3.7 |
 | Multi-Platform Gateway (Telegram/Discord/Slack/WhatsApp/Signal) | Gap (dead vendored Discord code in `completion.py`, never wired) |
 | Cron Scheduling | **Fixed 2026-09-01** — was built, silently broken, removed as "unused," now restored + actually working (see below) |
 | Isolated/Concurrent Subagents | Partial — registry exists, dispatch is synchronous |
@@ -44,8 +44,8 @@ Full grounded comparison (checked against both codebases, not marketing copy) li
 | Voice Mode (STT/TTS) | Partial — TTS hardcoded to one static voice |
 | Code Execution | Parity |
 | Tirith-style Security (approval/permission layer) | Parity/deeper |
-| Skill Marketplace (browse/install/audit) | Gap |
-| Reinforcement Learning | Gap |
+| Skill Marketplace (browse/install/audit) | **In progress 2026-09-01** — plan drafted, split + delegated to Hermes (Phase 3.3b), prioritized ahead of 3.5-3.7 |
+| Reinforcement Learning | Gap (deliberately deferred — Learning Loop above is supervised self-improvement, not autonomous policy training) |
 | Model Switching | Parity/better (10+ providers wired) |
 | Tool Use (MCP) | Parity — sensei itself is an MCP server Hermes consumes |
 | Local LLM Support | Parity |
@@ -157,6 +157,66 @@ Delegated to Hermes (in parallel with 3.2, per Elijah's explicit request to spli
 
 Independently re-verified: re-ran the real smoke check (a real server, "sensei-self", registered with all 38 real tools validated), confirmed `py_compile` clean, confirmed the schema-validation rejection claim with real malformed test servers (both transports), and confirmed the full regression suite still passes. Commit `5a620cb`.
 
+### 3.3b Skill Marketplace & Learning Loop — plan drafted 2026-09-01, delegated to Hermes
+
+**Elijah's explicit priority call (2026-09-01):** of the remaining real
+Gaps in the parity matrix above, **Skill Marketplace** and **Learning
+Loop (self-improving)** go first — ahead of 3.5/3.6/3.7 below. Split
+between Claude and Hermes the same way 3.4 (MCP catalog) was split:
+Claude builds the two backing modules, Hermes wires the REPL surface and
+independently-testable command flow, Claude re-verifies before closing.
+Full task spec handed to Hermes:
+`hermes_task_skill_marketplace_learning_loop.md` (scratchpad, addressed
+directly to Hermes). Status: **Claude's half built + verified live
+2026-09-01, Hermes' half delegated and queued** — Hermes' `hermes` tmux
+session was mid-task on 3.5 (headless daemon) at delegation time.
+Handoff: `~/MD/handoff_sensei_skill_marketplace_learning_loop_2026-09-01.md`.
+
+**Claude's half — done 2026-09-01, verified live (backing modules,
+stdlib-only, mirrors `sensei_mcp_client.py`'s probe-before-trust shape):**
+- `skill_marketplace.py` — `~/.master_ai_skill_sources.json` catalog of
+  skill *sources* (source #1: `~/.hermes/skills/`, already known-portable
+  at the `SKILL.md` frontmatter level per the 3.3 portability research).
+  `browse_source()` found all 151 real skills in the Hermes tree live
+  (read-only listing, correctly flags the 4 already-adapted ones) and
+  `audit_skill()`/`audit_adapted_skill()` (static-scans for the same
+  sandbox-bypass bug class the 3.3 fix found — direct `subprocess`/
+  `os.system`/`eval` calls that skip `sandbox.py`) proven live to hard-
+  reject a deliberately broken test skill and pass/stage a clean one.
+  Audit-only; never executes third-party code.
+- `learning_loop.py` — read-only analysis over `skill_runtime.py`'s
+  real per-session JSON records (`~/.master_ai_skills/<name>/sessions/
+  *.json` — history/errors/current_step/done/aborted; richer than the
+  skills' own `knowledge/*.jsonl`, which has no failure record at all).
+  Ran live against all 25 real session files across the 4 adapted
+  skills: real success/abort rates and step-level abort/retry patterns,
+  including one organically-surfaced real quirk (a `google-workspace`
+  session aborting at the `END` sentinel) flagged, not fixed — out of
+  scope for this task. No auto-mutation anywhere in this module — it
+  only produces a report.
+  Handoff: `~/MD/handoff_sensei_skill_marketplace_learning_loop_2026-09-01.md`.
+
+**Hermes' half (REPL wiring, exact `mcp`-command pattern):**
+- `skill browse [source]`, `skill install <source> <name>` (audits
+  first, refuses to stage anything that fails audit — same UX as `mcp
+  enable` refusing a broken server; does NOT claim a staged skill is
+  runnable, since format-portable ≠ execution-model-portable per the
+  3.3 research), `skill audit <name>`.
+- `skill improve <name>` — the actual self-improving loop, but
+  human-gated on purpose: calls `learning_loop.analyze_skill()`, and for
+  narrow rule-based fix opportunities only (not free-form model rewrites)
+  drafts a diff that **must route through the existing typed EDIT
+  confirm gate** (`confirm_edit()`, Phase 1.1) — no silent auto-write.
+  This is the hard constraint carried over from tonight's sandbox work:
+  the safety gate that Phase 1.2 built does not get bypassed just
+  because the writer is "the skill improving itself."
+
+**Explicitly deferred, staying a Gap on purpose:** true unsupervised
+RL / auto-applied self-modification. What's being built here is
+supervised self-improvement (analyze → propose → human/typed-gate
+confirms → apply), not autonomous policy training — matches the existing
+"Reinforcement Learning: Gap" row in the matrix, which stays open.
+
 ### 3.5 Headless / Daemon Mode
 - `sensei daemon` / `sensei --headless`: Unix socket or HTTP API, accepts jobs, returns job IDs, logs to `~/.master_ai_logs/`, optional webhook callbacks.
 - Note: `headless_runner.py` already exists but its model-reply path is a placeholder stub (no real LLM wired in) — this phase needs to actually wire it to a model, not just reuse it as-is.
@@ -226,10 +286,12 @@ bash ~/scripts/sensei_selftest.sh
 
 ## Suggested Execution Order
 
-1. Phase 1 first — typed dispatch + sandbox + read-fence TTL (Tier-1 blockers, unlock the 105 score).
-2. Phase 2 — output caps + approval expiry.
-3. Phase 3.1–3.3 — providers, profiles, skills/memory (Hermes-class flexibility).
-4. Pick 3.5 or 3.6 next depending on headless API vs. web dashboard priority.
-5. Save 3.7 messaging gateway for last — biggest operational burden.
+1. ~~Phase 1 — typed dispatch + sandbox + read-fence TTL~~ — closed 2026-09-01.
+2. ~~Phase 2 — output caps + approval expiry~~ — already satisfied, closed 2026-09-01.
+3. ~~Phase 3.1–3.2, 3.4 — providers, profiles, MCP catalog~~ — closed 2026-09-01.
+4. **Phase 3.3b — Skill Marketplace & Learning Loop — reprioritized to the front 2026-09-01 (Elijah's explicit call).** Delegated/split with Hermes, queued behind Hermes' in-flight 3.5 work at delegation time.
+5. Phase 3.5 headless daemon — already in progress (Hermes, model-wiring in `headless_runner.py`).
+6. Pick 3.6 web dashboard next if wanted.
+7. Save 3.7 messaging gateway for last — biggest operational burden.
 
 Related: [[project-hermes-vs-claf-distinction]], `~/MD/handoff_sensei_hermes_parity_2026-08-31.md`, `~/MD/handoff_sensei_hermes_parity_2026-08-20.md`

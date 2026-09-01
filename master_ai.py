@@ -105,6 +105,8 @@ try:
         "reason: ", "reason fast: ", "reason standard: ", "reason deep: ", "reason max: ",
         # P1.4 hooks REPL (2026-05-11)
         "hooks", "hooks list", "hooks enable ", "hooks disable ", "hooks reload",
+        # Skill marketplace + learning loop (2026-09-01)
+        "skill browse", "skill install ", "skill audit ", "skill improve ",
         # MCP client catalog (2026-09-01) — Sensei consuming other MCP servers
         "mcp", "mcp list", "mcp add ", "mcp remove ", "mcp enable ", "mcp disable ",
         "mcp validate ", "mcp tools ",
@@ -145,11 +147,16 @@ try:
     if "SENSEI_MOUSE" not in os.environ and _settings_path.exists():
         for _line in _settings_path.read_text().splitlines():
             if _line.startswith("SENSEI_MOUSE="):
-                os.environ["SENSEI_MOUSE"] = _line.split("=", 1)[1].strip() or "0"
+                os.environ["SENSEI_MOUSE"] = _line.split("=", 1)[1].strip() or "1"
                 break
-    os.environ.setdefault("SENSEI_MOUSE", "0")
+    # Default ON (matches sensei_tui.py's own documented default at its
+    # mouse_support= line) — wheel-scroll should work out of the box, no
+    # "mouse remote" opt-in needed, the same way Claude Code's own CLI
+    # scrolls without a mode switch. `mouse local` remains available to
+    # opt OUT for native terminal drag-select copy.
+    os.environ.setdefault("SENSEI_MOUSE", "1")
 except Exception:
-    os.environ.setdefault("SENSEI_MOUSE", "0")
+    os.environ.setdefault("SENSEI_MOUSE", "1")
 if _SENSEI_ENABLED:
     try:
         from sensei_tui import SenseiApp
@@ -7701,6 +7708,9 @@ def show_commands():
         ("profiles", "list profiles; * marks the active one"),
         ("mcp add <name> <cmd|url>", "register an MCP server (stdio or sse); probed before it is trusted"),
         ("mcp list", "show MCP servers + enabled state; also remove|enable|disable|validate|tools"),
+        ("skill browse", "list skills available in a source; flags already-adapted ones"),
+        ("skill install <src> <id>", "audit a source skill, then stage it (needs STEPS adaptation after)"),
+        ("skill improve <name>", "failure-pattern report from real runs; proposed fixes go through the EDIT gate"),
         ("doctor", "Check services, models, URLs, and warnings"),
         ("update", "Update Master AI safely"),
         ("copy chat", "Export this conversation"),
@@ -8902,19 +8912,26 @@ def set_mouse_profile(profile):
     remote: tmux mouse on + future Sensei launches with SENSEI_MOUSE=1.
     local:  tmux mouse off + future Sensei launches with SENSEI_MOUSE=0 so
             terminal drag-select reaches X11 CLIPBOARD cleanly.
+
+    Returns True if this call actually switched the profile (so the
+    caller can restart Sensei immediately — app-level mouse_support is
+    read once at prompt_toolkit Application construction, sensei_tui.py,
+    so the tmux-level toggle above takes effect instantly but the app's
+    own wheel-scroll capture does not until the process restarts). False
+    for a plain status query, which changes nothing.
     """
     profile = (profile or "").strip().lower()
     if profile == "toggle":
-        current = _settings_get("SENSEI_MOUSE", os.environ.get("SENSEI_MOUSE", "0"))
+        current = _settings_get("SENSEI_MOUSE", os.environ.get("SENSEI_MOUSE", "1"))
         profile = "local" if current != "0" else "remote"
     if profile not in {"remote", "local"}:
         profile = "status"
-    current = _settings_get("SENSEI_MOUSE", os.environ.get("SENSEI_MOUSE", "0"))
+    current = _settings_get("SENSEI_MOUSE", os.environ.get("SENSEI_MOUSE", "1"))
     if profile == "status":
         label = "remote/phone scroll" if current != "0" else "local drag-copy"
         print(f"  {C}Mouse profile:{X} {label}  {D}(SENSEI_MOUSE={current}){X}")
         print(f"  {D}Use: mouse remote  ·  mouse local{X}")
-        return
+        return False
     enable = profile == "remote"
     _settings_set("SENSEI_MOUSE", "1" if enable else "0")
     tmux_value = "on" if enable else "off"
@@ -8930,12 +8947,37 @@ def set_mouse_profile(profile):
             tmux_ok = False
     if enable:
         print(f"  {G}✅ mouse remote ON — better phone/RustDesk scrolling and taps.{X}")
-        print(f"  {D}Saved SENSEI_MOUSE=1. Current TUI may need `refresh` for full app-level mouse capture.{X}")
+        print(f"  {D}Saved SENSEI_MOUSE=1. Restarting now so it's live immediately...{X}")
     else:
         print(f"  {G}✅ mouse local ON — tmux mouse off, terminal drag-select copy restored.{X}")
-        print(f"  {D}Saved SENSEI_MOUSE=0. Type `refresh` so Sensei relaunches with app mouse disabled.{X}")
+        print(f"  {D}Saved SENSEI_MOUSE=0. Restarting now so it's live immediately...{X}")
     if not tmux_ok:
         print(f"  {Y}tmux command not available here; saved setting will apply on next launch.{X}")
+    return True
+
+
+def _mouse_profile_restart(history):
+    """Lightweight restart after a mouse-profile switch — mirrors the
+    `profile <name>` restart path (save, clear screen, execvp) rather
+    than handle_save_refresh's heavier compact-and-resume flow, since
+    a mouse toggle needs to be instant, not a 3-second banner."""
+    try:
+        save_session(list(history), silent=True)
+    except Exception:
+        pass
+    if _SENSEI_APP is not None:
+        try:
+            _SENSEI_APP.clear_output()
+        except Exception:
+            pass
+    _clear_tmux_scrollback("mouse profile")
+    try:
+        subprocess.run(["stty", "sane"], check=False)
+    except Exception:
+        pass
+    sys.stdout.write("\033c\033[2J\033[H")
+    sys.stdout.flush()
+    os.execvp(sys.executable, [sys.executable, str(Path.home() / "scripts/master_ai.py")])
 
 def _doctor_cmd(argv, timeout=2):
     try:
@@ -9219,7 +9261,7 @@ def show_doctor():
     if ui_service not in ("active", "unknown"):
         warnings.append("master-ai-ui.service is " + ui_service)
 
-    mouse = _settings_get("SENSEI_MOUSE", os.environ.get("SENSEI_MOUSE", "0"))
+    mouse = _settings_get("SENSEI_MOUSE", os.environ.get("SENSEI_MOUSE", "1"))
     mouse_label = "remote/phone" if mouse != "0" else "local/copy"
     mem_count = _doctor_count_lines(MEMORY_FILE)
     approved_count = _doctor_count_lines(APPROVED_FILE)
@@ -13751,7 +13793,7 @@ def main():
 
     # ── Auto-resize tmux pane to match the actual client terminal dims ──
     if os.environ.get("TMUX"):
-        mouse_pref = _settings_get("SENSEI_MOUSE", os.environ.get("SENSEI_MOUSE", "0"))
+        mouse_pref = _settings_get("SENSEI_MOUSE", os.environ.get("SENSEI_MOUSE", "1"))
         tmux_mouse = "on" if mouse_pref != "0" else "off"
         subprocess.run(["tmux", "set-option", "-g", "mouse", tmux_mouse],
                        check=False, capture_output=True)
@@ -14138,6 +14180,69 @@ def main():
                 print(f"  {W}mcp command error: {e}{X}\n")
             continue
 
+        # ── Skill marketplace + learning loop slash commands ──
+        # 2026-09-01. Sits on Claude's skill_marketplace.py +
+        # learning_loop.py modules (same module/dispatch split as `mcp`
+        # on sensei_mcp_client.py). Sub-commands:
+        #   skill browse [source]            — list a source's skills, flag adapted ones
+        #   skill install <source> <id>      — audit FIRST; pass = stage raw files
+        #                                      (NOT runnable — needs STEPS adaptation)
+        #   skill audit <name>               — re-scan an adapted skill, read-only
+        #   skill improve <name>             — failure-pattern report from real run
+        #                                      history; mechanical fix (if any) goes
+        #                                      through confirm_edit() — never a
+        #                                      silent write.
+        # Existing `skill list/load` style commands elsewhere in this file
+        # are untouched; these are new subcommands alongside them.
+        if lo == "skill" or lo.startswith("skill "):
+            try:
+                import skill_improve_helpers as _sk
+                _parts = cmd.split()
+                _sub = _parts[1].lower() if len(_parts) > 1 else ""
+                _rest = _parts[2:]
+                if _sub in ("", "list"):
+                    # bare `skill` = marketplace browse (source listing
+                    # lives in `skill browse`; no legacy conflict — the
+                    # old `skills`-style command family is untouched)
+                    print(f"  {_sk.browse(None)}")
+                elif _sub == "browse":
+                    _src = _rest[0] if _rest else None
+                    print(f"  {_sk.browse(_src)}")
+                elif _sub == "install":
+                    if len(_rest) < 2:
+                        print(f"  {W}usage: skill install <source> <skill-id>{X}")
+                        print(f"  {D}example: skill install hermes research/web-search-ddgr{X}")
+                    else:
+                        print(f"  {_sk.install(_rest[0], _rest[1])}")
+                elif _sub == "audit":
+                    if not _rest:
+                        print(f"  {W}usage: skill audit <name>{X}")
+                    else:
+                        print(f"  {_sk.audit(' '.join(_rest))}")
+                elif _sub == "improve":
+                    _name = _rest[0] if _rest else ""
+                    if not _name:
+                        print(f"  {W}usage: skill improve <name>{X}")
+                    else:
+                        _text, _fix = _sk.improve(_name)
+                        print(f"\n{_text}\n")
+                        if _fix:
+                            # THE safety gate: identical path to any other
+                            # EDIT Sensei proposes — fence check + diff +
+                            # mode check + explicit confirm. No bypass.
+                            _ok = confirm_edit(
+                                _fix["filepath"],
+                                _fix["find_text"],
+                                _fix["replace_text"],
+                            )
+                            print(f"  {G if _ok else Y}improve edit "
+                                  f"{'applied' if _ok else 'not applied'}{X}")
+                else:
+                    print(f"  {W}usage: skill [browse [source]|install <source> <id>|audit <name>|improve <name>]{X}")
+            except Exception as e:
+                print(f"  {W}skill command error: {e}{X}\n")
+            continue
+
         if lo == "help":
             maybe_msg = show_help()
             if maybe_msg:
@@ -14203,13 +14308,16 @@ def main():
             print(f"  {G}✅ No-mouse mode ON — arrow keys navigate menus, Tab/Enter to confirm.{X}")
             continue
         if lo in ("mouse remote", "remote mouse", "phone mouse", "mouse phone"):
-            set_mouse_profile("remote")
+            if set_mouse_profile("remote"):
+                _mouse_profile_restart(history)  # unreachable after
             continue
         if lo in ("mouse local", "local mouse", "copy mouse", "mouse copy"):
-            set_mouse_profile("local")
+            if set_mouse_profile("local"):
+                _mouse_profile_restart(history)  # unreachable after
             continue
         if lo in ("mouse toggle", "toggle mouse", "mouse switch"):
-            set_mouse_profile("toggle")
+            if set_mouse_profile("toggle"):
+                _mouse_profile_restart(history)  # unreachable after
             continue
         if lo in ("mouse status", "mouse", "mouse mode"):
             set_mouse_profile("status")

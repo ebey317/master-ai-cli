@@ -130,25 +130,29 @@ class HeadlessRunner:
 
     @staticmethod
     def _model_reply(history: List[Dict[str, str]]) -> str:
-        """Placeholder LLM call.
+        """Real model call via master_ai.ask_local.
 
-        In a full implementation this calls the same local/cloud routing path
-        used by the interactive Sensei loop. For now it returns a simple
-        directive so headless mode can be tested end-to-end without keys.
+        2026-09-01: this used to be a placeholder that never called any
+        model. ask_local() is the same local/cloud-routing layer the rest
+        of master_ai.py (and CLAF escalation) is built on -- the lower
+        level api_handle() in stt_server.py itself ultimately calls into.
+        Deliberately NOT routing through api_handle() directly: that
+        function is heavily specialized for the Chrome-extension browser-
+        action *proposal* contract (every action tagged executed=False by
+        design, classified by page_url/sensitivity tier) and pulls in a
+        lot of incidental machinery (capabilities/verifiers/prompt_versions,
+        module-global patching) just to extract a text reply -- real
+        coupling risk for a general RUN/READ/CREATE/EDIT headless loop.
+        ask_local() is the minimal, correct integration point.
+
+        Local import (not module-level) matches this file's own stated
+        design goal of not pulling in interactive-UI state at import time
+        -- master_ai only gets imported once a task actually needs a
+        model turn.
         """
-        # If the history only contains the original task and no tool results,
-        # ask the model to report what it would do rather than touch files.
-        last_user = next(
-            (m["content"] for m in reversed(history) if m.get("role") == "user"),
-            "",
-        )
-        if "READ:" in last_user or "CREATE:" in last_user or "RUN:" in last_user:
-            return "No further actions. Task complete."
-        return (
-            "I understand the task. In headless mode I would route this to the "
-            "configured local model and execute any returned tool directives. "
-            "No directives issued for this placeholder response."
-        )
+        import master_ai
+        messages = [{"role": h["role"], "content": h["content"]} for h in history]
+        return master_ai.ask_local(messages) or ""
 
     def _parse_actions(self, reply: str) -> List[Dict[str, Any]]:
         try:
