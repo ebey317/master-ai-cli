@@ -47,6 +47,18 @@ def save_schedules(schedules):
 
 
 def _next_time(when: str, cadence: str, now: datetime = None):
+    """Next occurrence strictly after `now`.
+
+    2026-09-01: the fire decision used to call this with `now` as the
+    reference point and then check `now >= result` -- but this function by
+    construction always returns something strictly after whatever
+    reference it's given, so that comparison could never be true. The
+    trigger was structurally unreachable; caught via an actual end-to-end
+    test (job never fired), not just code inspection. The fix isn't a new
+    function -- it's calling this with the right reference point: the
+    schedule's last_run (or creation time if it's never fired), not `now`.
+    Once `now` catches up to that boundary, it fires; see _scheduler_loop.
+    """
     now = now or datetime.now()
     m = re.match(r"(\d{1,2}):(\d{2})", when)
     hour = int(m.group(1)) if m else 0
@@ -72,13 +84,25 @@ def _next_time(when: str, cadence: str, now: datetime = None):
 
 
 def _run_command(command: str):
-    """Execute a master-ai slash command via the installed CLI."""
-    # Strip leading slash if present
+    """Execute a scheduled command directly through the shell.
+
+    2026-09-01: this used to shell out to `master_ai.py --run <cmd>`, a flag
+    that never existed (main() has no argv handling for --run). Two days
+    after this daemon was built, headless mode was reworked to --task/
+    --headless (headless_runner.py, commit 11ebf5d) and this call site was
+    never updated to match -- so scheduled jobs likely never actually ran
+    even before the feature was removed as "unused" a week later.
+    headless_runner's model-reply path is also a placeholder stub with no
+    real LLM wired in, so it can't dispatch master-ai's internal TUI
+    commands (doctor, etc.) either way. Running the scheduled string as a
+    real shell command matches how Hermes's own cron (~/.hermes/cron/
+    jobs.json) executes scripted jobs and is the only path that's actually
+    functional today. Strip a leading slash for compatibility with schedules
+    saved in the old "/rag rebuild"-style format.
+    """
     cmd = command.lstrip("/")
-    master_ai = Path.home() / "scripts" / "master_ai.py"
-    # Use the same python that is running us
     proc = subprocess.run(
-        [sys.executable, str(master_ai), "--run", cmd],
+        ["bash", "-lc", cmd],
         capture_output=True,
         text=True,
         timeout=600,
@@ -99,8 +123,11 @@ def _scheduler_loop():
             if not s.get("enabled", True):
                 continue
             last = s.get("last_run")
-            nxt = _next_time(s.get("when", "00:00"), s.get("cadence", "daily"), now)
-            if now >= nxt and (not last or datetime.fromisoformat(last) < nxt):
+            anchor = datetime.fromisoformat(last) if last else datetime.fromisoformat(
+                s.get("created") or now.isoformat()
+            )
+            boundary = _next_time(s.get("when", "00:00"), s.get("cadence", "daily"), anchor)
+            if now >= boundary:
                 log(f"triggering schedule {s.get('id')}: {s.get('command')}")
                 Thread(target=_run_command, args=(s["command"],), daemon=True).start()
                 s["last_run"] = now.isoformat()
