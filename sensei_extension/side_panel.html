@@ -4,16 +4,22 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sensei</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
   <link rel="stylesheet" href="side_panel.css">
 </head>
 <body>
   <main class="shell">
     <header class="topbar">
-      <div>
-        <h1>Sensei</h1>
-        <p id="connectionState">Checking backend</p>
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">M</span>
+        <div class="brand-text">
+          <h1>Sensei</h1>
+          <p id="connectionState">Checking backend</p>
+        </div>
       </div>
-      <button id="openOptions" class="icon-button" title="Options" aria-label="Options">...</button>
+      <button id="openOptions" class="icon-button" title="Options" aria-label="Options">⚙</button>
     </header>
 
     <section id="chatLog" class="chat-log" aria-live="polite"></section>

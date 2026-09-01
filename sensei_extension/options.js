@@ -1,5 +1,5 @@
 const DEFAULTS = {
-  backendUrl: "http://127.0.0.1:8080",
+  backendUrl: "http://127.0.0.1:8791",
   token: "",
   mode: "review",
   sessionId: "",
@@ -119,6 +119,12 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 3500) {
 async function load() {
   const stored = await chromeGet(Object.keys(DEFAULTS));
   const config = normalizeConfig(stored);
+  // Same 2026-08-21 :8080 -> :8791 migration as side_panel.js — self-heal
+  // instead of requiring a manual Save click.
+  if (config.backendUrl === "http://127.0.0.1:8080") {
+    config.backendUrl = DEFAULTS.backendUrl;
+    await chromeSet({ backendUrl: config.backendUrl });
+  }
   if (!config.sessionId) config.sessionId = `sensei-${crypto.randomUUID()}`;
   $("#backendUrl").value = config.backendUrl || DEFAULTS.backendUrl;
   $("#token").value = config.token || "";

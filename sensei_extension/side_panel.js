@@ -1,5 +1,5 @@
 const DEFAULT_CONFIG = {
-  backendUrl: "http://127.0.0.1:8080",
+  backendUrl: "http://127.0.0.1:8791",
   token: "",
   mode: "review",
   sessionId: "",
@@ -125,6 +125,14 @@ async function loadConfig() {
     await chromeSet({ sessionId: state.config.sessionId });
   }
   state.config.backendUrl = String(state.config.backendUrl || DEFAULT_CONFIG.backendUrl).replace(/\/+$/, "");
+  // One-time migration: sensei_bridge.py moved off :8080 (that port belongs
+  // to Pupil's stt_server.py) to :8791 on 2026-08-21. Any install that still
+  // has the old stale default saved gets auto-corrected here so nobody has
+  // to hunt down the Options page and click Save by hand.
+  if (state.config.backendUrl === "http://127.0.0.1:8080") {
+    state.config.backendUrl = DEFAULT_CONFIG.backendUrl;
+    await chromeSet({ backendUrl: state.config.backendUrl });
+  }
   $("#modeSelect").value = state.config.mode || "review";
   document.body.className = `mode-${state.config.mode || "review"}`;
 }
@@ -3394,3 +3402,215 @@ async function init() {
 }
 
 init().catch((err) => appendError(err.message));
+
+// ── MCP bridge poller ──────────────────────────────────────────────────────
+// sensei_mcp_server.py pushes BROWSER_* actions to the backend queue. We poll
+// /extension/pending every 2 s, execute them headlessly, and post results back.
+
+const MCP_POLL_INTERVAL_MS = 2000;
+const MCP_DEFAULT_SESSION = "mcp-default";
+
+async function dispatchMcpAction(action) {
+  const kind = String(action.kind || "").toUpperCase();
+  try {
+    // Tab-management actions that the normal approveAction flow doesn't cover
+    if (kind === "BROWSER_TAB_LIST") {
+      const sessionGroupId = state.sessionTabGroup?.groupId || null;
+      const tabs = await chrome.tabs.query({});
+      const sessionTabs = sessionGroupId
+        ? tabs.filter((t) => t.groupId === sessionGroupId)
+        : [];
+      return {
+        ok: true,
+        session_group_id: sessionGroupId,
+        session_tabs: sessionTabs.map((t) => ({
+          id: t.id, title: t.title, url: t.url, active: t.active,
+          windowId: t.windowId, index: t.index,
+        })),
+        all_tabs: tabs.slice(0, 50).map((t) => ({
+          id: t.id, title: t.title, url: t.url, active: t.active,
+          windowId: t.windowId, index: t.index,
+          in_session: t.groupId === sessionGroupId,
+        })),
+      };
+    }
+    if (kind === "BROWSER_TAB_SWITCH") {
+      const tabId = parseInt(String(action.target || ""), 10);
+      if (!tabId) return { ok: false, error: "tab_id required" };
+      await chrome.tabs.update(tabId, { active: true });
+      return { ok: true, tab_id: tabId };
+    }
+    if (kind === "BROWSER_TAB_CLOSE") {
+      const tabId = parseInt(String(action.target || ""), 10);
+      if (!tabId) return { ok: false, error: "tab_id required" };
+      await chrome.tabs.remove(tabId);
+      return { ok: true, tab_id: tabId };
+    }
+    if (kind === "BROWSER_TAB_CREATE") {
+      const url = normalizeUrl(action.target || "about:blank");
+      const newTab = await chrome.tabs.create({ url, active: false });
+      if (newTab?.id) await addTabToSessionGroup(newTab.id).catch(() => {});
+      return { ok: true, tab_created: { id: newTab?.id, url, windowId: newTab?.windowId } };
+    }
+    if (kind === "BROWSER_SCREENSHOT") {
+      const tab = await activeTab().catch(() => null);
+      if (!tab) return { ok: false, error: "no active tab" };
+      const capture = await chrome.runtime.sendMessage({
+        type: "SENSEI_CAPTURE_VISIBLE_TAB", windowId: tab.windowId,
+      });
+      if (!capture?.ok) return { ok: false, error: capture?.error || "capture failed" };
+      return { ok: true, screenshot: "visible_tab_png", dataUrl: capture.dataUrl };
+    }
+    if (kind === "BROWSER_GET_DOM") {
+      const tab = await activeTab().catch(() => null);
+      if (!tab?.id) return { ok: false, error: "no active tab" };
+      const selector = String(action.target || action.selector || "");
+      const [frame] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (sel) => {
+          try {
+            const el = sel ? document.querySelector(sel) : document.documentElement;
+            if (!el) return { ok: false, error: "selector not found" };
+            const html = el.outerHTML;
+            return { ok: true, html: html.length > 50000 ? html.slice(0, 50000) + "...[truncated]" : html };
+          } catch (e) { return { ok: false, error: e.message }; }
+        },
+        args: [selector],
+      });
+      return frame?.result || { ok: false, error: "script injection failed" };
+    }
+    if (kind === "BROWSER_JS") {
+      const tab = await activeTab().catch(() => null);
+      if (!tab?.id) return { ok: false, error: "no active tab" };
+      const command = String(action.command || "").toLowerCase();
+      const allFrames = action.all_frames !== false;
+      // Static, CSP-safe JS runner. We pass a fixed function body and an options
+      // object so Chrome injects real code instead of using eval() in the page.
+      const jsRunner = (opts) => {
+        try {
+          const byText = (tag, text) => {
+            const re = new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+            const els = Array.from(document.querySelectorAll(tag));
+            return els.find((el) => re.test(el.textContent.trim()));
+          };
+          if (opts.command === "click_text") {
+            const el = byText(opts.tag || "button, a, [role='button']", opts.text);
+            if (!el) return { ok: false, error: `no element with text "${opts.text}"` };
+            el.click();
+            return { ok: true, clicked: opts.text, url: location.href };
+          }
+          if (opts.command === "click_selector") {
+            const el = document.querySelector(opts.selector);
+            if (!el) return { ok: false, error: `selector not found: ${opts.selector}` };
+            el.click();
+            return { ok: true, clicked: opts.selector, url: location.href };
+          }
+          if (opts.command === "fill_selector") {
+            const el = document.querySelector(opts.selector);
+            if (!el) return { ok: false, error: `selector not found: ${opts.selector}` };
+            el.focus();
+            el.value = opts.value || "";
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+            el.blur();
+            return { ok: true, filled: opts.selector, url: location.href };
+          }
+          if (opts.command === "select_option") {
+            const el = document.querySelector(opts.selector);
+            if (!el) return { ok: false, error: `selector not found: ${opts.selector}` };
+            const opt = Array.from(el.options).find((o) =>
+              new RegExp(opts.option_text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i").test(o.text)
+            );
+            if (!opt) return { ok: false, error: `option "${opts.option_text}" not found` };
+            el.value = opt.value;
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+            return { ok: true, selected: opt.text, url: location.href };
+          }
+          if (opts.command === "query") {
+            const sel = opts.selector || "*";
+            const limit = Number(opts.limit) || 20;
+            const attr = opts.attribute || "textContent";
+            const els = Array.from(document.querySelectorAll(sel)).slice(0, limit);
+            const out = els.map((el) => {
+              const item = { tag: el.tagName, text: el.textContent?.trim().slice(0, 300) };
+              if (attr === "outerHTML") item.html = el.outerHTML?.slice(0, 800);
+              else if (attr !== "textContent") item[attr] = el.getAttribute?.(attr);
+              return item;
+            });
+            return { ok: true, count: out.length, selector: sel, results: out, url: location.href };
+          }
+          return { ok: false, error: `unknown command: ${opts.command}` };
+        } catch (e) {
+          return { ok: false, error: e.message, url: location.href };
+        }
+      };
+      const opts = {
+        command,
+        tag: action.tag,
+        text: action.text,
+        selector: action.selector,
+        value: action.value,
+        option_text: action.option_text,
+        attribute: action.attribute,
+        limit: action.limit,
+      };
+      try {
+        const frames = await chrome.scripting.executeScript({
+          target: { tabId: tab.id, allFrames },
+          func: jsRunner,
+          args: [opts],
+        });
+        const successes = (frames || []).filter((f) => f?.result?.ok).map((f) => f.result);
+        if (successes.length) return { ok: true, frames_run: frames.length, results: successes };
+        const errors = (frames || []).filter((f) => f?.result && !f.result.ok).map((f) => f.result);
+        return { ok: false, error: "all frames failed", details: errors.slice(0, 5) };
+      } catch (err) {
+        return { ok: false, error: err.message || String(err) };
+      }
+    }
+    // All other BROWSER_* actions route through the existing content-script path
+    if (kind.startsWith("BROWSER_")) {
+      const tab = await activeTab().catch(() => null);
+      if (!tab?.id) return { ok: false, error: "no active tab" };
+      const result = await Promise.race([
+        sendToContent(tab, action, {}),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("sendToContent timeout")), 15000)),
+      ]).catch((err) => ({ ok: false, error: err.message }));
+      if (result?.ok) await waitForTabSettled(tab.id, 3000).catch(() => {});
+      invalidatePageContext(tab.id);
+      return result || { ok: false, error: "no result" };
+    }
+    return { ok: false, error: `unsupported kind: ${kind}` };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+}
+
+let _mcpPollRunning = false;
+
+async function mcpPoll() {
+  if (_mcpPollRunning) return;
+  _mcpPollRunning = true;
+  try {
+    const data = await backendFetch(
+      `/extension/pending?session_id=${encodeURIComponent(MCP_DEFAULT_SESSION)}`,
+      { timeoutMs: 3000 }
+    ).catch(() => null);
+    if (!data?.actions?.length) return;
+    for (const entry of data.actions) {
+      const action = entry.action || entry;
+      const actionId = entry.action_id || action.id;
+      if (!actionId) continue;
+      const result = await dispatchMcpAction(action);
+      await backendFetch("/extension/mcp_result", {
+        method: "POST",
+        body: { action_id: actionId, session_id: MCP_DEFAULT_SESSION, result },
+        timeoutMs: 5000,
+      }).catch((err) => console.warn("[mcp-poll] result post failed:", err.message));
+    }
+  } finally {
+    _mcpPollRunning = false;
+  }
+}
+
+setInterval(mcpPoll, MCP_POLL_INTERVAL_MS);

@@ -78,10 +78,10 @@ picks up the UI commits:
 
 ```text
 1. Open chrome://extensions, reload Sensei.
-2. Open file:///home/user/scripts/sensei_extension/test/job_app_smoke.html
+2. Open file:///home/elijah/scripts/sensei_extension/test/job_app_smoke.html
 3. Open the side panel; mode = "Ask before acting".
 4. Send: fill out this job application for Elijah W., 317-555-0100,
-   you@example.com, Indianapolis IN 46201, 10 years experience,
+   ebey317@gmail.com, Indianapolis IN 46201, 10 years experience,
    authorized to work in the US, cover letter "I want this job",
    then submit.
 5. Expected: ONE Approve-All card listing 11 actions, brand-accent

@@ -4,19 +4,25 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sensei Options</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
   <link rel="stylesheet" href="options.css">
 </head>
 <body>
   <main class="settings">
     <header>
-      <h1>Sensei Options</h1>
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">M</span>
+        <h1>Sensei Options</h1>
+      </div>
       <p id="status">Not saved</p>
     </header>
 
     <form id="optionsForm">
       <label>
         Backend URL
-        <input id="backendUrl" type="url" placeholder="http://127.0.0.1:8080">
+        <input id="backendUrl" type="url" placeholder="http://127.0.0.1:8791">
       </label>
 
       <label>
@@ -40,7 +46,7 @@
 
       <label>
         Résumé file path
-        <input id="resumePath" type="text" placeholder="/home/user/Documents/resume.pdf" autocomplete="off">
+        <input id="resumePath" type="text" placeholder="/home/elijah/Documents/resume.pdf" autocomplete="off">
         <button id="testResumeRead" type="button">Test read</button>
         <small>Local file the model can reference for file-upload BROWSER_FILL targets. Backend reads via the /extension/read_local_file endpoint (auth required).</small>
       </label>

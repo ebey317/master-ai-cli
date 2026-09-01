@@ -2475,6 +2475,22 @@ async function executeBrowserAction(action) {
     return { ok: true, double_clicked: action.target, page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 }) };
   }
 
+  if (kind === "BROWSER_HOVER") {
+    const el = findElement(action.target);
+    if (!el) return { ok: false, error: "target not found" };
+    el.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
+    try { _mirrorMoveGhost(el); } catch (_e) {}
+    const rect = el.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const opts = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy };
+    el.dispatchEvent(new MouseEvent("mouseenter", opts));
+    el.dispatchEvent(new MouseEvent("mouseover", opts));
+    el.dispatchEvent(new MouseEvent("mousemove", opts));
+    await waitForPageStable(250, 800);
+    return { ok: true, hovered: action.target, page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 }) };
+  }
+
   if (kind === "BROWSER_FILL") {
     const parsed = parseFillTarget(action);
     const fileUpload = action?.extras?.fileUpload || null;
@@ -2801,6 +2817,71 @@ async function executeBrowserAction(action) {
   if (kind === "BROWSER_DRIVE_INSPECT_FOLDER") {
     const state = driveState();
     return { ok: true, drive_state: state, text: state.summary };
+  }
+
+  // ── BROWSER_CONSOLE ────────────────────────────────────────────────────────
+  if (kind === "BROWSER_CONSOLE") {
+    let logs = Array.isArray(globalThis.__SENSEI_CONSOLE_EVENTS__)
+      ? globalThis.__SENSEI_CONSOLE_EVENTS__.slice()
+      : [];
+    const pattern = String(action?.target || "").trim();
+    if (pattern) {
+      try {
+        const re = new RegExp(pattern, "i");
+        logs = logs.filter(e => re.test(String(e.message || "")));
+      } catch (_e) {
+        logs = logs.filter(e => String(e.message || "").includes(pattern));
+      }
+    }
+    return { ok: true, url: location.href, count: logs.length, logs };
+  }
+
+  // ── BROWSER_NETWORK ────────────────────────────────────────────────────────
+  if (kind === "BROWSER_NETWORK") {
+    try {
+      const result = await chrome.runtime.sendMessage({ type: "SENSEI_BROWSER_NETWORK", filter: String(action?.target || "all") });
+      return result;
+    } catch (err) { return { ok: false, error: String(err?.message || err) }; }
+  }
+
+  // ── BROWSER_GET_STORAGE ───────────────────────────────────────────────────
+  if (kind === "BROWSER_GET_STORAGE") {
+    try {
+      const result = await chrome.runtime.sendMessage({ type: "SENSEI_BROWSER_GET_STORAGE", storage_type: String(action?.target || "both") });
+      return result;
+    } catch (err) { return { ok: false, error: String(err?.message || err) }; }
+  }
+
+  // ── BROWSER_GET_COOKIES ───────────────────────────────────────────────────
+  if (kind === "BROWSER_GET_COOKIES") {
+    try {
+      const result = await chrome.runtime.sendMessage({ type: "SENSEI_BROWSER_GET_COOKIES" });
+      return result;
+    } catch (err) { return { ok: false, error: String(err?.message || err) }; }
+  }
+
+  // ── BROWSER_GET_NETWORK_BODY ──────────────────────────────────────────────
+  if (kind === "BROWSER_GET_NETWORK_BODY") {
+    try {
+      const result = await chrome.runtime.sendMessage({ type: "SENSEI_BROWSER_GET_NETWORK_BODY", url: String(action?.target || "") });
+      return result;
+    } catch (err) { return { ok: false, error: String(err?.message || err) }; }
+  }
+
+  // ── BROWSER_GET_DOM ───────────────────────────────────────────────────────
+  if (kind === "BROWSER_GET_DOM") {
+    try {
+      const result = await chrome.runtime.sendMessage({ type: "SENSEI_BROWSER_GET_DOM", selector: String(action?.target || "") });
+      return result;
+    } catch (err) { return { ok: false, error: String(err?.message || err) }; }
+  }
+
+  // ── BROWSER_GET_PERFORMANCE ───────────────────────────────────────────────
+  if (kind === "BROWSER_GET_PERFORMANCE") {
+    try {
+      const result = await chrome.runtime.sendMessage({ type: "SENSEI_BROWSER_GET_PERFORMANCE" });
+      return result;
+    } catch (err) { return { ok: false, error: String(err?.message || err) }; }
   }
 
   return { ok: false, error: `unsupported browser action: ${kind}` };

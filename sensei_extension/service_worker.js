@@ -1,5 +1,5 @@
 const DEFAULTS = {
-  backendUrl: "http://127.0.0.1:8080",
+  backendUrl: "http://127.0.0.1:8791",
   mode: "review",
   token: "",
   sessionId: "",
@@ -828,6 +828,117 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "SENSEI_RUN_SHORTCUT") {
     executeWorkflowShortcut(message.shortcut || {}, message.params || {}, { manual: true })
       .then(sendResponse);
+    return true;
+  }
+
+  // ── DevTools surface ───────────────────────────────────────────────────────
+  if (message?.type === "SENSEI_BROWSER_NETWORK") {
+    (async () => {
+      try {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tabId = tabs[0]?.id;
+        if (!Number.isFinite(tabId)) { sendResponse({ ok: false, error: "no active tab" }); return; }
+        await _ensureDebuggerAttached(tabId);
+        await _cdpSend(tabId, "Network.enable", {});
+        const filter = String(message.filter || "all").toLowerCase();
+        const buf = _networkBuffers.get(tabId) || [];
+        const rows = filter === "all"
+          ? buf
+          : buf.filter(e => String(e.url || "").toLowerCase().includes(filter));
+        sendResponse({ ok: true, count: rows.length, requests: rows });
+      } catch (err) { sendResponse({ ok: false, error: String(err?.message || err) }); }
+    })();
+    return true;
+  }
+
+  if (message?.type === "SENSEI_BROWSER_GET_COOKIES") {
+    (async () => {
+      try {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tabId = tabs[0]?.id;
+        if (!Number.isFinite(tabId)) { sendResponse({ ok: false, error: "no active tab" }); return; }
+        await _ensureDebuggerAttached(tabId);
+        await _cdpSend(tabId, "Network.enable", {});
+        const tabUrl = tabs[0]?.url || "";
+        const res = await _cdpSend(tabId, "Network.getCookies", { urls: [tabUrl] });
+        sendResponse({ ok: true, result: JSON.stringify(res.cookies || []) });
+      } catch (err) { sendResponse({ ok: false, error: String(err?.message || err) }); }
+    })();
+    return true;
+  }
+
+  if (message?.type === "SENSEI_BROWSER_GET_STORAGE") {
+    (async () => {
+      try {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tabId = tabs[0]?.id;
+        if (!Number.isFinite(tabId)) { sendResponse({ ok: false, error: "no active tab" }); return; }
+        await _ensureDebuggerAttached(tabId);
+        const t = String(message.storage_type || "both").toLowerCase();
+        const expr = t === "local"
+          ? "JSON.stringify({local:Object.fromEntries(Object.entries(localStorage))})"
+          : t === "session"
+          ? "JSON.stringify({session:Object.fromEntries(Object.entries(sessionStorage))})"
+          : "JSON.stringify({local:Object.fromEntries(Object.entries(localStorage)),session:Object.fromEntries(Object.entries(sessionStorage))})";
+        const res = await _cdpSend(tabId, "Runtime.evaluate", { expression: expr, returnByValue: true });
+        sendResponse({ ok: true, result: res?.result?.value || "{}" });
+      } catch (err) { sendResponse({ ok: false, error: String(err?.message || err) }); }
+    })();
+    return true;
+  }
+
+  if (message?.type === "SENSEI_BROWSER_GET_NETWORK_BODY") {
+    (async () => {
+      try {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tabId = tabs[0]?.id;
+        if (!Number.isFinite(tabId)) { sendResponse({ ok: false, error: "no active tab" }); return; }
+        const urlFilter = String(message.url || "").toLowerCase();
+        const buf = _networkBuffers.get(tabId) || [];
+        const match = [...buf].reverse().find(e => e.phase === "response" && (!urlFilter || e.url.toLowerCase().includes(urlFilter)));
+        if (!match) { sendResponse({ ok: false, error: "no matching response in network buffer — trigger the request first" }); return; }
+        await _ensureDebuggerAttached(tabId);
+        const body = await _cdpSend(tabId, "Network.getResponseBody", { requestId: match.request_id });
+        sendResponse({ ok: true, result: JSON.stringify({ url: match.url, status: match.status, body: (body.body || "").slice(0, 8192), base64: body.base64Encoded }) });
+      } catch (err) { sendResponse({ ok: false, error: String(err?.message || err) }); }
+    })();
+    return true;
+  }
+
+  if (message?.type === "SENSEI_BROWSER_GET_DOM") {
+    (async () => {
+      try {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tabId = tabs[0]?.id;
+        if (!Number.isFinite(tabId)) { sendResponse({ ok: false, error: "no active tab" }); return; }
+        await _ensureDebuggerAttached(tabId);
+        const selector = String(message.selector || "").trim();
+        const expr = selector
+          ? `(function(){var el=document.querySelector(${JSON.stringify(selector)});return el?el.outerHTML:"selector not found";})()`
+          : "document.documentElement.outerHTML.slice(0,32768)";
+        const res = await _cdpSend(tabId, "Runtime.evaluate", { expression: expr, returnByValue: true });
+        sendResponse({ ok: true, result: String(res?.result?.value || "").slice(0, 32768) });
+      } catch (err) { sendResponse({ ok: false, error: String(err?.message || err) }); }
+    })();
+    return true;
+  }
+
+  if (message?.type === "SENSEI_BROWSER_GET_PERFORMANCE") {
+    (async () => {
+      try {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tabId = tabs[0]?.id;
+        if (!Number.isFinite(tabId)) { sendResponse({ ok: false, error: "no active tab" }); return; }
+        await _ensureDebuggerAttached(tabId);
+        await _cdpSend(tabId, "Performance.enable", {});
+        const metrics = await _cdpSend(tabId, "Performance.getMetrics", {});
+        const timingRes = await _cdpSend(tabId, "Runtime.evaluate", {
+          expression: "JSON.stringify({navigation:performance.getEntriesByType('navigation').map(e=>e.toJSON()),resources:performance.getEntriesByType('resource').slice(0,20).map(e=>({name:e.name,duration:Math.round(e.duration),size:e.transferSize}))})",
+          returnByValue: true,
+        });
+        sendResponse({ ok: true, result: JSON.stringify({ metrics: metrics.metrics || [], timing: JSON.parse(timingRes?.result?.value || "{}") }) });
+      } catch (err) { sendResponse({ ok: false, error: String(err?.message || err) }); }
+    })();
     return true;
   }
 
