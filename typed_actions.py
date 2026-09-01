@@ -34,6 +34,7 @@ depend on it without pulling in the orchestrator.
 from __future__ import annotations
 
 import json
+import os
 import re
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -48,6 +49,13 @@ class Kind:
     CREATE = "CREATE"
     EDIT = "EDIT"
     REMEMBER = "REMEMBER"  # 2026-05-11: model self-write to memory
+    # 2026-08-23: kinds the legacy parser added after this module's initial
+    # build (2026-05-17) that typed_actions had drifted out of sync with.
+    PLAN = "PLAN"
+    DONE = "DONE"
+    THINK = "THINK"
+    RUN_SKILL = "RUN_SKILL"
+    SEND_EMAIL = "SEND_EMAIL"
     # 2026-05-12: Chrome extension M1 surface. Browser-side execution only —
     # backend proposes, extension dispatches via content script, posts result
     # to /extension/action_result. Backend never reaches into the DOM directly.
@@ -94,6 +102,7 @@ class Status:
 
 
 DIRECTIVE_KINDS = frozenset({Kind.RUN, Kind.RUNTERM, Kind.READ, Kind.CREATE, Kind.EDIT, Kind.REMEMBER,
+                             Kind.PLAN, Kind.DONE, Kind.THINK, Kind.RUN_SKILL, Kind.SEND_EMAIL,
                              Kind.BROWSER_CLICK, Kind.BROWSER_FILL, Kind.BROWSER_FILL_FORM, Kind.BROWSER_UPLOAD_FILE,
                              Kind.BROWSER_SUBMIT, Kind.BROWSER_READ,
                              Kind.BROWSER_READ_PAGE, Kind.BROWSER_READ_PAGE_FULL, Kind.BROWSER_OBSERVE, Kind.BROWSER_NAV,
@@ -127,7 +136,7 @@ _SAFE_RUN_PREFIXES = (
 )
 
 _DIRECTIVE_LINE_RE = re.compile(
-    r"^\s*(RUN|RUNTERM|READ|CREATE|EDIT|REMEMBER|BROWSER_CLICK|BROWSER_FILL|BROWSER_FILL_FORM|BROWSER_UPLOAD_FILE|BROWSER_SUBMIT|BROWSER_READ_PAGE_FULL|BROWSER_READ_PAGE|BROWSER_OBSERVE|BROWSER_READ|BROWSER_NAV|BROWSER_CLOSE_TAB|BROWSER_SCREENSHOT|BROWSER_WAIT|BROWSER_SCROLL|BROWSER_DOUBLE_CLICK|BROWSER_FIND|BROWSER_EXTRACT_LIST|BROWSER_DRIVE_INSPECT_FOLDER|BROWSER_CDP_MOUSE|BROWSER_CDP_KEY|BROWSER_TAB_CREATE|REMOTE_MCP):\s*(.*?)\s*$",
+    r"^\s*(RUN|RUNTERM|READ|CREATE|EDIT|REMEMBER|PLAN|DONE|THINK|RUN_SKILL|SEND_EMAIL|BROWSER_CLICK|BROWSER_FILL|BROWSER_FILL_FORM|BROWSER_UPLOAD_FILE|BROWSER_SUBMIT|BROWSER_READ_PAGE_FULL|BROWSER_READ_PAGE|BROWSER_OBSERVE|BROWSER_READ|BROWSER_NAV|BROWSER_CLOSE_TAB|BROWSER_SCREENSHOT|BROWSER_WAIT|BROWSER_SCROLL|BROWSER_DOUBLE_CLICK|BROWSER_FIND|BROWSER_EXTRACT_LIST|BROWSER_DRIVE_INSPECT_FOLDER|BROWSER_CDP_MOUSE|BROWSER_CDP_KEY|BROWSER_TAB_CREATE|REMOTE_MCP):\s*(.*?)\s*$",
     re.IGNORECASE,
 )
 
@@ -225,6 +234,12 @@ def classify_risk(action: TypedAction) -> str:
     if action.kind == Kind.READ:
         action.risk = Risk.SAFE
         return action.risk
+    if action.kind in (Kind.THINK, Kind.DONE, Kind.PLAN):
+        action.risk = Risk.SAFE
+        return action.risk
+    if action.kind in (Kind.RUN_SKILL, Kind.SEND_EMAIL):
+        action.risk = Risk.NORMAL
+        return action.risk
     if action.kind in (Kind.RUN, Kind.RUNTERM):
         t = (action.target or "").strip()
         low = t.lower()
@@ -283,7 +298,7 @@ def parse_directive(line: str, *, model: str = "", source_text: str = "",
         created_by_model=model or "",
         source_text=source_text or line,
         requires_confirm=(kind in (
-            Kind.RUN, Kind.RUNTERM, Kind.CREATE, Kind.EDIT,
+            Kind.RUN, Kind.RUNTERM, Kind.CREATE, Kind.EDIT, Kind.RUN_SKILL, Kind.SEND_EMAIL,
             Kind.BROWSER_CLICK, Kind.BROWSER_FILL, Kind.BROWSER_FILL_FORM, Kind.BROWSER_UPLOAD_FILE,
             Kind.BROWSER_SUBMIT, Kind.BROWSER_READ,
             Kind.BROWSER_READ_PAGE, Kind.BROWSER_OBSERVE, Kind.BROWSER_NAV,
@@ -311,6 +326,235 @@ def parse_reply(text: str, *, model: str = "",
         action = parse_directive(raw, model=model, source_text=raw, cwd=cwd)
         if action is not None:
             out.append(action)
+    return out
+
+
+def _is_noop_payload(s: str) -> bool:
+    """True for empty/placeholder payloads (bare ':', 'true', pure
+    punctuation) a model sometimes emits for a directive with nothing real
+    to say. A standalone equivalent of master_ai._is_noop_cmd — this module
+    intentionally has no master_ai import (see module docstring)."""
+    s = (s or "").strip()
+    if not s:
+        return True
+    if s in (":", "true", "True"):
+        return True
+    if not re.search(r"[A-Za-z0-9]", s):
+        return True
+    return False
+
+
+def _strip_wrap(s: str) -> str:
+    """Strip one matching pair of wrapping backticks/quotes, mirroring
+    master_ai._strip_command_wrap (master_ai.py:9156-9162)."""
+    s = (s or "").strip()
+    for lead, trail in (("`", "`"), ("'", "'"), ('"', '"'), ("“", "”"), ("‘", "’")):
+        if len(s) >= 2 and s.startswith(lead) and s.endswith(trail):
+            s = s[1:-1].strip()
+            break
+    return s
+
+
+# Kinds master_ai.process_reply() extracts as single-line RUN/READ-shaped
+# directives, matched by word-boundary search + backtick-parity suppression
+# (master_ai.py:9180-9206, 9210-9226). CREATE/EDIT are handled separately
+# below — the legacy body-block builder matches those by line-start anchor
+# instead, with no backtick-parity check (master_ai.py:9260-9298).
+_SINGLE_LINE_KINDS = (
+    Kind.RUN, Kind.RUNTERM, Kind.READ, Kind.REMEMBER,
+    Kind.PLAN, Kind.DONE, Kind.THINK, Kind.RUN_SKILL, Kind.SEND_EMAIL,
+)
+
+
+def _extract_single_line_payload(line: str, name: str) -> str:
+    parts = re.split(rf"\b{name}:", line, maxsplit=1, flags=re.IGNORECASE)
+    if len(parts) != 2:
+        return ""
+    payload = _strip_wrap(parts[1])
+    return "" if _is_noop_payload(payload) else payload
+
+
+def parse_reply_with_bodies(text: str, *, model: str = "", cwd: Optional[str] = None) -> list:
+    """Full reply parser with CREATE/EDIT body-block content capture.
+
+    parse_reply() only does single-line scanning with no backtick-parity or
+    body-block awareness — fine for its audit/observability callers, but not
+    enough to compare against master_ai.process_reply()'s actual extraction
+    for parity testing. This function mirrors that extraction more closely:
+
+      - RUN/RUNTERM/READ/REMEMBER/PLAN/DONE/THINK/RUN_SKILL/SEND_EMAIL are
+        matched by word-boundary search with backtick-parity suppression
+        (mirrors master_ai._real_directive, master_ai.py:9180-9184) — a
+        directive keyword mentioned in prose inside backticks does not fire.
+      - REMEMBER additionally excludes lines inside a <<<CONTENT/<<<FIND/
+        <<<REPLACE body block (mirrors master_ai.py:9235-9247); the other
+        single-line kinds share master_ai's own "blindspot" here and are
+        NOT body-excluded — that matches legacy behavior exactly, not an
+        oversight in this port.
+      - CREATE/EDIT are matched by line-start anchor (mirrors master_ai's
+        `^\\s*CREATE:`/`^\\s*EDIT:` body-block builder, master_ai.py:9260-
+        9298), with create_content/edit_old/edit_new reassembled from
+        <<<CONTENT/<<<FIND/<<<REPLACE blocks, plus the fenced-code salvage
+        fallback for a bare CREATE: line followed by a markdown fence
+        (master_ai.py:9300-9370), including the HTML CSS/JS fence-merging
+        special case.
+
+    Still standalone — no master_ai import (see module docstring).
+    """
+    out: list = []
+    if not isinstance(text, str):
+        return out
+    lines = text.splitlines()
+
+    # REMEMBER-in-body exclusion set (master_ai.py:9235-9247).
+    in_body, eligible = False, []
+    for ln in lines:
+        stripped_up = ln.strip().upper()
+        if stripped_up in ("<<<CONTENT", "<<<FIND", "<<<REPLACE"):
+            in_body = True
+            continue
+        if stripped_up in (">>>CONTENT", ">>>FIND", ">>>REPLACE"):
+            in_body = False
+            continue
+        if not in_body:
+            eligible.append(ln)
+
+    for kind in _SINGLE_LINE_KINDS:
+        candidate_lines = eligible if kind == Kind.REMEMBER else lines
+        for ln in candidate_lines:
+            fired = False
+            for m in re.finditer(rf"\b{kind}:", ln, re.IGNORECASE):
+                if ln[:m.start()].count("`") % 2 == 0:
+                    fired = True
+                    break
+            if not fired:
+                continue
+            payload = _extract_single_line_payload(ln, kind)
+            if not payload:
+                continue
+            action = TypedAction(
+                kind=kind, target=payload, cwd=cwd,
+                created_by_model=model or "", source_text=ln,
+                requires_confirm=(kind in (Kind.RUN, Kind.RUNTERM, Kind.RUN_SKILL, Kind.SEND_EMAIL)),
+            )
+            classify_risk(action)
+            out.append(action)
+
+    # CREATE/EDIT body-block state machine (master_ai.py:9260-9298).
+    in_block, cur_path, cur_content = False, None, []
+    cur_find, cur_replace, in_find, in_replace = None, None, False, False
+    created_targets: list = []
+    edited_targets: list = []
+    for line in lines:
+        if re.match(r"^\s*CREATE:", line, re.IGNORECASE):
+            cur_path = os.path.expanduser(
+                re.split(r"CREATE:", line, maxsplit=1, flags=re.IGNORECASE)[1].strip())
+            cur_content = []
+            in_block = False
+        elif line.strip().upper() == "<<<CONTENT" and cur_path:
+            in_block = True
+        elif line.strip().upper() == ">>>CONTENT" and in_block:
+            in_block = False
+            created_targets.append((cur_path, "\n".join(cur_content)))
+            cur_path = None
+        elif in_block:
+            cur_content.append(line)
+        elif re.match(r"^\s*EDIT:", line, re.IGNORECASE):
+            cur_path = os.path.expanduser(
+                re.split(r"EDIT:", line, maxsplit=1, flags=re.IGNORECASE)[1].strip())
+            cur_find = []; cur_replace = []; in_find = False; in_replace = False
+        elif line.strip().upper() == "<<<FIND" and cur_path:
+            in_find = True
+        elif line.strip().upper() == ">>>FIND" and in_find:
+            in_find = False
+        elif line.strip().upper() == "<<<REPLACE" and cur_path:
+            in_replace = True
+        elif line.strip().upper() == ">>>REPLACE" and in_replace:
+            in_replace = False
+            if cur_find is not None and cur_replace is not None:
+                edited_targets.append((cur_path, "\n".join(cur_find), "\n".join(cur_replace)))
+            cur_path = None; cur_find = None; cur_replace = None
+        elif in_find and cur_find is not None:
+            cur_find.append(line)
+        elif in_replace and cur_replace is not None:
+            cur_replace.append(line)
+
+    # Fenced-code salvage fallback for a bare CREATE: with no proper body
+    # (master_ai.py:9300-9370).
+    created_paths_seen = {os.path.realpath(p) for p, _ in created_targets}
+    for m in re.finditer(r"(?im)^\s*CREATE:\s*(.+?)\s*$", text):
+        raw_path = _strip_wrap(m.group(1))
+        if not raw_path:
+            continue
+        exp_path = os.path.expanduser(raw_path)
+        real_path = os.path.realpath(exp_path)
+        if real_path in created_paths_seen:
+            continue
+        tail = text[m.end():]
+        next_directive = re.search(r"(?im)^\s*(RUN|RUNTERM|READ|CREATE|EDIT|ASK|DONE):", tail)
+        create_tail = tail[:next_directive.start()] if next_directive else tail
+        reversed_block = re.search(r"(?is)^\s*>>>CONTENT\s*\n(.*?)\n\s*<<<CONTENT\s*", create_tail)
+        if reversed_block:
+            content = reversed_block.group(1).strip("\n")
+            if content:
+                created_targets.append((exp_path, content))
+                created_paths_seen.add(real_path)
+            continue
+        fences = list(re.finditer(r"```([A-Za-z0-9_-]+)?\s*\n(.*?)\n```", create_tail, re.DOTALL))
+        if fences:
+            content = fences[0].group(2).strip("\n")
+            if exp_path.lower().endswith((".html", ".htm")):
+                css_chunks: list = []
+                js_chunks: list = []
+                for fm in fences[1:]:
+                    lang = (fm.group(1) or "").lower()
+                    body = fm.group(2).strip("\n")
+                    if lang == "css":
+                        css_chunks.append(body)
+                    elif lang in ("js", "javascript"):
+                        js_chunks.append(body)
+                if css_chunks:
+                    style_block = "<style>\n" + "\n\n".join(css_chunks) + "\n</style>"
+                    content = re.sub(
+                        r"\s*<link[^>]+href=[\"']styles\.css[\"'][^>]*>\s*",
+                        "\n    " + style_block + "\n",
+                        content,
+                        flags=re.IGNORECASE,
+                    )
+                    if style_block not in content:
+                        content = content.replace("</head>", f"    {style_block}\n</head>", 1)
+                if js_chunks:
+                    script_block = "<script>\n" + "\n\n".join(js_chunks) + "\n</script>"
+                    content = re.sub(
+                        r"\s*<script[^>]+src=[\"']scripts\.js[\"'][^>]*>\s*</script>\s*",
+                        "\n    " + script_block + "\n",
+                        content,
+                        flags=re.IGNORECASE,
+                    )
+                    if script_block not in content:
+                        content = content.replace("</body>", f"    {script_block}\n</body>", 1)
+            if content:
+                created_targets.append((exp_path, content))
+                created_paths_seen.add(real_path)
+
+    for path, content in created_targets:
+        action = TypedAction(
+            kind=Kind.CREATE, target=path, cwd=cwd,
+            created_by_model=model or "", source_text=f"CREATE: {path}",
+            create_content=content, requires_confirm=True,
+        )
+        classify_risk(action)
+        out.append(action)
+
+    for path, find_text, replace_text in edited_targets:
+        action = TypedAction(
+            kind=Kind.EDIT, target=path, cwd=cwd,
+            created_by_model=model or "", source_text=f"EDIT: {path}",
+            edit_old=find_text, edit_new=replace_text, requires_confirm=True,
+        )
+        classify_risk(action)
+        out.append(action)
+
     return out
 
 

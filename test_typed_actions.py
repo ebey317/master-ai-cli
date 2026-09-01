@@ -23,10 +23,15 @@ import typed_actions as ta  # noqa: E402
 class KindAndRiskConstants(unittest.TestCase):
     def test_directive_kinds_are_complete(self):
         # REMEMBER added 2026-05-11 — model self-write to memory.
+        # PLAN/DONE/THINK/RUN_SKILL/SEND_EMAIL added 2026-08-23 — the legacy
+        # parser (master_ai._RE_DIRECTIVE, master_ai.py:3780) had grown these
+        # after this module's initial 2026-05-17 build; typed_actions had
+        # drifted out of sync with it until this gap-closing pass.
         self.assertEqual(
             ta.DIRECTIVE_KINDS,
             frozenset({
                 "RUN", "RUNTERM", "READ", "CREATE", "EDIT", "REMEMBER",
+                "PLAN", "DONE", "THINK", "RUN_SKILL", "SEND_EMAIL",
                 "BROWSER_CLICK", "BROWSER_FILL", "BROWSER_FILL_FORM", "BROWSER_UPLOAD_FILE", "BROWSER_SUBMIT",
                 "BROWSER_READ", "BROWSER_NAV", "BROWSER_CLOSE_TAB",
                 "BROWSER_SCREENSHOT", "BROWSER_WAIT", "BROWSER_SCROLL",
@@ -40,6 +45,7 @@ class KindAndRiskConstants(unittest.TestCase):
     def test_kind_class_aliases_match(self):
         for name in (
             "RUN", "RUNTERM", "READ", "CREATE", "EDIT", "REMEMBER",
+            "PLAN", "DONE", "THINK", "RUN_SKILL", "SEND_EMAIL",
             "BROWSER_CLICK", "BROWSER_FILL", "BROWSER_FILL_FORM", "BROWSER_UPLOAD_FILE", "BROWSER_SUBMIT",
             "BROWSER_READ", "BROWSER_NAV", "BROWSER_CLOSE_TAB",
             "BROWSER_SCREENSHOT", "BROWSER_WAIT", "BROWSER_SCROLL",
@@ -410,6 +416,55 @@ class Serialize(unittest.TestCase):
         self.assertEqual(d["kind"], "RUN")
         self.assertEqual(d["target"], "ls")
         self.assertNotIn("\n", s, "serialize must emit one line for jsonl")
+
+
+class ReplyParserWithBodies(unittest.TestCase):
+    """Fast, standalone unit tests for parse_reply_with_bodies() — content
+    capture and the backtick-parity / REMEMBER-in-body suppression it adds
+    on top of parse_reply(). No master_ai import (see module docstring).
+    The full legacy-vs-typed parity fixtures live in
+    test_typed_dispatch_e2e.py; these are narrower, faster checks of the
+    same parser in isolation."""
+
+    def test_create_populates_create_content(self):
+        text = "CREATE: /tmp/x.py\n<<<CONTENT\nprint(1)\n>>>CONTENT\n"
+        actions = ta.parse_reply_with_bodies(text)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].kind, "CREATE")
+        self.assertEqual(actions[0].create_content, "print(1)")
+
+    def test_edit_populates_old_and_new(self):
+        text = (
+            "EDIT: /tmp/x.py\n"
+            "<<<FIND\nprint(1)\n>>>FIND\n"
+            "<<<REPLACE\nprint(2)\n>>>REPLACE\n"
+        )
+        actions = ta.parse_reply_with_bodies(text)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].kind, "EDIT")
+        self.assertEqual(actions[0].edit_old, "print(1)")
+        self.assertEqual(actions[0].edit_new, "print(2)")
+
+    def test_non_string_input_returns_empty_list(self):
+        self.assertEqual(ta.parse_reply_with_bodies(None), [])
+        self.assertEqual(ta.parse_reply_with_bodies(123), [])
+
+    def test_backtick_wrapped_keyword_does_not_fire(self):
+        actions = ta.parse_reply_with_bodies("Use `RUN:` to run a command.")
+        self.assertEqual(actions, [])
+
+    def test_remember_line_inside_edit_body_does_not_fire(self):
+        text = (
+            "EDIT: /tmp/x.py\n"
+            "<<<FIND\nold\n>>>FIND\n"
+            "<<<REPLACE\nREMEMBER: not a real directive here\n>>>REPLACE\n"
+        )
+        actions = ta.parse_reply_with_bodies(text)
+        self.assertEqual([a.kind for a in actions], ["EDIT"])
+        self.assertIn("REMEMBER:", actions[0].edit_new)
+
+    def test_empty_string_returns_empty_list(self):
+        self.assertEqual(ta.parse_reply_with_bodies(""), [])
 
 
 if __name__ == "__main__":
