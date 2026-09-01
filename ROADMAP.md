@@ -278,12 +278,56 @@ if/when this gets its own unit.
   dashboard_data.py, headless_daemon.py, skill_marketplace.py,
   learning_loop.py, sandbox.py, observability.py, approval_queue.py,
   skill_improve_helpers.py) so this class of bug can't recur for them.
-  **`typed_actions.py` NOT touched** — its `~/scripts/` copy (Aug 23) is
-  actually *ahead* of this repo's copy (Aug 20), with extra directive
-  kinds (PLAN/DONE/THINK/RUN_SKILL/SEND_EMAIL) that were apparently
-  built directly in `~/scripts/` and never merged back to git. Needs its
-  own dedicated look before deciding a sync direction — do not blindly
-  symlink either way.
+  **`typed_actions.py` deferred here, closed separately 2026-09-01
+  (see below)** — the divergence turned out to be a real gap needing its
+  own dedicated look, not a blind symlink call.
+
+### `typed_actions.py` sync — closed 2026-09-01
+
+The file 3.6 explicitly declined to touch turned out to have a real
+history behind the drift. Plan-mode investigation traced it to a third
+local clone, `~/projects/master-ai` (separate GitHub remote, shares
+history with this repo up to a common-ancestor commit), which held a
+genuine, already-committed, 13/13-verified fix (`68dcb57`, Elijah,
+2026-08-26) that closed this exact PLAN/DONE/THINK/RUN_SKILL/SEND_EMAIL
+gap — it had been hand-copied into `~/scripts/typed_actions.py` at the
+time but never merged back into this repo, which is why the repo copy
+stayed 601 lines while the live one grew to 845.
+
+Ported `68dcb57`'s `typed_actions.py` + `test_typed_actions.py` hunks
+into this repo via `git apply` (clean, additive-only, confirmed
+byte-identical common ancestor first) and its `test_typed_dispatch_e2e.py`
+under the new name `test_typed_actions_parity.py` (this repo's own
+newer, unrelated file of the old name — live RUN/RUNTERM dispatch
+instrumentation, `6493fd5` — was not touched). `~/scripts/typed_actions.py`
+converted to a symlink into this repo, same pattern as the rest of 3.6
+(backup kept: `typed_actions.py.bak.20260901_181722`). Verified: previously-
+failing `test_directive_kinds_are_complete` now passes, new 13-test parity
+suite green, existing 8-test e2e suite unaffected, full pytest baseline
+unchanged (10 passed / 4 pre-existing failures, zero new),
+`agent_standards_score()` confirmed 100/100. No live dispatch behavior
+changed — the module's role is shadow-parse/audit only. Commit `9bfb3ba`.
+
+**Open question surfaced, not resolved:** whether `~/master-ai-cli` and
+`~/projects/master-ai` are meant to be reconciled as one project long-term
+(each has real commits the other lacks — this repo has accumulated far
+more since the shared ancestor, but `68dcb57` shows the reverse also
+happens) or whether `~/projects/master-ai` should be considered retired.
+This one-file port doesn't answer that; worth a decision at some point so
+this class of silent fork doesn't recur elsewhere.
+
+**Also noted, out of scope for this pass:** `~/scripts/test_master_ai_parser.py`
+has its own small, unrelated drift from this repo's copy (this repo is
+*ahead* there — a stale assertion about `_is_informational_cmd()` piping
+behavior that predates an already-landed 2026-08-27/08-28 fix). And
+`bash ~/scripts/sensei_selftest.sh` currently reports 4 FAIL/5 WARN —
+confirmed unrelated to this work (checked `agent_standards_score()`
+directly: 100/100, matches the documented Phase 1.2 baseline exactly).
+The script's own hardcoded sanity-guard assertions (expecting
+typed-tool-boundary/sandbox-boundary to still show WARN, i.e. written
+*before* Phase 1.1/1.2 intentionally closed them) plus one unrelated
+missing-file check (`sensei_behavior.md`) look stale and worth a look in
+their own right, but touching that script wasn't part of this task.
 
 ### 3.7 Messaging Gateway (Optional)
 - Only if remote trigger capability is wanted. Start with Telegram bot using the Phase 3.5 daemon API.
@@ -353,7 +397,7 @@ bash ~/scripts/sensei_selftest.sh
 4. ~~Phase 3.3b — Skill Marketplace & Learning Loop~~ — closed 2026-09-01, both halves.
 5. ~~Phase 3.5 — headless daemon~~ — closed 2026-09-01, both halves (daemon + model wiring).
 6. ~~Phase 3.6 — web dashboard~~ — closed 2026-09-01, both halves.
-7. **Next real open item: the `~/scripts/typed_actions.py` vs. repo divergence flagged during 3.6's deploy-drift fix** (845 vs. 601 lines — `~/scripts/` carries five live directive kinds, PLAN/DONE/THINK/RUN_SKILL/SEND_EMAIL, plus a `_is_noop_payload`/`_strip_wrap` legacy-parity layer, that never made it back into this repo). This is the one file 3.6 explicitly declined to symlink either direction because it needs "its own dedicated look" — it's the live daily-driver dispatch parser, so per the standing hard rule this gets a plan-mode pass, not a blind merge, before either direction is picked.
+7. ~~`typed_actions.py` vs. repo divergence~~ — closed 2026-09-01, see write-up above. Open follow-on (not scoped): whether `~/master-ai-cli` and `~/projects/master-ai` should be reconciled as one project.
 8. Save 3.7 messaging gateway for last — biggest operational burden.
 
 Related: [[project-hermes-vs-claf-distinction]], `~/MD/handoff_sensei_hermes_parity_2026-08-31.md`, `~/MD/handoff_sensei_hermes_parity_2026-08-20.md`
