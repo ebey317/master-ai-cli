@@ -2584,6 +2584,34 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             return
 
+        # GET /api/dashboard — 3.6 web dashboard aggregation endpoint.
+        # Read-only (dashboard_data.py has no write path anywhere). Same
+        # trust split as /ask: local pupil.html on this machine passes
+        # without a token (same threat model as /chat's same-origin
+        # trust); a remote caller (Tailscale/LAN) must present the same
+        # X-Mesh-Token /ask already requires, fail-closed if unconfigured.
+        if self.path.startswith('/api/dashboard'):
+            client_ip = (self.client_address or ('', 0))[0]
+            is_local = client_ip in ('127.0.0.1', '::1', 'localhost')
+            if not is_local:
+                mesh_path = os.path.expanduser('~/.master_ai_mesh.json')
+                expected_token = ''
+                if os.path.exists(mesh_path):
+                    try:
+                        expected_token = (json.load(open(mesh_path)).get('mesh_token') or '').strip()
+                    except Exception:
+                        expected_token = ''
+                if not expected_token:
+                    self._json({'error': 'mesh not configured (no mesh_token set in ~/.master_ai_mesh.json)'}, 503); return
+                supplied = (self.headers.get('X-Mesh-Token') or '').strip()
+                if supplied != expected_token:
+                    self._json({'error': 'unauthorized (bad or missing X-Mesh-Token)'}, 401); return
+            try:
+                import dashboard_data
+                self._json(dashboard_data.build_dashboard()); return
+            except Exception as e:
+                self._json({'error': str(e)}, 500); return
+
         if self.path == '/pupil-icon.svg':
             try:
                 svg = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
