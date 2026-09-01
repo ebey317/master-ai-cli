@@ -493,6 +493,7 @@ class SenseiApp:
         self._thinking_interval = 1.8
         self._thinking_started = 0.0
         self._scroll_offset = 0  # lines scrolled up from bottom
+        self._chat_focused = False  # True when user clicked/activated chat pane
 
         # Three thought-states: IDLE (rotating hints), THINKING (AI working),
         # HANDOFF (Plan→Review transition). Handoff suppresses idle + thinking
@@ -545,6 +546,15 @@ class SenseiApp:
             show_cursor=False,
             get_cursor_position=self._get_output_cursor,
         )
+
+        # Click/activate the chat output pane so wheel/arrow keys scroll it.
+        def _chat_mouse_handler(mouse_event):
+            if mouse_event.event_type == MouseEventType.MOUSE_UP:
+                self._focus_chat()
+            return None
+
+        self._output_control.mouse_handler = _chat_mouse_handler
+
         self._output_window = Window(
             content=self._output_control,
             wrap_lines=True,
@@ -568,12 +578,12 @@ class SenseiApp:
         # wheel would otherwise snap back every repaint. Overriding these
         # two methods keeps wheel and page-up/down on the same offset.
         def _wheel_up():
-            self._scroll_offset += 5
+            self._scroll_offset += 3
             try: self._app.invalidate()
             except Exception: pass
 
         def _wheel_down():
-            self._scroll_offset = max(0, self._scroll_offset - 5)
+            self._scroll_offset = max(0, self._scroll_offset - 3)
             try: self._app.invalidate()
             except Exception: pass
 
@@ -636,6 +646,20 @@ class SenseiApp:
         self._frame = Frame(input_stack, title=self._render_label,
                             style="class:frame")
 
+        # Clicking anywhere on the input frame returns focus to input.
+        # Same fix as _chat_mouse_handler above: only claim MOUSE_UP, else
+        # NotImplemented, so the input buffer's own mouse handling (cursor
+        # placement, its own scroll) isn't swallowed.
+        def _input_mouse_handler(mouse_event):
+            if mouse_event.event_type == MouseEventType.MOUSE_UP:
+                self._focus_input()
+                return None
+            return NotImplemented
+
+        # Attach handler to the input control so clicks on the input station
+        # reliably return focus for typing.
+        self._input.control.mouse_handler = _input_mouse_handler
+
         # Persistent "MASTER AI" header — single blue line pinned at the top
         # so the brand is always visible even when chat output scrolls.
         self._header_control = FormattedTextControl(
@@ -690,8 +714,10 @@ class SenseiApp:
             layout=Layout(root, focused_element=self._input),
             key_bindings=self._build_keys(),
             full_screen=True,
-            # Mouse ON by default — click focuses chat or input, wheel scrolls.
-            # Legacy opt-out with SENSEI_MOUSE=0 if native terminal copy is needed.
+            # Mouse ON by default — enables click-to-focus chat + wheel scroll.
+            # Opt-out with SENSEI_MOUSE=0 when native terminal drag-select is
+            # required; terminal copy still works via Shift+click in most
+            # emulators when mouse reporting is active.
             mouse_support=os.environ.get("SENSEI_MOUSE", "1") != "0",
             refresh_interval=0.25,
             style=self._build_style("plan"),
@@ -767,6 +793,30 @@ class SenseiApp:
         self._mode = mode
         try:
             self._app.style = self._build_style(mode)
+            self._app.invalidate()
+        except Exception:
+            pass
+
+    def _focus_chat(self):
+        """Move focus to chat pane and enable scroll-via-arrow-keys behavior."""
+        self._chat_focused = True
+        try:
+            self._app.layout.focus(self._output_window)
+        except Exception:
+            pass
+        try:
+            self._app.invalidate()
+        except Exception:
+            pass
+
+    def _focus_input(self):
+        """Return focus to the input box."""
+        self._chat_focused = False
+        try:
+            self._app.layout.focus(self._input)
+        except Exception:
+            pass
+        try:
             self._app.invalidate()
         except Exception:
             pass
@@ -1078,6 +1128,20 @@ class SenseiApp:
             else:
                 event.current_buffer.history_backward()
 
+        # Global Up/Down handling: when chat pane is focused, scroll one line;
+        # otherwise the input-history handlers above take over.
+        @kb.add("down")
+        def _global_down(event):
+            if self._chat_focused:
+                self._scroll_offset = max(0, self._scroll_offset - 1)
+                event.app.invalidate()
+
+        @kb.add("up")
+        def _global_up(event):
+            if self._chat_focused:
+                self._scroll_offset += 1
+                event.app.invalidate()
+
         @kb.add("c-c")
         def _sigint(event):
             # 2026-08-30: while something is actively running (self._thinking
@@ -1180,17 +1244,10 @@ class SenseiApp:
             self._scroll_offset = max(0, self._scroll_offset - max(8, _term_size().lines - 8))
             event.app.invalidate()
 
-        # Chat-pane focus: plain Up/Down scroll line-by-line.
-        @kb.add("up", filter=Condition(lambda: self._chat_focused))
-        def _chat_scroll_up(event):
-            self._scroll_offset += 1
-            event.app.invalidate()
-
-        @kb.add("down", filter=Condition(lambda: self._chat_focused))
-        def _chat_scroll_down(event):
-            self._scroll_offset = max(0, self._scroll_offset - 1)
-            event.app.invalidate()
-
+        # Chat-pane focus, plain Up/Down: owned by the global _global_up/
+        # _global_down bindings below (they no-op unless chat is focused) -
+        # do NOT also bind "up"/"down" here, that double-fires both
+        # handlers per keypress (2 lines scrolled instead of 1).
         @kb.add("pageup", filter=Condition(lambda: self._chat_focused))
         def _chat_page_up(event):
             self._scroll_offset += max(8, _term_size().lines - 8)
@@ -1211,12 +1268,12 @@ class SenseiApp:
             self._scroll_offset = 0
             event.app.invalidate()
 
-        # 2026-08-31: Click input to edit. Click chat to scroll. Esc returns
-        # focus to input so keyboard users can recover without reaching for the
-        # mouse. (Removed per follow-up: click-only switching, no Tab fallback.)
-        @kb.add("escape", filter=Condition(lambda: self._chat_focused))
-        def _return_to_input(event):
-            self._focus_input()
+        # Clicking the input frame or pressing Escape returns focus to input.
+        @kb.add("escape")
+        def _focus_input_escape(event):
+            if self._chat_focused:
+                self._focus_input()
+            # Otherwise let prompt_toolkit handle the default Escape behavior.
 
         return kb
 
