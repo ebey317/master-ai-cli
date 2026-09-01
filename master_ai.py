@@ -7531,6 +7531,10 @@ def show_controls():
         ("Pupil Tab", "native browser focus order; Shift+Tab moves backward"),
     ]
     width = 78
+    # 2026-08-31: `_fit_text` helper was never defined (NameError when this
+    # screen rendered). Inline the fit: hard-truncate to the cell width.
+    def _fit_text(text, limit):
+        return text if len(text) <= limit else text[: limit - 1] + "…"
     print(f"\n{BC}  ╔{'═' * width}╗{X}")
     print(f"{BC}  ║{X}  {BW}MASTER AI — Interaction Standards{X}{' ' * (width - 35)}{BC}║{X}")
     print(f"{BC}  ╠{'═' * width}╣{X}")
@@ -7626,6 +7630,18 @@ _STRAY_EMOJI_RE = re.compile(
     '\U0001F1E6-\U0001F1FF'
     ']'
 )
+# 2026-08-31: caught in the audit log — the model wrote its whole rambling
+# continuation on the same line as 'RUN: echo "check"...' with no newline,
+# so _extract_directive() grabbed the entire paragraph as the "command"
+# (it ran anyway — bash choked on the prose, exit 2). Real shell commands
+# don't contain multiple sentence-ending periods next to conversational
+# connector phrases; only prose does. _directive_corruption_issue requires
+# both signals together so a legitimate command that happens to contain one
+# of these words in a string literal/comment isn't falsely blocked.
+_PROSE_LEAK_RE = re.compile(
+    r"\b(let'?s|we can|i'll|i will|actually|which we saw|that is a|that's a|those are)\b",
+    re.IGNORECASE,
+)
 
 def _directive_corruption_issue(cmd):
     """Return a refusal reason if `cmd` looks like a corrupted/concatenated
@@ -7640,6 +7656,8 @@ def _directive_corruption_issue(cmd):
         )
     if _STRAY_EMOJI_RE.search(cmd):
         return "emoji/conversational text embedded in command"
+    if len(re.findall(r'[a-z]\.\s+[A-Z]', cmd)) >= 1 and _PROSE_LEAK_RE.search(cmd):
+        return "conversational prose leaked into RUN payload — model rambled past the command on the same line"
     return None
 
 _CLEANUP_PROTECTED_PATHS = (
@@ -9744,7 +9762,13 @@ def confirm_send_email(spec):
     print(f"{D}╠══════════════════════════════════════════════════════╣{X}")
     print(f"{D}║  1) Send  2) Cancel  3) Edit body{X}")
     print(f"{D}╚══════════════════════════════════════════════════════╝{X}")
-    ans = (_tui_input("> ") or "").strip().lower()
+    # 2026-08-31: `_tui_input` is a closure-local inside _run_with_tui() —
+    # referencing it from module scope NameError'd on every email confirm.
+    # In TUI mode builtins.input is patched to that closure (see _run_with_tui);
+    # in plain-terminal mode input() is the real stdin input. Either way the
+    # correct input source is builtins.input.
+    import builtins as _builtins
+    ans = (input("> ") or "").strip().lower()
     if ans in ("1", "y", "yes", "send"):
         result = send_email_via_smtp(to, subject, body, attach=attach)
         if result.get("ok"):
@@ -14371,16 +14395,14 @@ def main():
         # These are specialized clears that keep the session alive.
         if lo in ("clear approved", "clear cache", "clear chats"):
             history = [h for h in history if h.get("role") == "system"]
-            if lo == "clear approved":
-                _APPROVALS_WITH_TTL.clear()
-                print(f"  {G}✅ approvals cleared.{X}")
-            elif lo == "clear cache":
-                if _CONVERSATION_CACHE is not None:
-                    _CONVERSATION_CACHE.clear()
-                print(f"  {G}✅ cache cleared.{X}")
-            elif lo == "clear chats":
-                _CHATS.clear()
-                print(f"  {G}✅ chat list cleared.{X}")
+            # 2026-08-31: this block referenced `_APPROVALS_WITH_TTL`,
+            # `_CONVERSATION_CACHE`, and `_CHATS` — module globals that no
+            # longer exist (renamed/replaced by APPROVED_FILE /
+            # _clear_runtime_cache / CHATS_DIR later in main()). Any of the
+            # three commands NameError'd every time; the per-command handlers
+            # below (clear approved / clear cache / clear chats) are the
+            # working implementations. This block now only does the shared
+            # part: drop in-memory history + clear the visible output.
             if _SENSEI_APP is not None:
                 try:
                     _SENSEI_APP.clear_output()
