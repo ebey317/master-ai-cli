@@ -31,7 +31,7 @@ const PAGE_STABLE_WAIT_MS = 650;
 const PAGE_CONTEXT_PROMPT_RE =
   /\b(application|apply|browser|button|click|current\s+(page|tab|site)|drive|folder|field|fill|form|indeed|job|link|page|read|resume|résumé|screen|screenshot|search|select|selected|selection|simplify|tab|this|upload|visible|website|ziprecruiter)\b/i;
 const SMALL_TALK_RE =
-  /^\s*(hi+|hello+|hey|good\s+(morning|afternoon|evening|night)|what'?s?\s+up|how\s+(are|is|was)|nice\s+to\s+meet|thank\s*(you|s)|thanks|ok+|okay|nice|cool|great|good|bye|see\s+ya|later|yes+|no+|maybe)(\s+.*)?[.!?]*\s*$/i;
+  /^\s*(hi+|hello+|hey|good\s+(morning|afternoon|evening|night)|what'?s?\s+up|how\s+(are|is|was)|nice\s+to\s+meet|thank\s*(you|s)|thanks|ok+|okay|nice|cool|great|good|bye|see\s+ya|later|yes+|no+|maybe)(\s+.*)?[.!?…]*\s*(\p{Emoji_Presentation}*)\s*$/iu;
 const READONLY_BROWSER_KINDS = new Set([
   "BROWSER_READ",
   "BROWSER_READ_PAGE",
@@ -1114,6 +1114,13 @@ async function contentScriptPageContext(tab, options, timings = {}) {
 async function pageContext(prompt = "", timings = {}) {
   const tab = await timed(timings, "tab", activeTab);
   if (!tab?.id) return {};
+  // NEVER inject/read chrome://, edge://, about:*, or file:// pages. They
+  // throw "Cannot access a chrome:// URL" and poison the model with a broken
+  // page_context. A bare URL/title fallback is enough for the model to know
+  // it is not on a real web page.
+  if (!canInjectIntoTab(tab)) {
+    return { url: tab.url || "", title: tab.title || "" };
+  }
   const fallback = { url: tab.url || "", title: tab.title || "" };
   const includeVisibleText = promptNeedsPageContext(prompt);
   const key = contextCacheKey(tab, includeVisibleText);
@@ -1121,7 +1128,7 @@ async function pageContext(prompt = "", timings = {}) {
     return state.contextCache.value;
   }
 
-  if (!includeVisibleText || !canInjectIntoTab(tab)) {
+  if (!includeVisibleText) {
     state.contextCache = { key, tabId: tab.id, ts: performance.now(), value: fallback };
     return fallback;
   }
