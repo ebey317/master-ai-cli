@@ -30,6 +30,8 @@ const AX_TREE_TEXT_LIMIT = 14 * 1024;
 const PAGE_STABLE_WAIT_MS = 650;
 const PAGE_CONTEXT_PROMPT_RE =
   /\b(application|apply|browser|button|click|current\s+(page|tab|site)|drive|folder|field|fill|form|indeed|job|link|page|read|resume|résumé|screen|screenshot|search|select|selected|selection|simplify|tab|this|upload|visible|website|ziprecruiter)\b/i;
+const SMALL_TALK_RE =
+  /^\s*(hi+|hello+|hey|good\s+(morning|afternoon|evening|night)|what'?s?\s+up|how\s+(are|is|was)|nice\s+to\s+meet|thank\s*(you|s)|thanks|ok+|okay|nice|cool|great|good|bye|see\s+ya|later|yes+|no+|maybe)(\s+.*)?[.!?]*\s*$/i;
 const READONLY_BROWSER_KINDS = new Set([
   "BROWSER_READ",
   "BROWSER_READ_PAGE",
@@ -424,7 +426,12 @@ function formatMeta(data, timings = {}) {
 }
 
 function promptNeedsPageContext(prompt) {
+  if (SMALL_TALK_RE.test(String(prompt || ""))) return false;
   return PAGE_CONTEXT_PROMPT_RE.test(String(prompt || ""));
+}
+
+function isSmallTalk(prompt) {
+  return SMALL_TALK_RE.test(String(prompt || ""));
 }
 
 async function activeTab() {
@@ -2774,7 +2781,7 @@ async function sendPrompt() {
       mode: $("#modeSelect").value,
       source: "chrome_extension",
       session_id: state.config.sessionId,
-      page_context: ctx,
+      page_context: isSmallTalk(prompt) ? {} : ctx,
       client_timings: { ...timings }
     };
     // Phase 2.1: surface the configured local résumé path to the model so it
