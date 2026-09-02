@@ -13821,22 +13821,68 @@ def show_last_summary():
 def main():
     if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
         print(
-            "usage: master-ai [-h] [--setup] [--uninstall]\n\n"
+            "usage: master-ai [-h] [--setup] [--uninstall] [update]\n\n"
             "Local-first AI agent CLI with vision, voice, MCP integration, "
             "and multi-provider routing.\n\n"
             "Running with no arguments starts the interactive Sensei session.\n"
             "Use --setup to configure keys and providers.\n"
-            "Use --uninstall to remove Master AI.\n\n"
+            "Use --uninstall to remove Master AI.\n"
+            "Use update (or --update) to git-pull this repo to the latest "
+            "commit — every machine symlinking to it updates the same way.\n\n"
             "options:\n"
             "  -h, --help     show this help message and exit\n"
             "      --setup    run the interactive setup wizard\n"
-            "      --uninstall  run the interactive uninstall wizard"
+            "      --uninstall  run the interactive uninstall wizard\n"
+            "      update, --update  pull the latest version from git"
         )
         sys.exit(0)
 
     if any(arg == "--uninstall" for arg in sys.argv[1:]):
         import uninstall_wizard
         uninstall_wizard.run_uninstall(use_github="--github" in sys.argv[1:])
+        sys.exit(0)
+
+    if any(arg in ("update", "--update") for arg in sys.argv[1:]):
+        # This file is reached through ~/scripts/master_ai.py, a symlink into
+        # this git repo — updating the repo updates every machine that
+        # symlinks to it the same way, with no separate deploy step.
+        repo_dir = os.path.dirname(os.path.realpath(__file__))
+        print(f"Updating Master AI / Sensei ({repo_dir}) ...")
+        try:
+            dirty = subprocess.run(
+                ["git", "-C", repo_dir, "status", "--porcelain",
+                 "--", "master_ai.py"],
+                capture_output=True, text=True, timeout=10,
+            ).stdout.strip()
+            if dirty:
+                print("Local changes to master_ai.py would be overwritten by "
+                      "an update — resolve or stash them first, then re-run.")
+                sys.exit(1)
+            before = subprocess.run(
+                ["git", "-C", repo_dir, "rev-parse", "--short", "HEAD"],
+                capture_output=True, text=True, timeout=10,
+            ).stdout.strip()
+            r = subprocess.run(
+                ["git", "-C", repo_dir, "pull", "--ff-only"],
+                capture_output=True, text=True, timeout=60,
+            )
+            print(r.stdout.strip())
+            if r.returncode != 0:
+                print(r.stderr.strip())
+                print("Update failed — repo may have diverged from origin. "
+                      "Not applied.")
+                sys.exit(1)
+            after = subprocess.run(
+                ["git", "-C", repo_dir, "rev-parse", "--short", "HEAD"],
+                capture_output=True, text=True, timeout=10,
+            ).stdout.strip()
+            if before == after:
+                print("Already up to date.")
+            else:
+                print(f"Updated {before} -> {after}. Restart sensei to pick it up.")
+        except Exception as e:
+            print(f"Update failed: {e}")
+            sys.exit(1)
         sys.exit(0)
 
     if any(arg == "--setup" for arg in sys.argv[1:]):
@@ -16206,7 +16252,14 @@ def _run_with_tui():
 
 if __name__ == "__main__":
     try:
-        if _SENSEI_ENABLED and _SENSEI_APP is not None:
+        # CLI flags (-h/--setup/--uninstall/update) must reach main()'s argv
+        # dispatch even though the TUI launches unconditionally otherwise —
+        # without this check they were dead code, silently swallowed by
+        # _run_with_tui() starting the interactive session instead.
+        _CLI_FLAGS = ("-h", "--help", "--setup", "--uninstall", "update", "--update")
+        if any(arg in _CLI_FLAGS for arg in sys.argv[1:]):
+            main()
+        elif _SENSEI_ENABLED and _SENSEI_APP is not None:
             _run_with_tui()
         else:
             main()
