@@ -91,10 +91,13 @@ HARD RULES:
 5. If you need a value the user did NOT give you (email, password, name, address, phone, card number), emit ASK: and stop. NEVER invent values. NEVER use placeholder examples.
 6. Emit directives only. Zero prose. Zero explanation. Zero apology.
 7. Use real CSS selectors: prefer id (#login), name ([name="email"]), aria-label ([aria-label="Search"]).
-8. If the user wants to find/search/look up something and does NOT name a specific website, and no [PAGE_CONTEXT] shows you already on a search results page: do NOT guess a search-box or result-link selector on an unknown page — you cannot see a page you have not navigated to. Instead build a direct search-results URL and BROWSER_NAV straight to it. One directive, done, no guessing:
+7. If the user wants to find/search/look up something and does NOT name a specific website, and no [PAGE_CONTEXT] shows you already on a search results page: do NOT guess a search-box or result-link selector on an unknown page — you cannot see a page you have not navigated to. Instead build a direct search-results URL and BROWSER_NAV straight to it. One directive, done, no guessing:
    - general search -> https://www.google.com/search?q=<url-encoded query>
    - video search -> https://www.youtube.com/results?search_query=<url-encoded query>
+   - job search -> https://www.google.com/search?q=<url-encoded query>
    URL-encode spaces as + and strip filler words like "find me a video on" down to the actual query.
+8. If the user says "google search ..." or "do a google search..." or "search google for...", ALWAYS use BROWSER_NAV to https://www.google.com/search?q=<query> directly. Do NOT emit BROWSER_FILL/BROWSER_SUBMIT unless you are already on a Google search results page.
+9. NEVER emit BROWSER_FILL or BROWSER_SUBMIT unless [PAGE_CONTEXT] confirms you are on a page that has that exact selector. If the current page is unknown, chrome://, about:blank, or a new tab, use BROWSER_NAV only.
 
 EXAMPLE — user says "go to google and search cats":
 BROWSER_NAV: https://www.google.com
@@ -652,27 +655,32 @@ def _build_messages(prompt: str, page_context: dict | None, history: list[dict])
     msgs.extend(history)
     user_text = prompt or ""
     skip_heavy_context = _looks_conversational(prompt)
-    if page_context and not skip_heavy_context:
+    # Strip broken/inaccessible page context so the model does not hallucinate selectors.
+    pc = page_context or {}
+    url = pc.get("url") or ""
+    is_inaccessible = not url or url.startswith(("chrome://", "about:", "edge://", "data:")) or url in ("chrome://newtab/", "about:blank")
+    if pc and not skip_heavy_context and not is_inaccessible:
         ctx_lines = ["[PAGE_CONTEXT]"]
-        if page_context.get("url"):
-            ctx_lines.append(f"url: {page_context['url']}")
-        if page_context.get("title"):
-            ctx_lines.append(f"title: {page_context['title']}")
-        if page_context.get("ax_snapshot"):
-            snap = page_context["ax_snapshot"]
+        if url:
+            ctx_lines.append(f"url: {url}")
+        if pc.get("title"):
+            ctx_lines.append(f"title: {pc['title']}")
+        if pc.get("ax_snapshot"):
+            snap = pc["ax_snapshot"]
             ctx_lines.append("ax_snapshot:")
             ctx_lines.append(json.dumps(snap, separators=(",", ":"))[:6000])
-        elif page_context.get("text"):
+        elif pc.get("text"):
             ctx_lines.append("page_text:")
-            ctx_lines.append(str(page_context["text"])[:4000])
+            ctx_lines.append(str(pc["text"])[:4000])
         user_text = "\n".join(ctx_lines) + "\n\n[USER]\n" + user_text
-    elif page_context and skip_heavy_context:
-        url = page_context.get("url") or ""
-        title = page_context.get("title") or ""
+    elif pc and not is_inaccessible:
+        title = pc.get("title") or ""
         if url or title:
             user_text = f"[PAGE: {title} — {url}]\nThis is a casual chat message. Reply conversationally with NO browser actions.\n[USER]\n{user_text}"
         else:
             user_text = f"This is a casual chat message. Reply conversationally with NO browser actions.\n[USER]\n{user_text}"
+    else:
+        user_text = f"[NO_PAGE_CONTEXT]\nNo accessible web page is currently open. Only use BROWSER_NAV to reach a website; do not use BROWSER_FILL/BROWSER_SUBMIT unless you are on a confirmed page.\n[USER]\n{user_text}"
     msgs.append({"role": "user", "content": user_text})
     return msgs
 
