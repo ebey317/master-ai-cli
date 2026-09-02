@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-ext_id="leffhbjachgdjgniilffijjlhfekjghb"
+ext_id="reffhbpachgdpgtiirffijprhfeqpghb"
 host_dir="$HOME/.config/google-chrome/NativeMessagingHosts"
 host_path="$host_dir/com.master_ai.sensei_extension.json"
 src="$(cd "$(dirname "$0")" && pwd)/native_messaging/com.master_ai.sensei_extension.json"
