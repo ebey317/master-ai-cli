@@ -22,12 +22,13 @@ import urllib.request
 
 
 TOKEN_PATH = os.path.expanduser("~/.master_ai_extension_token")
-DEFAULT_BACKEND = "http://127.0.0.1:8080"
+DEFAULT_BACKEND = "http://127.0.0.1:8791"  # 2026-09-02: matches the :8080->:8791 migration (2026-08-21)
 ALLOWED_ENDPOINTS = {
     "/health",
     "/chat",
     "/chat/continue",
     "/extension/approve_action",
+    "/extension/read_local_file",
     "/tool/find",
     "/tool/describe_step",
 }
@@ -159,12 +160,13 @@ def main() -> int:
         try:
             msg = _read_message()
             if msg is None:
-                return 0
+                break
             _write_message(handle_message(msg))
         except Exception as e:
             _write_message({"type": "tool_response", "ok": False, "error": str(e)})
-            return 1
+            break
+    return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())
