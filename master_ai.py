@@ -234,11 +234,16 @@ def _activate_profile(name):
     """Create (if new) + persist `name` as the active profile. Shared by
     the --profile argv path above and the in-session `profile <name>`
     command so the two can't drift out of sync."""
+    global _PROFILE_NAME, _PROFILE_ROOT
     name = (name or "").strip()
     if not name:
         return False
     (Path.home() / ".master_ai_profiles" / name).mkdir(parents=True, exist_ok=True)
     _ACTIVE_PROFILE_FILE.write_text(name)
+    # Update module-level globals so _pfile() reflects the switch immediately
+    # without requiring a process restart.
+    _PROFILE_NAME = name
+    _PROFILE_ROOT = Path.home() / ".master_ai_profiles" / name
     return True
 
 
@@ -8567,6 +8572,31 @@ def _action_ok(result):
     return result is not None
 
 
+def _format_tool_result(kind, cmd, result):
+    ok = _action_ok(result)
+    exit_code = getattr(result, "exit_code", None)
+    if exit_code is None:
+        exit_code = 0 if ok else "unknown"
+    output = str(result or "").strip()
+    # Privacy guard for RUN/RUNTERM exfil before output goes back to
+    # the model: same source of truth as the READ marking path.
+    _priv_reason = _check_run_output_for_privacy(kind, cmd, output)
+    if _priv_reason:
+        print(f"  {Y}🔒 Privacy: turn marked private ({_priv_reason} in {kind}){X}")
+    if not output:
+        output = "[no output]"
+    max_chars = 12000
+    if len(output) > max_chars:
+        omitted = len(output) - max_chars
+        output = output[:max_chars].rstrip() + f"\n... [truncated {omitted} chars]"
+    return (
+        f"[{kind} RESULT]\n"
+        f"Command: {cmd}\n"
+        f"Exit: {exit_code}\n"
+        f"Output:\n{output}"
+    )
+
+
 def _extract_path_lines(output):
     """Best-effort parse of path-like lines from shell output."""
     out = output or ""
@@ -11294,30 +11324,6 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         globals()["_LAST_BLOCKED_ACTION"] = {}
         log(f"CHAIN_BLOCKED_FEEDBACK: appended [TOOL BLOCKED] for: {cmd}")
         return True
-
-    def _format_tool_result(kind, cmd, result):
-        ok = _action_ok(result)
-        exit_code = getattr(result, "exit_code", None)
-        if exit_code is None:
-            exit_code = 0 if ok else "unknown"
-        output = str(result or "").strip()
-        # Privacy guard for RUN/RUNTERM exfil before output goes back to
-        # the model: same source of truth as the READ marking path.
-        _priv_reason = _check_run_output_for_privacy(kind, cmd, output)
-        if _priv_reason:
-            print(f"  {Y}🔒 Privacy: turn marked private ({_priv_reason} in {kind}){X}")
-        if not output:
-            output = "[no output]"
-        max_chars = 12000
-        if len(output) > max_chars:
-            omitted = len(output) - max_chars
-            output = output[:max_chars].rstrip() + f"\n... [truncated {omitted} chars]"
-        return (
-            f"[{kind} RESULT]\n"
-            f"Command: {cmd}\n"
-            f"Exit: {exit_code}\n"
-            f"Output:\n{output}"
-        )
 
     def _append_exec_failure_feedback(kind, cmd, detail):
         """Genuine runtime failure (the command ran, then failed) — NOT a

@@ -3021,16 +3021,26 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
 
         # /keys — bridge between menu 11's ~/.master_ai_keys and Pupil's
         # localStorage-based wizard. Only exposed on localhost; the underlying
-        # file is already chmod 600 owned by the user. Returns the JSON as-is.
-        # Pupil uses this so you don't have to paste the same key twice.
+        # file is already chmod 600 owned by the user. Handles JSON or KEY=VALUE.
         if self.path == '/keys':
             try:
                 keys_file = os.path.expanduser('~/.master_ai_keys')
+                data = {}
                 if os.path.exists(keys_file):
-                    with open(keys_file) as f:
-                        data = json.load(f)
-                else:
-                    data = {}
+                    raw = open(keys_file).read().strip()
+                    if raw:
+                        try:
+                            data = json.loads(raw)
+                        except json.JSONDecodeError:
+                            # Parse simple KEY=VALUE lines, skipping comments/blank lines
+                            d = {}
+                            for line in raw.splitlines():
+                                line = line.strip()
+                                if not line or line.startswith('#') or '=' not in line:
+                                    continue
+                                k, v = line.split('=', 1)
+                                d[k.strip()] = v.strip()
+                            data = d
                 self.send_response(200)
                 self._cors()
                 self.send_header('Content-Type', 'application/json')
