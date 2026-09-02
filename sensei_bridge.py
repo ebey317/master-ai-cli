@@ -37,7 +37,7 @@ except ImportError:
 HOST = "127.0.0.1"
 PORT = 8791
 OLLAMA = "http://127.0.0.1:11434"
-DEFAULT_MODEL = os.environ.get("SENSEI_MODEL", "qwen2.5:7b")
+DEFAULT_MODEL = os.environ.get("SENSEI_MODEL", "opencode-free/laguna-s-2.1-free")
 VISION_MODEL = os.environ.get("SENSEI_VISION_MODEL", "qwen2.5vl:7b")
 
 
@@ -86,8 +86,8 @@ DONE: <one-line summary of what was accomplished>
 HARD RULES:
 1. DONE: is ONLY allowed as the very last line, AFTER real browser directives have executed. NEVER as the first or only line.
 2. If the user message already contains a [PAGE_CONTEXT] block, DO NOT emit BROWSER_READ — you already have the page. Use the context to pick selectors directly.
-3. Greetings, small talk, and casual chat ("hi", "hello", "good evening", "how are you", "thanks", "what's up", "test", a single word, or a question with no browser task) get ONLY a conversational reply. Emit ZERO directives. No BROWSER_READ. No DONE. Just a friendly short reply.
-4. If the user message is conversational ("hi", "hello", "why", "thanks", "what", "test", a single word, or a question with no browser task), emit ONLY: ASK: What would you like me to do on this page?  — nothing else. No BROWSER_READ, no DONE.
+3. Greetings, small talk, and casual chat ("hi", "hello", "good evening", "how are you", "thanks", "what's up", "test", a single word, or a question with no browser task) get ONLY a conversational reply. Emit ZERO directives. No BROWSER_READ. No DONE. No ASK. Just a friendly short reply.
+4. If the user asks what you can do or what to do next, reply conversationally — do not force a task unless they gave you one.
 5. If you need a value the user did NOT give you (email, password, name, address, phone, card number), emit ASK: and stop. NEVER invent values. NEVER use placeholder examples.
 6. Emit directives only. Zero prose. Zero explanation. Zero apology.
 7. Use real CSS selectors: prefer id (#login), name ([name="email"]), aria-label ([aria-label="Search"]).
@@ -692,6 +692,7 @@ def _select_model(body: dict) -> str:
     explicit = (body.get("model") or "").strip()
     if explicit:
         return explicit
+    # Default to OpenCode free relay for general chat; local 7B only when asked.
     return DEFAULT_MODEL
 
 
@@ -1113,9 +1114,17 @@ class Handler(BaseHTTPRequestHandler):
                 reply_text = "".join(full_text)
                 actions, cleaned = parse_directives(reply_text)
             else:
-                resp = _ollama_chat(model, msgs, timeout=120.0)
-                reply_text = (resp.get("message") or {}).get("content") or ""
-                actions, cleaned = parse_directives(reply_text)
+                if model.startswith("opencode-free/"):
+                    resp = _opencode_free_chat_tools(msgs, timeout=CLOUD_TOOLS_TIMEOUT)
+                    choice = (resp.get("choices") or [{}])[0]
+                    msg = choice.get("message") or {}
+                    reply_text = (msg.get("content") or "").strip()
+                    actions = _tool_calls_to_actions(msg.get("tool_calls") or [])
+                    cleaned = reply_text
+                else:
+                    resp = _ollama_chat(model, msgs, timeout=120.0)
+                    reply_text = (resp.get("message") or {}).get("content") or ""
+                    actions, cleaned = parse_directives(reply_text)
         except Exception as e:
             if sse_started:
                 _sse_write({"error": str(e), "session_id": session_id, "done": True})
