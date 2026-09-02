@@ -1,0 +1,16 @@
+[Unit]
+Description=Backstop sweep of the Sensei notification spool
+
+# A .path unit can miss a file that appears while its service is still running
+# or re-arming (observed 2026-09-02: a spooled notification sat undelivered
+# until the next unrelated trigger). The drain exits immediately when the spool
+# is empty, so a frequent sweep costs nothing and closes that race.
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=30s
+AccuracySec=1s
+Unit=sensei-notify-drain.service
+
+[Install]
+WantedBy=timers.target

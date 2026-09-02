@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch the Sensei notification spool
+
+[Path]
+PathExistsGlob=/home/elijah/.master_ai_notify_queue
+Unit=sensei-notify-drain.service
+
+[Install]
+WantedBy=default.target

@@ -281,7 +281,16 @@ if [ "$REPLY_CHOICE" = "yes" ]; then
             mkdir -p "$UD"
             if [ -d "$TARGET/systemd" ]; then
                 cp "$TARGET/systemd/"*.service "$UD/" 2>/dev/null
+                # .path/.timer units ship too -- sensei-notify-drain needs both
+                # (event trigger for latency, timer sweep so a missed trigger
+                # can't strand a queued notification).
+                cp "$TARGET/systemd/"*.path "$UD/" 2>/dev/null
+                cp "$TARGET/systemd/"*.timer "$UD/" 2>/dev/null
                 systemctl --user daemon-reload 2>/dev/null
+                for u in sensei-notify-drain.path sensei-notify-drain.timer; do
+                    [ -f "$UD/$u" ] && systemctl --user enable --now "$u" 2>/dev/null \
+                      && echo -e "  ${BG}\u2713 $u enabled${X}"
+                done
                 for svc in master-ai-ui.service master-ai-tts.service master-ai-prewarm.service; do
                     [ -f "$UD/$svc" ] && systemctl --user enable --now "$svc" 2>/dev/null \
                       && echo -e "  ${BG}✓ $svc enabled${X}"
