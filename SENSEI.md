@@ -160,6 +160,35 @@ whitelisted-domains/message-bus-ack story from the old stale AGENTS.md:
   synchronously in the same Python process as the main engine — a crashing
   subagent is caught with try/except, but there is no real fault isolation.
 
+## Fixed 2026-09-01 — turns ending on announcement, no answer
+
+Live session on Mary: user said "proceed", Sensei replied "On it. 🔍" and
+the turn ended — no directive dispatch, no follow-up, nothing. Happened
+twice in one session; the user had to ask "why did you stop without giving
+me an answer?" the first time. Root cause had two parts:
+
+1. `~/.sensei_behavior.md` — referenced by `BEHAVIOR_FILE`/`load_behavior()`
+   and by the top-of-file comment ("Full canonical profile ... loaded into
+   Sensei's system prompt via ~/.sensei_behavior.md") since long before this
+   fix — **never actually existed on either machine.** `load_behavior()`
+   silently returns `""` on a missing file, so this had been a no-op the
+   entire time with no error surfaced anywhere. Created it (see the file
+   itself for content) with a "read, work, AND answer" completion contract.
+2. Even a fully-populated `.sensei_behavior.md` wouldn't have reached the
+   turn that actually failed — `_behavior_block` is conditioned on
+   `not is_chat_fast`, and `cloud_fast` (Groq) is exactly the lane casual
+   back-and-forth chat routes through. Added the same completion rule
+   directly to the unconditional header text of both `LOCAL_SYSTEM` and
+   `CLOUD_SYSTEM` in `master_ai.py` so it reaches every route, `cloud_fast`
+   included.
+
+Not independently verified against a live repro yet — the original failure
+was intermittent/prompt-dependent, not a deterministic unit-testable
+condition. If it recurs, that means the instruction alone isn't sufficient
+and this needs an actual structural fix (e.g. detecting a directive-free,
+short, intent-only reply and forcing a follow-up turn before returning
+control to the user) rather than another prompt tweak.
+
 ## Open bugs (as of 2026-08-28, from a live stress-test session)
 
 Full detail: `~/.claude/projects/-home-elijah/memory/project_sensei_cli_stress_test_2026-08-28.md`
