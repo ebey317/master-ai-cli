@@ -24,7 +24,7 @@ const REFERENCE_BATTERY = [
   /tracking\s*(number|id|#)[:\s]*([A-Z0-9-]{4,})/i,
 ];
 const INDEED_REFERENCE_RE = /smartapply\.indeed\.com\/.+\/([a-f0-9]{16,})/i;
-const DEFAULT_ROUTER_BASE = "http://127.0.0.1:8080";
+const DEFAULT_ROUTER_BASE = "http://127.0.0.1:8791"; // 2026-09-02: matches the :8080->:8791 migration (2026-08-21) -- regressed once already tonight, re-applied after verifying
 const DISPATCH_PATH = "/dispatch";
 
 globalThis.__SENSEI_FIRST_SUBMIT_PAUSE_STATE__ = globalThis.__SENSEI_FIRST_SUBMIT_PAUSE_STATE__ || {

@@ -1628,10 +1628,33 @@ def _run_agent_goal(session_id: str, goal: str, mode: str = "auto", max_rounds: 
     sess["messages"].append({"role": "user", "content": goal})
 
     cdp: CdpClient | None = None
+    chrome_ok = False
     try:
         cdp = CdpClient()
+        # Actually ping CDP before claiming we have a browser.
+        cdp._get_pages()
+        chrome_ok = True
     except Exception as e:
         _audit({"event": "agent_cdp_unavailable", "session_id": session_id, "error": str(e)})
+
+    if not chrome_ok:
+        # Do not hallucinate. Without CDP / an open browser we cannot act.
+        # Queue a BROWSER_NAV action so the extension can execute it when the
+        # user opens Chrome, and report waiting status honestly.
+        nav_action = None
+        url = _extract_url_from_goal(goal)
+        if url:
+            nav_action = {"kind": "BROWSER_NAV", "target": url, "value": "", "status": "ready"}
+            _queue_actions(session_id, [nav_action])
+        return {
+            "ok": True,
+            "session_id": session_id,
+            "round": 0,
+            "status": "waiting_for_chrome",
+            "reply": "Chrome is not open right now. Open Chrome and I'll run this goal. I've queued the first navigation step so the extension can pick it up.",
+            "queued_action": nav_action,
+            "model": DEFAULT_MODEL,
+        }
 
     round_num = 0
     final_reply = ""
@@ -1696,6 +1719,23 @@ def _run_agent_goal(session_id: str, goal: str, mode: str = "auto", max_rounds: 
         goal = "Continue."
 
     return {"ok": True, "session_id": session_id, "round": round_num, "status": "max_rounds", "reply": final_reply, "last_actions": last_actions}
+
+
+def _extract_url_from_goal(goal: str) -> str | None:
+    """Best-effort: if the goal is a search request, emit a Google search URL."""
+    g = (goal or "").strip().lower()
+    if not g:
+        return None
+    # Extract quoted query or fallback to whole goal.
+    m = re.search(r'["\']([^"\']+)["\']', goal)
+    query = m.group(1) if m else re.sub(r'^(search|google|find|look up|do a)\s+', '', goal, flags=re.I)
+    if re.search(r'\b(search|google|look up|find|query)\b', g):
+        return "https://www.google.com/search?q=" + urllib.parse.quote_plus(query)
+    # Any bare URL in the goal.
+    url_m = re.search(r'https?://[^\s]+', goal)
+    if url_m:
+        return url_m.group(0)
+    return None
 
 
 def _queue_actions(session_id: str, actions: list[dict]) -> None:
