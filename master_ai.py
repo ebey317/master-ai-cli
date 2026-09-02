@@ -13693,6 +13693,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
     # stuck call.
     continuation_turns = 0
     max_continuation_turns = 60  # 2026-09-01: was 20 — operator hit the cap again
+    _repair_turns_seen = 0  # how many [Directive repair] nudges fired this chain
     while result is None and continuation_turns < max_continuation_turns:
         if _INTERRUPT_EVENT.is_set():
             print(_pill("STOPPED", f"{D}interrupted — {continuation_turns} step(s) already ran{X}"))
@@ -13701,6 +13702,8 @@ def handle(user_text, history, image_path=None, context_policy=None):
             break
         repair_turn = bool(history and history[-1].get("role") == "user"
                            and str(history[-1].get("content", "")).startswith("[Directive repair]"))
+        if repair_turn:
+            _repair_turns_seen += 1
         reply2, streamed2 = _continue_model_turn(repair_turn=repair_turn)
         if not reply2:
             break
@@ -13709,9 +13712,40 @@ def handle(user_text, history, image_path=None, context_policy=None):
         reply = reply2
         result = process_reply(reply2, history, streamed=streamed, continue_after_tools=True)
 
+    # 2026-09-01 — "no matter what, an answer, every time" is now a hard
+    # requirement, not a best-effort. Everything above (COMPLETION RULE
+    # prompt text, the stall-phrase/malformed-directive detector inside
+    # process_reply) is pattern-based and can miss a wording that hasn't
+    # been seen yet, or the model can keep stalling right up to the
+    # continuation cap. This is the backstop that can't itself fail to
+    # fire, because it's plain string formatting, not another model call
+    # that could also stall or time out: if the chain never resolved to a
+    # real result, DO NOT trust `reply` (it may just be the same stalled
+    # announcement that triggered the last repair attempt) — synthesize an
+    # honest, deterministic closing message instead of showing raw
+    # leftover text or nothing at all.
     if result is None:
         print(_pill("WARN", f"{D}continuation limit reached or model unavailable after tool output{X}"))
-        log(f"CHAIN_CONTINUATION_STOP: turns={continuation_turns} route={route} model={model}")
+        log(f"CHAIN_CONTINUATION_STOP: turns={continuation_turns} repairs={_repair_turns_seen} route={route} model={model}")
+        if _repair_turns_seen > 0:
+            fallback = (
+                f"I got stuck — tried {_repair_turns_seen} time(s) to actually do this and kept "
+                f"announcing it instead of doing it, across {continuation_turns} turn(s). Stopping "
+                f"rather than looping forever. Tell me to try again, or give me a narrower first step."
+            )
+        elif not (reply or "").strip():
+            fallback = (
+                f"Hit the {max_continuation_turns}-turn continuation limit (or the model stopped "
+                f"responding) with nothing usable back yet. {continuation_turns} step(s) ran — "
+                f"check scrollback above for what happened. Tell me to continue or try a different angle."
+            )
+        else:
+            fallback = None  # reply has real content — let the normal fallback below show it
+        if fallback:
+            render_reply(fallback, prefix=f"\n{M}  🥋{X} ", suffix="")
+            history.append({"role": "assistant", "content": fallback})
+            compact_history(history)
+            return fallback
 
     # 2026-08-30: root-caused a real bug — operator watched a live turn
     # end with tool pills visible but no closing answer at all, the app
@@ -13731,6 +13765,15 @@ def handle(user_text, history, image_path=None, context_policy=None):
     if not globals().get("_LAST_TURN_RENDERED") and (reply or "").strip():
         log("CLOSING_ANSWER_FALLBACK: process_reply never rendered the final reply — showing it directly")
         render_reply(reply, prefix=f"\n{M}  🥋{X} ", suffix="")
+    elif not globals().get("_LAST_TURN_RENDERED"):
+        # Absolute last resort: the chain "resolved" (result was not None)
+        # but there is still no rendered content and no reply text at all.
+        # Should not be reachable given the guards above, but "no matter
+        # what" means this path exists anyway rather than trusting that.
+        log("CLOSING_ANSWER_FALLBACK: empty reply reached end of turn with nothing shown")
+        _empty_fallback = "That finished without producing a visible result. Try rephrasing, or ask me to explain what happened."
+        render_reply(_empty_fallback, prefix=f"\n{M}  🥋{X} ", suffix="")
+        reply = _empty_fallback
 
     history.append({"role": "assistant", "content": reply})
 
