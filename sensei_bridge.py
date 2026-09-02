@@ -1022,6 +1022,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_describe_step(body)
             if path.startswith("/reentry/"):
                 return self._handle_reentry(path, body)
+            if path == "/agent/run":
+                return self._handle_agent_run(body)
+            if path == "/agent/chat":
+                return self._handle_agent_chat(body)
             return self._send_json(404, {"error": f"unknown route {path}"})
         except Exception as e:
             _audit({"event": "handler_error", "path": path, "error": str(e)})
@@ -1152,7 +1156,55 @@ class Handler(BaseHTTPRequestHandler):
             return
         return self._send_json(200, result_payload)
 
-    # ---- /extension/classify_domain ----
+
+    # ---- /agent/run ----
+    def _handle_agent_run(self, body: dict) -> None:
+        session_id = str(body.get("session_id") or f"agent-{uuid.uuid4().hex}")
+        goal = str(body.get("goal") or body.get("prompt") or "").strip()
+        if not goal:
+            return self._send_json(400, {"error": "missing goal"})
+        mode = str(body.get("mode") or "auto").lower()
+        if mode not in ("auto", "review"):
+            mode = "auto"
+        max_rounds = int(body.get("max_rounds") or 8)
+        try:
+            result = _run_agent_goal(session_id, goal, mode=mode, max_rounds=max_rounds)
+            return self._send_json(200, result)
+        except Exception as e:
+            _audit({"event": "agent_run_error", "session_id": session_id, "error": str(e)})
+            return self._send_json(500, {"error": str(e), "session_id": session_id})
+
+    # ---- /agent/chat ----
+    def _handle_agent_chat(self, body: dict) -> None:
+        session_id = str(body.get("session_id") or f"agent-{uuid.uuid4().hex}")
+        prompt = str(body.get("prompt") or "").strip()
+        if not prompt:
+            return self._send_json(400, {"error": "missing prompt"})
+        with _agent_lock:
+            sess = _agent_sessions.setdefault(session_id, {"messages": [], "tab_id": None, "url": "", "round": 0})
+        page_context = {}
+        try:
+            cdp = CdpClient()
+            page_context = cdp.read_page()
+        except Exception:
+            pass
+        try:
+            reply, actions, model = _agent_chat(session_id, prompt, page_context, sess["messages"])
+            sess["messages"].extend([
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": reply},
+            ])
+            # If the model produced actions, queue them for extension/CDP execution.
+            if actions:
+                _queue_actions(session_id, actions)
+            return self._send_json(200, {
+                "reply": reply, "actions": actions, "model": model,
+                "session_id": session_id, "status": "ok",
+            })
+        except Exception as e:
+            return self._send_json(500, {"error": str(e), "session_id": session_id})
+
+        # ---- /extension/classify_domain ----
     def _handle_classify(self, body: dict) -> None:
         url = str(body.get("url") or "")
         host = ""
@@ -1283,6 +1335,373 @@ class Handler(BaseHTTPRequestHandler):
         })
 
 
+# ── AGENTIC SENSEI — CDP-driven autonomous browser agent ────────────────────
+# Appended to sensei_bridge.py before serve().
+# Provides:
+#   - POST /agent/run {session_id?, goal, mode?="auto", max_rounds?=8}
+#   - Persistent conversation memory per session
+#   - Native Chrome tab control via CDP on http://127.0.0.1:9222
+#   - Cloud-escalation for hard reasoning, local 7B for fast steps
+#   - Falls back to extension queue when CDP is unavailable
+# ───────────────────────────────────────────────────────────────────────────
+
+import contextlib
+import urllib.parse
+import urllib.request
+
+_CDP_WS_TIMEOUT = 30.0
+_CDP_HTTP_TIMEOUT = 8.0
+
+# Per-session agent state: {session_id: {messages: [...], tab_id: str|None, url: str, ...}}
+_agent_sessions: dict[str, dict] = {}
+_agent_lock = threading.Lock()
+
+
+def _cdp_json_rpc(ws_url: str, method: str, params: dict | None = None, timeout: float = _CDP_WS_TIMEOUT) -> dict:
+    """Send one CDP command over WebSocket and return the result."""
+    import websockets.sync.client as wsc
+    req_id = int(time.time() * 1000000) % 0x7FFFFFFF
+    payload = {"id": req_id, "method": method, "params": params or {}}
+    with wsc.connect(ws_url, close_timeout=2, open_timeout=timeout) as ws:
+        ws.send(json.dumps(payload))
+        while True:
+            msg = json.loads(ws.recv(timeout=timeout))
+            if msg.get("id") == req_id:
+                if "error" in msg:
+                    raise RuntimeError(f"CDP {method}: {msg['error']}")
+                return msg.get("result", {})
+
+
+class CdpClient:
+    """Minimal Chrome DevTools Protocol client."""
+
+    def __init__(self, cdp_base: str = "http://127.0.0.1:9222"):
+        self.cdp_base = cdp_base.rstrip("/")
+        self._pages: list[dict] = []
+        self._ws_url: str | None = None
+
+    def _get_pages(self) -> list[dict]:
+        req = urllib.request.Request(f"{self.cdp_base}/json", method="GET")
+        with urllib.request.urlopen(req, timeout=_CDP_HTTP_TIMEOUT) as res:
+            return json.loads(res.read().decode())
+
+    def _find_or_create_page(self, url: str | None = None) -> dict:
+        pages = self._get_pages()
+        # Prefer an existing page with a real https? url if not asking for newtab.
+        for p in pages:
+            if p.get("type") == "page":
+                if url and p.get("url") == url:
+                    return p
+                if not url and re.match(r"^https?://", p.get("url", "")):
+                    return p
+        # Create a new tab.
+        target_url = url or "about:blank"
+        req = urllib.request.Request(f"{self.cdp_base}/json/new?{urllib.parse.urlencode({'': target_url})[1:]}", method="PUT")
+        with urllib.request.urlopen(req, timeout=_CDP_HTTP_TIMEOUT) as res:
+            return json.loads(res.read().decode())
+
+    def open(self, url: str) -> str:
+        page = self._find_or_create_page()
+        self._ws_url = page.get("webSocketDebuggerUrl")
+        if not self._ws_url:
+            raise RuntimeError("page has no webSocketDebuggerUrl")
+        # Enable required domains.
+        _cdp_json_rpc(self._ws_url, "Runtime.enable")
+        _cdp_json_rpc(self._ws_url, "Page.enable")
+        _cdp_json_rpc(self._ws_url, "DOM.enable")
+        # Navigate.
+        _cdp_json_rpc(self._ws_url, "Page.navigate", {"url": url})
+        time.sleep(0.8)  # basic settle
+        return page.get("id", "")
+
+    def evaluate(self, expression: str) -> dict:
+        if not self._ws_url:
+            raise RuntimeError("not connected")
+        return _cdp_json_rpc(self._ws_url, "Runtime.evaluate", {
+            "expression": expression,
+            "returnByValue": True,
+            "awaitPromise": True,
+        })
+
+    def read_page(self) -> dict:
+        expr = r"""
+        (function(){
+            const body = document.body ? document.body.innerText : '';
+            const title = document.title || '';
+            const url = location.href;
+            const inputs = Array.from(document.querySelectorAll('input, textarea, select'))
+                .slice(0, 80)
+                .map(el => ({
+                    tag: el.tagName.toLowerCase(),
+                    type: el.type || '',
+                    name: el.name || '',
+                    id: el.id || '',
+                    placeholder: el.placeholder || '',
+                    ariaLabel: el.getAttribute('aria-label') || '',
+                    selector: el.tagName.toLowerCase() +
+                        (el.id ? '#'+el.id : '') +
+                        (el.name ? '[name="'+el.name+'"]' : '') +
+                        (el.className ? '.'+el.className.split(/\s+/).slice(0,2).join('.') : '')
+                }));
+            const links = Array.from(document.querySelectorAll('a, button'))
+                .slice(0, 40)
+                .map(el => ({
+                    tag: el.tagName.toLowerCase(),
+                    text: (el.innerText || el.value || '').slice(0, 80),
+                    selector: el.tagName.toLowerCase() +
+                        (el.id ? '#'+el.id : '') +
+                        (el.className ? '.'+el.className.split(/\s+/).slice(0,2).join('.') : '')
+                }));
+            return {title, url, body: body.slice(0, 8000), inputs, links};
+        })()
+        """
+        res = self.evaluate(expr)
+        return res.get("result", {}).get("value", {}) or {}
+
+    def click(self, selector: str) -> dict:
+        expr = f"""
+        (function(){{
+            const el = document.querySelector({json.dumps(selector)});
+            if (!el) return {{ok: false, error: 'not found'}};
+            el.scrollIntoView({{block: 'center'}});
+            const rect = el.getBoundingClientRect();
+            el.click();
+            return {{ok: true, selector: {json.dumps(selector)}, x: rect.x, y: rect.y}};
+        }})()
+        """
+        return self.evaluate(expr)
+
+    def fill(self, selector: str, value: str) -> dict:
+        expr = f"""
+        (function(){{
+            const el = document.querySelector({json.dumps(selector)});
+            if (!el) return {{ok: false, error: 'not found'}};
+            el.scrollIntoView({{block: 'center'}});
+            el.focus();
+            if (el.tagName === 'SELECT') {{
+                el.value = {json.dumps(value)};
+            }} else {{
+                el.value = {json.dumps(value)};
+            }}
+            el.dispatchEvent(new Event('input', {{bubbles: true}}));
+            el.dispatchEvent(new Event('change', {{bubbles: true}}));
+            return {{ok: true, selector: {json.dumps(selector)}, value: {json.dumps(value)}}};
+        }})()
+        """
+        return self.evaluate(expr)
+
+    def submit(self, selector: str) -> dict:
+        expr = f"""
+        (function(){{
+            const el = document.querySelector({json.dumps(selector)});
+            if (!el) return {{ok: false, error: 'not found'}};
+            el.scrollIntoView({{block: 'center'}});
+            if (el.requestSubmit) el.requestSubmit(); else el.submit();
+            return {{ok: true, selector: {json.dumps(selector)}}};
+        }})()
+        """
+        return self.evaluate(expr)
+
+    def screenshot(self) -> str:
+        res = _cdp_json_rpc(self._ws_url, "Page.captureScreenshot")
+        return res.get("data", "")
+
+
+# ── Agent prompt & reasoning ───────────────────────────────────────────────
+
+_AGENT_SYSTEM_PROMPT = """You are Sensei, an autonomous browser agent. You control Chrome directly. You can hold detailed, multi-turn conversations to gather the information needed to fill forms, applications, and documents.
+
+RULES:
+1. If you need information the user has not given you (name, email, phone, address, work history, etc.), ASK in a conversational way. Do not guess. Do not use placeholders.
+2. When you have enough information, take browser actions: BROWSER_NAV, BROWSER_CLICK, BROWSER_FILL, BROWSER_SUBMIT, BROWSER_READ.
+3. After each action you will receive the updated page state. Use it to decide the next step.
+4. Keep replies concise but informative. When asking for missing info, ask one or a few related questions at a time — not a giant list.
+5. For multi-step forms, proceed field by field if needed. Confirm before submitting anything sensitive (payments, final applications, deletes).
+6. Use DONE: only when the goal is fully achieved or you are stuck waiting on user input.
+
+DIRECTIVES (emit exactly, one per line):
+BROWSER_NAV: <url>
+BROWSER_CLICK: <selector>
+BROWSER_FILL: <selector> :: <value>
+BROWSER_SUBMIT: <form-selector>
+BROWSER_READ
+ASK: <question or request for missing info>
+DONE: <summary>
+"""
+
+
+def _agent_select_model(prompt: str, has_screenshot: bool = False) -> str:
+    """Route: vision -> vision model; simple/fast -> local 7B; hard reasoning -> cloud free."""
+    if has_screenshot:
+        return VISION_MODEL
+    # Use cloud for questions that look like they need deep reasoning / form strategy.
+    hard_keywords = r"\b(application|apply|form|strategy|plan|document|resume|cover\s+letter|explain|why|compare|choose|decide)\b"
+    if re.search(hard_keywords, prompt, re.IGNORECASE):
+        return f"opencode-free/{_OPENCODE_FREE_MODEL}"
+    return DEFAULT_MODEL
+
+
+def _agent_chat(session_id: str, prompt: str, page_context: dict, history: list[dict]) -> tuple[str, list[dict], str]:
+    """Run one agent chat turn. Returns (reply_text, actions, model_used)."""
+    msgs = [{"role": "system", "content": _AGENT_SYSTEM_PROMPT}]
+    # Keep last 12 messages to give the model conversation memory without blowing context.
+    msgs.extend(history[-12:])
+    ctx_text = ""
+    if page_context:
+        ctx_text = json.dumps(page_context, separators=(",", ":"), ensure_ascii=False)[:8000]
+    user_text = prompt
+    if ctx_text:
+        user_text = f"[PAGE_STATE]\n{ctx_text}\n\n[USER/GOAL]\n{prompt}"
+    msgs.append({"role": "user", "content": user_text})
+
+    model = _agent_select_model(prompt)
+    try:
+        if model.startswith("opencode-free/"):
+            resp = _opencode_free_chat_tools(msgs, timeout=CLOUD_TOOLS_TIMEOUT)
+            choice = (resp.get("choices") or [{}])[0]
+            msg = choice.get("message") or {}
+            text = (msg.get("content") or "").strip()
+            actions = _tool_calls_to_actions(msg.get("tool_calls") or [])
+            return text, actions, model
+        resp = _ollama_chat(model, msgs, timeout=120.0)
+        text = (resp.get("message") or {}).get("content") or ""
+        actions, _ = parse_directives(text)
+        return text, actions, model
+    except Exception as e:
+        _audit({"event": "agent_chat_error", "session_id": session_id, "error": str(e)})
+        raise
+
+
+def _execute_action_cdp(cdp: CdpClient, action: dict) -> dict:
+    kind = action.get("kind", "")
+    target = action.get("target", "")
+    value = action.get("value", "")
+    try:
+        if kind == "BROWSER_NAV":
+            cdp.open(target)
+            return {"ok": True, "navigated": target}
+        if kind == "BROWSER_CLICK":
+            return cdp.click(target)
+        if kind == "BROWSER_FILL":
+            return cdp.fill(target, value)
+        if kind == "BROWSER_SUBMIT":
+            return cdp.submit(target)
+        if kind == "BROWSER_READ":
+            return {"ok": True, "page": cdp.read_page()}
+        return {"ok": False, "error": f"unsupported kind {kind}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _is_human_gate(action: dict, reply: str) -> bool:
+    """Returns True if this action should pause for human approval."""
+    if action.get("kind") == "ASK":
+        return True
+    text = (reply or "").lower()
+    gate_words = ["payment", "purchase", "checkout", "password", "credit card", "ssn", "social security", "submit application", "final", "delete"]
+    if any(w in text for w in gate_words):
+        return True
+    return False
+
+
+def _run_agent_goal(session_id: str, goal: str, mode: str = "auto", max_rounds: int = 8) -> dict:
+    """Main autonomous loop. Returns a status dict."""
+    with _agent_lock:
+        sess = _agent_sessions.setdefault(session_id, {"messages": [], "tab_id": None, "url": "", "round": 0})
+    sess["messages"].append({"role": "user", "content": goal})
+
+    cdp: CdpClient | None = None
+    try:
+        cdp = CdpClient()
+    except Exception as e:
+        _audit({"event": "agent_cdp_unavailable", "session_id": session_id, "error": str(e)})
+
+    round_num = 0
+    final_reply = ""
+    last_actions: list[dict] = []
+    while round_num < max_rounds:
+        round_num += 1
+        sess["round"] = round_num
+        # Build page_context from CDP if available.
+        page_context: dict = {}
+        if cdp:
+            try:
+                page_context = cdp.read_page()
+                sess["url"] = page_context.get("url", sess["url"])
+            except Exception as e:
+                page_context = {"error": str(e)}
+        try:
+            reply, actions, model = _agent_chat(session_id, goal if round_num == 1 else "Continue.", page_context, sess["messages"])
+        except Exception as e:
+            return {"ok": False, "session_id": session_id, "error": f"chat failed: {e}", "round": round_num}
+
+        final_reply = reply
+        sess["messages"].append({"role": "assistant", "content": reply})
+        last_actions = actions
+
+        # Filter to executable actions and check human gates.
+        exec_actions = []
+        for a in actions:
+            if a.get("kind") in ("BROWSER_NAV", "BROWSER_CLICK", "BROWSER_FILL", "BROWSER_SUBMIT", "BROWSER_READ"):
+                if mode != "auto" or _is_human_gate(a, reply):
+                    # In review mode or on sensitive actions, queue to extension for approval.
+                    _queue_actions(session_id, [a])
+                    return {
+                        "ok": True, "session_id": session_id, "round": round_num,
+                        "status": "waiting_for_approval", "reply": reply, "queued_action": a,
+                        "model": model,
+                    }
+                exec_actions.append(a)
+
+        if not exec_actions:
+            if any(a.get("kind") == "ASK" for a in actions):
+                return {"ok": True, "session_id": session_id, "round": round_num, "status": "needs_info", "reply": reply, "model": model}
+            if any(a.get("kind") == "DONE" for a in actions) or not actions:
+                return {"ok": True, "session_id": session_id, "round": round_num, "status": "done", "reply": reply, "model": model}
+
+        # Execute via CDP.
+        results = []
+        for a in exec_actions:
+            if cdp:
+                result = _execute_action_cdp(cdp, a)
+            else:
+                # No CDP: queue to extension and stop (it will execute when panel is open).
+                _queue_actions(session_id, [a])
+                return {"ok": True, "session_id": session_id, "round": round_num, "status": "queued_to_extension", "reply": reply, "queued_action": a, "model": model}
+            results.append({"action": a, "result": result})
+            _audit({"event": "agent_action", "session_id": session_id, "round": round_num, "action": a, "result": result})
+            if not result.get("ok"):
+                break
+
+        # Continue loop with results summary as the next user message.
+        summary = "[ACTION_RESULTS]\n" + json.dumps(results, separators=(",", ":"), ensure_ascii=False)[:4000]
+        sess["messages"].append({"role": "user", "content": summary})
+        goal = "Continue."
+
+    return {"ok": True, "session_id": session_id, "round": round_num, "status": "max_rounds", "reply": final_reply, "last_actions": last_actions}
+
+
+def _queue_actions(session_id: str, actions: list[dict]) -> None:
+    stamped = []
+    for a in actions:
+        a2 = dict(a)
+        a2.setdefault("id", uuid.uuid4().hex)
+        a2["queued_ts"] = time.time()
+        a2["status"] = "queued"
+        a2["_session_id"] = session_id
+        stamped.append(a2)
+    with _queue_lock:
+        bucket = _action_queue.setdefault(session_id, [])
+        overflow = max(0, (len(bucket) + len(stamped)) - _QUEUE_MAX_PER_SESSION)
+        if overflow:
+            del bucket[:overflow]
+        bucket.extend(stamped)
+    with _action_session_lock:
+        for a2 in stamped:
+            _action_session_map[a2["id"]] = session_id
+
+
+# Wire /agent/run into Handler.do_POST (called by patching the method).
 def serve() -> int:
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     sys.stderr.write(f"[bridge] listening on http://{HOST}:{PORT}\n")
