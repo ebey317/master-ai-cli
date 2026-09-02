@@ -10901,6 +10901,64 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         and not any(l.strip().lower().startswith(p) for p in skip_prefixes)
     ).strip()
 
+    # 2026-09-01: prompt-only fix (COMPLETION RULE in the system prompt)
+    # did not hold — same night, same bug: "I'll set that up now. One
+    # moment..." with zero directives, rendered as if it were the final
+    # answer, turn over. narrative is non-empty here so the branch above
+    # would have fired and shown it as done. Catch the announcement-only
+    # shape structurally instead of trusting the model to stop doing it:
+    # no directives at all + starts with a stock "about to work" lead-in +
+    # short enough to be a stall rather than a real short answer. Force
+    # another turn instead of ending on it. Bounded by the existing
+    # max_continuation_turns cap in the caller's loop — can't hang forever.
+    # Searches anywhere in the narrative, not just the start — real examples
+    # tonight led with "Got it — ..." before the actual stall phrase.
+    # "i'll <word> that/this/it/up/now" catches the generic case ("I'll set
+    # that up now"); the explicit verb list catches "I'll <verb> <object>"
+    # without a trailing filler word ("I'll check the logs").
+    _stall_pattern = re.compile(
+        r'\b(on it\b|i\'?ll\s+\w+\s+(?:that|this|it|up|now)\b|i\'?ll (?:set|get|'
+        r'check|investigate|look|create|start|do|run|write|build|make|dig|take)|'
+        r'let me (?:\w+\s+)?(?:check|see|look|investigate|create|dig|take|pivot)|'
+        r'one moment|give me a (?:second|moment|sec)|working on it|hold on)\b',
+        re.IGNORECASE,
+    )
+    # Second shape seen tonight: the model attempts directives but wraps
+    # them as `<tool_call>RUN: ...` mid-line instead of a bare `RUN:` at
+    # column 0 — the parser never recognizes these as real directives, so
+    # has_directives is False here too, but this isn't a stall-phrase, it's
+    # a malformed-syntax dump that got shown to the user as if it were an
+    # answer. No length cap here — these dumps ran long.
+    _malformed_directive_pattern = re.compile(
+        r'<tool_call>|\btool_call\b', re.IGNORECASE)
+    is_malformed_directive = (
+        not has_directives and narrative
+        and _malformed_directive_pattern.search(narrative)
+    )
+    is_stall = (
+        not has_directives
+        and narrative
+        and len(narrative) < 400
+        and _stall_pattern.search(narrative)
+    )
+    if is_stall or is_malformed_directive:
+        reason = "malformed <tool_call> syntax" if is_malformed_directive else "announced work, emitted no directive"
+        print(_pill("WARN", f"{D}model {reason} — forcing a retry{X}"))
+        log(f"STALL_REPAIR ({reason}): narrative={narrative[:120]!r}")
+        repair_msg = (
+            "[Directive repair]\n"
+            "You emitted `<tool_call>RUN: ...` — that format isn't recognized. "
+            "Directives are bare, one per line, at column 0: `RUN: <cmd>` (no "
+            "XML tags, no wrapper). Emit the real directive now in that format."
+            if is_malformed_directive else
+            "[Directive repair]\n"
+            "You said you'd do that but emitted no RUN/READ/CREATE/EDIT/"
+            "RUNTERM directive — nothing actually happened. Emit the real "
+            "directive now. Do not narrate intent again; either do the "
+            "thing or say plainly why you can't."
+        )
+        history.append({"role": "user", "content": repair_msg})
+        return None
     if narrative and not streamed:
         render_reply(narrative, prefix=f"\n{M}  🥋{X} ", suffix="")
     elif not has_directives and not streamed:
