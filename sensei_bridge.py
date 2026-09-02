@@ -1722,20 +1722,56 @@ def _run_agent_goal(session_id: str, goal: str, mode: str = "auto", max_rounds: 
 
 
 def _extract_url_from_goal(goal: str) -> str | None:
-    """Best-effort: if the goal is a search request, emit a Google search URL."""
-    g = (goal or "").strip().lower()
+    """Best-effort: turn a natural-language goal into a concrete URL.
+    Handles direct URLs, 'go to paypal.com', and search queries."""
+    g = (goal or "").strip()
     if not g:
         return None
-    # Extract quoted query or fallback to whole goal.
-    m = re.search(r'["\']([^"\']+)["\']', goal)
-    query = m.group(1) if m else re.sub(r'^(search|google|find|look up|do a)\s+', '', goal, flags=re.I)
-    if re.search(r'\b(search|google|look up|find|query)\b', g):
-        return "https://www.google.com/search?q=" + urllib.parse.quote_plus(query)
-    # Any bare URL in the goal.
-    url_m = re.search(r'https?://[^\s]+', goal)
+
+    # 1. Explicit URL anywhere in the goal.
+    url_m = re.search(r'https?://[^\s]+', g)
     if url_m:
         return url_m.group(0)
-    return None
+
+    low = g.lower()
+
+    # 2. 'go to paypal.com' / 'navigate to paypal.com'
+    nav_m = re.search(r'\b(?:go to|navigate to|open|visit)\s+([a-zA-Z0-9][a-zA-Z0-9\-.]+(?:\.[a-zA-Z]{2,})?)\b', g, re.I)
+    if nav_m:
+        host = nav_m.group(1).strip()
+        if host and not re.match(r'^(http|file|chrome|about|data)$', host, re.I):
+            return f"https://{host}"
+
+    # 3. Search intent: extract quoted query, otherwise strip filler and search.
+    if not re.search(r'\b(search|google|look up|look-up|lookup|find me|query)\b', low):
+        return None
+
+    m = re.search(r'["\']([^"\']+)["\']', g)
+    if m:
+        query = m.group(1).strip()
+        if query:
+            return "https://www.google.com/search?q=" + urllib.parse.quote_plus(query)
+
+    # Strip leading and trailing filler. Work on lowercase indices but slice original.
+    strip_patterns = [
+        # leading
+        r'^\s*(?:do\s+a\s+)?(?:google\s+)?search(?:\s*,?\s+web\s+scrape)?(?:\s*,?\s+whatever\s+you\s+need\s+to\s+do)?(?:\s+for)?\s*',
+        r'^\s*(?:search|google)\s+(?:for\s+|me\s+(?:for\s+)?|on\s+)?\s*',
+        r'^\s*(?:look\s*up|find(?:\s+me)?|query)\s+(?:for\s+|on\s+google\s+)?\s*',
+        r'^\s*(?:can\s+you|could\s+you|will\s+you|please|i\s+(?:want|need|would\s+like)\s+(?:you\s+to\s+)?)\s*',
+        r'^\s*(?:do\s+a|let\'s|let\s+us)\s+',
+        # trailing
+        r'\s*(?:on\s+google|via\s+google|using\s+google|web\s+scrape|whatever\s+you\s+need\s+to\s+do)\s*$',
+        r'[,;:]?\s*[\U0001F300-\U0001FAFF]+\s*$',  # trailing emojis
+    ]
+    query = g
+    for pat in strip_patterns:
+        new_query = re.sub(pat, '', query, flags=re.IGNORECASE).strip()
+        if new_query:
+            query = new_query
+    if not query:
+        query = g
+    return "https://www.google.com/search?q=" + urllib.parse.quote_plus(query)
 
 
 def _queue_actions(session_id: str, actions: list[dict]) -> None:
