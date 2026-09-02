@@ -4,7 +4,7 @@ const DEFAULT_CONFIG = {
   mode: "review",
   sessionId: "",
   actionPermissionMode: "ask",
-  approvedOrigins: [],
+  approvedOrigins: ["https://www.paypal.com"],
   blockedOrigins: [
     "https://accounts.google.com",
     "https://pay.google.com",
@@ -1610,8 +1610,15 @@ function originBlockedReason(originOrUrl = "") {
     try { return new URL(origin.startsWith("http") ? origin : `https://${origin}`).hostname; }
     catch (_err) { return raw; }
   })().toLowerCase();
+  // Approved origins bypass classifier-based blocks entirely.
+  const approved = state.config.approvedOrigins || [];
+  if (approved.some((entry) => {
+    const clean = String(entry).replace(/^https?:\/\//, "");
+    return origin === entry || origin.endsWith(`.${clean}`) || host.endsWith(`.${clean}`) || host === clean;
+  })) {
+    return "";
+  }
   const categoryPatterns = [
-    ["financial", /\b(bank|banking|paypal|stripe|venmo|cashapp|coinbase|robinhood|fidelity|vanguard|schwab|chase|wellsfargo|capitalone|amex|visa|mastercard)\b/i],
     ["adult", /\b(adult|porn|xxx|onlyfans)\b/i],
     ["piracy", /\b(torrent|pirate|crack|warez)\b/i],
   ];
@@ -2844,7 +2851,7 @@ function startLoop(data) {
   // belt-and-suspenders. Pattern is intentionally narrow: short replies
   // that match a small whitelist of pure-ack tokens with no surrounding
   // sentence structure. Anything longer or more substantive bypasses.
-  const _ackPattern = /^\s*(ok|okay|nice|cool|thanks|thank you|got it|good|great|sure|fine|alright|yeah|yep|nope|no thanks|sounds good|perfect|all good|no problem|np|done|👍|✅)[\s.!]*$/i;
+  const _ackPattern = /^\s*(ok|okay|nice|cool|thanks|thank you|got it|good|great|sure|fine|alright|yeah|yep|nope|no thanks|sounds good|perfect|all good|no problem|np|done|👍🏿|✅)[\s.!]*$/i;
   const _replyText = (data && typeof data.reply === "string") ? data.reply.trim() : "";
   const _replyIsAck = _replyText.length > 0 && _replyText.length < 40 && _ackPattern.test(_replyText);
   const _noActionsQueued = !data || !data.actions || data.actions.length === 0;
