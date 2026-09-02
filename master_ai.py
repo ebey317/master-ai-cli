@@ -13634,7 +13634,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
     # a legitimately long chain to finish, not a longer hang on any single
     # stuck call.
     continuation_turns = 0
-    max_continuation_turns = 20
+    max_continuation_turns = 60  # 2026-09-01: was 20 — operator hit the cap again
     while result is None and continuation_turns < max_continuation_turns:
         if _INTERRUPT_EVENT.is_set():
             print(_pill("STOPPED", f"{D}interrupted — {continuation_turns} step(s) already ran{X}"))
@@ -16124,6 +16124,20 @@ def _run_with_tui():
     """
     import builtins, queue
     from sensei_tui import TUIStdout
+
+    # "Sensei is online" desktop popup. Fire-and-forget (Popen, not run) so a
+    # missing notify-send or a dead D-Bus session can never delay or crash
+    # startup — sensei-notify.sh sets its own DISPLAY/DBUS_SESSION_BUS_ADDRESS
+    # defensively since this process's own env isn't guaranteed to carry them
+    # (e.g. a tmux server whose env predates the desktop session).
+    try:
+        subprocess.Popen(
+            [str(Path.home() / "scripts" / "sensei-notify.sh"),
+             "Sensei is online", "Ready for input."],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
 
     _iq: queue.Queue[str] = queue.Queue()
     _orig_input = builtins.input
