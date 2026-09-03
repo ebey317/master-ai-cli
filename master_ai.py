@@ -2242,8 +2242,18 @@ def _is_ambiguous(stripped, words, history):
     if len(words) == 1 and first and first not in _GREETINGS and not prior_assistant:
         return f"lone word '{first}' with no context"
 
-    # Explicit which/did-you-mean — user is asking US to choose; flip it back
-    if any(p in low for p in ("did you mean", "which one", "which of", "pick for me")):
+    # Explicit which/did-you-mean — user is asking US to choose; flip it back.
+    # 2026-09-02: reproduced live -- unlike every other check in this function,
+    # this one had no length guard, just a raw substring match against the
+    # WHOLE message. A 50-question, ~900-word audit prompt that happened to
+    # ask "which one is actually installed on this machine" as ONE of its 50
+    # questions got flagged as if the entire message were a bare "which one?"
+    # aimed at Sensei, and produced a clarify prompt with no real options to
+    # pick from. Genuine cases of this pattern are short ("which one did you
+    # mean?", "did you mean the other file?") -- a long, detailed, clearly-
+    # instructed message is never actually asking Sensei to guess between
+    # options just because one of those phrases appears somewhere in it.
+    if len(words) <= 20 and any(p in low for p in ("did you mean", "which one", "which of", "pick for me")):
         return "explicit which/did-you-mean"
 
     return None
@@ -2264,6 +2274,18 @@ def _clarifying_question(stripped, reason):
 def _memory_recall_payload(user_text):
     """Explicit recall triggers pull a memory snippet. Returns str or None."""
     low = user_text.lower()
+    # 2026-09-02: same missing-length-guard bug as _is_ambiguous's "which
+    # one" check, different function. A 50-question, ~1168-word audit
+    # prompt contained "you said" as part of ONE of its 50 questions
+    # ("name a task you said was fixed...") and this raw substring match
+    # against the WHOLE message hijacked the entire prompt into a bare
+    # memory-recall reply instead of answering the actual 50 questions.
+    # Genuine recall triggers ("what did we decide earlier?", "you said
+    # X, remind me") are short -- a long, clearly-instructed message
+    # containing the phrase incidentally is never actually asking for a
+    # memory dump.
+    if len(user_text.split()) > 25:
+        return None
     if not any(t in low for t in _RECALL_TRIGGERS):
         return None
     try:
@@ -5207,6 +5229,23 @@ def speak(text):
         text = text[:TTS_MAX_CHARS] + "... message truncated."
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     tmp.close()
+    # 2026-09-02: RT/F13 barge-in (ptt_pynput._mute_tts) kills aplay/mpv/
+    # ffplay by exact binary name on every press, and this file's own
+    # speak() plays through aplay, so a press DURING playback already
+    # interrupts it. The gap: edge-tts generation is a ~4s network round-
+    # trip with no player running yet, so a press during THAT window has
+    # nothing to kill and speech starts anyway right after the press --
+    # "I pressed RT and it kept talking, I need to press it again to stop
+    # it." voice_bridge.py (Hermes's TTS) already solved this with a
+    # tombstone: record when the request began, and skip playback if
+    # ~/tmp/ai_tts_barge was touched (by _mute_tts, on every RT press)
+    # any time after that. Same contract, applied here.
+    _tts_t0 = time.time()
+    def _barge_in_since(t0):
+        try:
+            return os.path.getmtime('/tmp/ai_tts_barge') >= t0
+        except OSError:
+            return False
     try:
         aria = _aria_voice_settings()
         edge_tts_bin = shutil.which("edge-tts") if aria else None
@@ -5218,12 +5257,15 @@ def speak(text):
                      f"--rate={aria['rate']}", "--text", text, "--write-media", tmp_mp3],
                     stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=25,
                 )
+                if _barge_in_since(_tts_t0):
+                    log("TTS_BARGE_SUPPRESSED: RT pressed during edge-tts generation window")
+                    return
                 if proc.returncode == 0 and os.path.exists(tmp_mp3) and os.path.getsize(tmp_mp3) > 0:
                     conv = subprocess.run(
                         ["/usr/bin/ffmpeg", "-y", "-loglevel", "error", "-i", tmp_mp3, tmp.name],
                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=20,
                     )
-                    if conv.returncode == 0:
+                    if conv.returncode == 0 and not _barge_in_since(_tts_t0):
                         subprocess.run(["aplay", tmp.name],
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
                         return
@@ -5234,14 +5276,17 @@ def speak(text):
                         os.remove(tmp_mp3)
                     except Exception:
                         pass
+        if _barge_in_since(_tts_t0):
+            log("TTS_BARGE_SUPPRESSED: RT pressed before Piper fallback started")
+            return
         proc = subprocess.run(
             ["piper", "--model", str(PIPER_MODEL), "--output_file", tmp.name],
             input=text.encode(), capture_output=True, timeout=30
         )
-        if proc.returncode == 0:
+        if proc.returncode == 0 and not _barge_in_since(_tts_t0):
             subprocess.run(["aplay", tmp.name],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
-        else:
+        elif proc.returncode != 0:
             log(f"PIPER_ERROR: {proc.stderr.decode()[:100]}")
     except subprocess.TimeoutExpired:
         log("TTS_TIMEOUT: edge-tts/piper/aplay took too long, skipping")
@@ -10622,6 +10667,7 @@ _DIRECTIVE_KEYWORDS_RE = re.compile(
     # this exact case. The trailing (?=\s|$) after the colon already
     # disambiguates real directives from prose sharing a substring.
     r'(RUN_SKILL|RUNTERM|RUN|READ|CREATE|EDIT|ASK|DONE|REMEMBER|SEARCH|'
+    r'TASK_ADD|TASK_DONE|'
     r'SEND_EMAIL|REMOTE_MCP|BROWSER_[A-Z_]+):(?=\s|$)'
 )
 _TOOL_CALL_TAG_RE = re.compile(r'</?\s*tool_call\s*>', re.IGNORECASE)
@@ -10823,6 +10869,22 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
     # SEARCH_VS_BROWSER_SYSTEM_ADDITION for the usage split taught to the model.
     search_queries = [q for q in (_extract_directive(l, "SEARCH")
                       for l in lines if _real_directive(l, "SEARCH")) if q]
+
+    # 2026-09-02: TASK_ADD: <text> / TASK_DONE: <text or number> — built
+    # for large multi-part requests (an audit, a numbered checklist, "do
+    # these 50 things") that don't reliably survive as one giant reply.
+    # Reproduced live: a 50-question audit prompt truncated silently
+    # mid-sentence with no error and no way to tell what had actually been
+    # answered. Operator's own words: "it's not making a to-do list, and
+    # it's not reflecting it -- it should definitely have a task list."
+    # Gives the model a directive it can emit to decompose a big request
+    # into the SAME persistent task list `task add`/`task list` already
+    # show the user, and to check items off as it goes -- see TASK
+    # DECOMPOSITION DISCIPLINE in the system prompt for when to use this.
+    task_add_texts = [t for t in (_extract_directive(l, "TASK_ADD")
+                      for l in lines if _real_directive(l, "TASK_ADD")) if t]
+    task_done_targets = [t for t in (_extract_directive(l, "TASK_DONE")
+                         for l in lines if _real_directive(l, "TASK_DONE")) if t]
 
     # 2026-05-17: SEND_EMAIL: to=<addr> subject="..." body="..." attach=<path>
     # Parses to a dict spec; dispatcher calls confirm_send_email which gates
@@ -11035,7 +11097,8 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         })
         return None
 
-    has_directives = bool(read_paths or run_cmds or runterm_cmds or create_files or edit_ops or remember_facts)
+    has_directives = bool(read_paths or run_cmds or runterm_cmds or create_files or edit_ops or remember_facts
+                          or task_add_texts or task_done_targets)
     # REMEMBER: <fact> — fire first, before any tool dispatch. Memory
     # writes are inert text appends; no fence, no approval needed, same
     # path as the user `remember:` command. The model may emit multiple
@@ -11121,6 +11184,17 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
     elif not has_directives and not streamed:
         render_reply(reply, prefix=f"\n{M}  🥋{X} ", suffix="")
 
+    # 2026-09-02: reproduced live -- a model emitted
+    # `READ: ~/.master_ai_facts.json 2>/dev/null || cat ... || find ...`,
+    # RUN:-style shell fallback chaining glued onto a READ: target. READ:
+    # only ever takes ONE bare path -- there is no shell here to interpret
+    # `||`/`2>/dev/null` -- so the whole string became one literal,
+    # obviously-nonexistent "path" and the read failed. Truncate at the
+    # first shell-operator token so at least the first real candidate path
+    # gets tried, the same "keep the clean part, discard the noise"
+    # approach as the <arg_key>/<tool_call> stripping above.
+    _READ_SHELL_NOISE_RE = re.compile(r'\s+(?:\|\||&&|\||[12]?>&?\d?|2>/dev/null)\s*')
+
     def _parse_read_target(raw):
         """Return (path, start_line, end_line) for READ payloads.
 
@@ -11130,6 +11204,9 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         """
         target = re.sub(r'\s+#.*$', '', (raw or "").strip())
         target = _strip_command_wrap(target)
+        noise = _READ_SHELL_NOISE_RE.search(target)
+        if noise:
+            target = target[:noise.start()].rstrip()
         m = re.match(r'^(?P<path>.+):(?P<start>\d+)(?:-(?P<end>\d+))?$', target)
         if not m:
             return target, None, None
@@ -11142,6 +11219,15 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
     # READ: — inject file content and signal caller to re-ask
     if read_paths:
         injected_block = []
+        # 2026-09-02: a READ that finds nothing (bad path, fence-blocked)
+        # used to just print to the terminal and vanish -- nothing was ever
+        # fed back to the model, unlike RUN/RUNTERM which both have a real
+        # failure path (_append_tool_blocked_feedback / _append_exec_failure_
+        # feedback). Reproduced live: a malformed READ ("not found") ended
+        # the turn with no repair and no explanation reaching the model, the
+        # same silent-stop shape as the CREATE/EDIT feedback gap fixed
+        # earlier tonight -- just on the failure side instead of success.
+        failed_reads = []
         for rpath in read_paths:
             parsed_path, start_line, end_line = _parse_read_target(rpath)
             exp = os.path.expanduser(parsed_path)
@@ -11154,6 +11240,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                 print(f"  {D}reason: {_why}{X}")
                 _audit("READ-FENCE-BLOCK", f"{exp} :: {_why}")
                 _record_blocked_action("read", exp, _why, "READ-FENCE-BLOCK")
+                failed_reads.append((exp, _why))
                 continue
             if os.path.isfile(exp):
                 full_text = Path(exp).read_text(errors='replace')
@@ -11186,12 +11273,33 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                 print(f"{C}  📁 Dir: {Y}{exp}{X}")
             else:
                 print(f"{R}  ❌ READ: not found: {exp}{X}")
+                failed_reads.append((exp, "not found"))
         if injected_block:
+            content = "[File contents]\n" + '\n\n'.join(injected_block)
+            if failed_reads:
+                content += "\n\n[Some READ targets also failed]\n" + "\n".join(
+                    f"- {p}: {why}" for p, why in failed_reads[:6]
+                )
             history.append({
                 "role": "user",
-                "content": "[File contents]\n" + '\n\n'.join(injected_block) + "\n\nNow proceed."
+                "content": content + "\n\nNow proceed."
             })
             return None  # caller re-asks AI with injected context
+        if failed_reads:
+            history.append({
+                "role": "user",
+                "content": (
+                    "[READ FAILED]\n"
+                    "Every READ target in this turn failed:\n"
+                    + "\n".join(f"- {p}: {why}" for p, why in failed_reads[:6])
+                    + "\n\nDo not repeat the same path. Either propose a corrected "
+                      "path (check spelling, try a directory listing first with "
+                      "RUN: ls, or search for the real filename), or if you "
+                      "genuinely don't know where the right file is, say so plainly "
+                      "as your closing answer instead of retrying blindly."
+                ),
+            })
+            return None
 
     def _latest_user_turn():
         for msg in reversed(history):
@@ -11678,6 +11786,54 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         else:
             print(f"  {C}{results}{X}\n", flush=True)
 
+    # TASK_ADD: / TASK_DONE: — see the extraction comment above for why
+    # this exists. Reuses the exact same persistent list `task add`/`task
+    # list`/`task done` already show the user (~/.master_ai_tasks.json via
+    # load_tasks()/save_tasks()) so a task the model adds is immediately
+    # visible with the plain `task list` command, and one the user adds
+    # manually is immediately visible to the model on its next turn.
+    if task_add_texts or task_done_targets:
+        _tasks = load_tasks()
+        _task_events = []
+        for _t in task_add_texts:
+            _t = _t.strip()
+            if not _t:
+                continue
+            _tasks.append({"text": _t, "done": False})
+            _task_events.append(f"added: {_t}")
+        for _target in task_done_targets:
+            _target = _target.strip()
+            _matched = None
+            # Accept a bare index ("3") or enough of the task text to be
+            # unambiguous -- the model may not know the exact current
+            # number if tasks were added earlier in a different turn.
+            if _target.isdigit():
+                _n = int(_target) - 1
+                if 0 <= _n < len(_tasks):
+                    _matched = _n
+            if _matched is None:
+                _hits = [i for i, t in enumerate(_tasks)
+                         if not t.get("done") and _target.lower() in (t.get("text", "") or "").lower()]
+                if len(_hits) == 1:
+                    _matched = _hits[0]
+            if _matched is not None:
+                _tasks[_matched]["done"] = True
+                _task_events.append(f"done: {_tasks[_matched]['text']}")
+            else:
+                _task_events.append(f"could not match TASK_DONE target {_target!r} to a pending task")
+        save_tasks(_tasks)
+        _pending = [t["text"] for t in _tasks if not t.get("done")]
+        _done_count = sum(1 for t in _tasks if t.get("done"))
+        print(f"\n  {BC}[tasks: {_done_count}/{len(_tasks)} done, {len(_pending)} pending]{X}")
+        if continue_after_tools:
+            summary = (
+                "[TASK LIST RESULT]\n"
+                + "\n".join(f"- {e}" for e in _task_events)
+                + f"\n\nProgress: {_done_count}/{len(_tasks)} done.\n"
+                + ("Pending:\n" + "\n".join(f"- {p}" for p in _pending[:15]) if _pending else "All tasks done.")
+            )
+            tool_result_feedback.append(summary)
+
     # SEND_EMAIL: runs after RUN/RUNTERM — e.g. RUN: a report-gen command,
     # then SEND_EMAIL: ship the report. Each spec confirmed individually
     # via confirm_send_email; irreversible, no auto-mode bypass.
@@ -11718,12 +11874,38 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             tool_result_feedback.append(_format_tool_result(kind, label, result))
 
     if tool_result_feedback:
+        # 2026-09-02: operator's own words: "it should always refer to the task
+        # list to see where it is, and to check what's done -- that will help
+        # it with continuation and keep going." Reproduced live: mid-way
+        # through a large task-decomposed request, a turn with no TASK_ADD/
+        # TASK_DONE of its own had zero visibility into the real task list --
+        # it fell back on its own memory of what it thought the tasks were,
+        # which had drifted from actual state, and it started fabricating a
+        # replacement list from scratch instead of checking the real one.
+        # Fix: pull load_tasks() FRESH off disk and append it to every
+        # continuation turn, not just the ones where this turn's own reply
+        # touched TASK_ADD/TASK_DONE -- ground truth every turn, never
+        # memory of an earlier turn's ground truth.
+        _live_tasks = load_tasks()
+        _task_context = ""
+        if _live_tasks:
+            _pend = [t.get("text", "") for t in _live_tasks if not t.get("done")]
+            _fin = sum(1 for t in _live_tasks if t.get("done"))
+            _task_context = (
+                f"\n\n[Current task list — {_fin}/{len(_live_tasks)} done, "
+                f"read fresh from disk, this is the real state, not your memory of "
+                f"an earlier turn]\n"
+                + ("\n".join(f"- {p}" for p in _pend[:15]) if _pend else "All tasks done.")
+            )
         history.append({
             "role": "user",
             "content": (
                 "\n\n".join(tool_result_feedback)
+                + _task_context
                 + "\n\nContinue from the tool output. If more inspection is needed, "
-                  "emit the next directive. If the task is complete, give the final "
+                  "emit the next directive. If you have pending tasks, work the "
+                  "next one from the list above -- do not re-add or re-guess tasks "
+                  "that are already there. If the task is complete, give the final "
                   "answer as 1-3 short plain sentences: state the direct result "
                   "(found it / done / not found / here's the number), skip restating "
                   "the tool output back to the user, and if there's an obvious next "
@@ -13103,7 +13285,37 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "  BROWSER_EXTRACT_LIST: page\n\n"
         "The colon-suffix grammar (`BROWSER_KIND: target`) IS the tool API. Every other "
         "shape is wrong. This rule covers BROWSER_* and every classical directive (RUN, "
-        "READ, CREATE, EDIT, REMEMBER, ASK, DONE).\n\n"
+        "READ, CREATE, EDIT, REMEMBER, ASK, DONE, TASK_ADD, TASK_DONE).\n\n"
+        "TASK DECOMPOSITION DISCIPLINE — reproduced live 2026-09-02: a 50-question "
+        "audit prompt truncated silently mid-sentence with no error and no way to "
+        "tell what had already been answered. Operator's own words: \"it's not "
+        "making a to-do list, and it's not reflecting it -- it should definitely "
+        "have a task list.\" When a request is genuinely large and multi-part -- "
+        "many numbered questions, an audit, a checklist, \"do these N things\" -- "
+        "do NOT attempt it as one giant reply. First emit one `TASK_ADD: <item>` "
+        "per item (batches of 10-15 TASK_ADD lines in one turn are fine) to build "
+        "a real, persistent, user-visible task list -- the SAME list `task list` "
+        "shows the user, so progress survives even if a later turn stalls or "
+        "truncates. Then work through the list across as many turns as it takes: "
+        "answer or complete ONE pending item, emit `TASK_DONE: <item text or "
+        "number>` for it, state that item's result plainly, and continue "
+        "automatically to the next pending item -- do not ask permission between "
+        "items, do not wait to be re-prompted (see STUCK-RECOVERY DISCIPLINE and "
+        "MODE:AUTO — this is not a destructive action). Do NOT use this for a "
+        "single question or a short 2-3 step task; TASK_ADD is for genuinely "
+        "large batches where one reply cannot reliably hold the whole answer. "
+        "Once a task list exists, the current pending/done state is appended "
+        "fresh to every continuation turn automatically -- that block, not your "
+        "memory of an earlier turn, is the real state. Reproduced live: after "
+        "an unrelated interruption, a model fell back on its memory of what it "
+        "thought the tasks were (which had drifted) and started fabricating a "
+        "replacement list from scratch instead of trusting the list shown to "
+        "it. Always work from the task list block in front of you. Never "
+        "re-add, re-guess, or manually recreate the task file yourself -- "
+        "TASK_ADD/TASK_DONE are the only way to change it, and the block "
+        "you're shown is always current. If that block ever looks wrong or "
+        "empty when you expected tasks, say so plainly and ask, rather than "
+        "inventing content to fill the gap.\n\n"
         "AMBIGUITY DISCIPLINE — when the user's request has multiple plausible "
         "interpretations, ask ONE concise clarifying question BEFORE acting. Two "
         "axes that commonly need clarification on browser tasks: (a) WHICH "
@@ -13353,7 +13565,22 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "scroll first to load lazy content; (c) BROWSER_WAIT 1500-3000ms "
         "then re-read in case the SPA was still rendering; (d) "
         "BROWSER_SCREENSHOT + read the screenshot's text to see what's "
-        "actually on the page instead of guessing selectors. Never bail "
+        "actually on the page instead of guessing selectors. The SAME "
+        "discipline applies to RUN:/READ:/SEARCH: failures, not just "
+        "BROWSER_*: 2026-09-02, a READ: for a nonexistent file failed and "
+        "the closing reply was \"I can verify the directory listing first "
+        "or search for the correct filename if you'd like\" -- an offer, "
+        "not an action, on a directive that isn't even destructive. A "
+        "failed READ: means RUN: ls -la <parent dir> or RUN: find ... "
+        "right now, in the SAME reply, then retry READ: with the "
+        "corrected path -- never ask permission to look. A failed RUN: "
+        "means read the actual error and try the fix it points at (missing "
+        "binary → install; wrong flag → correct syntax; permission denied "
+        "→ say so plainly, that one's a real stop). A failed SEARCH: means "
+        "broaden or rephrase the query and search again. None of "
+        "READ/RUN/SEARCH touch anything irreversible, so none of them "
+        "need the user's go-ahead to retry -- only genuinely destructive "
+        "actions (rm, overwrite, send, submit, sudo) do. Never bail "
         "with \"I can't authorize that\" or \"I can't do payments\" for "
         "tasks the user actually asked for that aren't on the "
         "irreversible list — those refusals only apply when the user is "
