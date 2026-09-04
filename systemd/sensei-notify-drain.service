@@ -1,0 +1,6 @@
+[Unit]
+Description=Deliver Sensei notifications spooled from inside the RUN sandbox
+
+[Service]
+Type=oneshot
+ExecStart=/home/elijah/scripts/sensei-notify-drain.sh

@@ -4,6 +4,6 @@
   "path": "/home/elijah/scripts/sensei_native_host.py",
   "type": "stdio",
   "allowed_origins": [
-    "chrome-extension://__EXTENSION_ID__/"
+    "chrome-extension://reffhbpachgdpgtiirffijprhfeqpghb/"
   ]
 }

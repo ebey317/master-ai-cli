@@ -3,7 +3,7 @@
   "name": "Sensei — browser limb",
   "short_name": "Sensei",
   "description": "Sensei's reach into the browser — her arm on the page, not a separate tool. Part of the Master AI local-first agent stack.",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "minimum_chrome_version": "116",
   "icons": {
     "16": "icons/icon-16.png",
@@ -42,5 +42,6 @@
   "side_panel": {
     "default_path": "side_panel.html"
   },
-  "options_page": "options.html"
+  "options_page": "options.html",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAo+k1YIkLVNCynOcWGAQw+65pmgyUgzR+IYaDAXmm1QQHYoOHwyELJkovAI8aXgo7MqqOq1c545YAEa7hGDjA3sLTkvn864817NFO9R9wb6Rc5xYbFsaP2DEvCVmEoKGdTPaOZ+lEU6ApxNi8n16O7iPMVfUp80sxUNl/ZPysed5CEmPjK5fRAiOp88aalyG2ZB1qYJf0eCrpVXi6iv/k6EOBZ0rPcSMcjhsOkTjDfDG3sxTCqI1pIWev4T/zqDNkCy/nSe8Y/DZ4EzLPG8Oh+jjXVacLw8IvVpnTENwF45xE6iB2isUIlxlIw1wwLo4CRZBliAQu5BjSjdZipq7TTwIDAQAB"
 }

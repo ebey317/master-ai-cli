@@ -1248,6 +1248,75 @@ def launch_desktop_app_safely(app_name):
     return _launch_desktop_argv([app_name], label=app_name)
 
 
+def notify_desktop(args = None):
+    """Capability registry executor for desktop.notify.
+
+    Calls the verified wrapper ~/scripts/sensei-notify.sh which sets
+    DISPLAY, XDG_RUNTIME_DIR, and DBUS_SESSION_BUS_ADDRESS before invoking
+    notify-send. Returns a RunResult so the registry verifier can observe it.
+    """
+    wrapper_path = Path.home() / "scripts" / "sensei-notify.sh"
+    title, body, urgency = "Sensei", "", "normal"
+    if isinstance(args, dict):
+        title = str(args.get("title") or "Sensei").strip() or "Sensei"
+        body = str(args.get("body") or "").strip()
+        urgency = str(args.get("urgency") or "normal").strip() or "normal"
+    elif isinstance(args, str):
+        try:
+            parts = shlex.split(args.strip())
+        except Exception:
+            parts = args.strip().split()
+        if parts:
+            if parts[0].endswith("sensei-notify.sh"):
+                idx = 1
+                if idx < len(parts):
+                    title = parts[idx]; idx += 1
+                if idx < len(parts):
+                    body = parts[idx]; idx += 1
+                if idx < len(parts):
+                    urgency = parts[idx]
+            elif parts[0] == "notify-send":
+                idx = 1
+                if idx < len(parts):
+                    title = parts[idx]; idx += 1
+                if idx < len(parts):
+                    body = parts[idx]; idx += 1
+                while idx < len(parts):
+                    if parts[idx] in ("-u", "--urgency") and idx + 1 < len(parts):
+                        urgency = parts[idx + 1]
+                        idx += 2
+                    else:
+                        idx += 1
+    if urgency not in ("low", "normal", "critical"):
+        urgency = "normal"
+
+    if not wrapper_path.is_file():
+        msg = f"notify wrapper missing: {wrapper_path}"
+        log(f"NOTIFY_ERROR: {msg}")
+        print(f"  {R}{msg}{X}")
+        return RunResult(output=msg, ok=False, exit_code=1, command=str(wrapper_path), error="wrapper_missing")
+
+    cmd = f"{shlex.quote(str(wrapper_path))} {shlex.quote(title)} {shlex.quote(body)} {shlex.quote(urgency)}"
+    try:
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            log(f"NOTIFY: {title!r} body={body!r} urgency={urgency}")
+            print(f"  {G}✅ Notified:{X} {title}")
+            return RunResult(output=f"[notified {title}]", ok=True, exit_code=0, command=cmd)
+        err = (result.stderr or result.stdout or "notify-send failed").strip()
+        log(f"NOTIFY_ERROR: {cmd} rc={result.returncode} err={err[:200]}")
+        print(f"  {R}notify failed: {err[:200]}{X}")
+        return RunResult(output=err, ok=False, exit_code=result.returncode, command=cmd, error=err[:200])
+    except subprocess.TimeoutExpired:
+        log("NOTIFY_ERROR: timeout after 10s")
+        print(f"  {R}notify timed out{X}")
+        return RunResult(output="timeout", ok=False, exit_code=124, command=cmd, error="timeout")
+    except Exception as e:
+        log(f"NOTIFY_ERROR: {e}")
+        print(f"  {R}notify error: {e}{X}")
+        return RunResult(output=str(e), ok=False, exit_code=1, command=str(wrapper_path), error=str(e))
+
+
 def _desktop_launch_from_command(cmd):
     """Return argv for GUI/browser/app commands that must not be wrapped in a terminal."""
     try:
@@ -5098,6 +5167,34 @@ def transcribe(audio_file):
 # ── TTS: PIPER ────────────────────────────────────────────────
 TTS_MAX_CHARS = 500  # truncate long replies so TTS doesn't hang on documents
 
+# 2026-09-02: Sensei's TTS and the ai-controller/Hermes "Aria" voice used to
+# be two totally disconnected systems -- this speak() hardcoded Piper's
+# "lessac" voice with no pitch/rate controls, while the operator's actually-
+# tuned voice (edge-tts en-US-AriaNeural, -22Hz pitch, +18% rate) lived only
+# in ~/ai-controller/voices/aria/config.json and was never read here. Turning
+# Sensei's TTS on made it speak in a voice the operator never configured.
+# Fix: read Aria's config live (so a retune in ai-controller is picked up
+# automatically, never a stale hardcoded copy) and speak with edge-tts +
+# that exact pitch/rate. Piper stays as the fallback for offline use or a
+# box that never had ai-controller installed -- Master AI's own install
+# docs promise it works standalone without any other project present.
+ARIA_VOICE_CONFIG = Path.home() / "ai-controller" / "voices" / "aria" / "config.json"
+
+def _aria_voice_settings():
+    try:
+        cfg = json.loads(ARIA_VOICE_CONFIG.read_text())
+        voice = cfg.get("voice")
+        if not voice:
+            return None
+        return {
+            "voice": voice,
+            "pitch": cfg.get("pitch", "+0Hz"),
+            "rate": cfg.get("rate", "+0%"),
+        }
+    except Exception:
+        return None
+
+
 def speak(text):
     if not text:
         return
@@ -5111,6 +5208,32 @@ def speak(text):
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     tmp.close()
     try:
+        aria = _aria_voice_settings()
+        edge_tts_bin = shutil.which("edge-tts") if aria else None
+        if edge_tts_bin and os.path.isfile("/usr/bin/ffmpeg"):
+            tmp_mp3 = tmp.name + ".src.mp3"
+            try:
+                proc = subprocess.run(
+                    [edge_tts_bin, "--voice", aria["voice"], f"--pitch={aria['pitch']}",
+                     f"--rate={aria['rate']}", "--text", text, "--write-media", tmp_mp3],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=25,
+                )
+                if proc.returncode == 0 and os.path.exists(tmp_mp3) and os.path.getsize(tmp_mp3) > 0:
+                    conv = subprocess.run(
+                        ["/usr/bin/ffmpeg", "-y", "-loglevel", "error", "-i", tmp_mp3, tmp.name],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=20,
+                    )
+                    if conv.returncode == 0:
+                        subprocess.run(["aplay", tmp.name],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+                        return
+                log(f"EDGE_TTS_FALLBACK: edge-tts/ffmpeg failed (rc={proc.returncode}) — falling back to Piper")
+            finally:
+                if os.path.exists(tmp_mp3):
+                    try:
+                        os.remove(tmp_mp3)
+                    except Exception:
+                        pass
         proc = subprocess.run(
             ["piper", "--model", str(PIPER_MODEL), "--output_file", tmp.name],
             input=text.encode(), capture_output=True, timeout=30
@@ -5121,7 +5244,7 @@ def speak(text):
         else:
             log(f"PIPER_ERROR: {proc.stderr.decode()[:100]}")
     except subprocess.TimeoutExpired:
-        log("TTS_TIMEOUT: piper/aplay took too long, skipping")
+        log("TTS_TIMEOUT: edge-tts/piper/aplay took too long, skipping")
     except Exception as e:
         log(f"TTS_ERROR: {e}")
     finally:
@@ -10503,6 +10626,18 @@ _DIRECTIVE_KEYWORDS_RE = re.compile(
 )
 _TOOL_CALL_TAG_RE = re.compile(r'</?\s*tool_call\s*>', re.IGNORECASE)
 
+# 2026-09-02: a different malformed-directive shape than the <tool_call>
+# wrapper above -- some free-tier models emit a real directive followed by
+# trailing fragments of THEIR OWN native structured tool-call XML schema,
+# e.g. `RUN: ls foo</arg_value><arg_key>description</arg_key><arg_value>...`
+# or `READ: /path/file.py<arg_key>end_line</arg_key><arg_value>150</arg_value>`.
+# Reproduced live three separate times today across different models. In
+# every observed case the real, valid command/path comes first and the XML
+# noise trails it -- so truncate at the first such tag rather than trying to
+# parse the fragment as real structured parameters (start_line/end_line etc.
+# have their own plain-text syntax elsewhere, e.g. READ: path:120-180).
+_ARG_XML_TAG_RE = re.compile(r'</?\s*arg_(?:key|value)\b', re.IGNORECASE)
+
 def _normalize_directive_lines(reply):
     """Give every parser downstream (_extract_directive, split-on-newline
     per-line matchers, _extract_browser_actions's line.strip()-anchored
@@ -10563,6 +10698,8 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         out = []
         i = 0
         directive_re = re.compile(r'^\s*(RUN|RUNTERM):\s*(.*)$', re.IGNORECASE)
+        other_directive_re = re.compile(
+            r'^\s*(RUN|RUNTERM|READ|CREATE|EDIT|ASK|DONE|SEARCH|REMEMBER):', re.IGNORECASE)
         while i < len(src_lines):
             line = src_lines[i]
             m = directive_re.match(line)
@@ -10573,12 +10710,29 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             name, rest = m.group(1), m.group(2).rstrip()
             pieces = [rest[:-1].rstrip() if rest.endswith("\\") else rest]
             continued = rest.endswith("\\")
+            # 2026-09-02: live stall reproduced and root-caused -- the model
+            # emitted `<tool_call>RUN:` on its own line with the real command
+            # on the NEXT line and no trailing backslash. _normalize_directive_lines
+            # strips the `<tool_call>` tag upstream, leaving a bare `RUN:` with
+            # an empty same-line payload; that fell through to the noop/empty
+            # check below and got silently discarded, while the orphaned command
+            # line (now missing its RUN: prefix) survived narrative construction
+            # as plain text -- shown to the user, never executed, no audit entry,
+            # no repair triggered (the malformed-<tool_call> detector runs against
+            # narrative, and the tag was already gone by then). Treat an empty
+            # same-line payload as an implicit continuation onto the next
+            # non-blank, non-directive line, same as an explicit backslash would.
+            empty_payload_pending = (not rest) and not continued
             i += 1
-            while continued and i < len(src_lines):
-                nxt = src_lines[i].strip()
+            while (continued or empty_payload_pending) and i < len(src_lines):
+                nxt_raw = src_lines[i]
+                nxt = nxt_raw.strip()
+                if empty_payload_pending and (not nxt or other_directive_re.match(nxt_raw)):
+                    break
                 continued = nxt.endswith("\\")
                 pieces.append(nxt[:-1].rstrip() if continued else nxt)
                 i += 1
+                empty_payload_pending = False
             out.append(f"{name}: {' '.join(p for p in pieces if p).strip()}")
         return out
 
@@ -10620,6 +10774,9 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         if len(parts) != 2:
             return ""
         s = _strip_command_wrap(parts[1])
+        arg_xml = _ARG_XML_TAG_RE.search(s)
+        if arg_xml:
+            s = s[:arg_xml.start()].rstrip()
         # Drop bash no-ops / placeholder garbage (`:`, `true`, empty) so
         # the dispatch loop never spawns a terminal that runs nothing.
         return "" if _is_noop_cmd(s) else s
@@ -10901,6 +11058,64 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         and not any(l.strip().lower().startswith(p) for p in skip_prefixes)
     ).strip()
 
+    # 2026-09-01: prompt-only fix (COMPLETION RULE in the system prompt)
+    # did not hold — same night, same bug: "I'll set that up now. One
+    # moment..." with zero directives, rendered as if it were the final
+    # answer, turn over. narrative is non-empty here so the branch above
+    # would have fired and shown it as done. Catch the announcement-only
+    # shape structurally instead of trusting the model to stop doing it:
+    # no directives at all + starts with a stock "about to work" lead-in +
+    # short enough to be a stall rather than a real short answer. Force
+    # another turn instead of ending on it. Bounded by the existing
+    # max_continuation_turns cap in the caller's loop — can't hang forever.
+    # Searches anywhere in the narrative, not just the start — real examples
+    # tonight led with "Got it — ..." before the actual stall phrase.
+    # "i'll <word> that/this/it/up/now" catches the generic case ("I'll set
+    # that up now"); the explicit verb list catches "I'll <verb> <object>"
+    # without a trailing filler word ("I'll check the logs").
+    _stall_pattern = re.compile(
+        r'\b(on it\b|i\'?ll\s+\w+\s+(?:that|this|it|up|now)\b|i\'?ll (?:set|get|'
+        r'check|investigate|look|create|start|do|run|write|build|make|dig|take)|'
+        r'let me (?:\w+\s+)?(?:check|see|look|investigate|create|dig|take|pivot)|'
+        r'one moment|give me a (?:second|moment|sec)|working on it|hold on)\b',
+        re.IGNORECASE,
+    )
+    # Second shape seen tonight: the model attempts directives but wraps
+    # them as `<tool_call>RUN: ...` mid-line instead of a bare `RUN:` at
+    # column 0 — the parser never recognizes these as real directives, so
+    # has_directives is False here too, but this isn't a stall-phrase, it's
+    # a malformed-syntax dump that got shown to the user as if it were an
+    # answer. No length cap here — these dumps ran long.
+    _malformed_directive_pattern = re.compile(
+        r'<tool_call>|\btool_call\b', re.IGNORECASE)
+    is_malformed_directive = (
+        not has_directives and narrative
+        and _malformed_directive_pattern.search(narrative)
+    )
+    is_stall = (
+        not has_directives
+        and narrative
+        and len(narrative) < 400
+        and _stall_pattern.search(narrative)
+    )
+    if is_stall or is_malformed_directive:
+        reason = "malformed <tool_call> syntax" if is_malformed_directive else "announced work, emitted no directive"
+        print(_pill("WARN", f"{D}model {reason} — forcing a retry{X}"))
+        log(f"STALL_REPAIR ({reason}): narrative={narrative[:120]!r}")
+        repair_msg = (
+            "[Directive repair]\n"
+            "You emitted `<tool_call>RUN: ...` — that format isn't recognized. "
+            "Directives are bare, one per line, at column 0: `RUN: <cmd>` (no "
+            "XML tags, no wrapper). Emit the real directive now in that format."
+            if is_malformed_directive else
+            "[Directive repair]\n"
+            "You said you'd do that but emitted no RUN/READ/CREATE/EDIT/"
+            "RUNTERM directive — nothing actually happened. Emit the real "
+            "directive now. Do not narrate intent again; either do the "
+            "thing or say plainly why you can't."
+        )
+        history.append({"role": "user", "content": repair_msg})
+        return None
     if narrative and not streamed:
         render_reply(narrative, prefix=f"\n{M}  🥋{X} ", suffix="")
     elif not has_directives and not streamed:
@@ -11056,6 +11271,15 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
     # model emitted CREATE: + RUN: together.
     action_failed = False
     created_ok_paths = []
+    # 2026-09-02: moved here from just above the RUN loop -- CREATE/EDIT
+    # now append to this list too (see the CREATE/EDIT success branches
+    # below), and both of those loops run BEFORE the RUN loop in this
+    # function's execution order. The old single init point after EDIT's
+    # blocked-feedback handling left CREATE and EDIT referencing this name
+    # before it was ever assigned (UnboundLocalError, reproduced live:
+    # "local variable 'tool_result_feedback' referenced before assignment"
+    # right after a successful CREATE). One init, at the true first use.
+    tool_result_feedback = []
     for filepath, content in create_files:
         if _html_demo_expected() and str(filepath).lower().endswith((".html", ".htm")):
             html_issues = _html_demo_quality_issues(content)
@@ -11108,6 +11332,21 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                 return None
         if confirm_create(filepath, content):
             created_ok_paths.append(os.path.expanduser(filepath))
+            # 2026-09-02: CREATE/EDIT success never fed tool_result_feedback,
+            # unlike RUN/RUNTERM/SEARCH/BROWSER -- so a reply that ended in a
+            # bare CREATE (no narrative text) produced an empty tool_result_
+            # feedback list, skipped CHAIN_CONTINUE_AFTER_TOOL_RESULT entirely,
+            # and the turn ended with no closing message and no chance for the
+            # model to do a requested follow-up (e.g. "write X, then read it
+            # back and show me"). Reproduced live: a search-then-write-then-
+            # read task wrote the file correctly and just stopped -- the
+            # "read it back" half was never attempted. Mirror the RUN/SEARCH
+            # pattern so a CREATE-terminated reply gets a real continuation
+            # turn instead of silently ending.
+            if continue_after_tools:
+                tool_result_feedback.append(
+                    f"[CREATE RESULT]\nPath: {filepath}\nStatus: written ({len(content)} bytes)"
+                )
         else:
             action_failed = True
 
@@ -11147,7 +11386,14 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             return None
 
     for filepath, find_text, replace_text in edit_ops:
-        if not confirm_edit(filepath, find_text, replace_text):
+        if confirm_edit(filepath, find_text, replace_text):
+            # Same CREATE-feedback gap applies to EDIT -- see the comment
+            # at the CREATE success branch above.
+            if continue_after_tools:
+                tool_result_feedback.append(
+                    f"[EDIT RESULT]\nPath: {filepath}\nStatus: applied"
+                )
+        else:
             action_failed = True
 
     if action_failed:
@@ -11351,8 +11597,6 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             ),
         })
         log(f"CHAIN_EXEC_FAIL_FEEDBACK: appended [TOOL FAILED] for: {cmd}")
-
-    tool_result_feedback = []
 
     for cmd in run_cmds:
         result = confirm_run(cmd)
@@ -12619,6 +12863,13 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "their colon-suffixed forms — the parser would match them. "
         "Do the task directly without long explanations. "
         "NEVER emit: rm -rf / | mkfs | dd if=\n\n"
+        "[COMPLETION RULE] Never end a turn on a bare announcement of intent — "
+        "\"On it\", \"Let me check...\", \"I'll investigate...\" — with no result "
+        "attached. Read, work, AND answer, every time: if you emit directives, "
+        "the results must be synthesized into an actual answer for the user in "
+        "that same reply (or the very next turn once results return), not left "
+        "for a message that never comes. A turn that only announces work without "
+        "the outcome is incomplete, full stop.\n\n"
         "[SELF-TEACHING] You can write one-line lessons to your own memory "
         "with `REMEMBER: <one-line lesson>`. Use it sparingly — only for "
         "facts you'll want next turn (\"X isn't installed here, use Y\", "
@@ -12640,6 +12891,13 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "Your job is to perform tasks: run shell commands, read/write files, search the web, "
         "write code, and automate this Linux machine. When given a task, DO it immediately "
         "using directives — do not explain or describe what you plan to do.\n\n"
+        "[COMPLETION RULE] Never end a turn on a bare announcement of intent — "
+        "\"On it\", \"Let me check...\", \"I'll investigate...\" — with no result "
+        "attached. Read, work, AND answer, every time: if you emit directives, "
+        "the results must be synthesized into an actual answer for the user in "
+        "that same reply (or the very next turn once results return), not left "
+        "for a message that never comes. A turn that only announces work without "
+        "the outcome is incomplete, full stop.\n\n"
         f"CURRENT MODE — you are running in MODE = '{MODE}' right now. The three modes are:\n"
         " - plan   (RED chrome)   — propose only; emit directives but DO NOT execute. Plan mode\n"
         "                          is for thinking through a goal before acting. End each plan\n"
@@ -12830,7 +13088,15 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "   {\"action\":\"BROWSER_WAIT\",\"ms\":2000},\n"
         "   {\"action\":\"BROWSER_EXTRACT_LIST\",\"selector\":\"img\"}]\n"
         "Also WRONG: ```json\\n[...]```, {\"actions\": [...]}, YAML lists, tool_calls "
-        "blocks, or any structured-output container.\n\n"
+        "blocks, or any structured-output container. This includes YOUR OWN native "
+        "structured tool-call format if you have one -- some models are trained to emit "
+        "<invoke>/<parameter> or <arg_key>/<arg_value> XML tags for tool calls. That "
+        "format does not exist here and gets glued onto the end of an otherwise-valid "
+        "directive as garbage, e.g. `RUN: ls foo</arg_value><arg_key>description</arg_key>"
+        "<arg_value>...` or `READ: /path/file.py<arg_key>end_line</arg_key><arg_value>150"
+        "</arg_value>`. A directive with parameters like a line range has its own plain-"
+        "text syntax (e.g. `READ: /path/file.py:120-180`) -- never append XML tags of any "
+        "kind after a directive's target.\n\n"
         "RIGHT — three lines at column 0, no quotes around args, no fence:\n"
         "  BROWSER_NAV: https://example.com\n"
         "  BROWSER_WAIT: 2000\n"
@@ -13583,8 +13849,19 @@ def handle(user_text, history, image_path=None, context_policy=None):
                 # one-line "found it" result; the job here is restating a
                 # known tool result in plain language, not reasoning, so the
                 # 3B model's speed matters far more than its extra depth.
-                print(f"  {D}🔒 private tool output — answering locally (fast tier) instead of cloud{X}")
-                return ask_local_stream(history, model=MODELS["fast"]), True
+                # 2026-09-02: MODELS["fast"] (qwen2.5:3b) isn't installed on
+                # this box -- `ollama list` only has qwen2.5:7b -- so this
+                # branch 404'd and killed the whole continuation loop at
+                # turns=0 every time a tool result got privacy-flagged.
+                # Reproduced live. Operator is cloud-first and explicitly
+                # does not want extra local models kept around for disk
+                # reasons (already dropped llava for the same reason), so
+                # pin this to the one local model actually present rather
+                # than pull another. This branch exists specifically so
+                # privacy-flagged content never leaves the machine -- keep
+                # it local, just point it at a model that's really there.
+                print(f"  {D}🔒 private tool output — answering locally (qwen2.5:7b) instead of cloud{X}")
+                return ask_local_stream(history, model="qwen2.5:7b"), True
             _spin2 = local_thinking_start()
             provider = "gemini" if route == "web" else (model if model in CLOUD_MODEL_NAMES else "groq")
             try:
@@ -13601,9 +13878,29 @@ def handle(user_text, history, image_path=None, context_policy=None):
             # the generic "continuation limit reached" WARN — same silent-
             # stop symptom as the privacy case, different trigger. Fall back
             # to local synthesis here too instead of giving up.
-            log(f"CLOUD_CONTINUATION_EMPTY: provider={provider} — falling back to local synthesis")
-            print(f"  {D}⚠ cloud continuation came back empty — answering locally instead{X}")
-            return ask_local_stream(history, model=MODELS["fast"]), True
+            # 2026-09-02: operator is cloud-first and asked to drop the
+            # silent local fallback here specifically (unlike the privacy
+            # branch above, nothing about an empty cloud reply requires
+            # staying off the network) -- retry the same cloud call once,
+            # and if it's still empty give an honest failure instead of
+            # quietly switching engines under the user.
+            log(f"CLOUD_CONTINUATION_EMPTY: provider={provider} — retrying cloud once")
+            print(f"  {D}⚠ cloud continuation came back empty — retrying cloud once{X}")
+            _spin3 = local_thinking_start()
+            try:
+                cloud_retry = ask_cloud(history, provider=provider)
+            finally:
+                local_thinking_stop(_spin3)
+            if cloud_retry:
+                return cloud_retry, False
+            log(f"CLOUD_CONTINUATION_EMPTY_TWICE: provider={provider} — no local fallback, honest failure")
+            print(f"  {D}⚠ cloud unavailable after retry — no local fallback (cloud-only mode){X}")
+            return (
+                "I couldn't get a response from the cloud model after two attempts "
+                "for this step. The tool result above is real; I just wasn't able to "
+                "synthesize a closing answer from it right now. Try again, or ask me "
+                "to continue from here."
+            ), False
         if repair_turn:
             return ask_local_stream(history, model=MODELS["master"]), True
         return ask_local_stream(history, model=model), True
@@ -13620,7 +13917,8 @@ def handle(user_text, history, image_path=None, context_policy=None):
     # a legitimately long chain to finish, not a longer hang on any single
     # stuck call.
     continuation_turns = 0
-    max_continuation_turns = 20
+    max_continuation_turns = 60  # 2026-09-01: was 20 — operator hit the cap again
+    _repair_turns_seen = 0  # how many [Directive repair] nudges fired this chain
     while result is None and continuation_turns < max_continuation_turns:
         if _INTERRUPT_EVENT.is_set():
             print(_pill("STOPPED", f"{D}interrupted — {continuation_turns} step(s) already ran{X}"))
@@ -13629,6 +13927,8 @@ def handle(user_text, history, image_path=None, context_policy=None):
             break
         repair_turn = bool(history and history[-1].get("role") == "user"
                            and str(history[-1].get("content", "")).startswith("[Directive repair]"))
+        if repair_turn:
+            _repair_turns_seen += 1
         reply2, streamed2 = _continue_model_turn(repair_turn=repair_turn)
         if not reply2:
             break
@@ -13637,9 +13937,40 @@ def handle(user_text, history, image_path=None, context_policy=None):
         reply = reply2
         result = process_reply(reply2, history, streamed=streamed, continue_after_tools=True)
 
+    # 2026-09-01 — "no matter what, an answer, every time" is now a hard
+    # requirement, not a best-effort. Everything above (COMPLETION RULE
+    # prompt text, the stall-phrase/malformed-directive detector inside
+    # process_reply) is pattern-based and can miss a wording that hasn't
+    # been seen yet, or the model can keep stalling right up to the
+    # continuation cap. This is the backstop that can't itself fail to
+    # fire, because it's plain string formatting, not another model call
+    # that could also stall or time out: if the chain never resolved to a
+    # real result, DO NOT trust `reply` (it may just be the same stalled
+    # announcement that triggered the last repair attempt) — synthesize an
+    # honest, deterministic closing message instead of showing raw
+    # leftover text or nothing at all.
     if result is None:
         print(_pill("WARN", f"{D}continuation limit reached or model unavailable after tool output{X}"))
-        log(f"CHAIN_CONTINUATION_STOP: turns={continuation_turns} route={route} model={model}")
+        log(f"CHAIN_CONTINUATION_STOP: turns={continuation_turns} repairs={_repair_turns_seen} route={route} model={model}")
+        if _repair_turns_seen > 0:
+            fallback = (
+                f"I got stuck — tried {_repair_turns_seen} time(s) to actually do this and kept "
+                f"announcing it instead of doing it, across {continuation_turns} turn(s). Stopping "
+                f"rather than looping forever. Tell me to try again, or give me a narrower first step."
+            )
+        elif not (reply or "").strip():
+            fallback = (
+                f"Hit the {max_continuation_turns}-turn continuation limit (or the model stopped "
+                f"responding) with nothing usable back yet. {continuation_turns} step(s) ran — "
+                f"check scrollback above for what happened. Tell me to continue or try a different angle."
+            )
+        else:
+            fallback = None  # reply has real content — let the normal fallback below show it
+        if fallback:
+            render_reply(fallback, prefix=f"\n{M}  🥋{X} ", suffix="")
+            history.append({"role": "assistant", "content": fallback})
+            compact_history(history)
+            return fallback
 
     # 2026-08-30: root-caused a real bug — operator watched a live turn
     # end with tool pills visible but no closing answer at all, the app
@@ -13659,6 +13990,15 @@ def handle(user_text, history, image_path=None, context_policy=None):
     if not globals().get("_LAST_TURN_RENDERED") and (reply or "").strip():
         log("CLOSING_ANSWER_FALLBACK: process_reply never rendered the final reply — showing it directly")
         render_reply(reply, prefix=f"\n{M}  🥋{X} ", suffix="")
+    elif not globals().get("_LAST_TURN_RENDERED"):
+        # Absolute last resort: the chain "resolved" (result was not None)
+        # but there is still no rendered content and no reply text at all.
+        # Should not be reachable given the guards above, but "no matter
+        # what" means this path exists anyway rather than trusting that.
+        log("CLOSING_ANSWER_FALLBACK: empty reply reached end of turn with nothing shown")
+        _empty_fallback = "That finished without producing a visible result. Try rephrasing, or ask me to explain what happened."
+        render_reply(_empty_fallback, prefix=f"\n{M}  🥋{X} ", suffix="")
+        reply = _empty_fallback
 
     history.append({"role": "assistant", "content": reply})
 
@@ -13818,25 +14158,92 @@ def show_last_summary():
         pass
 
 # ── MAIN LOOP ─────────────────────────────────────────────────
+def _is_simple_search_query(q):
+    """True for a bare lookup ("weather indianapolis"), False for anything
+    that reads like a multi-step task described in the search prefix
+    ("search X, then write it to a file, then read it back"). Used to gate
+    the instant local `search ` shortcut in main()'s raw-command dispatch --
+    see the comment at that call site for the bug this closes."""
+    q = (q or "").strip()
+    if not q:
+        return False
+    if len(q) > 90:
+        return False
+    if re.search(r'[.!?]\s+\S', q):
+        return False
+    for marker in (" then ", " and then ", " after that ", " once you ",
+                   " next ", "write ", "save ", "read it back", "read the file",
+                   "read back"):
+        if marker in q.lower():
+            return False
+    return True
+
+
 def main():
     if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
         print(
-            "usage: master-ai [-h] [--setup] [--uninstall]\n\n"
+            "usage: master-ai [-h] [--setup] [--uninstall] [update]\n\n"
             "Local-first AI agent CLI with vision, voice, MCP integration, "
             "and multi-provider routing.\n\n"
             "Running with no arguments starts the interactive Sensei session.\n"
             "Use --setup to configure keys and providers.\n"
-            "Use --uninstall to remove Master AI.\n\n"
+            "Use --uninstall to remove Master AI.\n"
+            "Use update (or --update) to git-pull this repo to the latest "
+            "commit — every machine symlinking to it updates the same way.\n\n"
             "options:\n"
             "  -h, --help     show this help message and exit\n"
             "      --setup    run the interactive setup wizard\n"
-            "      --uninstall  run the interactive uninstall wizard"
+            "      --uninstall  run the interactive uninstall wizard\n"
+            "      update, --update  pull the latest version from git"
         )
         sys.exit(0)
 
     if any(arg == "--uninstall" for arg in sys.argv[1:]):
         import uninstall_wizard
         uninstall_wizard.run_uninstall(use_github="--github" in sys.argv[1:])
+        sys.exit(0)
+
+    if any(arg in ("update", "--update") for arg in sys.argv[1:]):
+        # This file is reached through ~/scripts/master_ai.py, a symlink into
+        # this git repo — updating the repo updates every machine that
+        # symlinks to it the same way, with no separate deploy step.
+        repo_dir = os.path.dirname(os.path.realpath(__file__))
+        print(f"Updating Master AI / Sensei ({repo_dir}) ...")
+        try:
+            dirty = subprocess.run(
+                ["git", "-C", repo_dir, "status", "--porcelain",
+                 "--", "master_ai.py"],
+                capture_output=True, text=True, timeout=10,
+            ).stdout.strip()
+            if dirty:
+                print("Local changes to master_ai.py would be overwritten by "
+                      "an update — resolve or stash them first, then re-run.")
+                sys.exit(1)
+            before = subprocess.run(
+                ["git", "-C", repo_dir, "rev-parse", "--short", "HEAD"],
+                capture_output=True, text=True, timeout=10,
+            ).stdout.strip()
+            r = subprocess.run(
+                ["git", "-C", repo_dir, "pull", "--ff-only"],
+                capture_output=True, text=True, timeout=60,
+            )
+            print(r.stdout.strip())
+            if r.returncode != 0:
+                print(r.stderr.strip())
+                print("Update failed — repo may have diverged from origin. "
+                      "Not applied.")
+                sys.exit(1)
+            after = subprocess.run(
+                ["git", "-C", repo_dir, "rev-parse", "--short", "HEAD"],
+                capture_output=True, text=True, timeout=10,
+            ).stdout.strip()
+            if before == after:
+                print("Already up to date.")
+            else:
+                print(f"Updated {before} -> {after}. Restart sensei to pick it up.")
+        except Exception as e:
+            print(f"Update failed: {e}")
+            sys.exit(1)
         sys.exit(0)
 
     if any(arg == "--setup" for arg in sys.argv[1:]):
@@ -15628,7 +16035,24 @@ def main():
             continue
 
         # ── Web search ────────────────────────────────────────
-        elif lo.startswith("search "):
+        # 2026-09-02: this shortcut used to fire for ANY message starting
+        # with "search " and always print-then-continue, dead-ending the
+        # turn with no path back into the model/directive loop. Reproduced
+        # live: "Search the web for the current price of Bitcoin, then
+        # write it to a file, then read it back" got sliced at cmd[7:] into
+        # a garbled query ("the web for the current price of Bitcoin..."),
+        # printed results, and just stopped -- the "then write/read" half
+        # of the instruction was never seen by any model. Same truncation
+        # signature was already visible in the audit log from earlier
+        # today ("SEARCH: for AI jobs matching your background...").
+        # Fix: only take the instant local-print shortcut for a genuinely
+        # bare lookup. Anything with a sentence boundary or a continuation
+        # word ("then", "write", "read it back"...) falls through to the
+        # final `else: handle(...)` below instead, so the model sees the
+        # full instruction, can emit its own SEARCH: directive, and the
+        # normal continue_after_tools=True chain (verified working) takes
+        # it from there.
+        elif lo.startswith("search ") and _is_simple_search_query(cmd[7:]):
             q = cmd[7:].strip()
             results = web_search(q)
             print(f"\n{C}  🌐 Results:\n{results}{X}\n")
@@ -16065,6 +16489,15 @@ def _run_with_tui():
     import builtins, queue
     from sensei_tui import TUIStdout
 
+    # "Sensei is online" desktop popup. Fire-and-forget via the verified
+    # notify_desktop() capability executor. It uses sensei-notify.sh which
+    # sets DISPLAY/DBUS_SESSION_BUS_ADDRESS defensively and returns a RunResult
+    # so errors are logged instead of swallowed.
+    try:
+        notify_desktop({"title": "Sensei is online", "body": "Ready for input.", "urgency": "normal"})
+    except Exception:
+        pass
+
     _iq: queue.Queue[str] = queue.Queue()
     _orig_input = builtins.input
     _orig_stdout, _orig_stderr = sys.stdout, sys.stderr
@@ -16206,7 +16639,14 @@ def _run_with_tui():
 
 if __name__ == "__main__":
     try:
-        if _SENSEI_ENABLED and _SENSEI_APP is not None:
+        # CLI flags (-h/--setup/--uninstall/update) must reach main()'s argv
+        # dispatch even though the TUI launches unconditionally otherwise —
+        # without this check they were dead code, silently swallowed by
+        # _run_with_tui() starting the interactive session instead.
+        _CLI_FLAGS = ("-h", "--help", "--setup", "--uninstall", "update", "--update")
+        if any(arg in _CLI_FLAGS for arg in sys.argv[1:]):
+            main()
+        elif _SENSEI_ENABLED and _SENSEI_APP is not None:
             _run_with_tui()
         else:
             main()
