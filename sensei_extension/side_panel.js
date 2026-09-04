@@ -3431,6 +3431,26 @@ init().catch((err) => appendError(err.message));
 const MCP_POLL_INTERVAL_MS = 2000;
 const MCP_DEFAULT_SESSION = "mcp-default";
 
+// 2026-09-03: BROWSER_TAB_CREATE (below) always registered its new tab
+// into the session group via addTabToSessionGroup(); every other action
+// that resolves activeTab() did not, so any of them landing on a tab
+// outside the group left that tab untracked (tab_list showed it
+// in_session:false) without the action itself failing or looking wrong —
+// confirmed live: "BROWSER_NAV: https://www.netflix.com" reported
+// {"ok": true, "navigated": ...} and the page loaded correctly, but the
+// tab it navigated was never grouped. Same class of bug as the two
+// display-contract bugs found in the google-workspace skill this same
+// session (a real success silently missing a side effect a caller
+// depends on) — same fix shape too: make the missing step happen instead
+// of hoping every call site remembers to ask for it.
+async function ensureTabInSession(tab) {
+  if (!tab?.id) return;
+  const sessionGroupId = state.sessionTabGroup?.groupId || null;
+  if (tab.groupId !== sessionGroupId) {
+    await addTabToSessionGroup(tab.id).catch(() => {});
+  }
+}
+
 async function dispatchMcpAction(action) {
   const kind = String(action.kind || "").toUpperCase();
   try {
@@ -3476,6 +3496,7 @@ async function dispatchMcpAction(action) {
     if (kind === "BROWSER_SCREENSHOT") {
       const tab = await activeTab().catch(() => null);
       if (!tab) return { ok: false, error: "no active tab" };
+      await ensureTabInSession(tab);
       const capture = await chrome.runtime.sendMessage({
         type: "SENSEI_CAPTURE_VISIBLE_TAB", windowId: tab.windowId,
       });
@@ -3485,6 +3506,7 @@ async function dispatchMcpAction(action) {
     if (kind === "BROWSER_GET_DOM") {
       const tab = await activeTab().catch(() => null);
       if (!tab?.id) return { ok: false, error: "no active tab" };
+      await ensureTabInSession(tab);
       const selector = String(action.target || action.selector || "");
       const [frame] = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
@@ -3503,6 +3525,7 @@ async function dispatchMcpAction(action) {
     if (kind === "BROWSER_JS") {
       const tab = await activeTab().catch(() => null);
       if (!tab?.id) return { ok: false, error: "no active tab" };
+      await ensureTabInSession(tab);
       const command = String(action.command || "").toLowerCase();
       const allFrames = action.all_frames !== false;
       // Static, CSP-safe JS runner. We pass a fixed function body and an options
@@ -3590,9 +3613,11 @@ async function dispatchMcpAction(action) {
       }
     }
     // All other BROWSER_* actions route through the existing content-script path
+    // (this is where BROWSER_NAV lands)
     if (kind.startsWith("BROWSER_")) {
       const tab = await activeTab().catch(() => null);
       if (!tab?.id) return { ok: false, error: "no active tab" };
+      await ensureTabInSession(tab);
       const result = await Promise.race([
         sendToContent(tab, action, {}),
         new Promise((_, rej) => setTimeout(() => rej(new Error("sendToContent timeout")), 15000)),

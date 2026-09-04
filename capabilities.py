@@ -127,6 +127,58 @@ def _matches_desktop_launch(cmd: str) -> Optional[str]:
     return None
 
 
+def _parse_notify_args(cmd: str) -> tuple[str, str, str]:
+    """Best-effort parse of a notify-send or sensei-notify directive.
+
+    notify-send 'title' 'body'       → title, body, 'normal'
+    sensei-notify.sh title body      → title, body, 'normal'
+    sensei-notify.sh title body crit → title, body, 'critical'
+    """
+    import shlex
+    title = "Sensei"
+    body = ""
+    urgency = "normal"
+    if not cmd:
+        return title, body, urgency
+    try:
+        parts = shlex.split(cmd.strip())
+    except Exception:
+        parts = cmd.strip().split()
+    if not parts:
+        return title, body, urgency
+    # Drop the executable name
+    idx = 1
+    if idx < len(parts) and parts[0] == "notify-send":
+        if idx < len(parts):
+            title = parts[idx]
+            idx += 1
+        if idx < len(parts):
+            body = parts[idx]
+            idx += 1
+        # notify-send -u critical title body
+        while idx < len(parts):
+            if parts[idx] in ("-u", "--urgency") and idx + 1 < len(parts):
+                urgency = parts[idx + 1]
+                idx += 2
+            else:
+                idx += 1
+    elif parts[0].endswith("sensei-notify.sh"):
+        if idx < len(parts):
+            title = parts[idx]
+            idx += 1
+        if idx < len(parts):
+            body = parts[idx]
+            idx += 1
+        if idx < len(parts):
+            urgency = parts[idx]
+    else:
+        # Fallback: treat remainder as body, keep default title
+        body = " ".join(parts[1:])
+    if urgency not in ("low", "normal", "critical"):
+        urgency = "normal"
+    return title, body, urgency
+
+
 # --- Registry -------------------------------------------------------------
 
 
@@ -170,6 +222,34 @@ class Registry:
                 "bridge_unreachable": "Local bridge is unreachable; cannot dispatch desktop.launch_app right now.",
             },
         )
+        self._capabilities["desktop.notify"] = Capability(
+            name="desktop.notify",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "body": {"type": "string"},
+                    "urgency": {"type": "string"},
+                },
+                "required": ["title"],
+            },
+            executor_name="master_ai.notify_desktop",
+            permission_tier="allow",
+            risk_tier="low",
+            cost_tier="cheap",
+            verification_policy=VerificationPolicy(
+                verifier_name="verifiers.verify_notification_sent",
+                max_wait_s=1.0,
+                poll_ms=100,
+            ),
+            retry_policy=RetryPolicy(max_retries=0),
+            fallback_options=[],
+            failure_messages={
+                "blocked": "Refused to send notification — capability blocked.",
+                "verify_failed": "Notification could not be verified as displayed.",
+                "executor_error": "Executor raised an exception while sending notification.",
+            },
+        )
 
     def lookup(self, kind: str, args: str) -> Decision:
         """Match a directive (kind + args) to a registered capability.
@@ -188,6 +268,19 @@ class Registry:
                     reason=f"matched desktop.launch_app for '{matched_app}'",
                     capability=cap,
                     verify_target=matched_app,
+                )
+            # Intercept bare `notify-send ...` directives emitted by older
+            # prompts and route them through the verified wrapper instead.
+            stripped = (args or "").strip()
+            if stripped.startswith("notify-send") or stripped.startswith("sensei-notify"):
+                cap = self._capabilities.get("desktop.notify")
+                title, body, urgency = _parse_notify_args(stripped)
+                return Decision(
+                    allow=True,
+                    requires_confirmation=False,
+                    reason="matched desktop.notify from RUN: directive",
+                    capability=cap,
+                    verify_target=None,
                 )
         return Decision(
             allow=True,

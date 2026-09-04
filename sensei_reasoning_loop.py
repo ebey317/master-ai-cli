@@ -2,17 +2,19 @@
 """
 Sensei Reasoning Loop — Planner · Solver · Critic · Finalizer
 ─────────────────────────────────────────────────────────────
-A 4-stage reasoning pipeline for small local LLMs (7B–14B Qwen/Llama/etc.
-via Ollama). Forces multi-pass structured cognition so a smaller model
-can produce Claude-like multi-step reasoning output on CPU-only hardware.
+A 4-stage reasoning pipeline for local or cloud models.
+Forces multi-pass structured cognition so any model can produce
+Claude-like multi-step reasoning output.
 
-See ~/scripts/SENSEI_REASONING_LOOP.md for the full design spec.
+Model-agnostic: accepts any model identifier your master_ai.py router
+supports (Ollama local names, cloud lanes like 'opencode', 'nemotron',
+OpenRouter slugs like 'anthropic/claude-3.5-sonnet').
 
 Standalone use:
   python3 sensei_reasoning_loop.py "your query"
   python3 sensei_reasoning_loop.py --mode deep "your query"
-  python3 sensei_reasoning_loop.py --mode max "your query"
-  python3 sensei_reasoning_loop.py --planner qwen2.5:14b "your query"
+  python3 sensei_reasoning_loop.py --planner qwen2.5:14b --solver master-ai "your query"
+  python3 sensei_reasoning_loop.py --planner nemotron --solver nemotron "your query"
 
 Programmatic use:
   from sensei_reasoning_loop import run_reasoning_loop
@@ -25,21 +27,11 @@ import os
 import re
 import sys
 import time
-import urllib.request
-import urllib.error
 from pathlib import Path
 from typing import Any
 
-OLLAMA_URL = "http://localhost:11434/api/chat"
-DEFAULT_MODELS = {
-    "planner":   "qwen2.5:7b",
-    "solver":    "qwen2.5:7b",
-    "critic":    "qwen2.5:7b",
-    "finalizer": "qwen2.5:3b",
-}
 STAGE_TIMEOUT = 240        # seconds per stage
 STAGE_NUM_PREDICT = 900    # max tokens per stage
-KEEP_ALIVE = "30m"
 
 # ── Prompt templates ──────────────────────────────────────────
 # Each stage has a system prompt (role) and a user prompt (task).
@@ -140,35 +132,52 @@ CRITIC OUTPUT:
 Produce the final clean answer now."""
 
 
-# ── Ollama bridge ──────────────────────────────────────────────
-def _ollama_chat(model: str, system: str, user: str,
-                 timeout: int = STAGE_TIMEOUT,
-                 num_predict: int = STAGE_NUM_PREDICT,
-                 temperature: float = 0.2) -> tuple[str, float]:
-    """Single /api/chat call. Returns (content, elapsed_seconds).
-    On failure returns ('(ollama error: <msg>)', elapsed)."""
+def _model_chat(model: str, system: str, user: str,
+                timeout: int = STAGE_TIMEOUT,
+                num_predict: int = STAGE_NUM_PREDICT) -> tuple[str, float]:
+    """Model-agnostic chat call.
+
+    If master_ai.py is available in the same repo, route through its
+    ask_model_router(). Otherwise fall back to a direct Ollama /api/chat call
+    for local models only."""
     t0 = time.time()
-    body = json.dumps({
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user",   "content": user},
-        ],
-        "stream": False,
-        "options": {"num_predict": num_predict, "temperature": temperature},
-        "keep_alive": KEEP_ALIVE,
-    }).encode()
-    req = urllib.request.Request(OLLAMA_URL, data=body,
-                                  headers={"Content-Type": "application/json"})
+    messages = [{"role": "system", "content": system},
+                {"role": "user",   "content": user}]
+
+    # Try master_ai's router first (preferred — gives cloud + aliases)
     try:
+        import master_ai
+        if hasattr(master_ai, "ask_model_router"):
+            text, elapsed = master_ai.ask_model_router(messages, model=model,
+                                                       max_tokens=num_predict)
+            if text:
+                return text, elapsed
+    except Exception:
+        pass
+
+    # Fallback: direct Ollama call for local models
+    try:
+        import urllib.request
+        import urllib.error
+        body = json.dumps({
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "options": {"num_predict": num_predict, "temperature": 0.2},
+            "keep_alive": "30m",
+        }).encode()
+        req = urllib.request.Request(
+            "http://localhost:11434/api/chat", data=body,
+            headers={"Content-Type": "application/json"},
+        )
         with urllib.request.urlopen(req, timeout=timeout) as r:
             data = json.loads(r.read())
         content = (data.get("message") or {}).get("content", "").strip()
         return content, round(time.time() - t0, 2)
     except urllib.error.URLError as e:
-        return f"(ollama unreachable: {e.reason})", round(time.time() - t0, 2)
+        return f"(model unreachable: {e.reason})", round(time.time() - t0, 2)
     except Exception as e:
-        return f"(ollama error: {e})", round(time.time() - t0, 2)
+        return f"(model error: {e})", round(time.time() - t0, 2)
 
 
 # ── JSON extraction (tolerant — small models add prose sometimes) ──
@@ -203,8 +212,8 @@ def _parse_json_lenient(text: str) -> tuple[dict | None, str]:
 # ── Stage functions ───────────────────────────────────────────
 def plan_stage(query: str, model: str) -> dict:
     """PLANNER: decompose, don't solve. Returns the full stage record."""
-    content, elapsed = _ollama_chat(model, PROMPT_PLANNER_SYS,
-                                     PROMPT_PLANNER_USER.format(query=query))
+    content, elapsed = _model_chat(model, PROMPT_PLANNER_SYS,
+                                 PROMPT_PLANNER_USER.format(query=query))
     parsed, raw = _parse_json_lenient(content)
     return {
         "model": model, "elapsed_s": elapsed, "raw": raw,
@@ -217,9 +226,9 @@ def plan_stage(query: str, model: str) -> dict:
 def solve_stage(query: str, plan: dict, model: str) -> dict:
     """SOLVER: execute the plan, show work, produce raw solution."""
     prior = json.dumps(plan["json"], indent=2)
-    content, elapsed = _ollama_chat(model, PROMPT_SOLVER_SYS,
-                                     PROMPT_SOLVER_USER.format(query=query, prior=prior),
-                                     num_predict=1400)  # more room for solving
+    content, elapsed = _model_chat(model, PROMPT_SOLVER_SYS,
+                                 PROMPT_SOLVER_USER.format(query=query, prior=prior),
+                                 num_predict=1400)  # more room for solving
     parsed, raw = _parse_json_lenient(content)
     return {
         "model": model, "elapsed_s": elapsed, "raw": raw,
@@ -230,7 +239,7 @@ def solve_stage(query: str, plan: dict, model: str) -> dict:
 
 def critique_stage(query: str, plan: dict, solver: dict, model: str) -> dict:
     """CRITIC: find issues + corrections. May return empty lists if clean."""
-    content, elapsed = _ollama_chat(
+    content, elapsed = _model_chat(
         model, PROMPT_CRITIC_SYS,
         PROMPT_CRITIC_USER.format(
             query=query,
@@ -247,26 +256,85 @@ def critique_stage(query: str, plan: dict, solver: dict, model: str) -> dict:
 
 
 def finalize_stage(query: str, solver: dict, critic: dict | None, model: str) -> dict:
-    """FINALIZER: clean user-facing answer. Applies critic's corrections."""
+    """FINALIZER: clean user-facing answer. Applies critic's corrections.
+    If the answer appears truncated, runs a continuation pass."""
     critic_json = json.dumps(critic["json"] if critic else
                               {"issues": [], "corrections": []}, indent=2)
-    content, elapsed = _ollama_chat(
-        model, PROMPT_FINALIZER_SYS,
-        PROMPT_FINALIZER_USER.format(
-            query=query,
-            solver_json=json.dumps(solver["json"], indent=2),
-            critic_json=critic_json,
-        ),
-        num_predict=1200,
+
+    def _run_finalizer(user_content: str) -> tuple[str, float]:
+        return _model_chat(
+            model, PROMPT_FINALIZER_SYS,
+            user_content,
+            num_predict=2400,
+        )
+
+    user_content = PROMPT_FINALIZER_USER.format(
+        query=query,
+        solver_json=json.dumps(solver["json"], indent=2),
+        critic_json=critic_json,
     )
+    content, elapsed = _run_finalizer(user_content)
     parsed, raw = _parse_json_lenient(content)
     answer = (parsed or {}).get("answer", raw)
+
+    # Continuation pass if answer looks truncated
+    for _ in range(2):
+        if answer and not _looks_complete(answer):
+            continuation_prompt = (
+                "Continue exactly where the previous answer was cut off. "
+                "Do not repeat what was already written. Finish the answer cleanly.\n\n"
+                f"PREVIOUS ANSWER (truncated):\n{answer}\n\n"
+                "Continue now."
+            )
+            cont, cont_elapsed = _model_chat(model, PROMPT_FINALIZER_SYS,
+                                             continuation_prompt,
+                                             num_predict=2400)
+            elapsed += cont_elapsed
+            if cont:
+                # Try to extract just the answer text; if it comes back as JSON, use that
+                cp, _ = _parse_json_lenient(cont)
+                cont_text = (cp or {}).get("answer", cont)
+                # Avoid duplicating the tail
+                answer = _merge_continuation(answer, cont_text)
+
     return {
         "model": model, "elapsed_s": elapsed, "raw": raw,
         "parsed": parsed is not None,
         "json": {"answer": answer},
         "answer": answer,
     }
+
+
+def _looks_complete(text: str) -> bool:
+    """Heuristic: detect likely truncation mid-sentence or mid-block."""
+    if not text:
+        return False
+    # Strip trailing whitespace
+    t = text.rstrip()
+    # If it ends with a sentence terminator or markdown closing, it's probably complete
+    if t.endswith((".", "!", "?", '"', "'", "```", "</", "---", "===", ")", "]", "}")):
+        return True
+    # If the last line starts a list/table/code block and never closes, likely truncated
+    last_line = t.splitlines()[-1] if t else ""
+    if last_line.strip() in ("-", "*", "|", "```", "###", "##", "#"):
+        return False
+    # Mid-sentence markers
+    if t.endswith((",", ":", ";", "(", "[", "{", " ")):
+        return False
+    return True
+
+
+def _merge_continuation(original: str, continuation: str) -> str:
+    """Merge continuation text without duplicating the overlapping tail of original."""
+    if not continuation:
+        return original
+    # Normalize whitespace for overlap detection
+    orig_tail = original[-200:].lstrip()
+    cont_head = continuation[:200].lstrip()
+    # If continuation starts with same text, skip the duplicate prefix
+    if orig_tail and cont_head.startswith(orig_tail):
+        return original + continuation[len(orig_tail):]
+    return original + "\n\n" + continuation
 
 
 # ── Orchestrator ──────────────────────────────────────────────
@@ -283,8 +351,9 @@ def run_reasoning_loop(query: str, *,
       'deep'     — all four + a second solver-critic refinement pass
       'max'      — all four + mandatory second solver-critic refinement pass
 
-    models: optional override per stage, e.g.
-      {'critic': 'qwen2.5:14b'}. Falls back to DEFAULT_MODELS.
+    models: optional override per stage. Stage keys are:
+      planner, solver, critic, finalizer.
+      Any missing stage falls back to the master-ai default model.
 
     memory_file: optional path to a .jsonl store of prior loops; the
       orchestrator prepends the last 3 (query, answer) pairs to the
@@ -302,7 +371,25 @@ def run_reasoning_loop(query: str, *,
     """
     if mode not in ("fast", "standard", "deep", "max"):
         raise ValueError(f"mode must be fast|standard|deep|max (got {mode})")
-    mdl = {**DEFAULT_MODELS, **(models or {})}
+
+    # Determine a sensible default model from master_ai if available
+    default_model = None
+    try:
+        import master_ai
+        default_model = (master_ai.PINNED_MODEL
+                         or master_ai.MODELS.get("master")
+                         or "master-ai")
+    except Exception:
+        default_model = "master-ai"
+
+    mdl = {
+        "planner":   default_model,
+        "solver":    default_model,
+        "critic":    default_model,
+        "finalizer": default_model,
+    }
+    if models:
+        mdl.update({k: v for k, v in models.items() if v})
 
     def _say(msg: str) -> None:
         if progress:
@@ -428,10 +515,10 @@ def _main() -> int:
     ap.add_argument("query", nargs="+", help="the user question")
     ap.add_argument("--mode", choices=("fast", "standard", "deep", "max"),
                     default="standard")
-    ap.add_argument("--planner",   default=DEFAULT_MODELS["planner"])
-    ap.add_argument("--solver",    default=DEFAULT_MODELS["solver"])
-    ap.add_argument("--critic",    default=DEFAULT_MODELS["critic"])
-    ap.add_argument("--finalizer", default=DEFAULT_MODELS["finalizer"])
+    ap.add_argument("--planner",   default=None)
+    ap.add_argument("--solver",    default=None)
+    ap.add_argument("--critic",    default=None)
+    ap.add_argument("--finalizer", default=None)
     ap.add_argument("--memory", default=None,
                     help="optional .jsonl file to persist loops across runs")
     ap.add_argument("--json", action="store_true",
@@ -445,6 +532,9 @@ def _main() -> int:
         "planner": args.planner, "solver": args.solver,
         "critic": args.critic,  "finalizer": args.finalizer,
     }
+    # Drop None values so orchestrator uses its own default
+    models = {k: v for k, v in models.items() if v}
+
     out = run_reasoning_loop(query, mode=args.mode, models=models,
                               memory_file=args.memory, progress=not args.quiet)
 

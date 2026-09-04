@@ -80,6 +80,20 @@ _HARDCODED_SECRET_RE = re.compile(
     r"(?:api[_-]?key|secret|token|password)\s*=\s*[\"'][A-Za-z0-9_\-]{20,}[\"']", re.IGNORECASE
 )
 
+# 2026-09-03: master_ai.py's _skill_state_reply() (the function that turns
+# a finished skill state into what the user actually sees) reads
+# state.data["_reason"] for abort messages, not "error" or anything else —
+# undocumented anywhere except that function's own source. Missed this
+# building google-workspace's recipe.py; every abort rendered as a bare,
+# useless "Skill X aborted: aborted" until traced through a live .chat
+# transcript. Whole-file presence check (not per-line, since it needs to
+# know across the file whether _reason appears ANYWHERE, not on the same
+# line as ABORT) — heuristic, not proof a specific path sets it, but a
+# recipe using ABORT and never mentioning "_reason" at all is a near-
+# certain repeat of this exact bug.
+_ABORT_USAGE_RE = re.compile(r"\bABORT\b")
+_REASON_KEY_RE = re.compile(r'["\']_reason["\']')
+
 
 def _log(msg: str) -> None:
     try:
@@ -296,6 +310,19 @@ def _audit_dir(skill_dir: Path) -> AuditResult:
             # informational only.
             warnings.extend(bypass)
             warnings.extend(other)
+
+    if has_recipe:
+        try:
+            recipe_text = recipe_path.read_text(errors="replace")
+        except OSError:
+            recipe_text = ""
+        if _ABORT_USAGE_RE.search(recipe_text) and not _REASON_KEY_RE.search(recipe_text):
+            warnings.append(
+                f"{recipe_path}: uses ABORT but never sets state_update['_reason'] — "
+                f"master_ai.py's _skill_state_reply() reads '_reason' for the abort "
+                f"message (not 'error' or anything else); aborts on this recipe will "
+                f"render to the operator as a bare 'aborted: aborted' with no detail"
+            )
 
     passed = not reasons
     if not has_recipe and passed:

@@ -1159,16 +1159,41 @@ _ATTACHMENT_SUFFIXES = {
     ".css", ".js", ".jsx", ".ts", ".tsx", ".py", ".sh", ".bash", ".zsh", ".yaml",
     ".yml", ".toml", ".ini", ".conf", ".log", ".sql",
 }
+# Dotfiles like ~/.bashrc, ~/.zshrc, ~/.profile, ~/.master_ai_tasks have no real
+# extension but are plainly text. Allow them through after a binary sniff.
+_ATTACHMENT_DOTFILE_SUFFIXES = {
+    "", ".bashrc", ".zshrc", ".profile", ".bash_profile", ".bash_login",
+    ".bash_logout", ".zprofile", ".zlogin", ".zlogout", ".vimrc", ".nanorc",
+}
 
 def _attach_text_file(path, history):
     p = Path(os.path.expanduser(str(path))).expanduser()
     if not p.exists() or not p.is_file():
         print(f"  {R}attachment not found: {p}{X}")
         return False
-    if p.suffix.lower() not in _ATTACHMENT_SUFFIXES:
-        print(f"  {Y}attachment skipped: {p.name} does not look like a text file{X}")
-        print(f"  {D}Supported: txt, md, csv, json, html, css, js, ts, py, sh, yaml, log, sql, etc.{X}")
+    # Enforce the same read-path fence the READ directive uses.
+    _ok, _why = _read_path_ok(str(p))
+    if not _ok:
+        print(f"  {R}🚫 READ fence: {p}{X}")
+        print(f"  {D}reason: {_why}{X}")
         return False
+    suffix = p.suffix.lower()
+    if suffix not in _ATTACHMENT_SUFFIXES and suffix not in _ATTACHMENT_DOTFILE_SUFFIXES:
+        # Reject obvious binaries, but allow extensionless/dotfile text files.
+        try:
+            sample = p.read_bytes()[:4096]
+        except Exception as e:
+            print(f"  {R}attachment read failed: {e}{X}")
+            return False
+        if b"\x00" in sample:
+            print(f"  {Y}attachment skipped: {p.name} looks binary (contains null bytes){X}")
+            return False
+        # If >5% non-printable bytes, treat as binary.
+        non_printable = sum(1 for b in sample if b < 32 and b not in (9, 10, 13))
+        if len(sample) > 0 and non_printable / len(sample) > 0.05:
+            print(f"  {Y}attachment skipped: {p.name} does not look like a text file{X}")
+            print(f"  {D}Use `read: https://...` for non-text content, or convert first.{X}")
+            return False
     try:
         content = p.read_text(errors="replace")
     except Exception as e:
@@ -1213,9 +1238,46 @@ _DESKTOP_DOC_SUFFIXES = {
     ".txt", ".md",
 }
 
+def _spawn_detached_new_pgroup(argv):
+    """Launch argv as a new process-group leader (stdout/stderr to
+    /dev/null), without detaching it from the controlling session.
+
+    2026-09-03, two rounds of live-verified fixes:
+    1. Was subprocess.Popen(..., start_new_session=True) — full setsid,
+       new SESSION. Confirmed live this silently kills GTK/Cinnamon apps
+       with desktop-session integration (Hypnotix): Popen never raises,
+       the process starts, loads its data, then exits with no window and
+       no error surfaced (stderr was DEVNULL) — a false "opened it"
+       report with nothing actually open.
+    2. First fix attempt: Popen(..., preexec_fn=os.setpgrp) — new process
+       GROUP only, same session. Worked in an isolated single-threaded
+       test script, but confirmed live that it silently hung inside the
+       real master_ai.py process: preexec_fn runs Python bytecode in the
+       forked child between fork() and exec(), a documented deadlock
+       hazard in multi-threaded programs (a lock any OTHER thread held
+       at fork time stays locked forever in the child, since that thread
+       doesn't exist there to release it) — Popen() itself never raised,
+       so the caller again reported success while nothing launched.
+    This is the actual fix: os.posix_spawnp, the real posix_spawn(3)
+    syscall — its setpgroup= is implemented natively, no Python code runs
+    between fork and exec, so it can't hit the preexec_fn hazard.
+    subprocess's own thread-safe equivalent (Popen(process_group=...))
+    isn't available until Python 3.11; this machine runs 3.10."""
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    try:
+        file_actions = [
+            (os.POSIX_SPAWN_DUP2, devnull_fd, 1),
+            (os.POSIX_SPAWN_DUP2, devnull_fd, 2),
+            (os.POSIX_SPAWN_CLOSE, devnull_fd),
+        ]
+        return os.posix_spawnp(argv[0], argv, os.environ, file_actions=file_actions, setpgroup=0)
+    finally:
+        os.close(devnull_fd)
+
+
 def _launch_desktop_argv(argv, label="desktop app"):
     try:
-        subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        _spawn_detached_new_pgroup(argv)
         print(f"  {G}✅ Opened {label}:{X} {' '.join(shlex.quote(str(a)) for a in argv)}")
         log(f"DESKTOP_OPEN: {argv}")
         return RunResult(output=f"[opened {label}]", ok=True, exit_code=0, command=" ".join(map(str, argv)))
@@ -1230,8 +1292,9 @@ def launch_desktop_app_safely(app_name):
     Routes around confirm_run's run_command path because bash + backgrounded
     GUI apps leak inherited stdout/stderr pipes and Python's capture_output
     blocks indefinitely on read. Uses _launch_desktop_argv (Popen + DEVNULL
-    + start_new_session=True) which is the correct shape for detached GUI
-    launches.
+    + preexec_fn=os.setpgrp — new process group, same session; see that
+    function's comment for why not start_new_session=True) which is the
+    correct shape for detached GUI launches.
 
     The registry has already validated app_name against
     capabilities.DESKTOP_APP_ALLOWLIST; this function adds a defense-in-depth
@@ -1365,18 +1428,137 @@ def _resolve_discord_launch_argv():
         return ["xdg-open", "discord://"]
     return None
 
+def _app_name_matches(app_name: str, candidate: str) -> bool:
+    """True if app_name plausibly refers to the same app as `candidate`
+    (a .desktop filename stem, dpkg package name, or flatpak/snap listing
+    line). Two checks — confirmed live 2026-09-03 that naive single-token
+    substring matching gets BOTH directions of this wrong:
+      1. Too loose: "should I open a savings account" tokenized to
+         ["savings", "account"] and matched a cinnamon-settings online-
+         accounts panel on "account" alone — a single generic word
+         shouldn't be enough. Fixed by requiring ALL tokens (len>2)
+         present, not ANY.
+      2. Too strict: "fredtv" (no space — how someone actually types a
+         two-word product name) was never a substring of "Fred TV" (the
+         real .desktop stem, with a space) — the exact phrase that broke
+         live even after the app-open fix existed. Fixed by ALSO
+         comparing both strings with all separators stripped, either
+         direction, so "fredtv" ⊂ "fredtv" (space stripped) matches."""
+    app_low = app_name.lower()
+    cand_low = candidate.lower()
+    tokens = [t for t in re.split(r"[\s._-]+", app_low) if len(t) > 2]
+    if tokens and all(t in cand_low for t in tokens):
+        return True
+    app_compact = re.sub(r"[\s._-]+", "", app_low)
+    cand_compact = re.sub(r"[\s._-]+", "", cand_low)
+    # Both sides need a real minimum length, not just app_name — confirmed
+    # live this let the dpkg package "ed" (the line editor) false-match
+    # "fredtv" (which literally contains the two letters "ed" as a
+    # substring: fr-ED-tv) since only app_compact's length was guarded.
+    if len(app_compact) > 3 and len(cand_compact) > 3 and (app_compact in cand_compact or cand_compact in app_compact):
+        return True
+    return False
+
+
+def _resolve_installed_app_launch_argv(app_name):
+    """Find a real installed app's actual launch command via its .desktop
+    file's Exec= line — same real lookup _check_app_installed() uses,
+    parsed into a clean subprocess argv instead of a display string.
+    Handles the common 'env VAR=val VAR2=val2 realbinary args...' Exec=
+    prefix (e.g. Fred TV's `env WEBKIT_DISABLE_DMABUF_RENDERER=1 open_tv`)
+    and strips desktop-entry field codes (%f, %U, etc). Returns
+    (argv, label) or None — the same shape _try_desktop_open_intent()'s
+    other branches return, so it's a drop-in fallback there.
+
+    2026-09-03: added right after fixing the identical guessing bug for
+    "is X installed" — _try_desktop_open_intent() itself only recognizes
+    a small hardcoded alias dict, so "open fred tv" would have hit the
+    exact same wrong-binary-name failure via a different phrase. Matching
+    uses the shared _app_name_matches() (see its docstring) — plain
+    single-token substring matching here originally missed "fredtv"
+    (no space) against the real "Fred TV" (with space) .desktop stem."""
+    if not app_name or len(app_name.strip()) < 3:
+        return None
+    for base in ("/usr/share/applications", os.path.expanduser("~/.local/share/applications")):
+        try:
+            candidates = sorted(Path(base).glob("*.desktop"))
+        except OSError:
+            continue
+        for f in candidates:
+            if not _app_name_matches(app_name, f.stem):
+                continue
+            try:
+                text = f.read_text(errors="replace")
+            except OSError:
+                continue
+            exec_line = next((l[5:].strip() for l in text.splitlines() if l.startswith("Exec=")), "")
+            if not exec_line:
+                continue
+            exec_line = re.sub(r"%[fFuUick]\b", "", exec_line).strip()
+            try:
+                argv = shlex.split(exec_line)
+            except ValueError:
+                argv = exec_line.split()
+            if not argv:
+                continue
+            # Deliberately NOT stripping a leading "env VAR=val ..." prefix
+            # (e.g. Fred TV's `env WEBKIT_DISABLE_DMABUF_RENDERER=1
+            # open_tv`) — /usr/bin/env is a real executable subprocess.Popen
+            # can invoke directly with no shell, and that var is there to
+            # avoid an actual rendering bug, not incidental. Passing the
+            # whole Exec= line through as argv keeps that fix intact
+            # instead of silently discarding it for a small parsing
+            # convenience.
+            return (argv, f.stem)
+    return None
+
+
+_OPEN_ANYWHERE_RE = re.compile(
+    r'\bopen(?:ing)?\s+(?:up\s+)?(?:the\s+|my\s+)?'
+    r'([a-z0-9][a-z0-9 _-]{1,40}?)'
+    r'(?=[.?!,]|\s+(?:up|now|please|for me|for you|on this|on my)\b|$)',
+    re.IGNORECASE,
+)
+
+
 def _try_desktop_open_intent(user_text):
     """Deterministic launcher for browser URLs, local documents, and GUI apps.
 
     Terminal is for shells and TTY apps. xdg-open/LibreOffice/browser launches
     should happen directly, otherwise the user gets a terminal plus the app.
+
+    2026-09-03: the strict `^(open|which)\\s+...$` anchor below only ever
+    matched a message that IS "open X" and nothing else — a real user
+    message like "are you smart enough to open fredtv?" never matches it
+    at all, falls straight through to the model, which goes back to
+    guessing wrong binary names (confirmed live, repeatedly, even after
+    _resolve_installed_app_launch_argv already existed and worked
+    correctly for the exact-phrase case). Prompt-text fixes for this
+    class of bug already failed twice tonight for the same reason: a
+    small model's phrasing doesn't reliably match either a strict pattern
+    or a written instruction. Real fix: search "open <candidate>"
+    ANYWHERE in the message (_OPEN_ANYWHERE_RE below), not just as the
+    whole message — and gate purely on whether the extracted candidate
+    resolves to a REAL installed app (_resolve_installed_app_launch_argv
+    actually checking dpkg/.desktop files). A false-positive extraction
+    (e.g. "should I open a savings account") just fails to resolve to any
+    installed app and falls through unchanged — the regex being loose is
+    safe precisely because the real gate is "does this exist on disk,"
+    not "did the regex look right."
     """
     if not user_text:
         return None
     text = user_text.strip()
     m = re.match(r'^(open|which)\s+(.+?)[\s.!?]*$', text, re.IGNORECASE)
     if not m:
-        return None
+        m2 = _OPEN_ANYWHERE_RE.search(text)
+        if not m2:
+            return None
+        candidate = re.sub(r'^(my|the)\s+', '', m2.group(1).strip(), flags=re.IGNORECASE)
+        resolved = _resolve_installed_app_launch_argv(candidate)
+        if resolved:
+            log(f"DESKTOP_OPEN_ANYWHERE_MATCH: {candidate!r} from {text!r}")
+        return resolved
     verb = (m.group(1) or "").lower()
     target = re.sub(r'^(my|the)\s+', '', m.group(2).strip(), flags=re.IGNORECASE)
     low = target.lower()
@@ -1396,7 +1578,243 @@ def _try_desktop_open_intent(user_text):
         return (["xdg-open", str(expanded)], str(expanded))
     if target.startswith(("~", "/", ".")) and expanded.suffix.lower() in _DESKTOP_DOC_SUFFIXES:
         return (["xdg-open", str(expanded)], str(expanded))
+    return _resolve_installed_app_launch_argv(target)
+
+def _check_app_installed(app_name: str) -> dict:
+    """Check whether app_name is actually installed, using real package-
+    manager and desktop-file metadata instead of guessing plausible
+    binary names. Confirmed live 2026-09-03: the model guessed
+    'fred-tv'/'FredTV'/'OpenTV' as binary names for an app that WAS
+    genuinely installed (dpkg -l fred-tv confirms it) — the real
+    executable is /usr/bin/open_tv (no "fred" in it at all), directly
+    findable via dpkg -L or the .desktop file's Exec= line. Package/
+    binary names routinely don't match an app's colloquial name; .desktop
+    files (the human-facing name) and package metadata are ground truth,
+    guessing isn't. Matching uses the shared _app_name_matches() — see its
+    docstring for the two real bugs (too-loose single-word false
+    positives, too-strict no-space-vs-space misses) this fixed live.
+    Returns {"found": bool, "detail": str}."""
+    if not app_name or len(app_name.strip()) < 3:
+        return {"found": False, "detail": "app name too short to search"}
+    hits = []
+    for base in ("/usr/share/applications", os.path.expanduser("~/.local/share/applications")):
+        try:
+            for f in Path(base).glob("*.desktop"):
+                if _app_name_matches(app_name, f.stem):
+                    try:
+                        text = f.read_text(errors="replace")
+                        exec_line = next((l for l in text.splitlines() if l.startswith("Exec=")), "")
+                        hits.append(f"{f} ({exec_line.strip()})")
+                    except OSError:
+                        hits.append(str(f))
+        except OSError:
+            continue
+    try:
+        out = subprocess.run(
+            ["dpkg-query", "-W", "-f=${Package}\\t${Status}\\n"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout
+        for line in out.splitlines():
+            parts = line.split("\t", 1)
+            if len(parts) < 2 or "installed" not in parts[1]:
+                continue
+            if _app_name_matches(app_name, parts[0]):
+                hits.append(f"dpkg package: {parts[0]}")
+    except Exception:
+        pass
+    try:
+        out = subprocess.run(
+            ["flatpak", "list", "--app", "--columns=application,name"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout
+        for line in out.splitlines():
+            if _app_name_matches(app_name, line):
+                hits.append(f"flatpak: {line.strip()}")
+    except Exception:
+        pass
+    try:
+        out = subprocess.run(["snap", "list"], capture_output=True, text=True, timeout=10).stdout
+        for line in out.splitlines():
+            if _app_name_matches(app_name, line):
+                hits.append(f"snap: {line.strip()}")
+    except Exception:
+        pass
+    if hits:
+        return {"found": True, "detail": "; ".join(hits[:5])}
+    return {"found": False, "detail": f"no dpkg/flatpak/snap package or .desktop entry matched {app_name!r}"}
+
+
+_APP_INSTALLED_RE = re.compile(
+    r'^(?:is|do i have|did i (?:already )?(?:download|install)|check if)\s+'
+    r'(?:i\s+(?:already\s+)?have\s+)?(.+?)\s+(?:already\s+)?'
+    r'(?:installed|downloaded|on (?:this|my)\s+(?:computer|machine|pc|box|system))\??[\s.!?]*$',
+    re.IGNORECASE,
+)
+
+
+def _try_ground_app_installed_intent(user_text, history):
+    """Ground an 'is X installed?' question in a real dpkg/flatpak/snap/
+    .desktop-file check instead of letting the model guess plausible
+    binary names and wrongly conclude something's missing. Same shape as
+    _try_ground_download_install_intent() above — injects context,
+    doesn't short-circuit, since the model still needs to phrase the
+    actual answer (already installed + how to launch it, or genuinely
+    missing + offer to install)."""
+    if not user_text:
+        return None
+    m = _APP_INSTALLED_RE.match(user_text.strip())
+    if not m:
+        return None
+    app_name = m.group(1).strip()
+    if len(app_name) < 3:
+        return None
+    try:
+        result = _check_app_installed(app_name)
+    except Exception as e:
+        log(f"APP_INSTALLED_CHECK_ERROR: {e}")
+        return None
+    log(f"APP_INSTALLED_GROUNDING: {app_name} found={result['found']}")
+    if result["found"]:
+        # Short-circuit, don't just inject-and-hope. Confirmed live
+        # 2026-09-03: injecting this same found=True result as context
+        # and letting the model answer wasn't enough — it ran its own
+        # ADDITIONAL, wrongly-patterned check anyway (grep -i 'fred tv'
+        # with a space, missing the real 'fred-tv' package name) and
+        # trusted that bad result over the correct grounding already in
+        # front of it. Once we genuinely know it's installed there's
+        # nothing left for the model to usefully resolve — answer
+        # directly, skip the model call entirely so it can't second-
+        # guess a fact we already verified.
+        m_exec = re.search(r"Exec=(?:env\s+\S+=\S+\s+)*([^\s);]+)", result["detail"])
+        launch_hint = f" Launch it with `{m_exec.group(1)}` or from your app menu." if m_exec else ""
+        return f"{app_name} is already installed.{launch_hint}\n({result['detail']})"
+    # Not found — inject grounding and let the model continue normally;
+    # "should I offer to install it" still has real conversational
+    # latitude worth keeping (the download-grounding catch below covers
+    # the follow-through if the operator says yes).
+    history.append({
+        "role": "user",
+        "content": (
+            f"[INSTALLED-APP CHECK — before answering about '{app_name}']\n"
+            f"found=False\ndetail={result['detail']}\n\n"
+            f"Use ONLY this real check — do not guess binary names, and do "
+            f"not run a whole-filesystem `find` scan (slow, gets privacy-"
+            f"gated to local, often refused outright). If the operator "
+            f"wants it, offer to download/install it."
+        ),
+    })
     return None
+
+
+_DOWNLOAD_INSTALL_RE = re.compile(
+    r'^(?:download|install|get)\s+(?:me\s+)?(?:the\s+)?(?:a\s+)?(.+?)[\s.!?]*$',
+    re.IGNORECASE,
+)
+
+
+def _try_ground_download_install_intent(user_text, history):
+    """Force a real web search before the model responds to a 'download/
+    install <app>' request, instead of letting it assert what an
+    unfamiliar proper noun is from parametric memory. Unlike the other
+    deterministic catches in handle() (bare Google Workspace nav, desktop
+    open), this does NOT short-circuit — it injects grounding into
+    history and lets the normal model call proceed, since "what should I
+    download and from where" is genuinely conversational, just needs to
+    run on real facts instead of a guess.
+
+    Confirmed live 2026-09-03: asked to download "Fred TV" — a real,
+    correctly-named open-source IPTV app (github.com/Fredolx/open-tv) —
+    the model instead invented a fake correction ("Freed TV, a common
+    misspelling"), then on "proceed" silently opened a THIRD, unrelated
+    app (IPTV Smarters) with no acknowledgment it wasn't what it had just
+    proposed one message earlier. web_search("Fred TV download official")
+    surfaces the real project in its first DuckDuckGo hit — the
+    information was always one search away; the model just never looked.
+
+    Returns True if grounding was injected, False if user_text didn't
+    match, the name's too short/generic to search, or search failed —
+    caller proceeds to the normal model call regardless."""
+    if not user_text:
+        return False
+    m = _DOWNLOAD_INSTALL_RE.match(user_text.strip())
+    if not m:
+        return False
+    app_name = m.group(1).strip()
+    if len(app_name) < 3 or not re.search(r"[A-Za-z]{2,}", app_name):
+        return False
+    if app_name.lower() in _DESKTOP_APP_ALIASES:
+        return False  # already known locally — no need to ground a search
+    try:
+        result = web_search(f"{app_name} download official")
+    except Exception as e:
+        log(f"DOWNLOAD_GROUNDING_ERROR: {e}")
+        return False
+    if not result or result.startswith("Search unavailable"):
+        return False
+    history.append({
+        "role": "user",
+        "content": (
+            f"[GROUNDING SEARCH — before answering about '{app_name}']\n{result}\n\n"
+            f"Use ONLY this real information about what '{app_name}' actually is. "
+            f"Do not guess, and do not silently 'correct' the name to something "
+            f"else unless this search result itself says the name is wrong. If "
+            f"you propose downloading/opening something and the user confirms, "
+            f"follow through on that exact thing — never silently substitute a "
+            f"different app.\n"
+            f"This search already answers 'what is it and where do I get it' — "
+            f"do NOT also emit SEARCH: or BROWSER_NAV: to re-derive the same "
+            f"thing; that just burns turns re-finding what's already above and "
+            f"opens tabs the user didn't ask for. Answer directly from this "
+            f"result (name, what it is, the real download link). Only emit "
+            f"BROWSER_NAV: if the user explicitly asks you to open/go to the "
+            f"page — identifying an app and telling the user about it is a "
+            f"headless, text-only answer, not a browsing task."
+        ),
+    })
+    log(f"DOWNLOAD_GROUNDING: {app_name}")
+    return True
+
+
+_GOOGLE_WORKSPACE_BARE_NAV_RE = re.compile(
+    r'^(?:go to|open|check|show me)\s+(?:my\s+)?google\s+(drive|gmail|mail|calendar)\s*[.!?]*$',
+    re.IGNORECASE,
+)
+_GOOGLE_WORKSPACE_BARE_NAV_COMMAND = {
+    "drive": ("drive.search", {"query": "", "max": 20}),
+    "gmail": ("gmail.search", {"query": "", "max": 10}),
+    "mail": ("gmail.search", {"query": "", "max": 10}),
+    "calendar": ("calendar.list", {"max": 10}),
+}
+
+
+def _try_google_workspace_bare_nav_intent(user_text):
+    """Deterministic catch for a bare 'go to/open Google Drive/Gmail/
+    Calendar' with no further detail — same idiom as
+    _try_desktop_open_intent() just above: catch a known-ambiguous shape
+    before ever asking a model, rather than trying to out-prompt it.
+
+    Confirmed live 2026-09-03: the small free model (MODEL:openrouter/free)
+    flip-flopped between RUN_SKILL and BROWSER_NAV for this exact phrasing
+    on separate turns, then settled on BROWSER_NAV (wrong direction) twice
+    in a row even after the GOOGLE WORKSPACE INTENT prompt block was
+    tightened with an explicit example for it. Prompt-only fixes don't
+    reliably beat "go to X" pulling a small model toward literal
+    navigation — so this phrase never reaches the model's directive choice
+    at all now, same as the desktop-open and RUN_SKILL-typed-by-user
+    checks a few lines up in handle().
+
+    Returns a RUN_SKILL: directive string (fed straight into
+    _run_skill_reply_from_reply, the same dispatcher a model-emitted
+    RUN_SKILL: line goes through) or None if user_text doesn't match.
+    """
+    if not user_text:
+        return None
+    m = _GOOGLE_WORKSPACE_BARE_NAV_RE.match(user_text.strip())
+    if not m:
+        return None
+    command, args = _GOOGLE_WORKSPACE_BARE_NAV_COMMAND[m.group(1).lower()]
+    return f"RUN_SKILL: google-workspace {json.dumps({'command': command, 'args': args})}"
+
 
 def _show_recent_log(lines=80):
     try:
@@ -5038,6 +5456,42 @@ def _call_with_hard_timeout(fn, *args, timeout=_CLOUD_HARD_TIMEOUT, **kwargs):
         log(f"CLOUD_CALL_ERROR: {getattr(fn, '__name__', fn)}: {e}")
         return None
 
+# 2026-09-03: sensei already had a real cloud fallback chain (below, in
+# ask_cloud) — just entirely hardcoded, no runtime way to see or change
+# it, unlike Hermes' `hermes fallback list/add/remove`. This is the
+# management layer on top of the SAME chain, not a new mechanism.
+# Keep in sync with ask_cloud's fn_map keys — a name here that isn't a
+# real fn_map entry just gets silently dropped by _load_fallback_order,
+# it can't crash the chain or reintroduce a disabled provider.
+_FALLBACK_ORDER_FILE = Path.home() / ".master_ai_fallback_order.json"
+_DEFAULT_FALLBACK_ORDER = ["opencode", "nvidia", "nvidia-nano", "nemotron", "hermes-405b", "openrouter", "deepseek-r1"]
+_VALID_FALLBACK_NAMES = {
+    "opencode", "nvidia", "nvidia-nano", "hermes-405b", "gpt-oss-120b",
+    "nemotron", "qwen3-coder", "deepseek-r1", "openrouter",
+}
+
+
+def _load_fallback_order():
+    """Names only — ask_cloud resolves each against its own fn_map, so a
+    stale/typo'd saved name is just dropped, never a crash. No override
+    file, or an empty/invalid one, falls back to the built-in default
+    chain (same order this always ran before this feature existed)."""
+    try:
+        if _FALLBACK_ORDER_FILE.exists():
+            data = json.loads(_FALLBACK_ORDER_FILE.read_text())
+            if isinstance(data, list):
+                names = [n for n in data if isinstance(n, str) and n in _VALID_FALLBACK_NAMES]
+                if names:
+                    return names
+    except Exception as e:
+        log(f"FALLBACK_ORDER_LOAD_ERROR: {e}")
+    return list(_DEFAULT_FALLBACK_ORDER)
+
+
+def _save_fallback_order(names):
+    _FALLBACK_ORDER_FILE.write_text(json.dumps(names, indent=2))
+
+
 def ask_cloud(messages, provider="opencode"):
     # Privacy guard: if READ injected private content into this turn,
     # block cloud send unless the user explicitly approved via the
@@ -5061,9 +5515,12 @@ def ask_cloud(messages, provider="opencode"):
     # anthropic-direct/cerebras keys are ones he no longer uses; leaving
     # those ask_cloud_* functions defined (unreachable via this dispatch)
     # rather than deleting them, in case of an explicit manual override.
-    # 2026-08-27: restricted to working free lanes (OpenCode, NVIDIA, OpenRouter
-    # nemotron-free) plus paid Claude fallback. Dead providers (Groq/Fireworks/
-    # Cerebras/Gemini) disabled above by key checks.
+    # Deliberately all-free (confirmed with operator 2026-09-03) — no paid
+    # Claude/Anthropic fallback wired in despite ask_cloud_anthropic()
+    # existing as a function; a prior comment here claimed one was
+    # ("...plus paid Claude fallback") but fn_map/fallback_order never
+    # actually included it. Add "anthropic" to fn_map + `fallback add
+    # anthropic` (see _VALID_FALLBACK_NAMES) if that's ever wanted later.
     fn_map = {
         "opencode":     ask_cloud_opencode_free,
         "nvidia":       ask_cloud_nvidia,
@@ -5118,18 +5575,16 @@ def ask_cloud(messages, provider="opencode"):
         _record(r, provider)
         globals()["_LAST_MODEL"] = f"cloud/{provider}"
         return r
-    # 2026-08-27: fallback order — OpenCode (keyless/free) → NVIDIA direct
-    # (own quota) → OpenRouter free Nemotron (550B/120B) → paid Claude fallback.
-    # Dead providers disabled upstream.
-    fallback_order = [
-        ("opencode",     ask_cloud_opencode_free),
-        ("nvidia",       ask_cloud_nvidia),
-        ("nvidia-nano",  ask_cloud_nvidia_nano),
-        ("nemotron",     ask_cloud_openrouter_nemotron),
-        ("hermes-405b",  ask_cloud_openrouter_405b),
-        ("openrouter",   ask_cloud_openrouter),
-        ("deepseek-r1",  ask_cloud_openrouter_r1),
-    ]
+    # 2026-08-27 default order — OpenCode (keyless/free) → NVIDIA direct
+    # (own quota) → OpenRouter free Nemotron (550B/120B) → paid Claude
+    # fallback. Dead providers disabled upstream. 2026-09-03: now reads
+    # from _load_fallback_order() (operator-editable via `fallback
+    # add/remove/reset`) instead of a fixed literal — falls back to this
+    # same default order when no override is set, so behavior is
+    # unchanged unless the operator actually customizes it. Built from
+    # fn_map (already validated real cloud lanes) so an override can
+    # never reference a function that doesn't exist.
+    fallback_order = [(name, fn_map[name]) for name in _load_fallback_order() if name in fn_map]
     seen_fallbacks = set()
     for used_model, fn in fallback_order:
         if _INTERRUPT_EVENT.is_set():
@@ -5149,6 +5604,56 @@ def ask_cloud(messages, provider="opencode"):
             globals()["_LAST_MODEL"] = f"cloud/{used_model}"
             return r
     return None
+
+
+def ask_model_router(messages, model=None, max_tokens=None):
+    """Model/provider-agnostic single-call router.
+
+    Picks the right backend based on the model identifier:
+      - cloud lane keywords or OpenRouter-style slugs ("anthropic/...") → ask_cloud
+      - local Ollama model names → ask_local or direct /api/chat
+
+    Returns (response_text, elapsed_seconds). Never raises; errors become
+    None/empty text and are logged."""
+    t0 = time.time()
+    model = model or PINNED_MODEL or MODELS.get("master")
+    if model:
+        model = MODEL_COMMAND_ALIASES.get(model.lower(), model)
+    mlow = (model or "").lower()
+    text = None
+
+    # Cloud providers: named lanes, OpenRouter catalog slugs, or provider::model prefixes
+    if (mlow in CLOUD_MODEL_NAMES or "/" in (model or "") or
+        mlow.startswith(("nvidia::", "cerebras::", "groq::"))):
+        text = ask_cloud(messages, provider=model)
+    else:
+        # Local Ollama. If max_tokens is set, call directly so we can pass
+        # num_predict; otherwise reuse ask_local.
+        if max_tokens:
+            payload = {
+                "model": model,
+                "messages": messages,
+                "stream": False,
+                "keep_alive": "30m",
+                "options": {"num_ctx": 4096, "num_predict": max_tokens},
+            }
+            try:
+                data = json.dumps(payload).encode()
+                req = urllib.request.Request(
+                    f"{OLLAMA_URL}/api/chat", data=data,
+                    headers={"Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=_local_request_timeout(600)) as resp:
+                    result = json.loads(resp.read())
+                text = result["message"]["content"]
+            except Exception as e:
+                log(f"ROUTER_LOCAL_ERROR: {e}")
+        else:
+            text = ask_local(messages, model=model)
+
+    elapsed = round(time.time() - t0, 2)
+    return text, elapsed
+
 
 # ── STT: WHISPER ──────────────────────────────────────────────
 def record_audio(duration=5):
@@ -7628,6 +8133,8 @@ def show_help():
             ("compact",              "save + summarize + restart with compacted history, on demand"),
             ("load summary",         "inject last session summary into context"),
             ("load session",         "inject full last session transcript"),
+            ("sessions list",        "list saved sessions by date + summary preview"),
+            ("sessions resume <N>",  "inject a specific past session by number"),
             ("clear history",        "wipe conversation context"),
             ("cache",                "show response cache stats"),
             ("clear cache",          "wipe cached responses"),
@@ -7786,6 +8293,8 @@ def show_tips():
     row("memory",          "show all stored facts (injected into every message)")
     row("load summary",    "inject last session's summary into context")
     row("load session",    "inject full last session transcript")
+    row("sessions list",   "list saved sessions by date + summary preview")
+    row("sessions resume <N>", "inject a specific past session by number")
     blank()
 
     section("TASKS")
@@ -9416,6 +9925,114 @@ def show_agent_standards():
             print(f"  {line}")
     print()
 
+# 2026-09-03: sensei had no supply-chain vulnerability checking at all —
+# a real gap vs Hermes' `hermes security` (OSV.dev audit of venv/plugins/
+# MCP servers). requirements.txt has exactly one entry (ddgs) and
+# pyproject.toml has no dependency list either, so neither file is an
+# honest description of what this app actually imports — AST-parsing
+# master_ai.py itself is the only accurate way to know what a security
+# audit should even be scoped to. A bare `pip-audit` with no scoping
+# audits the ENTIRE system Python environment (confirmed live — it
+# surfaced CVEs in packages like VTK that have nothing to do with
+# sensei), which is useless noise for "is sensei's own dependency
+# footprint safe."
+_SECURITY_AUDIT_NAME_ALIASES = {"whisper": "openai-whisper"}
+
+
+def _sensei_third_party_imports():
+    """Top-level third-party import names actually used by master_ai.py —
+    excludes stdlib (sys.stdlib_module_names) and local sibling modules
+    (every *.py file in the same directory, e.g. hooks/sandbox/harvest —
+    real files here, not PyPI packages)."""
+    import ast as _ast
+    tree = _ast.parse(Path(__file__).read_text(errors="replace"))
+    names = set()
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.Import):
+            for alias in node.names:
+                names.add(alias.name.split(".")[0])
+        elif isinstance(node, _ast.ImportFrom):
+            if node.module and node.level == 0:
+                names.add(node.module.split(".")[0])
+    stdlib = sys.stdlib_module_names
+    local_modules = {p.stem for p in Path(__file__).parent.glob("*.py")}
+    return sorted(n for n in names if n not in stdlib and n not in local_modules and not n.startswith("_"))
+
+
+def _resolve_installed_dist(import_name):
+    """Import name -> (installed distribution name, version), or (None,
+    None) if not resolvable. Handles the import-name != PyPI-name case
+    (whisper's distribution is actually "openai-whisper")."""
+    import importlib.metadata as _im
+    for candidate in (_SECURITY_AUDIT_NAME_ALIASES.get(import_name, import_name), import_name):
+        try:
+            return candidate, _im.version(candidate)
+        except _im.PackageNotFoundError:
+            continue
+    return None, None
+
+
+def run_security_audit():
+    """Scope pip-audit to sensei's OWN direct third-party dependencies
+    (via _sensei_third_party_imports + version resolution), not the whole
+    system Python. Audits ONE package per pip-audit invocation rather
+    than one requirements file with all of them — confirmed live that
+    pip-audit tries to build/install each package into a fresh isolated
+    venv to inspect it (even with --no-deps), and openai-whisper fails
+    that build in this environment while the other 4 direct dependencies
+    (ddgs, duckduckgo_search, openai, rich) audit cleanly. A single
+    combined invocation means one package's build failure kills the
+    entire result; per-package means a build-isolation quirk in one
+    dependency doesn't hide real findings on all the others.
+
+    Returns {"ok": bool, "scanned": {name: ver}, "dependencies": [...],
+    "unscannable": {name: reason}}. pip-audit exits 1 (not 0) when it
+    finds vulnerabilities — a normal result, not a tool failure."""
+    third_party = _sensei_third_party_imports()
+    scanned = {}
+    for name in third_party:
+        dist_name, version = _resolve_installed_dist(name)
+        if dist_name and version:
+            scanned[dist_name] = version
+    if not scanned:
+        return {"ok": False, "error": "no resolvable third-party dependencies found"}
+
+    dependencies = []
+    unscannable = {}
+    for dist_name, version in scanned.items():
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False)
+        try:
+            tmp.write(f"{dist_name}=={version}\n")
+            tmp.close()
+            proc = subprocess.run(
+                ["pip-audit", "-r", tmp.name, "--format", "json"],
+                capture_output=True, text=True, timeout=90,
+            )
+        except FileNotFoundError:
+            return {"ok": False, "error": "pip-audit not installed (pip install --user pip-audit)"}
+        except subprocess.TimeoutExpired:
+            unscannable[dist_name] = "pip-audit timed out after 90s"
+            continue
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+        if proc.returncode not in (0, 1):
+            # Package-specific build/isolation failure (e.g. openai-whisper)
+            # — record it and keep going, don't drop the whole audit.
+            reason = (proc.stderr or "").strip().splitlines()
+            unscannable[dist_name] = reason[-1] if reason else "pip-audit failed (no stderr)"
+            continue
+        try:
+            data = json.loads(proc.stdout)
+        except Exception as e:
+            unscannable[dist_name] = f"could not parse pip-audit output: {e}"
+            continue
+        dependencies.extend(data.get("dependencies", []))
+    return {"ok": True, "scanned": scanned, "dependencies": dependencies, "unscannable": unscannable}
+
+
 def show_doctor():
     """Compact live health card for real use: URLs, services, mode, next fixes."""
     warnings = []
@@ -10861,6 +11478,12 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
     runterm_cmds = [c for c in (_extract_directive(l, "RUNTERM")
                     for l in lines if _real_directive(l, "RUNTERM")) if c]
 
+    # 2026-09-03: SUBAGENT: <goal> — model can delegate a focused task to
+    # the internal delegate_runner, which runs isolated in a temp workdir
+    # and returns a structured result back into the conversation.
+    subagent_goals = [g for g in (_extract_directive(l, "SUBAGENT")
+                    for l in lines if _real_directive(l, "SUBAGENT")) if g]
+
     # 2026-08-29: SEARCH: <query> — lightweight live-info lookup via
     # web_search(), no Chrome/tab required. Added because the model's only
     # taught tool for "find out X" was BROWSER_NAV — it kept opening a
@@ -11938,6 +12561,42 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         print(_pill("DONE", f"{BG}{task}{X}{D}{suffix}{X}"))
         log(f"AUTO-MARK-DONE: project={proj!r} task={task!r} flipped={flipped}")
 
+    # 2026-09-03: dispatch SUBAGENT: goals before final return so delegated
+    # work feeds back into the conversation like any other tool result.
+    if subagent_goals:
+        sub_feedback = []
+        try:
+            import delegate_runner as _dr
+            for goal in subagent_goals[:3]:  # cap parallel-like bursts
+                print(f"  {BC}[subagent: {goal[:60]}...]{X}")
+                res = _dr.delegate_task(
+                    goal=goal,
+                    context={"cwd": str(Path.cwd()), "mode": MODE},
+                    max_turns=10,
+                    timeout_s=300,
+                )
+                summary = res.get("summary", "no summary")
+                ok = res.get("ok", False)
+                sub_feedback.append(
+                    f"[SUBAGENT RESULT] goal={goal!r} ok={ok}\n{summary}\n"
+                    f"workdir: {res.get('workdir', '')}\n"
+                    f"stdout:\n{res.get('stdout', '')[:2000]}"
+                )
+        except Exception as e:
+            sub_feedback.append(f"[SUBAGENT ERROR] {e}")
+        if sub_feedback:
+            history.append({
+                "role": "user",
+                "content": (
+                    "\n\n".join(sub_feedback)
+                    + "\n\nThe subagent results above are now part of the context. "
+                    "If the task is complete, answer concisely. If more work is needed, "
+                    "emit the next directive."
+                ),
+            })
+            log(f"CHAIN_SUBAGENT_FEEDBACK: {len(sub_feedback)} subagent result(s)")
+            return None
+
     return reply
 
 def execute_approved_plan(original_request, approved_plan, history):
@@ -12698,6 +13357,32 @@ def handle(user_text, history, image_path=None, context_policy=None):
         process_reply(_direct_skill_reply, history, streamed=False, continue_after_tools=True)
         history.append({"role": "assistant", "content": _direct_skill_reply})
         return _direct_skill_reply
+    # ── Deterministic "go to/open Google Drive/Gmail/Calendar" catch ──────
+    # Ahead of the desktop-open catch below on purpose: "open google drive"
+    # should hit this, not fall through to a bare browser/xdg-open launch.
+    _gw_bare_nav_directive = _try_google_workspace_bare_nav_intent(user_text)
+    if _gw_bare_nav_directive is not None:
+        _gw_reply = _run_skill_reply_from_reply(_gw_bare_nav_directive, history)
+        if _gw_reply is not None:
+            print(f"\n  {BC}[thinking: skill dispatch]{X}")
+            print(f"  {M}Sensei:{X} {_gw_reply}\n", flush=True)
+            history.append({"role": "user", "content": user_text})
+            process_reply(_gw_reply, history, streamed=False, continue_after_tools=True)
+            history.append({"role": "assistant", "content": _gw_reply})
+            return _gw_reply
+    # ── "is X installed?" — short-circuits when found=True (see function
+    # docstring for why inject-only wasn't enough); otherwise injects
+    # grounding and falls through to the normal model call ─────────────
+    _app_installed_reply = _try_ground_app_installed_intent(user_text, history)
+    if _app_installed_reply is not None:
+        print(f"\n  {BC}[thinking: installed-app check]{X}")
+        print(f"  {M}Sensei:{X} {_app_installed_reply}\n", flush=True)
+        history.append({"role": "user", "content": user_text})
+        history.append({"role": "assistant", "content": _app_installed_reply})
+        return _app_installed_reply
+    # ── Ground "download/install X" in a real search before the model
+    # answers — does not return early, just injects context ─────────────
+    _try_ground_download_install_intent(user_text, history)
     # ── Deterministic "open <desktop app/file>" catch — no terminal wrapper ─
     _desktop_open = _try_desktop_open_intent(user_text)
     if _desktop_open:
@@ -13420,11 +14105,15 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "\"skip_drive_fetches\": true, \"skip_inbox\": true, \"max_applications\": 5}\n"
         "Dispatching the apply-job-session skill against ZipRecruiter for HVAC install in Indianapolis.\n\n"
         "GOOGLE WORKSPACE INTENT — when the user asks about Gmail (read/search/send/reply), "
-        "Google Calendar (list/create events), Google Drive (search/upload), Google Sheets "
-        "(read/update), Google Docs (read), or Google Contacts, emit a single RUN_SKILL "
+        "Google Calendar (list/create events), Google Drive (search/browse/upload), Google "
+        "Sheets (read/update), Google Docs (read), or Google Contacts, emit a single RUN_SKILL "
         "directive — do NOT try to hand-roll this with RUN:/curl or BROWSER_NAV to "
-        "mail.google.com. The skill wraps an already-authenticated Google API client "
-        "(~/.master_ai_skills/google-workspace/scripts/google_token.json).\n"
+        "mail.google.com or drive.google.com. This applies even to a bare 'go to/open Google "
+        "Drive/Gmail/Calendar' with no further detail — that's still an information request "
+        "(what's in there), not a request to just look at a browser tab; use drive.search "
+        "{query: \"\", max: 20} / gmail.search {query: \"\", max: 10} / calendar.list {max: 10} "
+        "for a bare 'go to X' with nothing more specific asked. The skill wraps an already-"
+        "authenticated Google API client (~/.hermes/google_token.json).\n"
         "Shape: RUN_SKILL: google-workspace {\"command\": \"<cmd>\", \"args\": {...}}\n"
         "Commands: gmail.search {query, max}, gmail.get {message_id}, gmail.send "
         "{to, subject, body, html?}, gmail.reply {message_id, body}, calendar.list {max}, "
@@ -13435,6 +14124,10 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "Reply:\nRUN_SKILL: google-workspace {\"command\": \"gmail.search\", \"args\": "
         "{\"query\": \"is:unread\", \"max\": 10}}\n"
         "Checking unread Gmail via the google-workspace skill.\n"
+        "Example — User: \"go to google drive\" (bare, no specifics)\n"
+        "Reply:\nRUN_SKILL: google-workspace {\"command\": \"drive.search\", \"args\": "
+        "{\"query\": \"\", \"max\": 20}}\n"
+        "Listing what's in Google Drive via the google-workspace skill.\n"
         "If the skill result shows NOT_AUTHENTICATED, tell the user to reauthorize — "
         "don't retry silently.\n"
         "SEND_EMAIL: vs gmail.send — \"send an email to X\" is ambiguous between "
@@ -14369,6 +15062,52 @@ def handle_save_refresh(history):
     sys.stdout.flush()
     os.execvp(sys.executable, [sys.executable, str(Path.home() / "scripts/master_ai.py")])
 
+def _sessions_list_entries(limit=30):
+    """List saved sessions, newest first, excluding the current one — the
+    data `load session`/`load summary` already write (CHATS_DIR/*.chat +
+    *.summary, one pair per session, named by that session's start
+    timestamp) but never expose beyond "the single most recent one".
+    Each entry gets a human date (parsed from the chat's own first
+    bracketed timestamp, falling back to the summary's) and a one-line
+    preview pulled from the summary's first bullet — same shape as
+    Hermes' own `sessions list` (numbered, title/preview, excludes
+    current), scoped down to sensei's flat-file storage instead of a
+    session database."""
+    chats = sorted(CHATS_DIR.glob("*.chat"), reverse=True)
+    entries = []
+    for chat_path in chats:
+        ts = chat_path.stem
+        if ts == str(SESSION_TS):
+            continue  # never list the session you're already in
+        summary_path = CHATS_DIR / f"{ts}.summary"
+        date_str, preview = "", ""
+        try:
+            first_line = chat_path.read_text(errors="replace").splitlines()[0]
+            m = re.match(r"^\[(.+?)\]", first_line)
+            if m:
+                date_str = m.group(1)
+        except Exception:
+            pass
+        if summary_path.exists():
+            try:
+                lines = summary_path.read_text(errors="replace").splitlines()
+                if not date_str and lines:
+                    date_str = lines[0].strip("[]")
+                bullet = next((l.strip() for l in lines if l.lstrip().startswith("•")), "")
+                preview = re.sub(r"^•\s*", "", bullet)[:90]
+            except Exception:
+                pass
+        entries.append({
+            "ts": ts,
+            "chat_path": chat_path,
+            "date": _normalize_visible_time(date_str) if date_str else ts,
+            "preview": preview,
+        })
+        if len(entries) >= limit:
+            break
+    return entries
+
+
 def show_last_summary():
     """Compact 1-line session note. 'load summary' reveals the full bullets."""
     try:
@@ -14856,6 +15595,50 @@ def main():
                 print(f"  {D}example: schedule doctor 02:00 daily{X}")
             continue
 
+        # ── Cloud fallback chain management (2026-09-03) ────────────────
+        # Management layer on the fallback chain ask_cloud() already runs
+        # (see _load_fallback_order docstring) — matches Hermes' own
+        # `hermes fallback list/add/remove` naming/shape.
+        if lo in ("fallback", "fallback list"):
+            order = _load_fallback_order()
+            custom = _FALLBACK_ORDER_FILE.exists()
+            print(f"\n  {BOLD}Cloud fallback chain{X} {D}({'custom' if custom else 'default'}){X}:")
+            for i, name in enumerate(order, 1):
+                print(f"  {C}{i}.{X} {name}")
+            print(f"\n  {D}Valid names: {', '.join(sorted(_VALID_FALLBACK_NAMES))}{X}")
+            print(f"  {D}'fallback add <name>' · 'fallback remove <name>' · 'fallback reset'{X}\n")
+            continue
+
+        if lo.startswith("fallback add"):
+            name = cmd.split(None, 2)[2].strip() if len(cmd.split(None, 2)) > 2 else ""
+            if name not in _VALID_FALLBACK_NAMES:
+                print(f"  {Y}unknown provider {name!r}. Valid: {', '.join(sorted(_VALID_FALLBACK_NAMES))}{X}")
+            else:
+                order = _load_fallback_order()
+                if name in order:
+                    print(f"  {Y}{name} is already in the chain (position {order.index(name)+1}){X}")
+                else:
+                    order.append(name)
+                    _save_fallback_order(order)
+                    print(f"  {G}added {name} → chain is now: {', '.join(order)}{X}")
+            continue
+
+        if lo.startswith("fallback remove"):
+            name = cmd.split(None, 2)[2].strip() if len(cmd.split(None, 2)) > 2 else ""
+            order = _load_fallback_order()
+            if name not in order:
+                print(f"  {Y}{name!r} isn't in the current chain — see 'fallback list'{X}")
+            else:
+                order = [n for n in order if n != name]
+                _save_fallback_order(order)
+                print(f"  {G}removed {name} → chain is now: {', '.join(order) or '(empty)'}{X}")
+            continue
+
+        if lo == "fallback reset":
+            _FALLBACK_ORDER_FILE.unlink(missing_ok=True)
+            print(f"  {G}reset to default chain: {', '.join(_DEFAULT_FALLBACK_ORDER)}{X}")
+            continue
+
         # ── MCP servers slash commands (Sensei as MCP client) ──
         # 2026-09-01. Sub-commands match the hooks/agents pattern:
         #   mcp [list]                    — show catalog + enabled state
@@ -14935,6 +15718,75 @@ def main():
                         print(f"  {D}example: skill install hermes research/web-search-ddgr{X}")
                     else:
                         print(f"  {_sk.install(_rest[0], _rest[1])}")
+                elif _sub == "run":
+                    # Reuses _parse_run_skill_payload — the same parser the
+                    # RUN_SKILL: model directive uses (_run_skill_specs_from_reply)
+                    # — so `skill run <name> <json>` and a model's RUN_SKILL:
+                    # line accept identical syntax. Re-derived from the raw
+                    # `cmd` text (not the pre-split _rest) so JSON payload
+                    # whitespace survives intact.
+                    _m = re.match(r'^\s*skill\s+run\s+(\S+)\s*(.*)$', cmd, re.IGNORECASE | re.DOTALL)
+                    if not _m:
+                        print(f"  {W}usage: skill run <name> [<json-params>|<session-id>]{X}")
+                        print(f"  {D}example: skill run google-workspace {{\"command\": \"gmail.search\", \"args\": {{\"query\": \"is:unread\", \"max\": 5}}}}{X}")
+                    else:
+                        try:
+                            _spec = _parse_run_skill_payload(f"{_m.group(1)} {_m.group(2)}".strip())
+                        except Exception as e:
+                            print(f"  {W}invalid skill run payload: {e}{X}")
+                            _spec = None
+                        if _spec is None:
+                            print(f"  {W}could not parse skill name/params — usage: skill run <name> [<json-params>]{X}")
+                        else:
+                            try:
+                                import skill_runtime as _sr
+                                _state = _sr.run_skill(
+                                    _spec["name"], _spec.get("params") or {},
+                                    session_id=_spec.get("session_id"),
+                                    resume=bool(_spec.get("resume") and _spec.get("session_id")),
+                                )
+                                log(f"SKILL_REPL_RUN: {_state.skill_name} session={_state.session_id} step={_state.current_step}")
+                                print(f"  {_skill_state_reply(_state, history)}")
+                            except Exception as e:
+                                print(f"  {W}skill run error: {type(e).__name__}: {e}{X}")
+                elif _sub == "resume":
+                    # Distinct from `skill run <name> <session-id>` (same
+                    # effect) only in that it validates a session id is
+                    # actually given and reports a clear usage error if not.
+                    # Handles the INTERRUPT->next-step advance itself — per
+                    # skill_runtime.run_skill()'s own contract, resuming an
+                    # INTERRUPTed session without first moving current_step
+                    # off INTERRUPT just re-enters INTERRUPT and does nothing.
+                    if not _rest:
+                        print(f"  {W}usage: skill resume <name> <session-id>{X}")
+                    else:
+                        _rname = _normalize_skill_name(_rest[0])
+                        _rsession = _rest[1] if len(_rest) > 1 else ""
+                        if not _rname or not _rsession:
+                            print(f"  {W}usage: skill resume <name> <session-id>{X}")
+                        else:
+                            try:
+                                import skill_runtime as _sr
+                                _state0 = _sr.load_state(_rname, _rsession)
+                                if _state0.done or _state0.aborted:
+                                    print(f"  {Y}session already finished (done={_state0.done} aborted={_state0.aborted}){X}")
+                                else:
+                                    _pending = (_state0.data or {}).get("_pending_step")
+                                    if _state0.current_step == _sr.INTERRUPT:
+                                        if not _pending:
+                                            print(f"  {W}recipe never set _pending_step on interrupt — cannot auto-resume{X}")
+                                            _state0 = None
+                                        else:
+                                            _state0.current_step = _pending
+                                    if _state0 is not None:
+                                        _sr.save_state(_state0)
+                                        _state = _sr.run_skill(_state0.skill_name, _state0.params, session_id=_state0.session_id, resume=True)
+                                        log(f"SKILL_REPL_RESUME: {_state.skill_name} session={_state.session_id} step={_state.current_step}")
+                                        print(f"  {_skill_state_reply(_state, history)}")
+                            except _sr.SkillNotFound as e:
+                                print(f"  {W}no such session: {e}{X}")
+                            except Exception as e:
+                                print(f"  {W}skill resume error: {type(e).__name__}: {e}{X}")
                 elif _sub == "audit":
                     if not _rest:
                         print(f"  {W}usage: skill audit <name>{X}")
@@ -14959,7 +15811,7 @@ def main():
                             print(f"  {G if _ok else Y}improve edit "
                                   f"{'applied' if _ok else 'not applied'}{X}")
                 else:
-                    print(f"  {W}usage: skill [browse [source]|install <source> <id>|audit <name>|improve <name>]{X}")
+                    print(f"  {W}usage: skill [browse [source]|install <source> <id>|run <name> [json]|resume <name> <session-id>|audit <name>|improve <name>]{X}")
             except Exception as e:
                 print(f"  {W}skill command error: {e}{X}\n")
             continue
@@ -14981,6 +15833,37 @@ def main():
         # ── Agent standards — candid readiness/gap report ──────
         if lo in ("standards", "agent standards", "anthropic standards"):
             show_agent_standards()
+            continue
+
+        # ── Supply-chain security audit (2026-09-03) ────────────────────
+        # Matches Hermes' `hermes security` naming — scoped to sensei's
+        # own direct dependencies (see run_security_audit docstring for
+        # why that scoping matters), not the whole system Python.
+        if lo in ("security", "security audit"):
+            print(f"  {C}Scanning sensei's own dependencies (not the whole system)...{X}")
+            result = run_security_audit()
+            if not result["ok"]:
+                print(f"  {R}audit failed: {result['error']}{X}")
+            else:
+                print(f"  {D}Scanned: {', '.join(f'{k} {v}' for k, v in result['scanned'].items())}{X}\n")
+                any_vulns = False
+                for dep in result["dependencies"]:
+                    vulns = dep.get("vulns", [])
+                    if vulns:
+                        any_vulns = True
+                        print(f"  {R}⚠ {dep['name']} {dep['version']} — {len(vulns)} known vuln(s){X}")
+                        for v in vulns[:3]:
+                            fix = ", ".join(v.get("fix_versions", [])) or "no fix yet"
+                            print(f"      {D}{v['id']} — fix: {fix}{X}")
+                    else:
+                        print(f"  {G}✓ {dep['name']} {dep['version']} — clean{X}")
+                if not any_vulns:
+                    print(f"\n  {G}No known vulnerabilities found.{X}")
+                unscannable = result.get("unscannable") or {}
+                if unscannable:
+                    print(f"\n  {Y}Could not scan (build/isolation issue, not a vuln finding):{X}")
+                    for name, reason in unscannable.items():
+                        print(f"  {Y}?{X} {name} — {D}{reason[:120]}{X}")
             continue
 
         # ── Tips screen ───────────────────────────────────────
@@ -15442,6 +16325,49 @@ def main():
                     _request_auto_save(history)
             except Exception as e:
                 print(f"  {R}❌ {e}{X}")
+            continue
+
+        # ── Named session list/resume (2026-09-03) ──────────────────────
+        # `load session`/`load summary` above only ever reach the single
+        # most recent .chat/.summary pair — there was no way to reach any
+        # OTHER past session by name/date/topic despite every one of them
+        # already being saved to CHATS_DIR. Same shape as Hermes' own
+        # `sessions list`/`sessions resume` (checked hermes_cli/
+        # session_listing.py for the convention): numbered, title/preview,
+        # excludes the current session, explicit "resume by number" hint.
+        if lo in ("sessions", "sessions list"):
+            entries = _sessions_list_entries()
+            if not entries:
+                print(f"  {Y}No other saved sessions found.{X}")
+            else:
+                print(f"\n  {BOLD}Saved sessions ({len(entries)}):{X}")
+                for i, e in enumerate(entries, 1):
+                    preview = e["preview"] or "(no summary yet)"
+                    print(f"  {C}{i:>2}.{X} {e['date']}  {D}{preview}{X}")
+                print(f"\n  {D}Resume: 'sessions resume <number>'{X}\n")
+            continue
+
+        if lo.startswith("sessions resume"):
+            arg = cmd.split(None, 2)[2].strip() if len(cmd.split(None, 2)) > 2 else ""
+            entries = _sessions_list_entries()
+            target = None
+            if arg.isdigit():
+                idx = int(arg) - 1
+                if 0 <= idx < len(entries):
+                    target = entries[idx]
+            else:
+                target = next((e for e in entries if e["ts"] == arg), None)
+            if not target:
+                print(f"  {Y}usage: sessions resume <number>  (see 'sessions list'){X}")
+            else:
+                try:
+                    content = target["chat_path"].read_text(errors="replace")[-6000:]
+                    history.append({"role": "user", "content": f"[Resumed session from {target['date']}]\n{content}"})
+                    history.append({"role": "assistant", "content": f"Loaded the session from {target['date']} — I have that context now. What would you like to continue?"})
+                    print(f"  {G}✅ Resumed session from {target['date']}.{X}")
+                    _request_auto_save(history)
+                except Exception as e:
+                    print(f"  {R}❌ {e}{X}")
             continue
 
         # ── Scroll commands (word-based — the ONE way to scroll in TUI mode) ─
@@ -16037,6 +16963,36 @@ def main():
                     print(f"  {W}usage: agents [list|inspect <name>|run <name> <task>]{X}\n")
             except Exception as e:
                 print(f"  {W}agents command error: {e}{X}\n")
+            continue
+
+        # P1.8 delegation runner — isolated subagent spawn inside Master AI CLI.
+        #   delegate <goal...>  — run a bounded delegated task in a temp workdir
+        if lo == "delegate" or lo.startswith("delegate "):
+            try:
+                import delegate_runner as _dr
+                goal = cmd[len("delegate"):].strip()
+                if not goal:
+                    print(f"  {W}usage: delegate <goal>{X}\n")
+                    continue
+                print(f"\n  {BC}[delegating: {goal[:60]}...]{X}\n")
+                result = _dr.delegate_task(
+                    goal=goal,
+                    context={"cwd": str(Path.cwd()), "mode": MODE},
+                    max_turns=10,
+                    timeout_s=300,
+                )
+                import json as _json
+                print(f"  {C}Delegation result:{X}")
+                print(f"    ok:         {G if result['ok'] else R}{result['ok']}{X}")
+                print(f"    summary:    {W}{result.get('summary', '')}{X}")
+                print(f"    workdir:    {result.get('workdir', '')}{X}")
+                if result.get("stderr", "").strip():
+                    print(f"  {Y}stderr:{X}\n{result['stderr'][:500]}")
+                print()
+            except Exception as e:
+                import traceback
+                print(f"  {R}Delegation error: {e}{X}\n")
+                traceback.print_exc()
             continue
 
         # P1.4 hooks REPL — Codex flagged 2026-05-11 that the hooks
