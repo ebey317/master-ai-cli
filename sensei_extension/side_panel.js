@@ -4,7 +4,7 @@ const DEFAULT_CONFIG = {
   mode: "review",
   sessionId: "",
   actionPermissionMode: "ask",
-  approvedOrigins: [],
+  approvedOrigins: ["https://www.paypal.com"],
   blockedOrigins: [
     "https://accounts.google.com",
     "https://pay.google.com",
@@ -30,6 +30,8 @@ const AX_TREE_TEXT_LIMIT = 14 * 1024;
 const PAGE_STABLE_WAIT_MS = 650;
 const PAGE_CONTEXT_PROMPT_RE =
   /\b(application|apply|browser|button|click|current\s+(page|tab|site)|drive|folder|field|fill|form|indeed|job|link|page|read|resume|résumé|screen|screenshot|search|select|selected|selection|simplify|tab|this|upload|visible|website|ziprecruiter)\b/i;
+const SMALL_TALK_RE =
+  /^\s*(hi+|hello+|hey|good\s+(morning|afternoon|evening|night)|what'?s?\s+up|how\s+(are|is|was)|nice\s+to\s+meet|thank\s*(you|s)|thanks|ok+|okay|nice|cool|great|good|bye|see\s+ya|later|yes+|no+|maybe)(\s+.*)?[.!?…]*\s*(\p{Emoji_Presentation}*)\s*$/iu;
 const READONLY_BROWSER_KINDS = new Set([
   "BROWSER_READ",
   "BROWSER_READ_PAGE",
@@ -424,7 +426,12 @@ function formatMeta(data, timings = {}) {
 }
 
 function promptNeedsPageContext(prompt) {
+  if (SMALL_TALK_RE.test(String(prompt || ""))) return false;
   return PAGE_CONTEXT_PROMPT_RE.test(String(prompt || ""));
+}
+
+function isSmallTalk(prompt) {
+  return SMALL_TALK_RE.test(String(prompt || ""));
 }
 
 async function activeTab() {
@@ -1107,6 +1114,13 @@ async function contentScriptPageContext(tab, options, timings = {}) {
 async function pageContext(prompt = "", timings = {}) {
   const tab = await timed(timings, "tab", activeTab);
   if (!tab?.id) return {};
+  // NEVER inject/read chrome://, edge://, about:*, or file:// pages. They
+  // throw "Cannot access a chrome:// URL" and poison the model with a broken
+  // page_context. A bare URL/title fallback is enough for the model to know
+  // it is not on a real web page.
+  if (!canInjectIntoTab(tab)) {
+    return { url: tab.url || "", title: tab.title || "" };
+  }
   const fallback = { url: tab.url || "", title: tab.title || "" };
   const includeVisibleText = promptNeedsPageContext(prompt);
   const key = contextCacheKey(tab, includeVisibleText);
@@ -1114,7 +1128,7 @@ async function pageContext(prompt = "", timings = {}) {
     return state.contextCache.value;
   }
 
-  if (!includeVisibleText || !canInjectIntoTab(tab)) {
+  if (!includeVisibleText) {
     state.contextCache = { key, tabId: tab.id, ts: performance.now(), value: fallback };
     return fallback;
   }
@@ -1610,8 +1624,15 @@ function originBlockedReason(originOrUrl = "") {
     try { return new URL(origin.startsWith("http") ? origin : `https://${origin}`).hostname; }
     catch (_err) { return raw; }
   })().toLowerCase();
+  // Approved origins bypass classifier-based blocks entirely.
+  const approved = state.config.approvedOrigins || [];
+  if (approved.some((entry) => {
+    const clean = String(entry).replace(/^https?:\/\//, "");
+    return origin === entry || origin.endsWith(`.${clean}`) || host.endsWith(`.${clean}`) || host === clean;
+  })) {
+    return "";
+  }
   const categoryPatterns = [
-    ["financial", /\b(bank|banking|paypal|stripe|venmo|cashapp|coinbase|robinhood|fidelity|vanguard|schwab|chase|wellsfargo|capitalone|amex|visa|mastercard)\b/i],
     ["adult", /\b(adult|porn|xxx|onlyfans)\b/i],
     ["piracy", /\b(torrent|pirate|crack|warez)\b/i],
   ];
@@ -2767,7 +2788,7 @@ async function sendPrompt() {
       mode: $("#modeSelect").value,
       source: "chrome_extension",
       session_id: state.config.sessionId,
-      page_context: ctx,
+      page_context: isSmallTalk(prompt) ? {} : ctx,
       client_timings: { ...timings }
     };
     // Phase 2.1: surface the configured local résumé path to the model so it
@@ -2844,7 +2865,7 @@ function startLoop(data) {
   // belt-and-suspenders. Pattern is intentionally narrow: short replies
   // that match a small whitelist of pure-ack tokens with no surrounding
   // sentence structure. Anything longer or more substantive bypasses.
-  const _ackPattern = /^\s*(ok|okay|nice|cool|thanks|thank you|got it|good|great|sure|fine|alright|yeah|yep|nope|no thanks|sounds good|perfect|all good|no problem|np|done|👍|✅)[\s.!]*$/i;
+  const _ackPattern = /^\s*(ok|okay|nice|cool|thanks|thank you|got it|good|great|sure|fine|alright|yeah|yep|nope|no thanks|sounds good|perfect|all good|no problem|np|done|👍🏿|✅)[\s.!]*$/i;
   const _replyText = (data && typeof data.reply === "string") ? data.reply.trim() : "";
   const _replyIsAck = _replyText.length > 0 && _replyText.length < 40 && _ackPattern.test(_replyText);
   const _noActionsQueued = !data || !data.actions || data.actions.length === 0;
@@ -3410,6 +3431,26 @@ init().catch((err) => appendError(err.message));
 const MCP_POLL_INTERVAL_MS = 2000;
 const MCP_DEFAULT_SESSION = "mcp-default";
 
+// 2026-09-03: BROWSER_TAB_CREATE (below) always registered its new tab
+// into the session group via addTabToSessionGroup(); every other action
+// that resolves activeTab() did not, so any of them landing on a tab
+// outside the group left that tab untracked (tab_list showed it
+// in_session:false) without the action itself failing or looking wrong —
+// confirmed live: "BROWSER_NAV: https://www.netflix.com" reported
+// {"ok": true, "navigated": ...} and the page loaded correctly, but the
+// tab it navigated was never grouped. Same class of bug as the two
+// display-contract bugs found in the google-workspace skill this same
+// session (a real success silently missing a side effect a caller
+// depends on) — same fix shape too: make the missing step happen instead
+// of hoping every call site remembers to ask for it.
+async function ensureTabInSession(tab) {
+  if (!tab?.id) return;
+  const sessionGroupId = state.sessionTabGroup?.groupId || null;
+  if (tab.groupId !== sessionGroupId) {
+    await addTabToSessionGroup(tab.id).catch(() => {});
+  }
+}
+
 async function dispatchMcpAction(action) {
   const kind = String(action.kind || "").toUpperCase();
   try {
@@ -3455,6 +3496,7 @@ async function dispatchMcpAction(action) {
     if (kind === "BROWSER_SCREENSHOT") {
       const tab = await activeTab().catch(() => null);
       if (!tab) return { ok: false, error: "no active tab" };
+      await ensureTabInSession(tab);
       const capture = await chrome.runtime.sendMessage({
         type: "SENSEI_CAPTURE_VISIBLE_TAB", windowId: tab.windowId,
       });
@@ -3464,6 +3506,7 @@ async function dispatchMcpAction(action) {
     if (kind === "BROWSER_GET_DOM") {
       const tab = await activeTab().catch(() => null);
       if (!tab?.id) return { ok: false, error: "no active tab" };
+      await ensureTabInSession(tab);
       const selector = String(action.target || action.selector || "");
       const [frame] = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
@@ -3482,6 +3525,7 @@ async function dispatchMcpAction(action) {
     if (kind === "BROWSER_JS") {
       const tab = await activeTab().catch(() => null);
       if (!tab?.id) return { ok: false, error: "no active tab" };
+      await ensureTabInSession(tab);
       const command = String(action.command || "").toLowerCase();
       const allFrames = action.all_frames !== false;
       // Static, CSP-safe JS runner. We pass a fixed function body and an options
@@ -3569,9 +3613,11 @@ async function dispatchMcpAction(action) {
       }
     }
     // All other BROWSER_* actions route through the existing content-script path
+    // (this is where BROWSER_NAV lands)
     if (kind.startsWith("BROWSER_")) {
       const tab = await activeTab().catch(() => null);
       if (!tab?.id) return { ok: false, error: "no active tab" };
+      await ensureTabInSession(tab);
       const result = await Promise.race([
         sendToContent(tab, action, {}),
         new Promise((_, rej) => setTimeout(() => rej(new Error("sendToContent timeout")), 15000)),
