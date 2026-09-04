@@ -5819,6 +5819,31 @@ def save_tasks(tasks):
 def active_task_count():
     return sum(1 for t in load_tasks() if not t.get("done", False))
 
+def _build_task_list_context():
+    """Fresh-from-disk task list grounding, shared by every turn that needs it.
+
+    2026-09-03: the 2026-09-02 fix below only ran inside handle()'s
+    tool_result_feedback continuation branch (mid-way through a tool chain
+    within one turn). A brand-new user message with no tool call yet this
+    turn -- e.g. "work through your task list" as the very first thing said
+    -- never reached that branch, so the model had zero grounding and
+    reproducibly hallucinated "you haven't set any tasks" while
+    active_task_count() (the TASKS:N header) showed real pending tasks on
+    disk. Factored out so both the continuation branch and a fresh turn's
+    auto-injected context call the exact same ground-truth read.
+    """
+    live_tasks = load_tasks()
+    if not live_tasks:
+        return ""
+    pending = [t.get("text", "") for t in live_tasks if not t.get("done")]
+    done = sum(1 for t in live_tasks if t.get("done"))
+    return (
+        f"\n\n[Current task list — {done}/{len(live_tasks)} done, "
+        f"read fresh from disk, this is the real state, not your memory of "
+        f"an earlier turn]\n"
+        + ("\n".join(f"- {p}" for p in pending[:15]) if pending else "All tasks done.")
+    )
+
 def show_tasks():
     tasks = load_tasks()
     if not tasks:
@@ -12508,18 +12533,11 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         # Fix: pull load_tasks() FRESH off disk and append it to every
         # continuation turn, not just the ones where this turn's own reply
         # touched TASK_ADD/TASK_DONE -- ground truth every turn, never
-        # memory of an earlier turn's ground truth.
-        _live_tasks = load_tasks()
-        _task_context = ""
-        if _live_tasks:
-            _pend = [t.get("text", "") for t in _live_tasks if not t.get("done")]
-            _fin = sum(1 for t in _live_tasks if t.get("done"))
-            _task_context = (
-                f"\n\n[Current task list — {_fin}/{len(_live_tasks)} done, "
-                f"read fresh from disk, this is the real state, not your memory of "
-                f"an earlier turn]\n"
-                + ("\n".join(f"- {p}" for p in _pend[:15]) if _pend else "All tasks done.")
-            )
+        # memory of an earlier turn's ground truth. Now shared with a fresh
+        # turn's own injection point (_build_task_list_context, see 2026-09-03
+        # note there) -- this branch alone didn't cover a message that starts
+        # a turn instead of continuing one.
+        _task_context = _build_task_list_context()
         history.append({
             "role": "user",
             "content": (
@@ -13413,6 +13431,13 @@ def handle(user_text, history, image_path=None, context_policy=None):
     # location so its meta can short-circuit big-file-no-symbol cases to ASK and
     # bias whole-file escape requests to cloud (heavy local CPU prefill cost).
     inject_ctx, ctx_meta = auto_inject_context(user_text, enabled=(not suppress_auto_context))
+    # 2026-09-03: reproduced live -- "work through your task list" as a fresh
+    # turn (no tool call yet this turn) never saw the real task list; only
+    # the tool_result_feedback continuation branch had this grounding. Same
+    # helper, same ground-truth read, so a fresh turn and a continuation
+    # turn can never disagree about what's actually pending. See
+    # _build_task_list_context()'s docstring for the full story.
+    inject_ctx = (inject_ctx or "") + _build_task_list_context()
 
     # ── Slicer guardrail: big file mentioned, no symbol matched, nothing useful
     # to feed the model. Ask deterministically; never feed a marker-only context
