@@ -8673,13 +8673,46 @@ _AGENT_POLICY_COMMAND_RULES = (
         ".aws/credentials", ".config/gcloud", ".ssh/id_rsa", ".ssh/id_ed25519",
     )),
     ("malware or persistence", (
-        "nc -e", "ncat -e", "bash -i >&", "/dev/tcp/", "crontab -l",
+        "nc -e", "ncat -e", "bash -i >&", "/dev/tcp/",
+        "crontab", "/etc/cron", "/var/spool/cron",
         "authorized_keys", "systemctl enable --now", "nohup",
     )),
     ("scaled abuse", (
         "hping3", "slowloris", "masscan", "hydra ", "medusa ",
     )),
 )
+
+# Cron is only a persistence signal when the command WRITES a schedule.
+# Reading your own crontab (`crontab -l`, `ls /etc/cron.d`, `which crontab`)
+# is introspection, not persistence, and must not trip the malware gate.
+_CRON_INSTALL_REDIRECT_RE = re.compile(
+    r">>?\s*['\"]?\S*(?:/etc/crontab|/etc/cron\.[a-z]+|/var/spool/cron)"
+)
+# `crontab` at command position (start, after a separator, or behind sudo/env),
+# capturing its argument list up to the next separator.
+_CRONTAB_INVOCATION_RE = re.compile(
+    r"(?:^|[;&|\n]|\$\(|`)\s*(?:sudo\s+|env\s+)*crontab\b([^;&|\n]*)"
+)
+
+def _cron_persistence_write(low):
+    """True only for cron commands that install/modify a schedule.
+
+    Read-only shapes (`crontab -l`, `crontab -u user -l`, `ls /etc/cron.d`,
+    `cat /etc/crontab`, `which crontab`) return False.
+    """
+    if not low or "cron" not in low:
+        return False
+    if _CRON_INSTALL_REDIRECT_RE.search(low):
+        return True
+    for match in _CRONTAB_INVOCATION_RE.finditer(low):
+        args = match.group(1)
+        # `-l` anywhere in the flags means list; that is a read.
+        if re.search(r"(?:^|\s)-[a-z]*l", args):
+            continue
+        # Everything else (`-e`, `-r`, `crontab -`, `crontab file`, bare
+        # `crontab` reading stdin) writes the user's schedule.
+        return True
+    return False
 
 _AGENT_POLICY_EXFIL_TOKENS = (
     "curl ", "wget ", "scp ", "rsync ", "nc ", "ncat ", "socat ", "ftp ",
@@ -8711,8 +8744,11 @@ def _agent_policy_issue_for_command(cmd):
                 return f"policy block: sensitive credential material access ({matched[0]})"
             continue
         if label == "malware or persistence":
-            if any(p in low for p in ("reverse", "payload", "shell", "cron", "authorized_keys", "nohup", "/dev/tcp/")):
+            if any(p in low for p in ("reverse", "payload", "shell", "authorized_keys", "nohup", "/dev/tcp/")):
                 return f"policy block: possible malware/persistence ({matched[0]})"
+            if _cron_persistence_write(low):
+                hit = next((n for n in matched if "cron" in n), matched[0])
+                return f"policy block: possible malware/persistence ({hit})"
             continue
         return f"policy block: {label} ({matched[0]})"
     return None
