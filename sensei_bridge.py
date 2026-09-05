@@ -37,7 +37,7 @@ except ImportError:
 HOST = "127.0.0.1"
 PORT = 8791
 OLLAMA = "http://127.0.0.1:11434"
-DEFAULT_MODEL = os.environ.get("SENSEI_MODEL", "qwen2.5:7b")
+DEFAULT_MODEL = os.environ.get("SENSEI_MODEL", "opencode-free/laguna-s-2.1-free")
 VISION_MODEL = os.environ.get("SENSEI_VISION_MODEL", "qwen2.5vl:7b")
 
 
@@ -86,8 +86,8 @@ DONE: <one-line summary of what was accomplished>
 HARD RULES:
 1. DONE: is ONLY allowed as the very last line, AFTER real browser directives have executed. NEVER as the first or only line.
 2. If the user message already contains a [PAGE_CONTEXT] block, DO NOT emit BROWSER_READ — you already have the page. Use the context to pick selectors directly.
-3. Greetings, small talk, and casual chat ("hi", "hello", "good evening", "how are you", "thanks", "what's up", "test", a single word, or a question with no browser task) get ONLY a conversational reply. Emit ZERO directives. No BROWSER_READ. No DONE. Just a friendly short reply.
-4. If the user message is conversational ("hi", "hello", "why", "thanks", "what", "test", a single word, or a question with no browser task), emit ONLY: ASK: What would you like me to do on this page?  — nothing else. No BROWSER_READ, no DONE.
+3. Greetings, small talk, and casual chat ("hi", "hello", "good evening", "how are you", "thanks", "what's up", "test", a single word, or a question with no browser task) get ONLY a conversational reply. Emit ZERO directives. No BROWSER_READ. No DONE. No ASK. Just a friendly short reply.
+4. If the user asks what you can do or what to do next, reply conversationally — do not force a task unless they gave you one.
 5. If you need a value the user did NOT give you (email, password, name, address, phone, card number), emit ASK: and stop. NEVER invent values. NEVER use placeholder examples.
 6. Emit directives only. Zero prose. Zero explanation. Zero apology.
 7. Use real CSS selectors: prefer id (#login), name ([name="email"]), aria-label ([aria-label="Search"]).
@@ -692,6 +692,7 @@ def _select_model(body: dict) -> str:
     explicit = (body.get("model") or "").strip()
     if explicit:
         return explicit
+    # Default to OpenCode free relay for general chat; local 7B only when asked.
     return DEFAULT_MODEL
 
 
@@ -1113,9 +1114,17 @@ class Handler(BaseHTTPRequestHandler):
                 reply_text = "".join(full_text)
                 actions, cleaned = parse_directives(reply_text)
             else:
-                resp = _ollama_chat(model, msgs, timeout=120.0)
-                reply_text = (resp.get("message") or {}).get("content") or ""
-                actions, cleaned = parse_directives(reply_text)
+                if model.startswith("opencode-free/"):
+                    resp = _opencode_free_chat_tools(msgs, timeout=CLOUD_TOOLS_TIMEOUT)
+                    choice = (resp.get("choices") or [{}])[0]
+                    msg = choice.get("message") or {}
+                    reply_text = (msg.get("content") or "").strip()
+                    actions = _tool_calls_to_actions(msg.get("tool_calls") or [])
+                    cleaned = reply_text
+                else:
+                    resp = _ollama_chat(model, msgs, timeout=120.0)
+                    reply_text = (resp.get("message") or {}).get("content") or ""
+                    actions, cleaned = parse_directives(reply_text)
         except Exception as e:
             if sse_started:
                 _sse_write({"error": str(e), "session_id": session_id, "done": True})
@@ -1619,10 +1628,33 @@ def _run_agent_goal(session_id: str, goal: str, mode: str = "auto", max_rounds: 
     sess["messages"].append({"role": "user", "content": goal})
 
     cdp: CdpClient | None = None
+    chrome_ok = False
     try:
         cdp = CdpClient()
+        # Actually ping CDP before claiming we have a browser.
+        cdp._get_pages()
+        chrome_ok = True
     except Exception as e:
         _audit({"event": "agent_cdp_unavailable", "session_id": session_id, "error": str(e)})
+
+    if not chrome_ok:
+        # Do not hallucinate. Without CDP / an open browser we cannot act.
+        # Queue a BROWSER_NAV action so the extension can execute it when the
+        # user opens Chrome, and report waiting status honestly.
+        nav_action = None
+        url = _extract_url_from_goal(goal)
+        if url:
+            nav_action = {"kind": "BROWSER_NAV", "target": url, "value": "", "status": "ready"}
+            _queue_actions(session_id, [nav_action])
+        return {
+            "ok": True,
+            "session_id": session_id,
+            "round": 0,
+            "status": "waiting_for_chrome",
+            "reply": "Chrome is not open right now. Open Chrome and I'll run this goal. I've queued the first navigation step so the extension can pick it up.",
+            "queued_action": nav_action,
+            "model": DEFAULT_MODEL,
+        }
 
     round_num = 0
     final_reply = ""
@@ -1687,6 +1719,59 @@ def _run_agent_goal(session_id: str, goal: str, mode: str = "auto", max_rounds: 
         goal = "Continue."
 
     return {"ok": True, "session_id": session_id, "round": round_num, "status": "max_rounds", "reply": final_reply, "last_actions": last_actions}
+
+
+def _extract_url_from_goal(goal: str) -> str | None:
+    """Best-effort: turn a natural-language goal into a concrete URL.
+    Handles direct URLs, 'go to paypal.com', and search queries."""
+    g = (goal or "").strip()
+    if not g:
+        return None
+
+    # 1. Explicit URL anywhere in the goal.
+    url_m = re.search(r'https?://[^\s]+', g)
+    if url_m:
+        return url_m.group(0)
+
+    low = g.lower()
+
+    # 2. 'go to paypal.com' / 'navigate to paypal.com'
+    nav_m = re.search(r'\b(?:go to|navigate to|open|visit)\s+([a-zA-Z0-9][a-zA-Z0-9\-.]+(?:\.[a-zA-Z]{2,})?)\b', g, re.I)
+    if nav_m:
+        host = nav_m.group(1).strip()
+        if host and not re.match(r'^(http|file|chrome|about|data)$', host, re.I):
+            return f"https://{host}"
+
+    # 3. Search intent: extract quoted query, otherwise strip filler and search.
+    if not re.search(r'\b(search|google|look up|look-up|lookup|find me|query)\b', low):
+        return None
+
+    m = re.search(r'["\']([^"\']+)["\']', g)
+    if m:
+        query = m.group(1).strip()
+        if query:
+            return "https://www.google.com/search?q=" + urllib.parse.quote_plus(query)
+
+    # Strip leading and trailing filler. Work on lowercase indices but slice original.
+    strip_patterns = [
+        # leading
+        r'^\s*(?:do\s+a\s+)?(?:google\s+)?search(?:\s*,?\s+web\s+scrape)?(?:\s*,?\s+whatever\s+you\s+need\s+to\s+do)?(?:\s+for)?\s*',
+        r'^\s*(?:search|google)\s+(?:for\s+|me\s+(?:for\s+)?|on\s+)?\s*',
+        r'^\s*(?:look\s*up|find(?:\s+me)?|query)\s+(?:for\s+|on\s+google\s+)?\s*',
+        r'^\s*(?:can\s+you|could\s+you|will\s+you|please|i\s+(?:want|need|would\s+like)\s+(?:you\s+to\s+)?)\s*',
+        r'^\s*(?:do\s+a|let\'s|let\s+us)\s+',
+        # trailing
+        r'\s*(?:on\s+google|via\s+google|using\s+google|web\s+scrape|whatever\s+you\s+need\s+to\s+do)\s*$',
+        r'[,;:]?\s*[\U0001F300-\U0001FAFF]+\s*$',  # trailing emojis
+    ]
+    query = g
+    for pat in strip_patterns:
+        new_query = re.sub(pat, '', query, flags=re.IGNORECASE).strip()
+        if new_query:
+            query = new_query
+    if not query:
+        query = g
+    return "https://www.google.com/search?q=" + urllib.parse.quote_plus(query)
 
 
 def _queue_actions(session_id: str, actions: list[dict]) -> None:
