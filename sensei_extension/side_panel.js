@@ -84,6 +84,13 @@ const state = {
   // chrome.storage.local on init when the same Chrome session is still up,
   // else created on demand when the first BROWSER_TAB_CREATE fires.
   sessionTabGroup: null,
+  // 2026-09-05 — The tab this session is currently working in. Set whenever a
+  // task-scoped command resolves a tab (see sessionTab()), when
+  // BROWSER_TAB_CREATE makes one, and when BROWSER_TAB_SWITCH moves us.
+  // Cleared when that tab closes. This is the anchor that stops an unrelated,
+  // concurrently-running agent from stealing a task's tab just by taking
+  // browser focus.
+  sessionTabId: null,
   // M9 — Agentic Continuation Loop (scaffold 2026-05-12). After /chat returns
   // proposed actions, the user approves/rejects each one. As each result is
   // reported to /extension/action_result, it's also appended to loop.results.
@@ -437,6 +444,103 @@ function isSmallTalk(prompt) {
 async function activeTab() {
   const result = await chrome.runtime.sendMessage({ type: "SENSEI_ACTIVE_TAB" });
   return result?.tab || null;
+}
+
+// ── Task-tab resolution ────────────────────────────────────────────────────
+// 2026-09-05: activeTab() bottoms out in chrome.tabs.query({active:true,
+// currentWindow:true}) — a raw, live, OS-level "whichever tab has focus right
+// now" query with zero concept of task ownership. Confirmed live: a job-search
+// task navigated a tab to remoteok.com successfully (real page, real title),
+// and then every subsequent read/extract/screenshot failed with "Frame with ID
+// 0 is showing error page" — including against unrelated sites. Cause: a
+// DIFFERENT, concurrently-running agent had opened a tab at a malformed URL
+// (https://file///tmp/...png) which held browser focus, so every one of those
+// commands was operating on THAT tab. Switching explicitly to the correct
+// tab_id made all of them work instantly. On this machine multiple agent
+// sessions drive the same Chrome window routinely, so this is not an edge case.
+//
+// Fix: task-scoped commands resolve through sessionTab(), which prefers a tab
+// this session actually created / switched to / last acted on. Ownership is
+// tracked on top of the existing "Sensei" tab-group machinery
+// (state.sessionTabGroup, the thing backing session_tabs / in_session in
+// BROWSER_TAB_LIST) — no second parallel tracker.
+//
+// Deliberate degradation: until this session owns a tab (no sessionTabId and no
+// tab group), sessionTab() falls straight through to activeTab(), so a
+// pure-human side-panel session behaves exactly as before. Stickiness only
+// engages once Sensei itself has created or adopted a tab.
+//
+// Still intentionally live-focus-following (NOT changed): the domain-block
+// banner, workflow-recording start, and content-script prewarm.
+
+function rememberSessionTab(tab) {
+  const id = typeof tab === "number" ? tab : tab?.id;
+  if (Number.isFinite(id) && id > 0) state.sessionTabId = id;
+  return tab;
+}
+
+function forgetSessionTab(tabId) {
+  if (state.sessionTabId === tabId) state.sessionTabId = null;
+}
+
+// Resolve a tab id to a live tab, or null if it is gone (closed/crashed).
+async function _liveTab(tabId) {
+  if (!Number.isFinite(tabId) || tabId <= 0 || !chrome.tabs?.get) return null;
+  try {
+    return (await chrome.tabs.get(tabId)) || null;
+  } catch (_err) {
+    return null;
+  }
+}
+
+// The tab a task-scoped command should operate on. Resolution order:
+//   1. an explicit tab id on the action (lets a caller target a tab outright)
+//   2. the tab this session last acted on, if it is still open
+//   3. any tab in this session's tab group (its active one, else the newest)
+//   4. Chrome's raw focused tab — only when this session owns nothing yet
+// Whatever comes back is recorded, so step 2 answers every later command in
+// the task. Callers on the MCP path additionally run ensureTabInSession(),
+// which pulls a freshly adopted tab into the group.
+async function sessionTab(action = null) {
+  const explicit = Number(action?.tab_id ?? action?.tabId);
+  if (Number.isFinite(explicit) && explicit > 0) {
+    const tab = await _liveTab(explicit);
+    if (tab) return rememberSessionTab(tab);
+  }
+
+  const remembered = await _liveTab(state.sessionTabId);
+  if (remembered) return remembered;
+  forgetSessionTab(state.sessionTabId);
+
+  const groupId = state.sessionTabGroup?.groupId || null;
+  if (groupId && chrome.tabs?.query) {
+    try {
+      const grouped = await chrome.tabs.query({ groupId });
+      if (Array.isArray(grouped) && grouped.length) {
+        const pick = grouped.find((t) => t.active) || grouped[grouped.length - 1];
+        if (pick?.id) return rememberSessionTab(pick);
+      }
+    } catch (_err) {
+      // Group was removed out from under us; fall through to the focus query.
+    }
+  }
+
+  const focused = await activeTab();
+  return focused ? rememberSessionTab(focused) : null;
+}
+
+// chrome.tabs.captureVisibleTab() photographs whatever is VISIBLE in a window,
+// not a tab id — so resolving the right tab is not enough for a screenshot; if
+// something else is foregrounded we would hand back a picture of that instead.
+// Raise the task tab first. Best-effort: a failure here just means the capture
+// falls back to whatever is on screen, same as before.
+async function focusTabForCapture(tab) {
+  if (!tab?.id || tab.active || !chrome.tabs?.update) return;
+  try {
+    await chrome.tabs.update(tab.id, { active: true });
+  } catch (_err) {
+    // Tab may have closed between resolve and capture; nothing to raise.
+  }
 }
 
 function canInjectIntoTab(tab) {
@@ -1112,7 +1216,7 @@ async function contentScriptPageContext(tab, options, timings = {}) {
 }
 
 async function pageContext(prompt = "", timings = {}) {
-  const tab = await timed(timings, "tab", activeTab);
+  const tab = await timed(timings, "tab", sessionTab);
   if (!tab?.id) return {};
   // NEVER inject/read chrome://, edge://, about:*, or file:// pages. They
   // throw "Cannot access a chrome:// URL" and poison the model with a broken
@@ -1153,7 +1257,7 @@ async function pageContext(prompt = "", timings = {}) {
 }
 
 async function freshPageContextForContinuation(timings = {}) {
-  const tab = await timed(timings, "tab", activeTab);
+  const tab = await timed(timings, "tab", sessionTab);
   if (!tab?.id) return {};
   const fallback = { url: tab.url || "", title: tab.title || "" };
   if (!canInjectIntoTab(tab)) return fallback;
@@ -1941,7 +2045,7 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
 
   if (kind === "REMOTE_MCP") {
     try {
-      tab = await activeTab().catch(() => null);
+      tab = await sessionTab().catch(() => null);
       const origin = actionOrigin(action, tab);
       if (permissionDecision !== "auto") await rememberPermission(permissionDecision, origin, action);
       const result = await dispatchRemoteMcpAction(action, origin);
@@ -1971,7 +2075,7 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
   }
 
   try {
-    tab = await activeTab();
+    tab = await sessionTab();
     if (!tab?.id) throw new Error("no active tab");
     const origin = actionOrigin(action, tab);
     const blockedReason = originBlockedReason(kind === "BROWSER_NAV" ? action.target : origin);
@@ -1988,6 +2092,7 @@ async function approveAction(action, row, permissionDecision = "allow_once") {
 
     let result;
     if (kind === "BROWSER_SCREENSHOT") {
+      await focusTabForCapture(tab);
       const capture = await chrome.runtime.sendMessage({
         type: "SENSEI_CAPTURE_VISIBLE_TAB",
         windowId: tab.windowId
@@ -2330,7 +2435,7 @@ async function inspectDriveFolderWorkflow(tab, action) {
 async function rejectAction(action, row) {
   row.querySelectorAll("button").forEach((btn) => { btn.disabled = true; });
   setActionStatus(row, "Rejected");
-  const tab = await activeTab().catch(() => null);
+  const tab = await sessionTab().catch(() => null);
   await rememberPermission("decline", actionOrigin(action, tab), action);
   reportAction(action, "reject", "blocked", {});
   recordLoopResult(action, "reject", "blocked", {});
@@ -2340,7 +2445,7 @@ async function renderActions(actions = [], blockedActions = []) {
   const dock = $("#actionDock");
   const list = $("#actionList");
   list.textContent = "";
-  const tab = await activeTab().catch(() => null);
+  const tab = await sessionTab().catch(() => null);
 
   // Phase 1.1 — pre-warm the domain classifier for every origin we're about
   // to classify (active-tab origin + any BROWSER_NAV targets in this round).
@@ -2677,7 +2782,7 @@ async function runQuickModeLoop(originalPrompt, firstData, timings) {
       appendMessage("assistant", `[Quick Mode] DONE round ${round}: ${cmd.summary || "(no summary)"}`);
       break;
     }
-    const tab = await activeTab().catch(() => null);
+    const tab = await sessionTab().catch(() => null);
     if (!tab?.id) {
       appendMessage("assistant", "[Quick Mode] no active tab; stopping loop.");
       break;
@@ -2689,6 +2794,7 @@ async function runQuickModeLoop(originalPrompt, firstData, timings) {
     // Capture screenshot for the next round.
     let screenshotDataUrl = "";
     try {
+      await focusTabForCapture(tab);
       const capture = await chrome.runtime.sendMessage({
         type: "SENSEI_CAPTURE_VISIBLE_TAB", windowId: tab.windowId,
       });
@@ -3117,19 +3223,31 @@ async function saveShortcut(shortcut) {
   renderShortcuts();
 }
 
+// 2026-09-05: stopping a recording used to resolve activeTab() — the same
+// live-focus query that let an unrelated concurrent agent steal a task's tab.
+// A recording is pinned to the tab RECORD_START ran in, and that id is already
+// in state.workflowRecording.tabId. Asking Chrome what has focus *now* sends
+// SENSEI_RECORD_STOP to whatever tab happens to be foregrounded at stop time,
+// which answers with no steps (or has no content script at all) — and the
+// recording is lost, while the tab that IS recording never gets told to stop.
+// The start path below is deliberately left following live focus: "record what
+// I'm looking at" is its actual contract.
+async function stopWorkflowRecordingInTab() {
+  const recordingTabId = state.workflowRecording.tabId;
+  if (!Number.isFinite(recordingTabId) || recordingTabId <= 0) {
+    return { ok: false, error: "recording tab is no longer known", steps: [], events: [] };
+  }
+  const stopped = await chrome.tabs
+    .sendMessage(recordingTabId, { type: "SENSEI_RECORD_STOP" })
+    .catch((err) => ({ ok: false, error: err.message || String(err), steps: [], events: [] }));
+  // A tab that closed mid-recording can resolve undefined rather than reject.
+  return stopped || { ok: false, error: "recording tab did not respond", steps: [], events: [] };
+}
+
 async function toggleWorkflowRecording() {
   const button = $("#recordButton");
   if (state.workflowRecording.active) {
-    const tab = await activeTab().catch(() => null);
-    let stopped = { ok: false, steps: [], events: [] };
-    if (tab?.id) {
-      stopped = await chrome.tabs.sendMessage(tab.id, { type: "SENSEI_RECORD_STOP" }).catch((err) => ({
-        ok: false,
-        error: err.message || String(err),
-        steps: [],
-        events: [],
-      }));
-    }
+    const stopped = await stopWorkflowRecordingInTab();
     state.workflowRecording.active = false;
     button.textContent = "Record";
     const transcript = $("#promptInput").value.trim();
@@ -3330,7 +3448,12 @@ function installTabCacheInvalidation() {
     if (changeInfo.url || changeInfo.status === "loading") invalidatePageContext(tabId);
     if (changeInfo.url || changeInfo.status === "complete") refreshDomainBlockBanner();
   });
-  chrome.tabs.onRemoved?.addListener((tabId) => invalidatePageContext(tabId));
+  chrome.tabs.onRemoved?.addListener((tabId) => {
+    invalidatePageContext(tabId);
+    // Drop the anchor when the task's tab is closed by anyone, so the next
+    // command re-resolves instead of pinning to a dead id.
+    forgetSessionTab(tabId);
+  });
   chrome.tabs.onActivated?.addListener(() => {
     state.contextCache = null;
     refreshDomainBlockBanner();
@@ -3464,6 +3587,10 @@ async function dispatchMcpAction(action) {
       return {
         ok: true,
         session_group_id: sessionGroupId,
+        // The tab task-scoped commands will act on right now (see sessionTab()).
+        // Surfaced so a caller can tell which tab it is driving without guessing
+        // from Chrome's `active` flag, which any concurrent agent can move.
+        task_tab_id: state.sessionTabId,
         session_tabs: sessionTabs.map((t) => ({
           id: t.id, title: t.title, url: t.url, active: t.active,
           windowId: t.windowId, index: t.index,
@@ -3479,24 +3606,35 @@ async function dispatchMcpAction(action) {
       const tabId = parseInt(String(action.target || ""), 10);
       if (!tabId) return { ok: false, error: "tab_id required" };
       await chrome.tabs.update(tabId, { active: true });
+      // An explicit switch is a statement of intent about where the task is
+      // working — move the anchor, not just browser focus.
+      rememberSessionTab(tabId);
       return { ok: true, tab_id: tabId };
     }
     if (kind === "BROWSER_TAB_CLOSE") {
       const tabId = parseInt(String(action.target || ""), 10);
       if (!tabId) return { ok: false, error: "tab_id required" };
       await chrome.tabs.remove(tabId);
+      forgetSessionTab(tabId);
       return { ok: true, tab_id: tabId };
     }
     if (kind === "BROWSER_TAB_CREATE") {
       const url = normalizeUrl(action.target || "about:blank");
       const newTab = await chrome.tabs.create({ url, active: false });
-      if (newTab?.id) await addTabToSessionGroup(newTab.id).catch(() => {});
+      if (newTab?.id) {
+        await addTabToSessionGroup(newTab.id).catch(() => {});
+        // Created with active:false on purpose, so focus stays put — but the
+        // caller's next command means the NEW tab ("tab_create then browse"),
+        // and only the anchor can express that.
+        rememberSessionTab(newTab.id);
+      }
       return { ok: true, tab_created: { id: newTab?.id, url, windowId: newTab?.windowId } };
     }
     if (kind === "BROWSER_SCREENSHOT") {
-      const tab = await activeTab().catch(() => null);
+      const tab = await sessionTab(action).catch(() => null);
       if (!tab) return { ok: false, error: "no active tab" };
       await ensureTabInSession(tab);
+      await focusTabForCapture(tab);
       const capture = await chrome.runtime.sendMessage({
         type: "SENSEI_CAPTURE_VISIBLE_TAB", windowId: tab.windowId,
       });
@@ -3504,7 +3642,7 @@ async function dispatchMcpAction(action) {
       return { ok: true, screenshot: "visible_tab_png", dataUrl: capture.dataUrl };
     }
     if (kind === "BROWSER_GET_DOM") {
-      const tab = await activeTab().catch(() => null);
+      const tab = await sessionTab(action).catch(() => null);
       if (!tab?.id) return { ok: false, error: "no active tab" };
       await ensureTabInSession(tab);
       const selector = String(action.target || action.selector || "");
@@ -3523,7 +3661,7 @@ async function dispatchMcpAction(action) {
       return frame?.result || { ok: false, error: "script injection failed" };
     }
     if (kind === "BROWSER_JS") {
-      const tab = await activeTab().catch(() => null);
+      const tab = await sessionTab(action).catch(() => null);
       if (!tab?.id) return { ok: false, error: "no active tab" };
       await ensureTabInSession(tab);
       const command = String(action.command || "").toLowerCase();
@@ -3615,7 +3753,7 @@ async function dispatchMcpAction(action) {
     // All other BROWSER_* actions route through the existing content-script path
     // (this is where BROWSER_NAV lands)
     if (kind.startsWith("BROWSER_")) {
-      const tab = await activeTab().catch(() => null);
+      const tab = await sessionTab(action).catch(() => null);
       if (!tab?.id) return { ok: false, error: "no active tab" };
       await ensureTabInSession(tab);
       const result = await Promise.race([
