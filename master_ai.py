@@ -431,13 +431,13 @@ PINNED_MODEL = None  # set by 'model' command to override auto-routing
 # brainstorm a plan together and converge on ONE plan instead of arguing
 # forever. See ~/master-ai-cli/BRAINSTORM_MODE.md for the design.
 #   planner_a = proposer/reviser   planner_b = critic   merger = unifier
-# Generation slots use the operator's paid Ollama Cloud subscription
-# (Moonshot kimi-k2.7-code + DeepSeek deepseek-v4-pro) via the
-# ollama-cloud:: prefix. The merger/verdict slot stays on a free
+# ONE paid planner (Moonshot kimi-k2.7-code on Ollama Cloud) — paid models
+# burn session limits fast, so the second planner is the free Nemotron
+# Ultra 550B (OpenRouter). The merger/verdict slot stays on a free
 # instruction-follower (minimax-m3:free) because reasoning models
 # monologue and won't emit a clean "build it" verdict. Override via env.
 PLAN_DEBATE_PLANNER_A  = os.environ.get("PLAN_DEBATE_PLANNER_A", "ollama-cloud::kimi-k2.7-code")
-PLAN_DEBATE_PLANNER_B  = os.environ.get("PLAN_DEBATE_PLANNER_B", "ollama-cloud::deepseek-v4-pro")
+PLAN_DEBATE_PLANNER_B  = os.environ.get("PLAN_DEBATE_PLANNER_B", "nvidia/nemotron-3-ultra-550b-a55b:free")
 PLAN_DEBATE_MERGER     = os.environ.get("PLAN_DEBATE_MERGER", "minimax/minimax-m3:free")
 PLAN_DEBATE_FALLBACK   = os.environ.get("PLAN_DEBATE_FALLBACK", "opencode::mimo-v2.5-free")
 PLAN_DEBATE_MAX_ROUNDS = int(os.environ.get("PLAN_DEBATE_MAX_ROUNDS", "6"))
