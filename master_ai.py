@@ -439,6 +439,7 @@ PINNED_MODEL = None  # set by 'model' command to override auto-routing
 PLAN_DEBATE_PLANNER_A  = os.environ.get("PLAN_DEBATE_PLANNER_A", "ollama-cloud::kimi-k2.7-code")
 PLAN_DEBATE_PLANNER_B  = os.environ.get("PLAN_DEBATE_PLANNER_B", "ollama-cloud::deepseek-v4-pro")
 PLAN_DEBATE_MERGER     = os.environ.get("PLAN_DEBATE_MERGER", "minimax/minimax-m3:free")
+PLAN_DEBATE_FALLBACK   = os.environ.get("PLAN_DEBATE_FALLBACK", "poolside/laguna-s-2.1:free")
 PLAN_DEBATE_MAX_ROUNDS = int(os.environ.get("PLAN_DEBATE_MAX_ROUNDS", "6"))
 
 # ── AUTO-SAVE STATE ───────────────────────────────────────────
@@ -17690,6 +17691,7 @@ def main():
                     planner_a=PLAN_DEBATE_PLANNER_A,
                     planner_b=PLAN_DEBATE_PLANNER_B,
                     merger=PLAN_DEBATE_MERGER,
+                    fallback=PLAN_DEBATE_FALLBACK,
                     max_rounds=PLAN_DEBATE_MAX_ROUNDS,
                     progress=True,
                 )

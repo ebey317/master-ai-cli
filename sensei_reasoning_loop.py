@@ -546,6 +546,7 @@ def run_plan_debate(query: str, *,
                     planner_a: str | None = None,
                     planner_b: str | None = None,
                     merger: str | None = None,
+                    fallback: str | None = None,
                     max_rounds: int = 8,
                     progress: bool = True) -> dict:
     """Run the merge-to-consensus planning loop.
@@ -571,10 +572,22 @@ def run_plan_debate(query: str, *,
     a = planner_a or default_model
     b = planner_b or default_model
     m = merger or a
+    # Fallback for the merge/verdict slot — a second free instruction-follower
+    # (laguna-s-2.1:free) so the convergence gate degrades gracefully instead
+    # of dying if the primary merger rate-limits or fails.
+    fb = fallback or "poolside/laguna-s-2.1:free"
 
     def _say(msg: str) -> None:
         if progress:
             print(msg, flush=True)
+
+    def _chat_merge(model: str, prompt: str, num_predict: int) -> str:
+        """Call the merge/verdict model, falling back to `fb` on empty output."""
+        out = _model_chat(model, "", prompt, num_predict=num_predict)[0]
+        if not (out or "").strip() and model != fb:
+            _say(f"    (merger {model} returned empty — falling back to {fb})")
+            out = _model_chat(fb, "", prompt, num_predict=num_predict)[0]
+        return out
 
     result: dict[str, Any] = {
         "query": query, "plan": "", "rounds": 0, "converged": False,
@@ -592,12 +605,12 @@ def run_plan_debate(query: str, *,
 
     # 2. MERGE — one model receives BOTH plans, produces ONE unified plan.
     _say(f"🧠 [plan_debate] MERGE ({m})...")
-    merged = _model_chat(m, "", (
+    merged = _chat_merge(m, (
         f"Here are TWO plans for the same task. Merge them into ONE unified, "
         f"complete plan that combines the best of both and fills any gaps. "
         f"Output only the single merged plan.\n\n"
         f"Task: {query}\n\nPLAN A:\n{plan_a}\n\nPLAN B:\n{plan_b}"
-    ), num_predict=2000)[0]
+    ), 2000)
     result["stages"]["merge"] = merged
 
     # 3. Critique/revise loop with the keep-agree rule + verdict gate.
@@ -609,22 +622,22 @@ def run_plan_debate(query: str, *,
     plan = merged
     rounds = []
     for rnd in range(1, max_rounds + 1):
-        crit = _model_chat(m, "", (
+        crit = _chat_merge(m, (
             f"Critique this plan for the task. {PLAN_DEBATE_KEEP_RULE} List only "
             f"the concrete flaws, gaps, or disagreements that still need fixing. "
             f"Do NOT write a new plan.\n\nTask: {query}\n\nPlan:\n{plan}"
-        ), num_predict=1200)[0]
+        ), 1200)
 
         # Revise + verdict: use the MERGER (instruction-follower) so the
         # "build it" verdict lands cleanly.
-        plan = _model_chat(m, "", (
+        plan = _chat_merge(m, (
             f"Here is a plan and a critique of it. {PLAN_DEBATE_KEEP_RULE} Revise "
             f"the plan to address ONLY the critique points, then output the full "
             f"revised plan. On the FIRST line, write exactly one of: 'critique it' "
             f"(if it still needs another review) or 'build it' (if it is now "
             f"complete and correct). Then output the plan below that line.\n\n"
             f"Task: {query}\n\nPlan:\n{plan}\n\nCritique:\n{crit}"
-        ), num_predict=2000)[0]
+        ), 2000)
 
         v = _plan_debate_verdict(plan)
         rounds.append({"round": rnd, "verdict": v, "critique": crit, "plan": plan})
@@ -656,6 +669,7 @@ def _main() -> int:
     ap.add_argument("--planner-a", default=None, help="plan_debate: proposer/reviser model")
     ap.add_argument("--planner-b", default=None, help="plan_debate: critic model")
     ap.add_argument("--merger",    default=None, help="plan_debate: merge model")
+    ap.add_argument("--fallback",  default=None, help="plan_debate: fallback for merge/verdict slot")
     ap.add_argument("--max-rounds", type=int, default=8, help="plan_debate: safety cap")
     ap.add_argument("--memory", default=None,
                     help="optional .jsonl file to persist loops across runs")
@@ -673,6 +687,7 @@ def _main() -> int:
             planner_a=args.planner_a,
             planner_b=args.planner_b,
             merger=args.merger,
+            fallback=args.fallback,
             max_rounds=args.max_rounds,
             progress=not args.quiet,
         )
