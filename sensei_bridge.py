@@ -37,7 +37,24 @@ except ImportError:
 HOST = "127.0.0.1"
 PORT = 8791
 OLLAMA = "http://127.0.0.1:11434"
-DEFAULT_MODEL = os.environ.get("SENSEI_MODEL", "opencode-free/laguna-s-2.1-free")
+# 2026-09-06: this was defaulting to "opencode-free/laguna-s-2.1-free" — an
+# OpenCode-relay model string, not a real Ollama model name. Nothing set
+# SENSEI_MODEL to override it (checked: sensei-bridge.service only sets
+# HOME), so every single call to _ollama_chat_tools(DEFAULT_MODEL, ...) hit
+# Ollama's 404 ("model 'opencode-free/laguna-s-2.1-free' not found",
+# reproduced directly) and silently fell through to the cloud escalation
+# every time. "Local-first" was never actually running locally-first.
+# Fixed to a real, verified-working local model name (qwen2.5:7b — confirmed
+# it returns correct tool_calls) for whenever local tool-calling is turned
+# back on. It's off by default right now (see LOCAL_TOOLS_ENABLED below) —
+# operator call: qwen2.5:7b took 22s round-trip (9s just loading into RAM)
+# on this box, not viable until more RAM is available.
+DEFAULT_MODEL = os.environ.get("SENSEI_MODEL", "qwen2.5:7b")
+
+# 2026-09-06: side panel forced cloud-only — local model load time (~9s) plus
+# inference is too slow on current RAM. Set SENSEI_LOCAL_TOOLS=1 to re-enable
+# the local-first attempt once more RAM is available.
+LOCAL_TOOLS_ENABLED = os.environ.get("SENSEI_LOCAL_TOOLS", "0") == "1"
 VISION_MODEL = os.environ.get("SENSEI_VISION_MODEL", "qwen2.5vl:7b")
 
 
@@ -462,14 +479,21 @@ def _ollama_chat_tools(model: str, messages: list[dict], timeout: float) -> dict
 # it live — "only permitted to use free models, not paid" is a standing
 # rule, not a one-off, and that model billed $0.003/call. Replaced with
 # OpenCode's free Zen relay: keyless (no account, no key, nothing to leak
-# or run out of), model "laguna-s-2.1-free" per the built-in Hermes plugin
-# at ~/.hermes/hermes-agent/plugins/model-providers/opencode-free/__init__.py
-# ("the fastest non-UA-gated free model" — other model IDs listed on this
-# relay's /v1/models, including the claude-* ones, 401 without a real
-# OpenCode account; only specific -free-suffixed IDs are actually keyless).
-# Measured 2026-08-27: 1.58s, correct tool_calls, "cost": "0".
+# or run out of).
+#
+# 2026-09-06: "laguna-s-2.1-free" started 401ing — reproduced verbatim with
+# curl, confirmed it (and every other -free ID that worked on 2026-08-27) no
+# longer appears in the relay's own /v1/models list at all. OpenCode fully
+# rotated/discontinued that free-tier cohort; not fixable by a header/key
+# change on our end. Re-surveyed /v1/models and tested every current
+# -free-suffixed ID directly against /chat/completions with the same empty
+# Authorization header: "nemotron-3.5-lightning-free" returned clean
+# tool_calls (verified with the same BROWSER_TOOLS-shaped request this
+# function sends). It's a reasoning model (emits a "reasoning" field before
+# tool_calls), so it burns more tokens per call than laguna did — max_tokens
+# bumped 500->1000 to keep that from truncating the actual tool call.
 _OPENCODE_FREE_URL = "https://opencode.ai/zen/v1/chat/completions"
-_OPENCODE_FREE_MODEL = "laguna-s-2.1-free"
+_OPENCODE_FREE_MODEL = "nemotron-3.5-lightning-free"
 _OPENCODE_FREE_HEADERS = {
     "Content-Type": "application/json",
     "Authorization": "",  # relay 401s if this header is absent entirely
@@ -490,7 +514,7 @@ def _opencode_free_chat_tools(messages: list[dict], timeout: float) -> dict:
     the relay is anonymous/keyless for this specific model."""
     body = json.dumps({
         "model": _OPENCODE_FREE_MODEL,
-        "max_tokens": 500,
+        "max_tokens": 1000,
         "messages": messages,
         "tools": BROWSER_TOOLS,
     }).encode("utf-8")
@@ -541,20 +565,23 @@ def _tool_calls_to_actions(tool_calls: list[dict]) -> list[dict]:
 
 
 def _chat_via_tools(prompt: str, history: list[dict]) -> tuple[str, list[dict], str]:
-    """Local-first, cloud-escalation-on-failure typed tool-calling. Returns
-    (reply_text, actions, model_used). Raises only if BOTH tiers fail."""
+    """Cloud-only when LOCAL_TOOLS_ENABLED is off (current default — local
+    model load time isn't viable on this box's RAM); local-first with
+    cloud-escalation-on-failure when it's on. Returns (reply_text, actions,
+    model_used). Raises only if the active tier(s) all fail."""
     messages = list(history) + [{"role": "user", "content": prompt}]
-    try:
-        resp = _ollama_chat_tools(DEFAULT_MODEL, messages, timeout=LOCAL_TOOLS_TIMEOUT)
-        msg = resp.get("message") or {}
-        tool_calls = msg.get("tool_calls") or []
-        text = (msg.get("content") or "").strip()
-        if tool_calls or text:
-            return text, _tool_calls_to_actions(tool_calls), DEFAULT_MODEL
-        # Empty reply, no tool call — treat as a soft failure and escalate.
-        raise RuntimeError("local model returned no tool_calls and no text")
-    except Exception as e:
-        _audit({"event": "local_tools_failed", "error": str(e)})
+    if LOCAL_TOOLS_ENABLED:
+        try:
+            resp = _ollama_chat_tools(DEFAULT_MODEL, messages, timeout=LOCAL_TOOLS_TIMEOUT)
+            msg = resp.get("message") or {}
+            tool_calls = msg.get("tool_calls") or []
+            text = (msg.get("content") or "").strip()
+            if tool_calls or text:
+                return text, _tool_calls_to_actions(tool_calls), DEFAULT_MODEL
+            # Empty reply, no tool call — treat as a soft failure and escalate.
+            raise RuntimeError("local model returned no tool_calls and no text")
+        except Exception as e:
+            _audit({"event": "local_tools_failed", "error": str(e)})
     resp = _opencode_free_chat_tools(messages, timeout=CLOUD_TOOLS_TIMEOUT)
     choice = (resp.get("choices") or [{}])[0]
     msg = choice.get("message") or {}
@@ -692,8 +719,15 @@ def _select_model(body: dict) -> str:
     explicit = (body.get("model") or "").strip()
     if explicit:
         return explicit
-    # Default to OpenCode free relay for general chat; local 7B only when asked.
-    return DEFAULT_MODEL
+    # 2026-09-06: this used to unconditionally return DEFAULT_MODEL, which
+    # only routes to the cloud relay correctly in the non-streaming branch
+    # (it checks for the "opencode-free/" prefix); the streaming branch had
+    # no such check and would silently hit local Ollama regardless. Local is
+    # off (LOCAL_TOOLS_ENABLED=False) until more RAM is available, so the
+    # default here must be the cloud-prefixed string in that case.
+    if LOCAL_TOOLS_ENABLED:
+        return DEFAULT_MODEL
+    return f"opencode-free/{_OPENCODE_FREE_MODEL}"
 
 
 def _safe_local_path(path: str) -> tuple[bool, str]:
@@ -1058,6 +1092,7 @@ class Handler(BaseHTTPRequestHandler):
 
         t0 = time.time()
         sse_started = False
+        model_used = model
 
         def _sse_write(payload: dict) -> None:
             self.wfile.write(f"data: {json.dumps(payload)}\n\n".encode("utf-8"))
@@ -1097,34 +1132,63 @@ class Handler(BaseHTTPRequestHandler):
                             })
                     if "err" in result:
                         raise result["err"]
-                    reply_text, actions, model = result["ok"]
+                    reply_text, actions, model_used = result["ok"]
                     cleaned = reply_text
                 else:
-                    reply_text, actions, model = _chat_via_tools(prompt, history)
+                    reply_text, actions, model_used = _chat_via_tools(prompt, history)
                     cleaned = reply_text
             elif stream_mode:
-                full_text = []
-                for chunk in _ollama_chat_stream(model, msgs, timeout=120.0):
-                    full_text.append(chunk)
-                    _sse_write({
-                        "chunk": chunk,
-                        "session_id": session_id,
-                        "model": model,
-                    })
-                reply_text = "".join(full_text)
-                actions, cleaned = parse_directives(reply_text)
-            else:
+                # 2026-09-06: this always called Ollama directly regardless
+                # of `model` — the only "opencode-free/" prefix check lived
+                # in the non-streaming branch below. That meant streaming
+                # chat silently used local Ollama even when the cloud relay
+                # was selected. The relay itself doesn't stream token-by-
+                # token in this codebase (single blocking POST), so route it
+                # here the same way, then emit the whole reply as one chunk
+                # — still a valid SSE stream, just not incremental for this
+                # tier.
                 if model.startswith("opencode-free/"):
                     resp = _opencode_free_chat_tools(msgs, timeout=CLOUD_TOOLS_TIMEOUT)
                     choice = (resp.get("choices") or [{}])[0]
-                    msg = choice.get("message") or {}
-                    reply_text = (msg.get("content") or "").strip()
-                    actions = _tool_calls_to_actions(msg.get("tool_calls") or [])
-                    cleaned = reply_text
+                    reply_text = ((choice.get("message") or {}).get("content") or "").strip()
+                    _sse_write({"chunk": reply_text, "session_id": session_id, "model": model})
+                    model_used = model
+                else:
+                    full_text = []
+                    for chunk in _ollama_chat_stream(model, msgs, timeout=120.0):
+                        full_text.append(chunk)
+                        _sse_write({
+                            "chunk": chunk,
+                            "session_id": session_id,
+                            "model": model,
+                        })
+                    reply_text = "".join(full_text)
+                    model_used = model
+                actions, cleaned = parse_directives(reply_text)
+            else:
+                if model.startswith("opencode-free/"):
+                    try:
+                        resp = _opencode_free_chat_tools(msgs, timeout=CLOUD_TOOLS_TIMEOUT)
+                        choice = (resp.get("choices") or [{}])[0]
+                        msg = choice.get("message") or {}
+                        reply_text = (msg.get("content") or "").strip()
+                        actions = _tool_calls_to_actions(msg.get("tool_calls") or [])
+                        cleaned = reply_text
+                        model_used = model
+                    except urllib.error.HTTPError as cloud_err:
+                        if getattr(cloud_err, "code", None) in (503, 502, 504, 429):
+                            _audit({"event": "cloud_relay_unavailable", "code": cloud_err.code, "fallback": "qwen2.5:7b"})
+                            resp = _ollama_chat("qwen2.5:7b", msgs, timeout=120.0)
+                            reply_text = (resp.get("message") or {}).get("content") or ""
+                            actions, cleaned = parse_directives(reply_text)
+                            model_used = "qwen2.5:7b"
+                        else:
+                            raise
                 else:
                     resp = _ollama_chat(model, msgs, timeout=120.0)
                     reply_text = (resp.get("message") or {}).get("content") or ""
                     actions, cleaned = parse_directives(reply_text)
+                    model_used = model
         except Exception as e:
             if sse_started:
                 _sse_write({"error": str(e), "session_id": session_id, "done": True})
@@ -1151,7 +1215,7 @@ class Handler(BaseHTTPRequestHandler):
             "continuation": continuation,
             "session_id": session_id,
             "turn_id": turn_id,
-            "model": model,
+            "model": model_used,
             "elapsed_s": elapsed,
             "actions_count": len(actions),
             "prompt": prompt[:200],
@@ -1163,7 +1227,7 @@ class Handler(BaseHTTPRequestHandler):
             "blocked_actions": [],
             "session_id": session_id,
             "turn_id": turn_id,
-            "model": model,
+            "model": model_used,
             "elapsed_s": elapsed,
             "done": True,
         }
@@ -1548,9 +1612,14 @@ DONE: <summary>
 
 
 def _agent_select_model(prompt: str, has_screenshot: bool = False) -> str:
-    """Route: vision -> vision model; simple/fast -> local 7B; hard reasoning -> cloud free."""
+    """Route: vision -> vision model; simple/fast -> local 7B; hard reasoning -> cloud free.
+    2026-09-06: local is off (LOCAL_TOOLS_ENABLED=False) until more RAM is
+    available, so the "simple/fast -> local" leg is disabled and everything
+    non-vision goes cloud regardless of the hard-keyword check."""
     if has_screenshot:
         return VISION_MODEL
+    if not LOCAL_TOOLS_ENABLED:
+        return f"opencode-free/{_OPENCODE_FREE_MODEL}"
     # Use cloud for questions that look like they need deep reasoning / form strategy.
     hard_keywords = r"\b(application|apply|form|strategy|plan|document|resume|cover\s+letter|explain|why|compare|choose|decide)\b"
     if re.search(hard_keywords, prompt, re.IGNORECASE):

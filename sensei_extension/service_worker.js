@@ -905,6 +905,40 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "SENSEI_BROWSER_EVAL") {
+    // 2026-09-06: added so js_eval has a real arbitrary-JS path. BROWSER_JS
+    // in side_panel.js is a fixed 5-command whitelist (click_text,
+    // click_selector, fill_selector, select_option, query) via
+    // chrome.scripting.executeScript — it never ran arbitrary code despite
+    // the tool's own description promising that, which is what produced
+    // "unknown command: " (empty command) errors all session. This mirrors
+    // SENSEI_BROWSER_GET_DOM's CDP pattern exactly, since that path has been
+    // reliable all session while the content-script/executeScript path for
+    // BROWSER_JS was not.
+    (async () => {
+      try {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tabId = tabs[0]?.id;
+        if (!Number.isFinite(tabId)) { sendResponse({ ok: false, error: "no active tab" }); return; }
+        await _ensureDebuggerAttached(tabId);
+        const code = String(message.code || "");
+        if (!code.trim()) { sendResponse({ ok: false, error: "no code provided" }); return; }
+        const res = await _cdpSend(tabId, "Runtime.evaluate", {
+          expression: code,
+          returnByValue: true,
+          awaitPromise: true,
+        });
+        if (res?.exceptionDetails) {
+          const desc = res.exceptionDetails.exception?.description || res.exceptionDetails.text || "evaluation threw";
+          sendResponse({ ok: false, error: desc });
+          return;
+        }
+        sendResponse({ ok: true, result: res?.result?.value });
+      } catch (err) { sendResponse({ ok: false, error: String(err?.message || err) }); }
+    })();
+    return true;
+  }
+
   if (message?.type === "SENSEI_BROWSER_GET_DOM") {
     (async () => {
       try {
