@@ -716,6 +716,7 @@ _KV_KEY_MAP = {
     "HUGGINGFACE_TOKEN": "huggingface",
     "HF_TOKEN": "huggingface",
     "NVIDIA_API_KEY": "nvidia",
+    "NVIDIA_API_KEY_2": "nvidia2",
 }
 
 def _looks_like_real_key(val):
@@ -4944,39 +4945,49 @@ def _ask_groq(messages, model, label, timeout=30):
 def _ask_nvidia(messages, model, label, timeout=30):
     """Generic NVIDIA NIM caller — takes an explicit model id so the live
     picker (any of NVIDIA's 100+ models, not just the one default lane)
-    can dispatch through this instead of a hardcoded model string."""
+    can dispatch through this instead of a hardcoded model string.
+
+    Ping-pongs between NVIDIA_API_KEY and NVIDIA_API_KEY_2 on 429 so a
+    rate-limit on one key doesn't stall the call — the second key picks up
+    the request instead of waiting out the circuit breaker."""
     provider_key = f"nvidia/{label}"
     if not _cloud_allowed(provider_key):
         return None
-    key = KEYS.get("nvidia")
-    if not key:
+    keys = [k for k in (KEYS.get("nvidia"), KEYS.get("nvidia2")) if k]
+    if not keys:
         return None
     messages = _inject_identity(messages)
-    log(f"CLOUD [nvidia/{label}]")
     payload = {"model": model, "messages": messages,
                "max_tokens": 1024, "stream": False}
     data = json.dumps(payload).encode()
-    req = urllib.request.Request(
-        "https://integrate.api.nvidia.com/v1/chat/completions", data=data,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}",
-                 "User-Agent": "python-requests/2.31.0"}
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read())["choices"][0]["message"]["content"]
-    except urllib.error.HTTPError as e:
-        code = e.code
-        diag = {401:"AUTH FAIL — check API key", 403:"AUTH FAIL — check API key",
-                429:"RATE LIMIT hit", 402:"OUT OF CREDITS"}.get(code, f"HTTP {code}")
-        log(f"NVIDIA_ERROR [{label}]: {diag}")
-        if code == 429:
-            _cloud_trip(provider_key, "rate limit", 30)
-        return None
-    except Exception as e:
-        log(f"NVIDIA_ERROR [{label}]: {e}")
-        if _network_error(e):
-            _cloud_trip_network(e, 60)
-        return None
+    for key in keys:
+        log(f"CLOUD [nvidia/{label}]")
+        req = urllib.request.Request(
+            "https://integrate.api.nvidia.com/v1/chat/completions", data=data,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}",
+                     "User-Agent": "python-requests/2.31.0"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read())["choices"][0]["message"]["content"]
+        except urllib.error.HTTPError as e:
+            code = e.code
+            diag = {401: "AUTH FAIL — check API key", 403: "AUTH FAIL — check API key",
+                    429: "RATE LIMIT hit", 402: "OUT OF CREDITS"}.get(code, f"HTTP {code}")
+            log(f"NVIDIA_ERROR [{label}]: {diag}")
+            if code == 429 and key != keys[-1]:
+                # Ping-pong to the next key instead of tripping the circuit.
+                log(f"NVIDIA_PINGPONG [{label}]: 429 on key, trying next key")
+                continue
+            if code == 429:
+                _cloud_trip(provider_key, "rate limit", 30)
+            return None
+        except Exception as e:
+            log(f"NVIDIA_ERROR [{label}]: {e}")
+            if _network_error(e):
+                _cloud_trip_network(e, 60)
+            return None
+    return None
 
 def ask_cloud_nvidia(messages):
     # 2026-08-27: llama-3.1-nemotron-70b-instruct's NIM function was
