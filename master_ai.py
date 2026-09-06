@@ -426,6 +426,20 @@ MODEL_COMMAND_ALIASES = {
 
 PINNED_MODEL = None  # set by 'model' command to override auto-routing
 
+# ── PLAN DEBATE (brainstorm mode) ─────────────────────────────
+# Plan mode is now a merge-to-consensus multi-agent debate: two models
+# brainstorm a plan together and converge on ONE plan instead of arguing
+# forever. See ~/master-ai-cli/BRAINSTORM_MODE.md for the design.
+#   planner_a = proposer/reviser   planner_b = critic   merger = unifier
+# Defaults are the two free-tier models proven to obey the "build it"
+# verdict cleanly (2026-09-06 live test). Override via env for offline
+# (local master-ai) or other lanes. Non-reasoning models are required for
+# the verdict step — reasoning models monologue instead of committing.
+PLAN_DEBATE_PLANNER_A  = os.environ.get("PLAN_DEBATE_PLANNER_A", "minimax/minimax-m3:free")
+PLAN_DEBATE_PLANNER_B  = os.environ.get("PLAN_DEBATE_PLANNER_B", "poolside/laguna-s-2.1:free")
+PLAN_DEBATE_MERGER     = os.environ.get("PLAN_DEBATE_MERGER", "minimax/minimax-m3:free")
+PLAN_DEBATE_MAX_ROUNDS = int(os.environ.get("PLAN_DEBATE_MAX_ROUNDS", "6"))
+
 # ── AUTO-SAVE STATE ───────────────────────────────────────────
 GLOBAL_HISTORY      = []          # shared reference for signal handlers
 CHARS_SINCE_SAVE    = 0           # chars accumulated since last auto-save
@@ -17589,64 +17603,43 @@ def main():
         # approval (1 / Enter), the ORIGINAL user_text re-runs in Review
         # mode for per-command execution.
         if MODE == "plan" and not _looks_terminal_visual_request(user_text):
-            print(f"{C}  thinking (plan mode — pulling grounding facts)...{X}")
+            print(f"{C}  thinking (plan mode — two models debating)...{X}")
             _hist_len_before = len(history)
             # Pull grounding facts FIRST: Wikipedia + live web + filesystem
-            # + memory. Stops generic plans by giving the model real data
-            # about the actual subject before it drafts. Fail-silent: if
-            # nothing comes back, plan still drafts (just less specific).
+            # + memory. Stops generic plans by giving the models real data
+            # about the actual subject before they draft. Fail-silent: if
+            # nothing comes back, the debate still drafts (just less specific).
             _grounding = _plan_grounding(user_text)
-            # Small local models (3B/7B) follow SHORT prompts better than
-            # long ones. Kept to 7 lines of hard rules + grounding + input.
-            _plan_prompt = (
-                "PLAN MODE. Act like Claude Code/Codex planning before touching files.\n"
-                "Your job is to make a concrete execution plan, not generic advice.\n\n"
-                "Hard rules:\n"
-                "1. Infer reasonable defaults from the actual machine context. Do not ask questions "
-                "unless the task is impossible or dangerous without the answer.\n"
-                "2. If the task touches code/files, name the likely files or directories to inspect first.\n"
-                "3. Include the exact kind of verification to run at the end: syntax check, test, service "
-                "restart, browser preview, log check, or file existence check.\n"
-                "4. Call out risks or must-know details in plain words if they affect execution.\n"
-                "5. Make the plan DETAILED: 3 to 7 numbered steps, and under EACH step add 1-3 "
-                "sub-bullets with the concrete action, exact file path, or thing to inspect. "
-                "No one-line steps — Elijah will reject a plan that just says 'update the script'.\n"
-                "6. Use real names from the GROUNDING FACTS and machine context: files, directories, "
-                "scripts, services. No generic placeholders.\n"
-                "7. Decide presentation: direct action, numbered options, or up to 4 understanding questions. "
-                "Use numbered options for destructive/broad/product-direction choices; otherwise plan the work.\n"
-                "8. NO code blocks. NO shell command blocks. NO directive keywords with colons.\n"
-                "9. Do not tell Elijah to do the work. Sensei will execute after approval.\n\n"
-                "Plan format:\n"
-                "1. Inspect <specific place> to learn <specific fact>.\n"
-                "   - what to look at and what to record\n"
-                "2. Change <specific file/behavior> so <result>.\n"
-                "   - what exactly changes, what stays untouched\n"
-                "3. Verify with <specific check>: the command or output that proves it works.\n"
-                "Risk or must-know detail: <one line, or 'none obvious'>\n"
-                "<PLAN READY>\n\n"
-                "Voice-to-text fixes: sensi=Sensei, pants=plans, Lennox=Linux Mint, "
-                "except=accept, seperate=separate.\n"
-                "When the plan is ready, the final line MUST be exactly <PLAN READY>. "
-                "If understanding questions are needed before a useful plan, ask up to 4 and do not emit the marker."
-                f"{_grounding}"
-                "\n"
-                f"User: {user_text}"
+            # Plan mode is now a merge-to-consensus multi-agent debate:
+            # two models brainstorm a plan together and converge on ONE
+            # plan instead of arguing forever. See BRAINSTORM_MODE.md.
+            # The debate query carries the grounding facts + the user's ask.
+            _debate_query = (
+                f"{user_text}\n\n"
+                f"GROUNDING FACTS (use real names from these — files, dirs, "
+                f"scripts, services; no generic placeholders):\n{_grounding}"
             )
-            # PIN to local master — bypass detect_route() so Plan mode
-            # never lands on a cloud lane that refuses tool intents
-            # ("I am not able to create files or run commands"). master
-            # has Modelfile-baked SYSTEM, no separate system message needed.
-            _plan_messages = [m for m in history if m.get("role") != "system"]
-            _plan_messages.append({"role": "user", "content": _plan_prompt})
-            # Stream instead of ask_local()'s buffer-then-dump: on this
-            # CPU-only box a plan draft can take minutes, and ask_local()
-            # gives zero feedback until the whole response lands — reads
-            # as hung, not slow (2026-08-29, after repeated premature
-            # kills of a plan-mode call that was just slow). ask_local_
-            # stream() prints tokens live with a thinking animation until
-            # the first one arrives, so the wait is visibly alive.
-            plan_reply = ask_local_stream(_plan_messages, model=MODELS["master"]) or ""
+            try:
+                import sys as _sys
+                if str(Path.home() / "scripts") not in _sys.path:
+                    _sys.path.insert(0, str(Path.home() / "scripts"))
+                from sensei_reasoning_loop import run_plan_debate
+                _debate = run_plan_debate(
+                    _debate_query,
+                    planner_a=PLAN_DEBATE_PLANNER_A,
+                    planner_b=PLAN_DEBATE_PLANNER_B,
+                    merger=PLAN_DEBATE_MERGER,
+                    max_rounds=PLAN_DEBATE_MAX_ROUNDS,
+                    progress=True,
+                )
+                plan_reply = _debate.get("plan", "") or ""
+                _converged = _debate.get("converged", False)
+            except KeyboardInterrupt:
+                print(f"\n  {Y}plan debate interrupted{X}")
+                continue
+            except Exception as e:
+                print(f"  {R}plan debate error: {e}{X}")
+                continue
             # Drop the planning turn from history so the real execution
             # turn starts with clean context.
             while len(history) > _hist_len_before:
@@ -17657,30 +17650,18 @@ def main():
                 r'\1(step would) ',
                 plan_reply,
             )
-            # No second print here — ask_local_stream() already painted
-            # the raw plan_reply to the terminal live as it streamed.
-            # (Trade-off: unlike the old buffered path, a leaked RUN:/
-            # CREATE:/EDIT: directive streams unsoftened before we catch
-            # it below — cosmetic only, nothing dispatches from plan text.)
-            # Detect <PLAN READY> marker — also accept the malformed
-            # </PLAN READY> splice the model emits when its browser-plan
-            # few-shots (<PLAN>...</PLAN>) bleed into TUI plan mode; either
-            # way the model is signaling the plan is done.
-            if re.search(r'</?\s*PLAN\s*READY\s*>', plan_text, re.IGNORECASE):
-                plan_text_clean = re.sub(
-                    r'</?\s*PLAN\s*READY\s*>\s*', '', plan_text, flags=re.IGNORECASE
-                ).strip()
-                globals()['PENDING_PLAN_TEXT'] = plan_text_clean[:1600]
+            # The debate converges to a single plan — treat it as ready.
+            # (No <PLAN READY> marker needed; "build it" is the signal.)
+            if plan_text.strip():
+                globals()['PENDING_PLAN_TEXT'] = plan_text[:1600]
                 globals()['PENDING_PLAN_REQUEST'] = user_text
                 print(f"\n  {BTN_G} 1){X} Review step-by-step  ·  {BTN_Y} 2){X} edit  ·  "
                       f"{BTN_R} 3){X} no  ·  {BTN_C} 4){X} keep talking  ·  "
                       f"{BTN_G} A){X} finish in Auto")
                 threading.Thread(target=speak, args=("Plan ready.",), daemon=True).start()
             else:
-                # Conversational turn — model is still reasoning or asking.
-                # Keep history so context carries across turns.
+                # Debate produced nothing usable — keep history for context.
                 history.append({"role": "user", "content": user_text})
-                history.append({"role": "assistant", "content": plan_text})
             continue
 
         # ── Check cache ───────────────────────────────────────
