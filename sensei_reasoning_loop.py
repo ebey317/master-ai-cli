@@ -601,16 +601,23 @@ def run_plan_debate(query: str, *,
     result["stages"]["merge"] = merged
 
     # 3. Critique/revise loop with the keep-agree rule + verdict gate.
+    # The critique AND verdict both run on the MERGER (instruction-follower).
+    # Reasoning models (kimi/deepseek) monologue ("We need answer critique...")
+    # instead of emitting a clean critique or a binary "build it" verdict, so
+    # they only generate the seed plans; the convergence mechanics stay on the
+    # instruction-follower that actually obeys the binary instruction.
     plan = merged
     rounds = []
     for rnd in range(1, max_rounds + 1):
-        crit = _model_chat(b, "", (
+        crit = _model_chat(m, "", (
             f"Critique this plan for the task. {PLAN_DEBATE_KEEP_RULE} List only "
             f"the concrete flaws, gaps, or disagreements that still need fixing. "
             f"Do NOT write a new plan.\n\nTask: {query}\n\nPlan:\n{plan}"
         ), num_predict=1200)[0]
 
-        plan = _model_chat(a, "", (
+        # Revise + verdict: use the MERGER (instruction-follower) so the
+        # "build it" verdict lands cleanly.
+        plan = _model_chat(m, "", (
             f"Here is a plan and a critique of it. {PLAN_DEBATE_KEEP_RULE} Revise "
             f"the plan to address ONLY the critique points, then output the full "
             f"revised plan. On the FIRST line, write exactly one of: 'critique it' "

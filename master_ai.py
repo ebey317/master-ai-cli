@@ -431,12 +431,13 @@ PINNED_MODEL = None  # set by 'model' command to override auto-routing
 # brainstorm a plan together and converge on ONE plan instead of arguing
 # forever. See ~/master-ai-cli/BRAINSTORM_MODE.md for the design.
 #   planner_a = proposer/reviser   planner_b = critic   merger = unifier
-# Defaults are the two free-tier models proven to obey the "build it"
-# verdict cleanly (2026-09-06 live test). Override via env for offline
-# (local master-ai) or other lanes. Non-reasoning models are required for
-# the verdict step — reasoning models monologue instead of committing.
-PLAN_DEBATE_PLANNER_A  = os.environ.get("PLAN_DEBATE_PLANNER_A", "minimax/minimax-m3:free")
-PLAN_DEBATE_PLANNER_B  = os.environ.get("PLAN_DEBATE_PLANNER_B", "poolside/laguna-s-2.1:free")
+# Generation slots use the operator's paid Ollama Cloud subscription
+# (Moonshot kimi-k2.7-code + DeepSeek deepseek-v4-pro) via the
+# ollama-cloud:: prefix. The merger/verdict slot stays on a free
+# instruction-follower (minimax-m3:free) because reasoning models
+# monologue and won't emit a clean "build it" verdict. Override via env.
+PLAN_DEBATE_PLANNER_A  = os.environ.get("PLAN_DEBATE_PLANNER_A", "ollama-cloud::kimi-k2.7-code")
+PLAN_DEBATE_PLANNER_B  = os.environ.get("PLAN_DEBATE_PLANNER_B", "ollama-cloud::deepseek-v4-pro")
 PLAN_DEBATE_MERGER     = os.environ.get("PLAN_DEBATE_MERGER", "minimax/minimax-m3:free")
 PLAN_DEBATE_MAX_ROUNDS = int(os.environ.get("PLAN_DEBATE_MAX_ROUNDS", "6"))
 
@@ -5373,9 +5374,66 @@ def ask_cloud_opencode_free(messages):
             _cloud_trip_network(e, 60)
         return None
 
+def _ask_ollama_cloud(messages, model, label, timeout=90):
+    """Ollama Cloud (https://ollama.com/v1) — the operator's paid
+    subscription. OpenAI-compatible endpoint. Key lives in ~/.hermes/.env
+    as OLLAMA_API_KEY (NOT the keychain). Used for plan-debate generation
+    slots (Moonshot kimi-k2.7-code, DeepSeek deepseek-v4-pro)."""
+    provider_key = f"ollama-cloud/{label}"
+    if not _cloud_allowed(provider_key):
+        return None
+    key = os.environ.get("OLLAMA_API_KEY", "").strip()
+    if not key:
+        # Fall back to reading ~/.hermes/.env directly if not in env.
+        try:
+            _env = Path.home() / ".hermes" / ".env"
+            for _ln in _env.read_text().splitlines():
+                _ln = _ln.strip()
+                if _ln.startswith("export OLLAMA_API_KEY="):
+                    key = _ln.split("=", 1)[1].strip().strip('"').strip("'")
+                    break
+        except Exception:
+            key = ""
+    if not key:
+        log("OLLAMA_CLOUD_ERROR: no OLLAMA_API_KEY")
+        return None
+    messages = _inject_identity(messages)
+    log(f"CLOUD [ollama-cloud/{label}]")
+    payload = {"model": model, "messages": messages,
+               "max_tokens": 1024, "stream": False}
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        "https://ollama.com/v1/chat/completions", data=data,
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {key}",
+                 "User-Agent": "python-requests/2.31.0"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            result = json.loads(resp.read())
+            msg = result["choices"][0]["message"]
+            content = msg.get("content") or ""
+            if not content.strip():
+                content = msg.get("reasoning") or ""
+            return content
+    except urllib.error.HTTPError as e:
+        code = e.code
+        diag = {401: "AUTH FAIL — check OLLAMA_API_KEY",
+                402: "OUT OF CREDITS",
+                429: "RATE LIMIT hit"}.get(code, f"HTTP {code}")
+        log(f"OLLAMA_CLOUD_ERROR [{label}]: {diag}")
+        if code == 429:
+            _cloud_trip(provider_key, "rate limit", 30)
+        return None
+    except Exception as e:
+        log(f"OLLAMA_CLOUD_ERROR [{label}]: {e}")
+        if _network_error(e):
+            _cloud_trip_network(e, 60)
+        return None
+
+
 def _ask_claf(messages, timeout=45):
     """Route through CLAF (~/projects/claf) — the router this whole stack
-    is documented to use (see this file's own CLAUDE.md architecture
     note), running as claf.service. Only for AUTO/unpinned cloud
     escalation: CLAF's provider selection (claf_config.select_provider)
     picks by its own tier/hard-task logic and does not honor a specific
@@ -5572,6 +5630,9 @@ def ask_cloud(messages, provider="opencode"):
     elif (provider or "").startswith("groq::"):
         _m = provider[len("groq::"):]
         _asker = lambda msgs, _m=_m: _ask_groq(msgs, _m, _m)
+    elif (provider or "").startswith("ollama-cloud::"):
+        _m = provider[len("ollama-cloud::"):]
+        _asker = lambda msgs, _m=_m: _ask_ollama_cloud(msgs, _m, _m)
     elif "/" in (provider or ""):
         # Arbitrary OpenRouter catalog id (e.g. "anthropic/claude-3.5-sonnet")
         # picked via `model or search ...` — not one of the curated named
@@ -5638,7 +5699,7 @@ def ask_model_router(messages, model=None, max_tokens=None):
 
     # Cloud providers: named lanes, OpenRouter catalog slugs, or provider::model prefixes
     if (mlow in CLOUD_MODEL_NAMES or "/" in (model or "") or
-        mlow.startswith(("nvidia::", "cerebras::", "groq::"))):
+        mlow.startswith(("nvidia::", "cerebras::", "groq::", "ollama-cloud::"))):
         text = ask_cloud(messages, provider=model)
     else:
         # Local Ollama. If max_tokens is set, call directly so we can pass
