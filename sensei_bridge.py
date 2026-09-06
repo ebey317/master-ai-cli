@@ -385,7 +385,11 @@ import urllib.parse
 
 SENSEI_TOOLS_MODE = os.environ.get("SENSEI_TOOLS_MODE", "0") == "1"
 LOCAL_TOOLS_TIMEOUT = float(os.environ.get("SENSEI_LOCAL_TOOLS_TIMEOUT", "120"))
-CLOUD_TOOLS_TIMEOUT = float(os.environ.get("SENSEI_CLOUD_TOOLS_TIMEOUT", "20"))
+# 2026-09-06: was 20 — too short once max_tokens went 1000->4096 for the
+# reasoning-model fix above. Reproduced directly: a "detailed strategy"
+# prompt hit this timeout before the model finished, side panel showed
+# "chat backend unreachable" again. 60 gives real prompts room to finish.
+CLOUD_TOOLS_TIMEOUT = float(os.environ.get("SENSEI_CLOUD_TOOLS_TIMEOUT", "60"))
 _KEYS_FILE = os.path.expanduser("~/.master_ai_keys")
 
 
@@ -485,15 +489,22 @@ def _ollama_chat_tools(model: str, messages: list[dict], timeout: float) -> dict
 # curl, confirmed it (and every other -free ID that worked on 2026-08-27) no
 # longer appears in the relay's own /v1/models list at all. OpenCode fully
 # rotated/discontinued that free-tier cohort; not fixable by a header/key
-# change on our end. Re-surveyed /v1/models and tested every current
-# -free-suffixed ID directly against /chat/completions with the same empty
-# Authorization header: "nemotron-3.5-lightning-free" returned clean
-# tool_calls (verified with the same BROWSER_TOOLS-shaped request this
-# function sends). It's a reasoning model (emits a "reasoning" field before
-# tool_calls), so it burns more tokens per call than laguna did — max_tokens
-# bumped 500->1000 to keep that from truncating the actual tool call.
+# change on our end.
+#
+# First replacement, "nemotron-3.5-lightning-free", correctly returned
+# tool_calls but turned out to be a heavy "thinking" reasoner: on real prompts
+# (not trivial "say hi" tests) it dumped raw chain-of-thought straight into
+# `content` whenever it ran out of budget mid-reasoning (reproduced live —
+# that's what the side panel showed as a "red screen" reply), and even with
+# 4096 tokens a substantial prompt took 60s+ and timed out. No token budget
+# fixed both problems at once for this model with this system prompt.
+#
+# "ling-3.0-flash-fin-free" instead: content starts clean immediately (no
+# leaked reasoning ever observed), correct tool_calls verified, and 2-7s
+# response times on the same prompts that took nemotron 20-38s. Actually
+# fast, not just named that way.
 _OPENCODE_FREE_URL = "https://opencode.ai/zen/v1/chat/completions"
-_OPENCODE_FREE_MODEL = "nemotron-3.5-lightning-free"
+_OPENCODE_FREE_MODEL = "ling-3.0-flash-fin-free"
 _OPENCODE_FREE_HEADERS = {
     "Content-Type": "application/json",
     "Authorization": "",  # relay 401s if this header is absent entirely
@@ -514,7 +525,12 @@ def _opencode_free_chat_tools(messages: list[dict], timeout: float) -> dict:
     the relay is anonymous/keyless for this specific model."""
     body = json.dumps({
         "model": _OPENCODE_FREE_MODEL,
-        "max_tokens": 1000,
+        # 2026-09-06: ling-3.0-flash-fin-free doesn't leak reasoning into
+        # content (unlike the nemotron model tried first — see comment above
+        # _OPENCODE_FREE_MODEL), so this budget only needs to cover a real
+        # answer, not a chain-of-thought too. 3000 with room to spare at the
+        # ~2-7s response times measured directly for this model.
+        "max_tokens": 3000,
         "messages": messages,
         "tools": BROWSER_TOOLS,
     }).encode("utf-8")
