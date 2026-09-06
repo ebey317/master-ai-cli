@@ -573,9 +573,10 @@ def run_plan_debate(query: str, *,
     b = planner_b or default_model
     m = merger or a
     # Fallback for the merge/verdict slot — a second free instruction-follower
-    # (laguna-s-2.1:free) so the convergence gate degrades gracefully instead
-    # of dying if the primary merger rate-limits or fails.
-    fb = fallback or "poolside/laguna-s-2.1:free"
+    # (mimo-v2.5-free on OpenCode Zen, keyless + separate infra from OpenRouter)
+    # so the convergence gate degrades gracefully instead of dying if the
+    # primary merger rate-limits or fails.
+    fb = fallback or "opencode::mimo-v2.5-free"
 
     def _say(msg: str) -> None:
         if progress:

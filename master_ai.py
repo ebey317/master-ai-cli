@@ -439,7 +439,7 @@ PINNED_MODEL = None  # set by 'model' command to override auto-routing
 PLAN_DEBATE_PLANNER_A  = os.environ.get("PLAN_DEBATE_PLANNER_A", "ollama-cloud::kimi-k2.7-code")
 PLAN_DEBATE_PLANNER_B  = os.environ.get("PLAN_DEBATE_PLANNER_B", "ollama-cloud::deepseek-v4-pro")
 PLAN_DEBATE_MERGER     = os.environ.get("PLAN_DEBATE_MERGER", "minimax/minimax-m3:free")
-PLAN_DEBATE_FALLBACK   = os.environ.get("PLAN_DEBATE_FALLBACK", "poolside/laguna-s-2.1:free")
+PLAN_DEBATE_FALLBACK   = os.environ.get("PLAN_DEBATE_FALLBACK", "opencode::mimo-v2.5-free")
 PLAN_DEBATE_MAX_ROUNDS = int(os.environ.get("PLAN_DEBATE_MAX_ROUNDS", "6"))
 
 # ── AUTO-SAVE STATE ───────────────────────────────────────────
@@ -4988,6 +4988,47 @@ def ask_cloud_nvidia(messages):
 def ask_cloud_nvidia_nano(messages):
     return _ask_nvidia(messages, "nvidia/nemotron-3-nano-30b-a3b", "nemotron-3-nano-30b")
 
+def _ask_opencode_zen(messages, model, label, timeout=30):
+    """Generic OpenCode Zen relay caller — keyless, takes an explicit model id
+    so the plan-debate fallback can reach mimo-v2.5-free (a clean
+    instruction-follower) instead of only the hardcoded laguna-s-2.1-free."""
+    provider_key = f"opencode-free/{label}"
+    if not _cloud_allowed(provider_key):
+        return None
+    log(f"CLOUD [opencode-free/{label}]")
+    payload = {"model": model, "messages": messages,
+               "max_tokens": 1024, "stream": False}
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        "https://opencode.ai/zen/v1/chat/completions", data=data,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": "",  # relay 401s if this header is absent entirely
+            "User-Agent": "curl/8.5.0",
+            "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+            "X-Title": "Hermes Agent",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            result = json.loads(resp.read())
+            msg = result["choices"][0]["message"]
+            content = msg.get("content") or ""
+            if not content.strip():
+                content = msg.get("reasoning") or ""
+            return content
+    except urllib.error.HTTPError as e:
+        log(f"OPENCODE_FREE_ERROR [{label}]: HTTP {e.code}")
+        if e.code == 429:
+            _cloud_trip(provider_key, "rate limit", 30)
+        return None
+    except Exception as e:
+        log(f"OPENCODE_FREE_ERROR [{label}]: {e}")
+        if _network_error(e):
+            _cloud_trip_network(e, 60)
+        return None
+
+
 def ask_cloud_opencode_free(messages):
     """OpenCode's free Zen relay — keyless (no account, nothing to leak or
     run out of, not subject to any other provider's shared rate limits).
@@ -4996,38 +5037,7 @@ def ask_cloud_opencode_free(messages):
     ~/.hermes/hermes-agent/plugins/model-providers/opencode-free/__init__.py
     and ~/scripts/sensei_bridge.py's _opencode_free_chat_tools for the
     same pattern, verified working 2026-08-27."""
-    provider_key = "opencode-free"
-    if not _cloud_allowed(provider_key):
-        return None
-    log("CLOUD [opencode-free/laguna-s-2.1-free]")
-    payload = {"model": "laguna-s-2.1-free", "messages": messages,
-               "max_tokens": 1024, "stream": False}
-    data = json.dumps(payload).encode()
-    req = urllib.request.Request(
-        "https://opencode.ai/zen/v1/chat/completions", data=data,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": "",  # relay 401s if this header is absent entirely
-            # Cloudflare in front of this relay bot-blocks (403) Python
-            # urllib's default User-Agent string — any normal UA clears it.
-            "User-Agent": "curl/8.5.0",
-            "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-            "X-Title": "Hermes Agent",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read())["choices"][0]["message"]["content"]
-    except urllib.error.HTTPError as e:
-        log(f"OPENCODE_FREE_ERROR: HTTP {e.code}")
-        if e.code == 429:
-            _cloud_trip(provider_key, "rate limit", 30)
-        return None
-    except Exception as e:
-        log(f"OPENCODE_FREE_ERROR: {e}")
-        if _network_error(e):
-            _cloud_trip_network(e, 60)
-        return None
+    return _ask_opencode_zen(messages, "laguna-s-2.1-free", "laguna-s-2.1-free")
 
 def ask_cloud_openai(messages):
     if not _cloud_allowed("openai"):
@@ -5634,6 +5644,9 @@ def ask_cloud(messages, provider="opencode"):
     elif (provider or "").startswith("ollama-cloud::"):
         _m = provider[len("ollama-cloud::"):]
         _asker = lambda msgs, _m=_m: _ask_ollama_cloud(msgs, _m, _m)
+    elif (provider or "").startswith("opencode::"):
+        _m = provider[len("opencode::"):]
+        _asker = lambda msgs, _m=_m: _ask_opencode_zen(msgs, _m, _m)
     elif "/" in (provider or ""):
         # Arbitrary OpenRouter catalog id (e.g. "anthropic/claude-3.5-sonnet")
         # picked via `model or search ...` — not one of the curated named
@@ -5700,7 +5713,7 @@ def ask_model_router(messages, model=None, max_tokens=None):
 
     # Cloud providers: named lanes, OpenRouter catalog slugs, or provider::model prefixes
     if (mlow in CLOUD_MODEL_NAMES or "/" in (model or "") or
-        mlow.startswith(("nvidia::", "cerebras::", "groq::", "ollama-cloud::"))):
+        mlow.startswith(("nvidia::", "cerebras::", "groq::", "ollama-cloud::", "opencode::"))):
         text = ask_cloud(messages, provider=model)
     else:
         # Local Ollama. If max_tokens is set, call directly so we can pass
