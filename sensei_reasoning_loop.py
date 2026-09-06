@@ -506,19 +506,150 @@ def run_reasoning_loop(query: str, *,
     return result
 
 
+# ── Plan Debate (brainstorm mode) ─────────────────────────────
+# Elijah's merge-to-consensus multi-agent planning. Two models brainstorm
+# a plan together and converge on ONE plan instead of arguing forever.
+# See ~/master-ai-cli/BRAINSTORM_MODE.md for the full design.
+
+PLAN_DEBATE_KEEP_RULE = (
+    "Keep everything the two plans already agree on. Only change the parts "
+    "where they disagree or where a real gap exists. Do not add new scope."
+)
+
+
+def _plan_debate_verdict(text: str) -> str:
+    """Extract the verdict ('build' | 'critique' | 'unknown') from a revision.
+
+    The verdict is emitted on the FIRST line so truncation can't eat it.
+    """
+    t = (text or "").strip().lower()
+    lines = [ln.strip().lower() for ln in t.splitlines() if ln.strip()]
+    if lines:
+        first = lines[0]
+        if "build it" in first and "critique" not in first:
+            return "build"
+        if "critique it" in first:
+            return "critique"
+    for ln in lines:
+        if "build it" in ln and "critique" not in ln:
+            return "build"
+        if "critique it" in ln:
+            return "critique"
+    if "build it" in t and "critique it" not in t:
+        return "build"
+    if "critique it" in t:
+        return "critique"
+    return "unknown"
+
+
+def run_plan_debate(query: str, *,
+                    planner_a: str | None = None,
+                    planner_b: str | None = None,
+                    merger: str | None = None,
+                    max_rounds: int = 8,
+                    progress: bool = True) -> dict:
+    """Run the merge-to-consensus planning loop.
+
+    Returns a dict:
+      {
+        'query': str,
+        'plan': str,            # the converged ONE plan
+        'rounds': int,          # critique/revise rounds spent
+        'converged': bool,      # True if both said "build it"
+        'stages': {'seed_a', 'seed_b', 'merge', 'rounds': [...]},
+      }
+    """
+    default_model = None
+    try:
+        import master_ai
+        default_model = (master_ai.PINNED_MODEL
+                         or master_ai.MODELS.get("master")
+                         or "master-ai")
+    except Exception:
+        default_model = "master-ai"
+
+    a = planner_a or default_model
+    b = planner_b or default_model
+    m = merger or a
+
+    def _say(msg: str) -> None:
+        if progress:
+            print(msg, flush=True)
+
+    result: dict[str, Any] = {
+        "query": query, "plan": "", "rounds": 0, "converged": False,
+        "stages": {},
+    }
+
+    # 1. Simultaneous seed — two parallel plans.
+    _say(f"🧠 [plan_debate] SEED A ({a}) + SEED B ({b})...")
+    seed = (f"Here is a task. Draft a concise, concrete step-by-step plan for it.\n\n"
+            f"Task: {query}")
+    plan_a = _model_chat(a, "", seed, num_predict=2000)[0]
+    plan_b = _model_chat(b, "", seed, num_predict=2000)[0]
+    result["stages"]["seed_a"] = plan_a
+    result["stages"]["seed_b"] = plan_b
+
+    # 2. MERGE — one model receives BOTH plans, produces ONE unified plan.
+    _say(f"🧠 [plan_debate] MERGE ({m})...")
+    merged = _model_chat(m, "", (
+        f"Here are TWO plans for the same task. Merge them into ONE unified, "
+        f"complete plan that combines the best of both and fills any gaps. "
+        f"Output only the single merged plan.\n\n"
+        f"Task: {query}\n\nPLAN A:\n{plan_a}\n\nPLAN B:\n{plan_b}"
+    ), num_predict=2000)[0]
+    result["stages"]["merge"] = merged
+
+    # 3. Critique/revise loop with the keep-agree rule + verdict gate.
+    plan = merged
+    rounds = []
+    for rnd in range(1, max_rounds + 1):
+        crit = _model_chat(b, "", (
+            f"Critique this plan for the task. {PLAN_DEBATE_KEEP_RULE} List only "
+            f"the concrete flaws, gaps, or disagreements that still need fixing. "
+            f"Do NOT write a new plan.\n\nTask: {query}\n\nPlan:\n{plan}"
+        ), num_predict=1200)[0]
+
+        plan = _model_chat(a, "", (
+            f"Here is a plan and a critique of it. {PLAN_DEBATE_KEEP_RULE} Revise "
+            f"the plan to address ONLY the critique points, then output the full "
+            f"revised plan. On the FIRST line, write exactly one of: 'critique it' "
+            f"(if it still needs another review) or 'build it' (if it is now "
+            f"complete and correct). Then output the plan below that line.\n\n"
+            f"Task: {query}\n\nPlan:\n{plan}\n\nCritique:\n{crit}"
+        ), num_predict=2000)[0]
+
+        v = _plan_debate_verdict(plan)
+        rounds.append({"round": rnd, "verdict": v, "critique": crit, "plan": plan})
+        _say(f"    round {rnd}: verdict={v}")
+
+        if v == "build":
+            result["converged"] = True
+            break
+
+    result["rounds"] = len(rounds)
+    result["stages"]["rounds"] = rounds
+    result["plan"] = plan
+    return result
+
+
 # ── CLI ───────────────────────────────────────────────────────
 def _main() -> int:
     import argparse
     ap = argparse.ArgumentParser(
-        description="Sensei Reasoning Loop — Planner/Solver/Critic/Finalizer"
+        description="Sensei Reasoning Loop — Planner/Solver/Critic/Finalizer + plan_debate"
     )
     ap.add_argument("query", nargs="+", help="the user question")
-    ap.add_argument("--mode", choices=("fast", "standard", "deep", "max"),
+    ap.add_argument("--mode", choices=("fast", "standard", "deep", "max", "plan_debate"),
                     default="standard")
     ap.add_argument("--planner",   default=None)
     ap.add_argument("--solver",    default=None)
     ap.add_argument("--critic",    default=None)
     ap.add_argument("--finalizer", default=None)
+    ap.add_argument("--planner-a", default=None, help="plan_debate: proposer/reviser model")
+    ap.add_argument("--planner-b", default=None, help="plan_debate: critic model")
+    ap.add_argument("--merger",    default=None, help="plan_debate: merge model")
+    ap.add_argument("--max-rounds", type=int, default=8, help="plan_debate: safety cap")
     ap.add_argument("--memory", default=None,
                     help="optional .jsonl file to persist loops across runs")
     ap.add_argument("--json", action="store_true",
@@ -528,6 +659,28 @@ def _main() -> int:
     args = ap.parse_args()
 
     query = " ".join(args.query).strip()
+
+    if args.mode == "plan_debate":
+        out = run_plan_debate(
+            query,
+            planner_a=args.planner_a,
+            planner_b=args.planner_b,
+            merger=args.merger,
+            max_rounds=args.max_rounds,
+            progress=not args.quiet,
+        )
+        if args.json:
+            print(json.dumps(out, indent=2))
+        else:
+            print()
+            print("─" * 60)
+            print("  CONVERGED PLAN" if out["converged"] else "  PLAN (no convergence)")
+            print("─" * 60)
+            print(out["plan"])
+            print()
+            print(f"  rounds: {out['rounds']}  converged: {out['converged']}")
+        return 0 if out["converged"] else 1
+
     models = {
         "planner": args.planner, "solver": args.solver,
         "critic": args.critic,  "finalizer": args.finalizer,
