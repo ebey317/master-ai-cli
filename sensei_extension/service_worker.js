@@ -593,18 +593,21 @@ chrome.runtime.onInstalled.addListener(async () => {
     await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
   }
   await restoreSchedules();
-
-  // Panel-free trigger: right-click → "Ask Sensei" on any page.
-  if (chrome.contextMenus?.create) {
-    chrome.contextMenus.removeAll(() => {
-      chrome.contextMenus.create({
-        id: "sensei-ask",
-        title: "Ask Sensei to act on this page",
-        contexts: ["page", "selection", "link", "image"],
-      });
-    });
-  }
 });
+
+// Panel-free trigger: right-click → "Ask Sensei" on any page.
+// Created at top level (NOT inside onInstalled) so it also registers on a
+// plain extension reload — onInstalled only fires on install/update, so a
+// reload would otherwise leave the context menu missing.
+if (chrome.contextMenus?.create) {
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: "sensei-ask",
+      title: "Ask Sensei to act on this page",
+      contexts: ["page", "selection", "link", "image"],
+    });
+  });
+}
 
 chrome.runtime.onStartup?.addListener(() => {
   restoreSchedules().catch(() => {});
