@@ -316,6 +316,7 @@ def _ollama_chat(model: str, messages: list[dict], timeout: float = 90.0, stream
         "messages": messages,
         "stream": stream,
         "keep_alive": "1h",
+        "think": "medium",
     }).encode("utf-8")
     req = urllib.request.Request(
         f"{OLLAMA}/api/chat",
@@ -465,6 +466,7 @@ def _ollama_chat_tools(model: str, messages: list[dict], timeout: float) -> dict
         "tools": BROWSER_TOOLS,
         "stream": False,
         "keep_alive": "1h",
+        "think": "medium",
     }).encode("utf-8")
     req = urllib.request.Request(
         f"{OLLAMA}/api/chat",
@@ -512,6 +514,11 @@ _OPENCODE_FREE_HEADERS = {
     "User-Agent": "curl/8.5.0",
     "HTTP-Referer": "https://hermes-agent.nousresearch.com",
     "X-Title": "Hermes Agent",
+    # 2026-09-07: the relay now REQUIRES this header — without it every call
+    # returns 400 "MissingSessionID ... cannot be routed efficiently". Any
+    # stable value works; we use a fixed session id so the relay can route
+    # consistently.
+    "x-opencode-session": "sensei-bridge",
 }
 
 
