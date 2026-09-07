@@ -44,18 +44,16 @@ OLLAMA = "http://127.0.0.1:11434"
 # Ollama's 404 ("model 'opencode-free/laguna-s-2.1-free' not found",
 # reproduced directly) and silently fell through to the cloud escalation
 # every time. "Local-first" was never actually running locally-first.
-# Fixed to a real, verified-working local model name (qwen2.5:7b — confirmed
-# it returns correct tool_calls) for whenever local tool-calling is turned
-# back on. It's off by default right now (see LOCAL_TOOLS_ENABLED below) —
-# operator call: qwen2.5:7b took 22s round-trip (9s just loading into RAM)
-# on this box, not viable until more RAM is available.
-DEFAULT_MODEL = os.environ.get("SENSEI_MODEL", "qwen2.5:7b")
+# 2026-09-06: consolidated to a single VLM (qwen3-vl:8b) — language + vision
+# in one model. Replaces the old qwen2.5:7b (text) + qwen2.5vl:7b (vision)
+# pair, which were removed to free RAM.
+DEFAULT_MODEL = os.environ.get("SENSEI_MODEL", "qwen3-vl:8b")
 
 # 2026-09-06: side panel forced cloud-only — local model load time (~9s) plus
 # inference is too slow on current RAM. Set SENSEI_LOCAL_TOOLS=1 to re-enable
 # the local-first attempt once more RAM is available.
 LOCAL_TOOLS_ENABLED = os.environ.get("SENSEI_LOCAL_TOOLS", "0") == "1"
-VISION_MODEL = os.environ.get("SENSEI_VISION_MODEL", "qwen2.5vl:7b")
+VISION_MODEL = os.environ.get("SENSEI_VISION_MODEL", "qwen3-vl:8b")
 
 
 TOOL_CATALOG = """
@@ -1193,11 +1191,11 @@ class Handler(BaseHTTPRequestHandler):
                         model_used = model
                     except urllib.error.HTTPError as cloud_err:
                         if getattr(cloud_err, "code", None) in (503, 502, 504, 429):
-                            _audit({"event": "cloud_relay_unavailable", "code": cloud_err.code, "fallback": "qwen2.5:7b"})
-                            resp = _ollama_chat("qwen2.5:7b", msgs, timeout=120.0)
+                            _audit({"event": "cloud_relay_unavailable", "code": cloud_err.code, "fallback": "qwen3-vl:8b"})
+                            resp = _ollama_chat("qwen3-vl:8b", msgs, timeout=120.0)
                             reply_text = (resp.get("message") or {}).get("content") or ""
                             actions, cleaned = parse_directives(reply_text)
-                            model_used = "qwen2.5:7b"
+                            model_used = "qwen3-vl:8b"
                         else:
                             raise
                 else:
