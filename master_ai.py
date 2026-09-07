@@ -4355,6 +4355,7 @@ def ask_local(messages, model=None, image_path=None):
     # from blocking the input loop for minutes on CPU.
     payload = {"model": model, "messages": messages, "stream": False,
                "keep_alive": "60s" if model == MODELS.get("vision") else "30m",
+               "think": "medium",
                "options": {"num_ctx": 4096}}
     if image_path:
         try:
@@ -4578,6 +4579,7 @@ def ask_local_stream(messages, model=None, image_path=None):
     messages = _inject_few_shot(messages, model)
     payload = {"model": model, "messages": messages, "stream": True,
                "keep_alive": "60s" if model == MODELS.get("vision") else "30m",
+               "think": "medium",
                "options": {"num_ctx": 4096}}
     if image_path:
         try:
@@ -5731,6 +5733,7 @@ def ask_model_router(messages, model=None, max_tokens=None):
                 "messages": messages,
                 "stream": False,
                 "keep_alive": "30m",
+                "think": "medium",
                 "options": {"num_ctx": 4096, "num_predict": max_tokens},
             }
             try:
