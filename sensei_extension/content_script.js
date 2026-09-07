@@ -2900,6 +2900,90 @@ if (globalThis.__SENSEI_ENABLE_TEST_API__) {
   };
 }
 
+// ── Panel-free prompt bar + result overlay ──────────────────────────────
+// Claude-for-Chrome parity: a floating input so the operator can ask Sensei
+// to act on the page without opening the side panel. The service worker
+// drives the agent loop; this UI is just the trigger + result surface.
+
+const _SENSEI_PROMPT_BAR_ID = "__sensei_prompt_bar__";
+const _SENSEI_RESULT_ID = "__sensei_result_toast__";
+
+function _senseiPromptBarShow(placeholder) {
+  try {
+    let bar = document.getElementById(_SENSEI_PROMPT_BAR_ID);
+    if (!bar) {
+      bar = document.createElement("div");
+      bar.id = _SENSEI_PROMPT_BAR_ID;
+      bar.style.cssText = "position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:2147483647;display:flex;gap:8px;align-items:center;background:rgba(15,18,22,0.96);border:1px solid #c7761a;border-radius:8px;padding:8px 10px;box-shadow:0 6px 24px rgba(0,0,0,0.45);font-family:ui-sans-serif,system-ui,sans-serif;";
+      const input = document.createElement("input");
+      input.id = "__sensei_prompt_input__";
+      input.type = "text";
+      input.style.cssText = "width:340px;max-width:60vw;background:transparent;border:none;outline:none;color:#e9d6b5;font-size:13px;";
+      input.placeholder = placeholder;
+      const go = document.createElement("button");
+      go.id = "__sensei_prompt_go__";
+      go.textContent = "Ask";
+      go.style.cssText = "background:#c7761a;color:#0f1216;border:none;border-radius:5px;padding:5px 12px;font-size:12px;font-weight:600;cursor:pointer;";
+      const cancel = document.createElement("button");
+      cancel.id = "__sensei_prompt_cancel__";
+      cancel.textContent = "✕";
+      cancel.style.cssText = "background:transparent;color:#8a8f98;border:none;font-size:14px;cursor:pointer;padding:2px 6px;";
+      bar.appendChild(input);
+      bar.appendChild(go);
+      bar.appendChild(cancel);
+      document.documentElement.appendChild(bar);
+
+      const submit = () => {
+        const text = input.value.trim();
+        if (!text) return;
+        _senseiPromptBarHide();
+        // Hand the prompt to the service worker to run the agent loop.
+        try {
+          chrome.runtime.sendMessage({ type: "SENSEI_PROMPT_SUBMITTED", prompt: text }, () => {});
+        } catch (_e) {}
+      };
+      go.addEventListener("click", submit);
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") submit();
+        if (e.key === "Escape") _senseiPromptBarHide();
+      });
+      cancel.addEventListener("click", _senseiPromptBarHide);
+      setTimeout(() => input.focus(), 0);
+    } else {
+      bar.style.display = "flex";
+      const input = document.getElementById("__sensei_prompt_input__");
+      if (input) { input.value = ""; setTimeout(() => input.focus(), 0); }
+    }
+  } catch (_e) {}
+}
+
+function _senseiPromptBarHide() {
+  try {
+    const bar = document.getElementById(_SENSEI_PROMPT_BAR_ID);
+    if (bar) bar.style.display = "none";
+  } catch (_e) {}
+}
+
+function _senseiResultShow(text, status) {
+  try {
+    let toast = document.getElementById(_SENSEI_RESULT_ID);
+    if (!toast) {
+      toast = document.createElement("div");
+      toast.id = _SENSEI_RESULT_ID;
+      toast.style.cssText = "position:fixed;bottom:16px;right:16px;z-index:2147483647;max-width:420px;padding:10px 14px;background:rgba(15,18,22,0.96);color:#e9d6b5;border:1px solid #c7761a;border-radius:8px;font-family:ui-sans-serif,system-ui,sans-serif;font-size:12px;line-height:1.45;box-shadow:0 6px 24px rgba(0,0,0,0.45);white-space:pre-wrap;word-break:break-word;";
+      document.documentElement.appendChild(toast);
+    }
+    const color = status === "error" ? "#e06c6c" : status === "working" ? "#c7761a" : "#7fb069";
+    toast.style.borderColor = color;
+    toast.textContent = String(text || "").slice(0, 1200);
+    toast.style.display = "block";
+    if (toast._hideTimer) clearTimeout(toast._hideTimer);
+    if (status !== "working") {
+      toast._hideTimer = setTimeout(() => { toast.style.display = "none"; }, 12000);
+    }
+  } catch (_e) {}
+}
+
 if (globalThis.chrome?.runtime?.onMessage?.addListener) {
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "SENSEI_PING") {
@@ -2962,6 +3046,36 @@ if (globalThis.chrome?.runtime?.onMessage?.addListener) {
 
     if (message?.type === "SENSEI_RECORD_STOP") {
       sendResponse(stopWorkflowRecording());
+      return false;
+    }
+
+    // ── Panel-free prompt bar (Claude-for-Chrome parity) ────────────────
+    // Lets the operator ask Sensei to act on the page WITHOUT opening the
+    // side panel. The service worker fires these; the content script owns
+    // the floating UI so it can live on any page (including chrome:// and
+    // file:// where the side panel can't attach).
+    if (message?.type === "SENSEI_SHOW_PROMPT_BAR") {
+      _senseiPromptBarShow(String(message.placeholder || "Ask Sensei to act on this page…"));
+      sendResponse({ ok: true });
+      return false;
+    }
+
+    if (message?.type === "SENSEI_HIDE_PROMPT_BAR") {
+      _senseiPromptBarHide();
+      sendResponse({ ok: true });
+      return false;
+    }
+
+    if (message?.type === "SENSEI_PREFILL_PROMPT") {
+      const input = document.getElementById("__sensei_prompt_input__");
+      if (input) { input.value = String(message.text || ""); input.focus(); }
+      sendResponse({ ok: true });
+      return false;
+    }
+
+    if (message?.type === "SENSEI_SHOW_RESULT") {
+      _senseiResultShow(String(message.text || ""), String(message.status || "done"));
+      sendResponse({ ok: true });
       return false;
     }
 

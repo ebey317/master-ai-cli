@@ -593,6 +593,17 @@ chrome.runtime.onInstalled.addListener(async () => {
     await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
   }
   await restoreSchedules();
+
+  // Panel-free trigger: right-click → "Ask Sensei" on any page.
+  if (chrome.contextMenus?.create) {
+    chrome.contextMenus.removeAll(() => {
+      chrome.contextMenus.create({
+        id: "sensei-ask",
+        title: "Ask Sensei to act on this page",
+        contexts: ["page", "selection", "link", "image"],
+      });
+    });
+  }
 });
 
 chrome.runtime.onStartup?.addListener(() => {
@@ -615,7 +626,164 @@ chrome.action.onClicked.addListener(async (tab) => {
   }
 });
 
+// ── Panel-free agent loop (Claude-for-Chrome parity) ────────────────────
+// Runs a full Sensei turn WITHOUT the side panel: reads the page via the
+// AX-tree snapshot, POSTs to the bridge /chat, then executes any returned
+// BROWSER_* actions through the content script. The floating prompt bar +
+// result toast live in content_script.js; this is the orchestration.
+
+async function _backendFetch(path, body) {
+  const cfg = await storageGet(["backendUrl", "token"]);
+  const base = String(cfg.backendUrl || DEFAULTS.backendUrl).replace(/\/+$/, "");
+  const res = await fetch(`${base}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Master-AI-Token": String(cfg.token || ""),
+    },
+    body: JSON.stringify(body),
+  });
+  return res.json();
+}
+
+async function _activeTabId() {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tabs?.[0]?.id ?? null;
+}
+
+async function _sendToTab(tabId, message) {
+  try {
+    return await chrome.tabs.sendMessage(tabId, message);
+  } catch (_err) {
+    // Content script not injected yet — inject and retry once.
+    try {
+      await chrome.scripting.executeScript({ target: { tabId }, files: ["content_script.js"] });
+      return await chrome.tabs.sendMessage(tabId, message);
+    } catch (_err2) {
+      return null;
+    }
+  }
+}
+
+async function _runPanelFreeAgent(prompt, tabId) {
+  const tab = tabId ?? (await _activeTabId());
+  if (!Number.isInteger(tab)) {
+    return { ok: false, error: "no active tab" };
+  }
+
+  // 1. Read the page (AX-tree snapshot, same as the side panel uses).
+  let pageContext = {};
+  try {
+    const snap = await buildAxSnapshot(tab);
+    pageContext = {
+      url: snap.snapshot?.url || "",
+      title: snap.snapshot?.title || "",
+      ax_tree: snap.snapshot || {},
+    };
+  } catch (_err) {
+    pageContext = { url: "", title: "", ax_tree: {} };
+  }
+
+  // 2. Ask the bridge (the real agent backend).
+  const cfg = await storageGet(["sessionId", "mode"]);
+  let data;
+  try {
+    data = await _backendFetch("/chat", {
+      prompt,
+      mode: String(cfg.mode || "review"),
+      source: "chrome_extension_panelfree",
+      session_id: String(cfg.sessionId || `sensei-${crypto.randomUUID()}`),
+      page_context: pageContext,
+    });
+  } catch (err) {
+    return { ok: false, error: `bridge unreachable: ${err?.message || err}` };
+  }
+
+  const reply = String(data?.reply || "");
+  const actions = Array.isArray(data?.actions) ? data.actions : [];
+
+  // 3. Execute actions through the content script (with the mirror overlay).
+  const results = [];
+  for (const action of actions) {
+    const kind = String(action?.kind || "").toUpperCase();
+    if (kind === "BROWSER_NAV") {
+      try {
+        await chrome.tabs.update(tab, { url: action.target });
+        results.push({ kind, ok: true });
+      } catch (err) {
+        results.push({ kind, ok: false, error: String(err?.message || err) });
+      }
+      continue;
+    }
+    const r = await _sendToTab(tab, { type: "SENSEI_EXECUTE_ACTION", action });
+    results.push({ kind, ...(r || { ok: false, error: "content script unavailable" }) });
+  }
+
+  return { ok: true, reply, actions, results, model: data?.model || "" };
+}
+
+async function _showPromptBar(tabId) {
+  const tab = tabId ?? (await _activeTabId());
+  if (!Number.isInteger(tab)) return;
+  await _sendToTab(tab, { type: "SENSEI_SHOW_PROMPT_BAR" });
+}
+
+async function _showResult(tabId, text, status) {
+  const tab = tabId ?? (await _activeTabId());
+  if (!Number.isInteger(tab)) return;
+  await _sendToTab(tab, { type: "SENSEI_SHOW_RESULT", text, status });
+}
+
+// Keyboard shortcut (Ctrl+Shift+S) → open the floating prompt bar.
+chrome.commands?.onCommand?.addListener(async (command) => {
+  if (command === "ask-sensei") {
+    await _showPromptBar();
+  }
+});
+
+// Right-click → "Ask Sensei" → open the floating prompt bar (prefill with
+// selected text if any).
+chrome.contextMenus?.onClicked?.addListener(async (info, tab) => {
+  if (info.menuItemId !== "sensei-ask") return;
+  const tabId = tab?.id ?? (await _activeTabId());
+  if (!Number.isInteger(tabId)) return;
+  const prefill = String(info.selectionText || "").trim();
+  await _sendToTab(tabId, {
+    type: "SENSEI_SHOW_PROMPT_BAR",
+    placeholder: prefill ? `Ask Sensei about "${prefill.slice(0, 60)}"…` : "Ask Sensei to act on this page…",
+  });
+  if (prefill) {
+    // Prefill the input with the selection.
+    await _sendToTab(tabId, { type: "SENSEI_PREFILL_PROMPT", text: prefill });
+  }
+});
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "SENSEI_PROMPT_SUBMITTED") {
+    const prompt = String(message.prompt || "").trim();
+    const tabId = Number.isInteger(_sender?.tab?.id) ? _sender.tab.id : null;
+    if (!prompt) { sendResponse({ ok: false, error: "empty prompt" }); return false; }
+    (async () => {
+      const tab = tabId ?? (await _activeTabId());
+      if (Number.isInteger(tab)) {
+        await _showResult(tab, "Sensei is working…", "working");
+      }
+      const result = await _runPanelFreeAgent(prompt, tab);
+      if (Number.isInteger(tab)) {
+        if (result.ok) {
+          const done = result.actions.length
+            ? `Done. ${result.actions.length} action(s) run.\n\n${result.reply}`
+            : result.reply;
+          await _showResult(tab, done, "done");
+        } else {
+          await _showResult(tab, `Sensei error: ${result.error}`, "error");
+        }
+      }
+      sendResponse(result);
+    })();
+    return true;
+  }
+
   if (message?.type === "SENSEI_ACTIVE_TAB") {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       sendResponse({ tab: tabs?.[0] || null });
