@@ -349,31 +349,25 @@ _SETTINGS            = Path.home() / ".master_ai_settings"
 TTS_ENABLED          = "TTS_OFF" not in (_SETTINGS.read_text() if _SETTINGS.exists() else "")
 
 MODELS = {
-    # THE TRIFECTA (2026-04-19, master rebuilt 2026-04-21):
-    #   fast    — qwen2.5:3b   (spark — instant, <1s, ~2 GB RAM)
-    #   master  — master-ai    (custom: qwen2.5:7b + baked-in behavior SYSTEM)
-    #   vision  — llava        (eyes — image + multimodal chat, ~5 GB RAM)
-    # master-ai is built from ~/scripts/Modelfile-master-ai via `ollama create`.
-    # SYSTEM is baked into the model so behavior rules, directive taxonomy,
-    # senior-engineer habits, and save-path taxonomy are KV-cached once — no
-    # per-turn prompt cost. Rebuild after editing the Modelfile:
-    #   ollama create master-ai -f ~/scripts/Modelfile-master-ai
-    "fast":    "qwen2.5:3b",       # spark — briefings, idle, quick answers
-    "master":  "master-ai",        # primary — qwen2.5:7b + baked senior-engineer behavior
-    "vision":  "llava",            # eyes — scrap scanner, apothecary
-    "coder":   "master-ai",        # shared with master (same 7B base + rules)
-    "general": "master-ai",
-    "heavy":   "llava",            # text-capable local fallback
-    "qwen3":   "qwen3.5:cloud",    # cloud — complex analysis
-    "kimi":    "kimi-k2.5:cloud",  # cloud — best vision when online
+    # SINGLE-MODEL STACK (2026-09-06): consolidated to one VLM.
+    #   qwen3-vl:8b — language + vision in one model (RAG + eyes).
+    #   nomic-embed-text — the RAG embedding model (kept separately).
+    # master-ai / qwen2.5:7b / llava / qwen2.5:3b were removed to free RAM;
+    # every local slot now points at the single VLM.
+    "fast":    "qwen3-vl:8b",       # spark — briefings, idle, quick answers
+    "master":  "qwen3-vl:8b",       # primary — language + vision (VLM)
+    "vision":  "qwen3-vl:8b",       # eyes — image + multimodal chat
+    "coder":   "qwen3-vl:8b",       # shared with master (same VLM)
+    "general": "qwen3-vl:8b",
+    "heavy":   "qwen3-vl:8b",       # text-capable local fallback
+    "qwen3":   "qwen3.5:cloud",     # cloud — complex analysis
+    "kimi":    "kimi-k2.5:cloud",   # cloud — best vision when online
 }
 
 # All models with labels for the picker menu
 MODEL_MENU = [
     # ── LOCAL (your machine — private, free, no token limit) ──
-    ("master-ai",          "LOCAL  · Sensei primary · qwen2.5:7b + baked rules"),
-    ("qwen2.5:3b",         "LOCAL  · 3B · spark · instant · briefings · quick answers"),
-    ("llava",              "LOCAL  · multimodal · vision + chat · scanner"),
+    ("qwen3-vl:8b",        "LOCAL  · Sensei primary · VLM (language + vision)"),
     ("qwen3.5:cloud",      "LOCAL  · 397B · thinking · tools · vision"),
     ("kimi-k2.5:cloud",    "LOCAL  · 1T params · deep reasoning · vision"),
     # ── CLOUD (2026-08-27: restricted to the three keys operator actually
@@ -405,18 +399,20 @@ MODEL_COMMAND_ALIASES = {
     "smart": None,
     "default": None,
     "router": None,
-    "local": "master-ai",
-    "private": "master-ai",
-    "offline": "master-ai",
-    "master": "master-ai",
-    "sensei": "master-ai",
-    "primary": "master-ai",
-    "fast": "qwen2.5:3b",
-    "spark": "qwen2.5:3b",
-    "3b": "qwen2.5:3b",
-    "7b": "master-ai",
-    "qwen": "master-ai",
-    "vision": "llava",
+    "local": "qwen3-vl:8b",
+    "private": "qwen3-vl:8b",
+    "offline": "qwen3-vl:8b",
+    "master": "qwen3-vl:8b",
+    "sensei": "qwen3-vl:8b",
+    "primary": "qwen3-vl:8b",
+    "fast": "qwen3-vl:8b",
+    "spark": "qwen3-vl:8b",
+    "3b": "qwen3-vl:8b",
+    "7b": "qwen3-vl:8b",
+    "8b": "qwen3-vl:8b",
+    "qwen": "qwen3-vl:8b",
+    "vision": "qwen3-vl:8b",
+    "vlm": "qwen3-vl:8b",
     "deepseek": "deepseek-r1",
     "hermes": "hermes-405b",
     "gptoss": "gpt-oss-120b",
@@ -3293,10 +3289,10 @@ def orchestrate(history, user_text, image_path=None):
         if run_mode == "peacetime" and any_cloud and have_gemini:
             return {"route": "cloud_vision", "model": "gemini",
                     "reason": "connected vision → Gemini 2.0 Flash"}
-        # Local default: use local llava (no internet needed). Fall
-        # through to kimi:cloud only when llava isn't pulled.
+        # Local default: use the local VLM (no internet needed). Fall
+        # through to kimi:cloud only when the VLM isn't pulled.
         return {"route": "local", "model": MODELS["vision"],
-                "reason": "local vision → llava (image-confirmed)"}
+                "reason": "local vision → qwen3-vl:8b (image-confirmed)"}
 
     # 4. Ambiguous → ask the user
     amb = _is_ambiguous(stripped, words, history)
@@ -14941,8 +14937,8 @@ def handle(user_text, history, image_path=None, context_policy=None):
                 # than pull another. This branch exists specifically so
                 # privacy-flagged content never leaves the machine -- keep
                 # it local, just point it at a model that's really there.
-                print(f"  {D}🔒 private tool output — answering locally (qwen2.5:7b) instead of cloud{X}")
-                return ask_local_stream(history, model="qwen2.5:7b"), True
+                print(f"  {D}🔒 private tool output — answering locally (qwen3-vl:8b) instead of cloud{X}")
+                return ask_local_stream(history, model="qwen3-vl:8b"), True
             _spin2 = local_thinking_start()
             provider = "gemini" if route == "web" else (model if model in CLOUD_MODEL_NAMES else "groq")
             try:
@@ -17249,13 +17245,13 @@ def main():
                        f"  'project <path>' (scope a directory), 'refresh' (soft reload).",
             "sensei":  f"{C}🥷 Sensei IS this thing — the tmux terminal AI you're talking to.{X}\n"
                        f"  Runs master_ai.py, routes between local models + cloud.\n"
-                       f"  Current primary: qwen2.5:7b · fast tier: qwen2.5:3b · vision: llava.",
+                       f"  Current primary: qwen3-vl:8b (VLM — language + vision in one).",
             "local mode": f"{C}🥷 Local Mode:{X} the local-first state of Master AI.\n"
-                       f"  When cloud is unavailable, you rely on the trifecta (3b/7b/llava).\n"
+                       f"  When cloud is unavailable, you rely on the single VLM (qwen3-vl:8b).\n"
                        f"  Switch with `mode local`; return to cloud-first with `mode connected`.",
-            "trifecta": f"{C}🥷 The trifecta:{X} qwen2.5:3b (spark) + qwen2.5:7b (brain) + llava (eyes).\n"
-                       f"  Total ~11.3 GB disk, fits Elijah's budget ceiling.\n"
-                       f"  OLLAMA_MAX_LOADED_MODELS=2 recommended for master-ai + llava residency.",
+            "trifecta": f"{C}🥷 The stack:{X} qwen3-vl:8b (VLM — language + vision) + nomic-embed-text (RAG).\n"
+                       f"  Total ~6.4 GB disk (VLM + RAG embedder).\n"
+                       f"  OLLAMA_MAX_LOADED_MODELS=2 recommended for VLM + embedder residency.",
             "master ai": f"{C}🥷 Master AI{X} is the umbrella brand — NOT a single app.\n"
                        f"  Includes: menu (master.sh), Sensei (master_ai.py), Pupil (pupil.html),\n"
                        f"  Remote (menu 6), TTS (:5050), Ollama runtime (:11434).",
