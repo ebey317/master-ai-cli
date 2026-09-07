@@ -17737,8 +17737,14 @@ def main():
             # The debate converges to a single plan — treat it as ready.
             # (No <PLAN READY> marker needed; "build it" is the signal.)
             if plan_text.strip():
-                globals()['PENDING_PLAN_TEXT'] = plan_text[:1600]
+                globals()['PENDING_PLAN_TEXT'] = plan_text
                 globals()['PENDING_PLAN_REQUEST'] = user_text
+                # Show the FULL plan in the thread so Elijah can read it and
+                # edit before approving — not just the 1/2/3/4 buttons. He
+                # explicitly wants to see the entire plan, not a "go" prompt.
+                print(f"\n{C}  ── PLAN ──────────────────────────────{X}")
+                print(f"{W}{plan_text}{X}")
+                print(f"{C}  ────────────────────────────────────────{X}")
                 print(f"\n  {BTN_G} 1){X} Review step-by-step  ·  {BTN_Y} 2){X} edit  ·  "
                       f"{BTN_R} 3){X} no  ·  {BTN_C} 4){X} keep talking  ·  "
                       f"{BTN_G} A){X} finish in Auto")
