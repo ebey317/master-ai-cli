@@ -8255,6 +8255,7 @@ def show_help():
         ("SESSIONS & CACHE", [
             ("save session",         "save full chat + auto-generate summary now"),
             ("compact",              "save + summarize + restart with compacted history, on demand"),
+            ("compress",             "alias for compact — same save + summarize + restart"),
             ("load summary",         "inject last session summary into context"),
             ("load session",         "inject full last session transcript"),
             ("sessions list",        "list saved sessions by date + summary preview"),
@@ -16401,7 +16402,8 @@ def main():
         # orchestrate()'s routing check — there was no way to trigger it on
         # demand. This is the same call the automatic path makes, just
         # user-invoked instead of threshold-triggered.
-        if lo in ("compact", "compact history", "compact session"):
+        if lo in ("compact", "compact history", "compact session",
+                  "compress", "compress history", "compress session"):
             handle_save_refresh(history)  # execvp — never returns
             continue
 
