@@ -379,7 +379,7 @@ MODEL_MENU = [
     #    got rerouted to the one working nemotron slug, so keeping them as
     #    separate menu entries would just be three names for one model —
     #    dropped rather than left misleading.) ──
-    ("opencode",           "☁ FREE · OpenCode Zen — keyless, laguna-s-2.1-free"),
+    ("opencode",           "☁ FREE · OpenCode Zen — keyless, ling-3.0-flash-fin-free"),
     ("nvidia",             "☁ KEY  · NVIDIA NIM direct — Nemotron 3 Super 120B"),
     ("nemotron",           "☁ FREE · OpenRouter /free — Nemotron 3 Super 120B"),
     ("hermes-405b",        "☁ FREE · OpenRouter /free — Nemotron 3 Ultra 550B (larger, slower)"),
@@ -5041,12 +5041,11 @@ def _ask_opencode_zen(messages, model, label, timeout=30):
 def ask_cloud_opencode_free(messages):
     """OpenCode's free Zen relay — keyless (no account, nothing to leak or
     run out of, not subject to any other provider's shared rate limits).
-    Model 'laguna-s-2.1-free' is the confirmed-keyless one; other IDs on
-    this relay 401 without a real OpenCode account. See
-    ~/.hermes/hermes-agent/plugins/model-providers/opencode-free/__init__.py
-    and ~/scripts/sensei_bridge.py's _opencode_free_chat_tools for the
-    same pattern, verified working 2026-08-27."""
-    return _ask_opencode_zen(messages, "laguna-s-2.1-free", "laguna-s-2.1-free")
+    2026-09-06: 'laguna-s-2.1-free' (and the whole 2026-08-27 free cohort)
+    was rotated off the relay and now 401s. 'ling-3.0-flash-fin-free' is
+    the current working keyless model — clean content, no leaked reasoning,
+    2-7s responses. Matches sensei_bridge.py's _OPENCODE_FREE_MODEL."""
+    return _ask_opencode_zen(messages, "ling-3.0-flash-fin-free", "ling-3.0-flash-fin-free")
 
 def ask_cloud_openai(messages):
     if not _cloud_allowed("openai"):
@@ -5354,18 +5353,15 @@ def ask_cloud_openrouter(messages):
 def ask_cloud_opencode_free(messages):
     """OpenCode's free Zen relay — keyless (no account, nothing to leak or
     run out of, not subject to any other provider's shared rate limits).
-    2026-08-27: a same-day self-edit had rerouted this to OpenRouter,
-    apparently reading "only free models" as "only OpenRouter's /free
-    models" — but operator named OpenCode as one of his three approved
-    keys explicitly, separately from the OpenRouter free-only cleanup.
-    Restored to actually call OpenCode. Model 'laguna-s-2.1-free' is the
-    confirmed-keyless one; other IDs on this relay 401 without a real
-    OpenCode account."""
+    2026-09-06: 'laguna-s-2.1-free' (and the whole 2026-08-27 free cohort)
+    was rotated off the relay and now 401s. 'ling-3.0-flash-fin-free' is
+    the current working keyless model — clean content, no leaked reasoning,
+    2-7s responses. Matches sensei_bridge.py's _OPENCODE_FREE_MODEL."""
     provider_key = "opencode-free"
     if not _cloud_allowed(provider_key):
         return None
-    log("CLOUD [opencode-free/laguna-s-2.1-free]")
-    payload = {"model": "laguna-s-2.1-free", "messages": messages,
+    log("CLOUD [opencode-free/ling-3.0-flash-fin-free]")
+    payload = {"model": "ling-3.0-flash-fin-free", "messages": messages,
                "max_tokens": 1024, "stream": False}
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
