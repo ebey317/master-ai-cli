@@ -97,6 +97,7 @@ try:
         "commands", "controls", "shortcuts", "?",
         "tts on", "tts off", "tts",
         "hints", "project", "attach ", "search ", "dl ", "image: ", "image status ", "image latest",
+ "tinyfish", "tinyfish search ", "tinyfish fetch ", "tinyfish status", "tf search ", "tf fetch ", "tf status",
         "git", "git status",
         "git diff", "git log", "git commit ", "go", "cancel", "accessibility", "x",
         "how", "how we work", "hww", "agent:", "max:",
@@ -334,6 +335,12 @@ LAST_MODEL           = ""      # model name used by the most recent handle() —
 PENDING_PLAN_TEXT    = ""
 PENDING_PLAN_REQUEST = ""
 PENDING_USER_NOTE    = ""
+# 2026-09-07: continuation feature — set when a cloud reply's finish_reason
+# comes back "length" (cut off at max_tokens). Holds what's needed to
+# re-prompt the SAME model to pick up exactly where it stopped: the
+# messages that were actually sent (system+history+user turn), the partial
+# reply text so far, and which model/provider answered it.
+PENDING_CONTINUATION = None
 _NEXT_TURN_CONTEXT_POLICY = None  # one-turn override consumed by main() loop
 _NEXT_TURN_RESET_HISTORY  = False
 _NEXT_TURN_MARKER         = ""
@@ -713,6 +720,15 @@ _KV_KEY_MAP = {
     "HF_TOKEN": "huggingface",
     "NVIDIA_API_KEY": "nvidia",
     "NVIDIA_API_KEY_2": "nvidia2",
+    # 2026-09-07: Elijah's QwenCloud Token Plan (paid, $6/mo) — wired into
+    # Hermes already (see project_qwen_token_plan_setup memory), never into
+    # master-ai-cli until now. WS key confirmed dead (401) both back in
+    # August and re-verified live tonight — mapped anyway so it's visible/
+    # trackable rather than silently missing, but never used for dispatch.
+    "QWEN_TOKENPLAN_API_KEY": "qwen",
+    "QWEN_TOKENPLAN_WS_API_KEY": "qwen_ws",
+    "TINYFISH_API_KEY": "tinyfish",
+    "TELEGRAM_BOT_TOKEN": "telegram",
 }
 
 def _looks_like_real_key(val):
@@ -777,6 +793,16 @@ def _send_email_log(record):
     except Exception as e:
         try: log(f"SEND_EMAIL log write failed: {e}")
         except Exception: pass
+
+
+# ── telegram_client interface ─────────────────────────────────
+# Lazy import so Sensei starts fine even if telegram_client.py is missing.
+def send_telegram_message(chat_id, text, silent=False):
+    try:
+        import telegram_client as _tc
+        return _tc.send_message(chat_id, text, token=KEYS.get("telegram"), silent=silent)
+    except Exception as e:
+        return {"ok": False, "error": f"telegram_client failed: {e}", "message_id": None}
 
 
 # Multi-provider SMTP routing — Gmail / AOL / Outlook. Provider picked from
@@ -3307,15 +3333,13 @@ def orchestrate(history, user_text, image_path=None):
         return {"route": "recall_memory", "payload": payload,
                 "reason": "explicit recall trigger"}
 
-    # 5b2. Tool-required intent — must run on local Sensei.
-    # Cloud lanes (Groq, DeepSeek, Gemini) are text-only and either refuse
-    # ("I cannot run commands") or fabricate when asked to touch disk,
-    # memory, or project state. Catch the intent BEFORE peacetime/chat-class
-    # lanes grab it. Explicit `local:` / `fast:` prefixes already returned
-    # in step 2 — those still win if the user wants to override.
-    if tool_required:
-        return {"route": "local", "model": MODELS["master"],
-                "reason": "tool-required → Sensei (cloud lanes can't touch disk)"}
+    # 5b2. Tool-required intent — route through normal peacetime/cloud path.
+    # 2026-09-07: removed the forced-local override. It was causing every tool
+    # result to be summarized by the slow local model (10-minute replies).
+    # Cloud models can emit RUN:/READ: directives just fine; local code executes
+    # them. The `local:` / `private:` prefixes at step 2 still give an explicit
+    # local override when the user wants privacy.
+    # (Tool-required short-circuit intentionally removed; falls through.)
 
     # 5c. Current-events check — local brains can't know what happened today.
     # In Local Mode the default path is a frozen offline model with no
@@ -3439,7 +3463,7 @@ def orchestrate(history, user_text, image_path=None):
         candidates = [
             {"route": "local", "model": MODELS["coder"],
              "task_type": "code", "base_score": 86,
-             "reason": f"code → {MODELS['coder']} (qwen2.5:7b + Sensei SYSTEM, local)"}
+             "reason": f"code → {MODELS['coder']} (Sensei primary VLM, local)"}
         ]
         if _have_14b():
             candidates.append({"route": "local", "model": "qwen2.5:14b",
@@ -3986,15 +4010,26 @@ def wikihow_via_gemini(query, timeout=15):
 def web_search(query, max_results=4):
     """Top-level search. Queries several engines in parallel-ish priority,
     blends the best hits. Engines tried:
-      1. Gemini grounded (Google) — synthesized answer + sources
-      2. Wikipedia REST API       — encyclopedic grounding
-      3. DuckDuckGo               — raw web hits
-      4. DDG Instant Answer       — structured quick facts
-      5. WikiHow via Gemini       — only for "how to..." queries
+      1. TinyFish Search          — free/token-efficient web grounding when API key present
+      2. Gemini grounded (Google) — synthesized answer + sources
+      3. Wikipedia REST API       — encyclopedic grounding
+      4. DuckDuckGo               — raw web hits
+      5. DDG Instant Answer       — structured quick facts
+      6. WikiHow via Gemini       — only for "how to..." queries
     Returns a formatted string combining whichever engines answered.
     Every engine returns None on error, so the combiner tolerates any
     subset being down. Explicit "Search unavailable" only when ALL fail."""
     log(f"WEB_SEARCH: {query}")
+    try:
+        import tinyfish_client as _tf
+        if _tf.has_key():
+            tiny_res = _tf.search(query)
+            tiny_block = _tf.format_search(tiny_res, max_results=max_results)
+            if tiny_block:
+                log("WEB_SEARCH: TinyFish answered")
+                return tiny_block
+    except Exception as e:
+        log(f"TINYFISH_SEARCH_ERROR: {e}")
     gem    = gemini_grounded_search(query)
     brave  = brave_search(query, max_results=max_results)
     serper = serper_search(query, max_results=max_results)
@@ -4796,7 +4831,15 @@ def local_thinking_stop(handle):
     except Exception:
         pass
 
-# ── CLOUD AI ──────────────────────────────────────────────────
+# Inventory the local Ollama models actually installed so prompts don't
+# hallucinate deleted ones (qwen2.5:7b, master-ai:latest, llava, etc.).
+_LOCAL_MODEL_INVENTORY = (
+    "Local Ollama models currently installed: "
+    "qwen3-vl:8b (language + vision, Sensei primary), "
+    "nomic-embed-text:v1.5 (RAG embedder). "
+    "Deleted/legacy models are NOT present: master-ai:latest, "
+    "qwen2.5:7b, qwen2.5-coder:7b, llava, qwen2.5:3b."
+)
 MASTER_AI_IDENTITY_SYSTEM = (
     "You are Master AI — Elijah's collaborator on your-machine (Linux). "
     "You run as Sensei (tmux agent) or Pupil (browser UI), with Dojo (project picker), "
@@ -4804,7 +4847,14 @@ MASTER_AI_IDENTITY_SYSTEM = (
     "doctor/health command — every surface, every command, every file IS you. "
     "When the user says 'you' / 'your app' / 'this app' / 'this project,' they mean "
     "Master AI itself. Read those prompts as self-referential — never advise yourself "
-    "like a generic developer building from scratch."
+    "like a generic developer building from scratch.\n\n"
+    "2026-09-07 standing rule, every reply, no exceptions: any answer longer than a "
+    "couple sentences must end with a short 'Summary' section (2-5 sentences or bullets) "
+    "restating the core point in plain language. Every sentence in the reply, summary "
+    "included, must be a complete sentence ending in real terminal punctuation "
+    "(. ! or ?) — never stop mid-clause, mid-word, or on a dangling conjunction. If you "
+    "are running low on room to finish, cut detail from the middle, not the ending — the "
+    "summary and its closing punctuation must always land."
 )
 
 def _inject_identity(messages):
@@ -4812,6 +4862,23 @@ def _inject_identity(messages):
         merged = MASTER_AI_IDENTITY_SYSTEM + "\n\n" + messages[0].get("content", "")
         return [{"role": "system", "content": merged}] + list(messages[1:])
     return [{"role": "system", "content": MASTER_AI_IDENTITY_SYSTEM}] + list(messages)
+
+# 2026-09-07: continuation feature — every direct-provider function just
+# discarded the API's own finish_reason ("length" means the reply was cut
+# off at max_tokens, "stop" means it ended naturally), so a truncated reply
+# and a complete one looked identical to everything downstream. Smuggled
+# via a global the same way _LAST_MODEL already is, rather than changing
+# every _ask_*'s return signature (6+ call sites, all currently return a
+# bare string that other code already depends on).
+def _extract_cloud_reply(resp_json):
+    """(content, finish_reason) from a standard OpenAI-shaped chat completion
+    response. Also stamps globals()['_LAST_FINISH_REASON'] for callers that
+    can't easily thread a second return value through (ask_cloud's fn_map)."""
+    choice = (resp_json.get("choices") or [{}])[0]
+    content = (choice.get("message") or {}).get("content", "")
+    finish_reason = choice.get("finish_reason", "")
+    globals()["_LAST_FINISH_REASON"] = finish_reason
+    return content, finish_reason
 
 # Groq free-tier payload trim (2026-05-16). Every groq call was returning
 # HTTP 413 because the request body exceeded the per-request budget. The
@@ -4870,7 +4937,7 @@ def ask_cloud_groq(messages):
     messages = _trim_groq_messages(messages, _GROQ_MAX_INPUT_CHARS)
     log("CLOUD [groq/llama-3.3-70b]")
     payload = {"model": "llama-3.3-70b-versatile", "messages": messages,
-               "max_tokens": 1024, "stream": False}
+               "max_tokens": 8192, "stream": False}
     data = json.dumps(payload).encode()
     # GROQ_PAYLOAD diagnostic (2026-05-16). Captures real bytes + msg count +
     # system-message size before urlopen so _GROQ_MAX_INPUT_CHARS can be tuned
@@ -4887,7 +4954,8 @@ def ask_cloud_groq(messages):
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read())["choices"][0]["message"]["content"]
+            content, _ = _extract_cloud_reply(json.loads(resp.read()))
+            return content
     except urllib.error.HTTPError as e:
         code = e.code
         label = {401:"AUTH FAIL — check API key", 403:"AUTH FAIL — check API key",
@@ -4902,7 +4970,7 @@ def ask_cloud_groq(messages):
             _cloud_trip_network(e, 60)
         return None
 
-def _ask_groq(messages, model, label, timeout=30):
+def _ask_groq(messages, model, label, timeout=60):
     """Generic Groq caller — takes an explicit model id so the live picker
     (any of Groq's models, not just the hardcoded llama-3.3-70b default
     lane in ask_cloud_groq) can dispatch through this instead."""
@@ -4916,7 +4984,7 @@ def _ask_groq(messages, model, label, timeout=30):
     messages = _trim_groq_messages(messages, _GROQ_MAX_INPUT_CHARS)
     log(f"CLOUD [groq/{label}]")
     payload = {"model": model, "messages": messages,
-               "max_tokens": 1024, "stream": False}
+               "max_tokens": 8192, "stream": False}
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         "https://api.groq.com/openai/v1/chat/completions", data=data,
@@ -4925,7 +4993,8 @@ def _ask_groq(messages, model, label, timeout=30):
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read())["choices"][0]["message"]["content"]
+            content, _ = _extract_cloud_reply(json.loads(resp.read()))
+            return content
     except urllib.error.HTTPError as e:
         code = e.code
         diag = {401:"AUTH FAIL — check API key", 403:"AUTH FAIL — check API key",
@@ -4940,7 +5009,7 @@ def _ask_groq(messages, model, label, timeout=30):
             _cloud_trip_network(e, 60)
         return None
 
-def _ask_nvidia(messages, model, label, timeout=30):
+def _ask_nvidia(messages, model, label, timeout=90):
     """Generic NVIDIA NIM caller — takes an explicit model id so the live
     picker (any of NVIDIA's 100+ models, not just the one default lane)
     can dispatch through this instead of a hardcoded model string.
@@ -4956,7 +5025,7 @@ def _ask_nvidia(messages, model, label, timeout=30):
         return None
     messages = _inject_identity(messages)
     payload = {"model": model, "messages": messages,
-               "max_tokens": 1024, "stream": False}
+               "max_tokens": 8192, "stream": False}
     data = json.dumps(payload).encode()
     for key in keys:
         log(f"CLOUD [nvidia/{label}]")
@@ -4967,7 +5036,8 @@ def _ask_nvidia(messages, model, label, timeout=30):
         )
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return json.loads(resp.read())["choices"][0]["message"]["content"]
+                content, _ = _extract_cloud_reply(json.loads(resp.read()))
+            return content
         except urllib.error.HTTPError as e:
             code = e.code
             diag = {401: "AUTH FAIL — check API key", 403: "AUTH FAIL — check API key",
@@ -4987,6 +5057,47 @@ def _ask_nvidia(messages, model, label, timeout=30):
             return None
     return None
 
+def _ask_qwen(messages, model, label, timeout=90):
+    """QwenCloud Token Plan direct caller — mirrors _ask_nvidia's shape.
+    Only QWEN_TOKENPLAN_API_KEY (the 'sp' key) is ever used here; the 'ws'
+    key is tracked in KEYS for visibility but confirmed dead (401) as of
+    both 2026-08-08 and re-verified 2026-09-07 — no ping-pong to it, that
+    would just add latency to every call for zero chance of success."""
+    provider_key = f"qwen/{label}"
+    if not _cloud_allowed(provider_key):
+        return None
+    key = KEYS.get("qwen")
+    if not key:
+        return None
+    messages = _inject_identity(messages)
+    payload = {"model": model, "messages": messages,
+               "max_tokens": 8192, "stream": False}
+    data = json.dumps(payload).encode()
+    log(f"CLOUD [qwen/{label}]")
+    req = urllib.request.Request(
+        "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
+        data=data,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}",
+                 "User-Agent": "python-requests/2.31.0"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            content, _ = _extract_cloud_reply(json.loads(resp.read()))
+            return content
+    except urllib.error.HTTPError as e:
+        code = e.code
+        diag = {401: "AUTH FAIL — check API key", 403: "AUTH FAIL — check API key",
+                429: "RATE LIMIT hit", 402: "OUT OF CREDITS"}.get(code, f"HTTP {code}")
+        log(f"QWEN_ERROR [{label}]: {diag}")
+        if code == 429:
+            _cloud_trip(provider_key, "rate limit", 30)
+        return None
+    except Exception as e:
+        log(f"QWEN_ERROR [{label}]: {e}")
+        if _network_error(e):
+            _cloud_trip_network(e, 60)
+        return None
+
 def ask_cloud_nvidia(messages):
     # 2026-08-27: llama-3.1-nemotron-70b-instruct's NIM function was
     # retired (404 "Function ... Not found for account") — verified live
@@ -4997,25 +5108,50 @@ def ask_cloud_nvidia(messages):
 def ask_cloud_nvidia_nano(messages):
     return _ask_nvidia(messages, "nvidia/nemotron-3-nano-30b-a3b", "nemotron-3-nano-30b")
 
-def _ask_opencode_zen(messages, model, label, timeout=30):
+def _opencode_session_id():
+    """Return the canonical x-opencode-session value, with env override."""
+    val = os.environ.get("OPENCODE_SESSION", "").strip()
+    if val:
+        return val
+    try:
+        for _ln in (Path.home() / ".hermes" / ".env").read_text().splitlines():
+            _ln = _ln.strip()
+            if _ln.startswith("export OPENCODE_SESSION="):
+                _v = _ln.split("=", 1)[1].strip().strip('"').strip("'")
+                if _v:
+                    return _v
+                break
+    except Exception:
+        pass
+    return "sensei-bridge"
+
+
+def _ask_opencode_zen(messages, model, label, timeout=60):
     """Generic OpenCode Zen relay caller — keyless, takes an explicit model id
     so the plan-debate fallback can reach mimo-v2.5-free (a clean
-    instruction-follower) instead of only the hardcoded laguna-s-2.1-free."""
+    instruction-follower) instead of only the hardcoded laguna-s-2.1-free.
+    2026-09-07: relay requires x-opencode-session; without it the endpoint
+    returns HTTP 400/503 for every model."""
     provider_key = f"opencode-free/{label}"
     if not _cloud_allowed(provider_key):
         return None
     log(f"CLOUD [opencode-free/{label}]")
     payload = {"model": model, "messages": messages,
-               "max_tokens": 1024, "stream": False}
+               "max_tokens": 8192, "stream": False}
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         "https://opencode.ai/zen/v1/chat/completions", data=data,
         headers={
             "Content-Type": "application/json",
-            "Authorization": "",  # relay 401s if this header is absent entirely
-            "User-Agent": "curl/8.5.0",
-            "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+            # 2026-09-07: omit Authorization entirely. Earlier code sent an
+            # empty string, but the relay now 503s when the header is present
+            # even if blank. Keyless Zen does not need this header.
+            "x-opencode-session": _opencode_session_id(),
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "HTTP-Referer": "https://opencode.ai",
             "X-Title": "Hermes Agent",
+            "Accept": "application/json",
+            "Origin": "https://opencode.ai",
         },
     )
     try:
@@ -5027,7 +5163,12 @@ def _ask_opencode_zen(messages, model, label, timeout=30):
                 content = msg.get("reasoning") or ""
             return content
     except urllib.error.HTTPError as e:
-        log(f"OPENCODE_FREE_ERROR [{label}]: HTTP {e.code}")
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")[:200]
+        except Exception:
+            pass
+        log(f"OPENCODE_FREE_ERROR [{label}]: HTTP {e.code} — {body}")
         if e.code == 429:
             _cloud_trip(provider_key, "rate limit", 30)
         return None
@@ -5058,7 +5199,7 @@ def ask_cloud_openai(messages):
     try:
         from openai import OpenAI
         resp = OpenAI(api_key=key).chat.completions.create(
-            model="gpt-4o", messages=messages, max_tokens=1024)
+            model="gpt-4o", messages=messages, max_tokens=8192)
         return resp.choices[0].message.content
     except Exception as e:
         log(f"OPENAI_ERROR: {e}")
@@ -5098,7 +5239,7 @@ def ask_cloud_anthropic(messages):
     log("CLOUD [anthropic/claude-sonnet-4-6]")
     system = next((m["content"] for m in messages if m["role"] == "system"), "")
     user_msgs = [m for m in messages if m["role"] != "system"]
-    payload = {"model": "claude-sonnet-4-6", "max_tokens": 1024, "system": system, "messages": user_msgs}
+    payload = {"model": "claude-sonnet-4-6", "max_tokens": 8192, "system": system, "messages": user_msgs}
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         "https://api.anthropic.com/v1/messages", data=data,
@@ -5123,7 +5264,7 @@ def ask_cloud_deepseek(messages):
     log("CLOUD [deepseek/R1-reasoner]")
     system = next((m["content"] for m in messages if m["role"] == "system"), "")
     user_msgs = [m for m in messages if m["role"] != "system"]
-    payload = {"model": "deepseek-reasoner", "max_tokens": 1024,
+    payload = {"model": "deepseek-reasoner", "max_tokens": 16384,
                "messages": [{"role": "system", "content": system}] + user_msgs if system else user_msgs}
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
@@ -5132,7 +5273,8 @@ def ask_cloud_deepseek(messages):
     )
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
-            return json.loads(resp.read())["choices"][0]["message"]["content"]
+            content, _ = _extract_cloud_reply(json.loads(resp.read()))
+            return content
     except Exception as e:
         log(f"DEEPSEEK_ERROR: {e}")
         if _network_error(e):
@@ -5156,7 +5298,7 @@ def ask_cloud_fireworks_dsv3(messages):
     payload = {
         "model": "accounts/fireworks/models/deepseek-v3p1",
         "messages": messages,
-        "max_tokens": 4096,
+        "max_tokens": 8192,
         "top_p": 1, "top_k": 40,
         "presence_penalty": 0, "frequency_penalty": 0,
         "temperature": 0.6,
@@ -5172,7 +5314,8 @@ def ask_cloud_fireworks_dsv3(messages):
     )
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
-            return json.loads(resp.read())["choices"][0]["message"]["content"]
+            content, _ = _extract_cloud_reply(json.loads(resp.read()))
+            return content
     except urllib.error.HTTPError as e:
         code = e.code
         label = {401: "AUTH FAIL — check API key",
@@ -5315,82 +5458,54 @@ def ask_cloud_cerebras_llama8b(messages):
     return _ask_cerebras(messages, "llama3.1-8b", "llama3.1-8b", timeout=30)
 
 def ask_cloud_openrouter_405b(messages):
-    # 2026-08-27: verified working free slug on OpenRouter (18s, 550B params).
-    return _ask_openrouter(messages, "nvidia/nemotron-3-ultra-550b-a55b:free", "nemotron-550B", timeout=90)
+    # 2026-09-07: free-only live catalog; hardcoded slug era is over.
+    slug = _openrouter_best_free_model()
+    return _ask_openrouter(messages, slug, "openrouter-free", timeout=90) if slug else None
 
 def ask_cloud_openrouter_gptoss(messages):
-    # 2026-08-27: gpt-oss free slug removed (404). Reroute to working nemotron.
-    return _ask_openrouter(messages, "nvidia/nemotron-3-super-120b-a12b:free", "nemotron-120B", timeout=60)
+    # 2026-09-07: free-only live catalog.
+    return ask_cloud_openrouter_generic(messages)
 
 def ask_cloud_openrouter_nemotron(messages):
-    # 2026-08-27: verified working free slug on OpenRouter (4s, 120B params).
-    return _ask_openrouter(messages, "nvidia/nemotron-3-super-120b-a12b:free", "nemotron-120B", timeout=60)
+    # 2026-09-07: prefer a live nemotron free slug if available, else any free.
+    catalog = _openrouter_model_catalog()
+    for slug, _, is_free in catalog:
+        if is_free and "nemotron" in slug.lower():
+            return _ask_openrouter(messages, slug, "nemotron-free", timeout=60)
+    slug = _openrouter_best_free_model()
+    return _ask_openrouter(messages, slug, "openrouter-free", timeout=60) if slug else None
 
 def ask_cloud_openrouter_qwen3coder(messages):
-    # 2026-08-27: qwen3-coder:free removed (404); reroute to working nemotron.
-    return _ask_openrouter(messages, "nvidia/nemotron-3-super-120b-a12b:free", "nemotron-120B", timeout=60)
+    # 2026-09-07: free-only live catalog.
+    return ask_cloud_openrouter_generic(messages)
 
 def ask_cloud_openrouter_r1(messages):
-    # 2026-08-27: OpenRouter /free models only — reasoner lane maps to generic free chain.
+    # 2026-09-07: OpenRouter /free models only — reasoner lane maps to generic free chain.
     return ask_cloud_openrouter_generic(messages)
 
 def ask_cloud_openrouter_generic(messages):
-    # 2026-08-27: OpenRouter /free models only — prefer fastest verified slug,
-    # then the larger fallback slug. No paid models, no keyless OpenCode.
-    for slug, label, timeout in (
-        ("nvidia/nemotron-3-super-120b-a12b:free", "nemotron-120B", 30),
-        ("nvidia/nemotron-3-ultra-550b-a55b:free", "nemotron-550B", 90),
-    ):
-        r = _ask_openrouter(messages, slug, label, timeout=timeout)
+    # 2026-09-07: free-only live catalog. Try known-good free slugs in priority
+    # order, then any other free slug OpenRouter currently advertises.
+    free_slugs = _openrouter_free_models()
+    if not free_slugs:
+        log("OPENROUTER_GENERIC: no free models available in live catalog")
+        return None
+    for slug in free_slugs[:6]:  # cap fallback attempts to avoid long chains
+        label = slug.rsplit("/", 1)[-1][:24]
+        r = _ask_openrouter(messages, slug, label, timeout=60)
         if r:
             return r
     return None
 
 def ask_cloud_openrouter(messages):
-    # 2026-08-27: OpenRouter /free models only.
+    # 2026-09-07: OpenRouter /free models only, from live catalog.
     return ask_cloud_openrouter_generic(messages)
 
 def ask_cloud_opencode_free(messages):
-    """OpenCode's free Zen relay — keyless (no account, nothing to leak or
-    run out of, not subject to any other provider's shared rate limits).
-    2026-09-06: 'laguna-s-2.1-free' (and the whole 2026-08-27 free cohort)
-    was rotated off the relay and now 401s. 'ling-3.0-flash-fin-free' is
-    the current working keyless model — clean content, no leaked reasoning,
-    2-7s responses. Matches sensei_bridge.py's _OPENCODE_FREE_MODEL."""
-    provider_key = "opencode-free"
-    if not _cloud_allowed(provider_key):
-        return None
-    log("CLOUD [opencode-free/ling-3.0-flash-fin-free]")
-    payload = {"model": "ling-3.0-flash-fin-free", "messages": messages,
-               "max_tokens": 1024, "stream": False}
-    data = json.dumps(payload).encode()
-    req = urllib.request.Request(
-        "https://opencode.ai/zen/v1/chat/completions", data=data,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": "",  # relay 401s if this header is absent entirely
-            # Cloudflare in front of this relay bot-blocks (403) Python
-            # urllib's default User-Agent string — any normal UA clears it.
-            "User-Agent": "curl/8.5.0",
-            "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-            "X-Title": "Hermes Agent",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read())["choices"][0]["message"]["content"]
-    except urllib.error.HTTPError as e:
-        log(f"OPENCODE_FREE_ERROR: HTTP {e.code}")
-        if e.code == 429:
-            _cloud_trip(provider_key, "rate limit", 30)
-        return None
-    except Exception as e:
-        log(f"OPENCODE_FREE_ERROR: {e}")
-        if _network_error(e):
-            _cloud_trip_network(e, 60)
-        return None
+    """OpenCode's free Zen relay — keyless. Delegates to the shared Zen caller."""
+    return _ask_opencode_zen(messages, "ling-3.0-flash-fin-free", "ling-3.0-flash-fin-free")
 
-def _ask_ollama_cloud(messages, model, label, timeout=90):
+def _ask_ollama_cloud(messages, model, label, timeout=120):
     """Ollama Cloud (https://ollama.com/v1) — the operator's paid
     subscription. OpenAI-compatible endpoint. Key lives in ~/.hermes/.env
     as OLLAMA_API_KEY (NOT the keychain). Used for plan-debate generation
@@ -5416,7 +5531,7 @@ def _ask_ollama_cloud(messages, model, label, timeout=90):
     messages = _inject_identity(messages)
     log(f"CLOUD [ollama-cloud/{label}]")
     payload = {"model": model, "messages": messages,
-               "max_tokens": 1024, "stream": False}
+               "max_tokens": 8192, "stream": False}
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         "https://ollama.com/v1/chat/completions", data=data,
@@ -5448,7 +5563,7 @@ def _ask_ollama_cloud(messages, model, label, timeout=90):
         return None
 
 
-def _ask_claf(messages, timeout=45):
+def _ask_claf(messages, timeout=90):
     """Route through CLAF (~/projects/claf) — the router this whole stack
     note), running as claf.service. Only for AUTO/unpinned cloud
     escalation: CLAF's provider selection (claf_config.select_provider)
@@ -5460,7 +5575,7 @@ def _ask_claf(messages, timeout=45):
     any error here — this never REPLACES that safety net, only tries
     the documented router first."""
     port = os.environ.get("CLAF_PORT", "8000")
-    payload = {"model": "claf-auto", "messages": messages, "max_tokens": 1024}
+    payload = {"model": "claf-auto", "messages": messages, "max_tokens": 8192}
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}/v1/chat/completions", data=data,
@@ -5499,7 +5614,7 @@ def _ask_claf(messages, timeout=45):
 _CLOUD_CALL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=32, thread_name_prefix="cloud-call"
 )
-_CLOUD_HARD_TIMEOUT = 90
+_CLOUD_HARD_TIMEOUT = 150
 
 def _call_with_hard_timeout(fn, *args, timeout=_CLOUD_HARD_TIMEOUT, **kwargs):
     future = _CLOUD_CALL_EXECUTOR.submit(fn, *args, **kwargs)
@@ -5538,7 +5653,23 @@ def _call_with_hard_timeout(fn, *args, timeout=_CLOUD_HARD_TIMEOUT, **kwargs):
         # function already checks internally — makes the REST of this
         # turn's fallback attempts skip near-instantly instead of each
         # queueing up its own full timeout.
-        _cloud_trip_network(f"hard timeout in {getattr(fn, '__name__', fn)}", 60)
+        #
+        # 2026-09-07: reproduced live — a single provider taking too long
+        # on ONE unusually large request (the timeout itself just got
+        # raised from 90s->150s to fix truncated replies) tripped this
+        # GLOBAL 60s block, and a very slow fallback chain within that same
+        # turn could re-trip it again before it expired, extending the
+        # window further. The user's very NEXT, completely unrelated
+        # prompt then hit "cloud providers unavailable" for something that
+        # had nothing to do with it. A single slow-but-not-actually-down
+        # provider was getting treated as "the whole internet is down."
+        # The original 2026-08-30 intent — skip the REST of the CURRENT
+        # turn's remaining fallback candidates instantly — only needs a few
+        # seconds; it never needed to reach into the next, unrelated turn.
+        # Shortened 60s -> 10s so this still does its one real job (stop a
+        # bad turn from cascading through every remaining provider at full
+        # timeout each) without poisoning whatever the user asks next.
+        _cloud_trip_network(f"hard timeout in {getattr(fn, '__name__', fn)}", 10)
         return None
     except Exception as e:
         log(f"CLOUD_CALL_ERROR: {getattr(fn, '__name__', fn)}: {e}")
@@ -5552,7 +5683,11 @@ def _call_with_hard_timeout(fn, *args, timeout=_CLOUD_HARD_TIMEOUT, **kwargs):
 # real fn_map entry just gets silently dropped by _load_fallback_order,
 # it can't crash the chain or reintroduce a disabled provider.
 _FALLBACK_ORDER_FILE = Path.home() / ".master_ai_fallback_order.json"
-_DEFAULT_FALLBACK_ORDER = ["opencode", "nvidia", "nvidia-nano", "nemotron", "hermes-405b", "openrouter", "deepseek-r1"]
+# 2026-09-07: free-first fallback order. OpenCode (keyless free) and
+# OpenRouter free lanes are tried before any paid direct provider.
+# NVIDIA direct is last because it consumes paid credits; it only runs
+# when no free option works.
+_DEFAULT_FALLBACK_ORDER = ["opencode", "nemotron", "openrouter", "deepseek-r1", "hermes-405b", "nvidia", "nvidia-nano"]
 _VALID_FALLBACK_NAMES = {
     "opencode", "nvidia", "nvidia-nano", "hermes-405b", "gpt-oss-120b",
     "nemotron", "qwen3-coder", "deepseek-r1", "openrouter",
@@ -5646,6 +5781,9 @@ def ask_cloud(messages, provider="opencode"):
     elif (provider or "").startswith("groq::"):
         _m = provider[len("groq::"):]
         _asker = lambda msgs, _m=_m: _ask_groq(msgs, _m, _m)
+    elif (provider or "").startswith("qwen::"):
+        _m = provider[len("qwen::"):]
+        _asker = lambda msgs, _m=_m: _ask_qwen(msgs, _m, _m)
     elif (provider or "").startswith("ollama-cloud::"):
         _m = provider[len("ollama-cloud::"):]
         _asker = lambda msgs, _m=_m: _ask_ollama_cloud(msgs, _m, _m)
@@ -5668,6 +5806,24 @@ def ask_cloud(messages, provider="opencode"):
     if r:
         _record(r, provider)
         globals()["_LAST_MODEL"] = f"cloud/{provider}"
+        # 2026-09-07: continuation feature — Elijah: "make it max out at
+        # that one, make it load up and start again... continue from
+        # where it maxes out at." finish_reason=="length" means the model
+        # hit max_tokens, not a natural stop. Instead of quietly handing
+        # back a truncated reply as if it were the whole answer, store
+        # what's needed to pick up right where it stopped and tell the
+        # user how to continue it.
+        if globals().get("_LAST_FINISH_REASON") == "length":
+            globals()["PENDING_CONTINUATION"] = {
+                "provider": provider,
+                "messages": list(messages),
+                "so_far": r,
+            }
+            r = (r + "\n\n" + "─" * 40 +
+                 "\n⚠ Hit the length limit — this isn't the end. Type "
+                 "'proceed' and I'll continue exactly from here.")
+        else:
+            globals()["PENDING_CONTINUATION"] = None
         return r
     # 2026-08-27 default order — OpenCode (keyless/free) → NVIDIA direct
     # (own quota) → OpenRouter free Nemotron (550B/120B) → paid Claude
@@ -5718,7 +5874,7 @@ def ask_model_router(messages, model=None, max_tokens=None):
 
     # Cloud providers: named lanes, OpenRouter catalog slugs, or provider::model prefixes
     if (mlow in CLOUD_MODEL_NAMES or "/" in (model or "") or
-        mlow.startswith(("nvidia::", "cerebras::", "groq::", "ollama-cloud::", "opencode::"))):
+        mlow.startswith(("nvidia::", "cerebras::", "groq::", "qwen::", "ollama-cloud::", "opencode::"))):
         text = ask_cloud(messages, provider=model)
     else:
         # Local Ollama. If max_tokens is set, call directly so we can pass
@@ -7304,6 +7460,37 @@ def _openrouter_model_catalog():
             return [(m["id"], m.get("name", ""), bool(m.get("free"))) for m in cached.get("models", [])]
         return []
 
+# 2026-09-07: free-only, catalog-aware OpenRouter model selection. The
+# hardcoded slug era (nvidia/nemotron-3.5-lightning:free, etc.) drifts too
+# fast — providers rotate free cohorts weekly. This helper reads the live
+# catalog and returns only models OpenRouter marks as free (pricing.prompt==0).
+_OPENROUTER_FREE_PRIORITY = [
+    # Prefer fast instruction-followers for general chat/tool turns.
+    "nvidia/nemotron-3.5-lightning:free",
+    "minimax/minimax-m3:free",
+    "mimo-ai/mimo-v2.5-free",
+    # Reasoning/heavy free models when the above are unavailable.
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "deepseek/deepseek-chat-v3:free",
+    "qwen/qwen-2.5-coder-32b:free",
+    "google/gemma-3-27b-it:free",
+]
+
+def _openrouter_free_models():
+    """Return currently free OpenRouter slugs from the live catalog, sorted
+    with known-good models first. Empty list if the catalog can't be fetched."""
+    catalog = _openrouter_model_catalog()
+    free_ids = {mid for mid, _, is_free in catalog if is_free}
+    ordered = [m for m in _OPENROUTER_FREE_PRIORITY if m in free_ids]
+    # Append any other free models not in the priority list.
+    ordered.extend(sorted(free_ids - set(ordered)))
+    return ordered
+
+def _openrouter_best_free_model():
+    """Single best free slug, or None if no free models are available."""
+    slugs = _openrouter_free_models()
+    return slugs[0] if slugs else None
+
 def print_openrouter_search(query, free_only=False):
     catalog = _openrouter_model_catalog()
     if not catalog:
@@ -7328,7 +7515,7 @@ def print_openrouter_search(query, free_only=False):
         print(f"  {D}...and {len(matches) - 40} more — narrow your search.{X}")
     print(f"\n  {D}pin one with: model <exact-id>   (use 'model or free' to see only 🆓 models){X}\n")
 
-def print_full_model_catalog(query=""):
+def print_full_model_catalog(query="", free_only=False):
     """Every model reachable through every configured key, unfiltered —
     paid and free, local and cloud, one screen per provider.
 
@@ -7338,7 +7525,20 @@ def print_full_model_catalog(query=""):
     defaulted toward free-tier framing. This is the actual "everything I
     have access to" view: no free_only filter, every provider with a key
     present, so a real top-tier paid model is just as visible as a free
-    3B one. Selection stays simple — pin the exact id with `model <id>`."""
+    3B one. Selection stays simple — pin the exact id with `model <id>`.
+
+    2026-09-07: operator — "model free" only ever searched OpenRouter,
+    even though NVIDIA/Cerebras/Groq keys are configured too and were
+    silently excluded from every free-model view. Worse, this function
+    hardcoded "💰 paid" on every NVIDIA/Cerebras/Groq row without ever
+    checking real pricing — an unverified claim, not a fact (Groq in
+    particular runs a genuinely free rate-limited tier for most models).
+    free_only=True now spans every provider: OpenRouter rows are filtered
+    to its own confirmed-free (pricing.prompt==0) set, local Ollama is
+    always included (free by construction — it's local), and NVIDIA/
+    Cerebras/Groq are left OUT of the free view entirely rather than
+    guessed at, since this app has no live pricing check for them — see
+    the ❓ marker in the unfiltered view below for the same reason."""
     q = (query or "").strip().lower()
     sections = []
 
@@ -7352,24 +7552,34 @@ def print_full_model_catalog(query=""):
         catalog = _openrouter_model_catalog()
         rows = [(mid, name, "🆓 free" if free else "💰 paid")
                 for mid, name, free in catalog
-                if not q or q in mid.lower() or q in (name or "").lower()]
+                if (not free_only or free)
+                and (not q or q in mid.lower() or q in (name or "").lower())]
         if rows:
             sections.append(("OPENROUTER", rows))
 
-    if KEYS.get("nvidia"):
-        rows = [(m, "", "💰 paid") for m in _nvidia_model_catalog() if not q or q in m.lower()]
-        if rows:
-            sections.append(("NVIDIA NIM", rows))
+    if not free_only:
+        if KEYS.get("nvidia"):
+            rows = [(m, "", "❓ unmetered — pricing not tracked") for m in _nvidia_model_catalog() if not q or q in m.lower()]
+            if rows:
+                sections.append(("NVIDIA NIM", rows))
 
-    if KEYS.get("cerebras"):
-        rows = [(m, "", "💰 paid") for m in _cerebras_model_catalog() if not q or q in m.lower()]
-        if rows:
-            sections.append(("CEREBRAS", rows))
+        if KEYS.get("cerebras"):
+            rows = [(m, "", "❓ unmetered — pricing not tracked") for m in _cerebras_model_catalog() if not q or q in m.lower()]
+            if rows:
+                sections.append(("CEREBRAS", rows))
 
-    if KEYS.get("groq"):
-        rows = [(m, "", "💰 paid") for m in _groq_model_catalog() if not q or q in m.lower()]
-        if rows:
-            sections.append(("GROQ", rows))
+        if KEYS.get("groq"):
+            rows = [(m, "", "❓ unmetered — pricing not tracked") for m in _groq_model_catalog() if not q or q in m.lower()]
+            if rows:
+                sections.append(("GROQ", rows))
+
+        if KEYS.get("qwen"):
+            # Unlike NVIDIA/Cerebras/Groq, pricing here IS known — a flat
+            # $6/mo Token Plan subscription, not per-token uncertainty — so
+            # this gets an honest "paid" marker instead of the "❓" used above.
+            rows = [(m, "", "💰 paid ($6/mo plan)") for m in _qwen_model_catalog() if not q or q in m.lower()]
+            if rows:
+                sections.append(("QWEN (Token Plan)", rows))
 
     if not sections:
         print(f"  {Y}no models found — no provider keys configured, or network/API errors on all of them.{X}")
@@ -7377,6 +7587,8 @@ def print_full_model_catalog(query=""):
 
     total = sum(len(rows) for _, rows in sections)
     label = f"matching '{query}'" if query else "— everything reachable through your keys, unfiltered"
+    if free_only:
+        label = (f"free {label}" if query else "— every confirmed-free model across every provider, no filter")
     print(f"\n  {C}Full model catalog{X} {label}  ({total} total):")
     for section_label, rows in sections:
         print(f"\n  {BW}{section_label}{X}  ({len(rows)}):")
@@ -7385,6 +7597,8 @@ def print_full_model_catalog(query=""):
             print(f"    {W}{mid:<45}{X} {marker}{name_part}")
         if len(rows) > 40:
             print(f"  {D}...and {len(rows) - 40} more in {section_label} — narrow with: model all <term>{X}")
+    if free_only and (KEYS.get("nvidia") or KEYS.get("cerebras") or KEYS.get("groq")):
+        print(f"  {D}NVIDIA/Cerebras/Groq are configured but left out here — this app has no live pricing check for them (see 'model all' for the full unmetered list).{X}")
     print(f"\n  {D}pin one with: model <exact-id>{X}\n")
 
 # ── Live model picker — every configured key, arrow keys + Enter ──────
@@ -7430,6 +7644,19 @@ def _cerebras_model_catalog():
     return _provider_model_catalog(_CEREBRAS_MODELS_CACHE,
         "https://api.cerebras.ai/v1/models", KEYS.get("cerebras"))
 
+_QWEN_MODELS_CACHE = Path.home() / ".master_ai_qwen_models_cache.json"
+
+def _qwen_model_catalog():
+    """QwenCloud Token Plan's real entitlement list — verified live
+    2026-09-07 (HTTP 200, 12 models: qwen3.8-max, qwen3.8-flash, qwen3.7-
+    max/plus, qwen3.6-flash, glm-5.2, deepseek-v4-pro/flash-0731, plus
+    audio/image models). This is the actual purchased-plan list from the
+    endpoint itself, not the Qwen CLI's settings.json (which enumerates
+    the whole platform — see project_qwen_token_plan_setup memory)."""
+    return _provider_model_catalog(_QWEN_MODELS_CACHE,
+        "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/models",
+        KEYS.get("qwen"))
+
 _GROQ_MODELS_CACHE = Path.home() / ".master_ai_groq_models_cache.json"
 
 def _groq_model_catalog():
@@ -7453,7 +7680,7 @@ def _ollama_local_models():
     _OLLAMA_LOCAL_CACHE["models"] = models
     return models
 
-_PROVIDER_PICKER_ORDER = ("local", "openrouter", "nvidia", "cerebras", "groq")
+_PROVIDER_PICKER_ORDER = ("local", "openrouter", "nvidia", "cerebras", "groq", "qwen")
 
 def live_provider_completions(query="", mode=None):
     """Providers with a key configured (or local Ollama actually running)
@@ -7461,7 +7688,20 @@ def live_provider_completions(query="", mode=None):
     `query`/`mode` are accepted so this matches the shape SenseiApp calls
     with (self._model_catalog_fn("", mode="providers")) but are otherwise
     unused — the picker doesn't type-filter, it navigates.
-    Returns [(provider_key, display, hint), ...]."""
+    Returns [(provider_key, display, hint), ...].
+
+    2026-09-07: operator — "I thought we already had something that
+    refreshes them every time I open it up." It didn't: _openrouter_model_
+    catalog()'s cache is TTL'd at 24h and only force-cleared at process
+    startup, so opening the picker mid-session (without restarting) could
+    show up-to-a-day-stale data. This is step 1 of every picker open, so
+    clearing the cache here — before step 2 (live_model_completions)
+    reads it — guarantees each picker open does one live OpenRouter fetch,
+    not a stale one. Cheap: deleting a small on-disk JSON file."""
+    try:
+        _OPENROUTER_MODELS_CACHE.unlink(missing_ok=True)
+    except Exception:
+        pass
     rows = []
     local = _ollama_local_models()
     if local:
@@ -7474,6 +7714,8 @@ def live_provider_completions(query="", mode=None):
         rows.append(("cerebras", "Cerebras", "paid"))
     if KEYS.get("groq"):
         rows.append(("groq", "Groq", "paid"))
+    if KEYS.get("qwen"):
+        rows.append(("qwen", "Qwen (Token Plan)", "paid — $6/mo plan"))
     return rows
 
 def live_model_completions(provider):
@@ -7513,6 +7755,8 @@ def live_model_completions(provider):
         return [(f"cerebras::{m}", m, "💰") for m in _cerebras_model_catalog()]
     if provider == "groq":
         return [(f"groq::{m}", m, "💰") for m in _groq_model_catalog()]
+    if provider == "qwen":
+        return [(f"qwen::{m}", m, "💰") for m in _qwen_model_catalog()]
     return []
 
 def _resolve_model_choice(choice):
@@ -7536,7 +7780,7 @@ def _resolve_model_choice(choice):
     # Explicit direct-API pick from the live picker (live_model_completions)
     # — "nvidia::"/"cerebras::" is the authoritative signal here, not "/"
     # (Cerebras model ids like "gpt-oss-120b" don't contain one at all).
-    if low.startswith("nvidia::") or low.startswith("cerebras::") or low.startswith("groq::"):
+    if low.startswith("nvidia::") or low.startswith("cerebras::") or low.startswith("groq::") or low.startswith("qwen::"):
         return raw
     # Any locally-pulled Ollama model, not just the handful hardcoded into
     # MODEL_MENU — picked via the live picker, which lists `ollama list`
@@ -7558,7 +7802,7 @@ def _is_key_backed_model(model):
     # own "/"-shaped ids, which collide with NVIDIA/Cerebras id space for
     # the same underlying model (e.g. "nvidia/nemotron-3-ultra-550b-a55b"
     # exists as a distinct, paid id on OpenRouter too).
-    if m.startswith("nvidia::") or m.startswith("cerebras::") or m.startswith("groq::"):
+    if m.startswith("nvidia::") or m.startswith("cerebras::") or m.startswith("groq::") or m.startswith("qwen::"):
         return True
     # Bare "/"-shaped ids are OpenRouter's own catalog convention
     # (provider/model-name) — hundreds of models we don't hardcode into
@@ -7571,6 +7815,8 @@ def _model_required_key(model):
         return "nvidia"
     if m.startswith("cerebras::"):
         return "cerebras"
+    if m.startswith("qwen::"):
+        return "qwen"
     if m in CLOUD_MODEL_KEYS:
         return CLOUD_MODEL_KEYS[m]
     return "openrouter" if "/" in m else ""
@@ -7612,7 +7858,7 @@ def _pin_model_choice(choice):
     # model — warn instead of silently letting real-money calls happen.
     # Per Elijah 2026-08-20: "I want to choose the free models — I don't
     # know if I'm being billed or not."
-    _direct_api_pick = resolved.startswith("nvidia::") or resolved.startswith("cerebras::") or resolved.startswith("groq::")
+    _direct_api_pick = resolved.startswith("nvidia::") or resolved.startswith("cerebras::") or resolved.startswith("groq::") or resolved.startswith("qwen::")
     if "/" in resolved and resolved not in CLOUD_MODEL_NAMES and not _direct_api_pick:
         catalog = {mid: free for mid, _, free in _openrouter_model_catalog()}
         is_free = catalog.get(resolved)
@@ -11116,6 +11362,43 @@ def confirm_send_email(spec):
         return {"ok": False, "error": "user cancelled", "recipient": to}
 
 
+@_awaiting_confirm
+def confirm_send_telegram(spec):
+    """Irreversible message — prompt once in review/auto, refuse in plan."""
+    chat_id = spec.get("chat_id", "")
+    text = spec.get("text", "")
+    mode = globals().get("MODE", "plan")
+    if mode == "plan":
+        print(_pill("BLOCKED", f"{D}plan mode refuses SEND_TELEGRAM{X}"))
+        _audit("SEND_TELEGRAM-PLAN-REFUSE", f"chat_id={chat_id}")
+        return {"ok": False, "error": "refused in plan mode", "chat_id": chat_id}
+    preview = (text[:300] + " …") if len(text) > 300 else text
+    print(f"\n{D}╔══════════════════════════════════════════════════════╗{X}")
+    print(f"{D}║  ✈️ {BOLD}AI wants to send Telegram:{X}")
+    print(f"{D}║  Chat ID: {Y}{chat_id}{X}")
+    print(f"{D}╠══════════════════════════════════════════════════════╣{X}")
+    for ln in preview.splitlines()[:20]:
+        print(f"{D}║  {ln}{X}")
+    print(f"{D}╠══════════════════════════════════════════════════════╣{X}")
+    print(f"{D}║  1) Send  2) Cancel{X}")
+    print(f"{D}╚══════════════════════════════════════════════════════╝{X}")
+    import builtins as _builtins
+    ans = (input("> ") or "").strip().lower()
+    if ans in ("1", "y", "yes", "send"):
+        result = send_telegram_message(chat_id, text)
+        if result.get("ok"):
+            print(_pill("SENT", f"{D}to {chat_id}{X}"))
+            _audit("SEND_TELEGRAM-OK", f"chat_id={chat_id}")
+        else:
+            print(_pill("FAILED", f"{R}{result.get('error','')}{X}"))
+            _audit("SEND_TELEGRAM-FAIL", f"chat_id={chat_id} err={result.get('error','')}")
+        return result
+    else:
+        print(_pill("CANCELLED"))
+        _audit("SEND_TELEGRAM-CANCELLED", f"chat_id={chat_id}")
+        return {"ok": False, "error": "user cancelled", "chat_id": chat_id}
+
+
 # ── FILE EDIT CONFIRM ────────────────────────────────────────
 @_awaiting_confirm
 def confirm_edit(filepath, find_text, replace_text):
@@ -11442,7 +11725,7 @@ _DIRECTIVE_KEYWORDS_RE = re.compile(
     # disambiguates real directives from prose sharing a substring.
     r'(RUN_SKILL|RUNTERM|RUN|READ|CREATE|EDIT|ASK|DONE|REMEMBER|SEARCH|'
     r'TASK_ADD|TASK_DONE|'
-    r'SEND_EMAIL|REMOTE_MCP|BROWSER_[A-Z_]+):(?=\s|$)'
+    r'SEND_EMAIL|REMOTE_MCP|SEND_TELEGRAM|BROWSER_[A-Z_]+):(?=\s|$)'
 )
 _TOOL_CALL_TAG_RE = re.compile(r'</?\s*tool_call\s*>', re.IGNORECASE)
 
@@ -11687,6 +11970,27 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
     send_email_specs = [s for s in (_parse_send_email_spec(l)
                         for l in lines if _real_directive(l, "SEND_EMAIL")) if s]
 
+    # 2026-09-08: SEND_TELEGRAM: <chat_id> <message> — one-way outbound Telegram
+    # from Sensei CLI. Uses TELEGRAM_BOT_TOKEN from ~/.master_ai_keys. Irreversible
+    # send, so it follows the same confirm gate as SEND_EMAIL (plan refuses,
+    # review/auto prompt once).
+    def _parse_send_telegram_spec(line):
+        payload = _extract_directive(line, "SEND_TELEGRAM")
+        if not payload:
+            return None
+        parts = payload.split(None, 1)
+        if len(parts) < 2:
+            return None
+        chat_id, text = parts[0], parts[1].strip()
+        # Strip accidental surrounding quotes
+        if len(text) >= 2 and text[0] == text[-1] and text[0] in ('"', "'"):
+            text = text[1:-1]
+        if not chat_id or not text:
+            return None
+        return {"chat_id": chat_id, "text": text}
+    send_telegram_specs = [s for s in (_parse_send_telegram_spec(l)
+                           for l in lines if _real_directive(l, "SEND_TELEGRAM")) if s]
+
     # 2026-08-27: BROWSER_* — see _extract_browser_actions()/confirm_browser_action()
     # above confirm_run. Long taught to the model, never executed until now.
     browser_actions = _extract_browser_actions(lines)
@@ -11878,7 +12182,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         return None
 
     has_directives = bool(read_paths or run_cmds or runterm_cmds or create_files or edit_ops or remember_facts
-                          or task_add_texts or task_done_targets)
+                          or task_add_texts or task_done_targets or send_email_specs or send_telegram_specs)
     # REMEMBER: <fact> — fire first, before any tool dispatch. Memory
     # writes are inert text appends; no fence, no approval needed, same
     # path as the user `remember:` command. The model may emit multiple
@@ -11917,8 +12221,8 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
     # that up now"); the explicit verb list catches "I'll <verb> <object>"
     # without a trailing filler word ("I'll check the logs").
     _stall_pattern = re.compile(
-        r'\b(on it\b|i\'?ll\s+\w+\s+(?:that|this|it|up|now)\b|i\'?ll (?:set|get|'
-        r'check|investigate|look|create|start|do|run|write|build|make|dig|take)|'
+        r'\b(on it\b|on it\s+[🔍🚀⚙️✅👍]|i\'?ll\s+\w+\s+(?:that|this|it|up|now)\b|'
+        r'i\'?ll (?:set|get|check|investigate|look|create|start|do|run|write|build|make|dig|take)|'
         r'let me (?:\w+\s+)?(?:check|see|look|investigate|create|dig|take|pivot)|'
         r'one moment|give me a (?:second|moment|sec)|working on it|hold on)\b',
         re.IGNORECASE,
@@ -11987,6 +12291,17 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         noise = _READ_SHELL_NOISE_RE.search(target)
         if noise:
             target = target[:noise.start()].rstrip()
+        # 2026-09-07: reproduced live — a READ target came back "not found"
+        # for a file that genuinely exists (confirmed via direct ls). Root
+        # cause: _extract_directive already truncates RUN payloads at the
+        # same _ARG_XML_TAG_RE match (trailing <arg_key>/<arg_value>/
+        # </tool_call> fragments a small model glues onto real output), but
+        # this READ-specific parser never got that same protection — so a
+        # genuine path with XML noise trailing it just silently fails to
+        # match any real file on disk instead of being cleaned first.
+        arg_xml = _ARG_XML_TAG_RE.search(target)
+        if arg_xml:
+            target = target[:arg_xml.start()].rstrip()
         m = re.match(r'^(?P<path>.+):(?P<start>\d+)(?:-(?P<end>\d+))?$', target)
         if not m:
             return target, None, None
@@ -12633,6 +12948,25 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         if continue_after_tools:
             tool_result_feedback.append(
                 f"[SEND_EMAIL RESULT]\nTo: {spec.get('to','')}\nSubject: {spec.get('subject','')}\nStatus: sent"
+            )
+
+    # SEND_TELEGRAM: runs after RUN/RUNTERM/SEND_EMAIL — one-way bot message.
+    for spec in send_telegram_specs:
+        result = confirm_send_telegram(spec)
+        if not (isinstance(result, dict) and result.get("ok")):
+            err = (result or {}).get("error", "send_telegram refused or failed")
+            if _append_tool_blocked_feedback("SEND_TELEGRAM", f"chat_id={spec.get('chat_id','')} text={spec.get('text','')[:80]}"):
+                return None
+            print(_pill("BLOCKED", f"{D}SEND_TELEGRAM failed or was refused — {err}{X}"))
+            log(f"CHAIN_ABORT: SEND_TELEGRAM chat_id={spec.get('chat_id','')} err={err}")
+            _append_exec_failure_feedback(
+                "SEND_TELEGRAM", f"chat_id={spec.get('chat_id','')}",
+                f"Chat ID: {spec.get('chat_id','')}\nText: {spec.get('text','')}\nError: {err}",
+            )
+            return None
+        if continue_after_tools:
+            tool_result_feedback.append(
+                f"[SEND_TELEGRAM RESULT]\nChat ID: {spec.get('chat_id','')}\nMessage: {spec.get('text','')}\nStatus: sent"
             )
 
     # BROWSER_* — dispatched through sensei_bridge.py's queue (same one
@@ -13879,6 +14213,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
     )
     LOCAL_SYSTEM = (
         f"You are Master AI on your-machine ({os_info}).\n\n"
+        f"{_LOCAL_MODEL_INVENTORY}\n\n"
         f"{REPLY_SHAPES_SYSTEM_ADDITION}\n"
         "[BEHAVIOR RULES]\n"
         "Execute tasks using the documented directive keywords (read, run, runterm, create, edit, run_skill, remember, search). "
@@ -13910,7 +14245,8 @@ def handle(user_text, history, image_path=None, context_policy=None):
     CLOUD_SYSTEM = (
         f"You are Master AI — a task-executing AI service agent built by Elijah, "
         f"running on your-machine ({os_info}, {arch}).\n"
-        f"Current MODE: {MODE.upper()} (plan/review/auto are the three operating modes; see CURRENT MODE block below).\n\n"
+        f"Current MODE: {MODE.upper()} (plan/review/auto are the three operating modes; see CURRENT MODE block below).\n"
+        f"{_LOCAL_MODEL_INVENTORY}\n\n"
         "IDENTITY: You are a service tool and automation agent — NOT a conversational assistant. "
         "Your job is to perform tasks: run shell commands, read/write files, search the web, "
         "write code, and automate this Linux machine. When given a task, DO it immediately "
@@ -14913,32 +15249,11 @@ def handle(user_text, history, image_path=None, context_policy=None):
 
     def _continue_model_turn(repair_turn=False):
         if route in ("cloud", "web"):
-            if _is_turn_private():
-                # 2026-08-29: a privacy-flagged tool result (e.g. a RUN over
-                # a private path) used to hit ask_cloud() here, which prints
-                # its block message and returns None — that killed the whole
-                # continuation loop at turns=0, so the user got a bare
-                # FOUND/RAN pill and no closing answer. Synthesizing the
-                # answer never needs to leave the machine, so fall back to
-                # local instead of giving up. Use the fast 3B tier, not the
-                # 7B master-ai brain — this box is CPU-only and master-ai
-                # took 5+ minutes (and once outright hung) just to relay a
-                # one-line "found it" result; the job here is restating a
-                # known tool result in plain language, not reasoning, so the
-                # 3B model's speed matters far more than its extra depth.
-                # 2026-09-02: MODELS["fast"] (qwen2.5:3b) isn't installed on
-                # this box -- `ollama list` only has qwen2.5:7b -- so this
-                # branch 404'd and killed the whole continuation loop at
-                # turns=0 every time a tool result got privacy-flagged.
-                # Reproduced live. Operator is cloud-first and explicitly
-                # does not want extra local models kept around for disk
-                # reasons (already dropped llava for the same reason), so
-                # pin this to the one local model actually present rather
-                # than pull another. This branch exists specifically so
-                # privacy-flagged content never leaves the machine -- keep
-                # it local, just point it at a model that's really there.
-                print(f"  {D}🔒 private tool output — answering locally (qwen3-vl:8b) instead of cloud{X}")
-                return ask_local_stream(history, model="qwen3-vl:8b"), True
+            # 2026-09-07: removed automatic "private tool output -> local" branch.
+            # It was forcing every tool result on a private path to be summarized
+            # by the slow local qwen3-vl:8b model, taking 10 minutes. The user is
+            # cloud-first and wants answers via cloud. Explicit `local:` / `private:`
+            # prefixes still keep those turns local at the orchestrator level.
             _spin2 = local_thinking_start()
             provider = "gemini" if route == "web" else (model if model in CLOUD_MODEL_NAMES else "groq")
             try:
@@ -14947,20 +15262,6 @@ def handle(user_text, history, image_path=None, context_policy=None):
                 local_thinking_stop(_spin2)
             if cloud_reply:
                 return cloud_reply, False
-            # 2026-08-31: sibling of the 2026-08-29 privacy-branch fix above —
-            # ask_cloud() can also come back empty/None on a plain API error,
-            # timeout, or empty completion (not just a privacy block). That
-            # used to propagate straight up: the continuation loop saw a
-            # falsy reply2, broke at turns=0, and the user got nothing but
-            # the generic "continuation limit reached" WARN — same silent-
-            # stop symptom as the privacy case, different trigger. Fall back
-            # to local synthesis here too instead of giving up.
-            # 2026-09-02: operator is cloud-first and asked to drop the
-            # silent local fallback here specifically (unlike the privacy
-            # branch above, nothing about an empty cloud reply requires
-            # staying off the network) -- retry the same cloud call once,
-            # and if it's still empty give an honest failure instead of
-            # quietly switching engines under the user.
             log(f"CLOUD_CONTINUATION_EMPTY: provider={provider} — retrying cloud once")
             print(f"  {D}⚠ cloud continuation came back empty — retrying cloud once{X}")
             _spin3 = local_thinking_start()
@@ -15108,7 +15409,27 @@ def summarize_session(history):
     try:
         result = (_ask_cloud_for_label([{"role": "user", "content": prompt}])
                   or ask_local([{"role": "user", "content": prompt}], model=MODELS["general"]))
-        return result.strip() if result else None
+        if not result:
+            return None
+        result = result.strip()
+        # 2026-09-07: reproduced live — a small/free model answering this
+        # call emitted the same malformed tool-call XML seen elsewhere
+        # tonight (raw <arg_value>/<tool_call> fragments instead of clean
+        # prose), and it got saved VERBATIM as the session summary with no
+        # check at all. 'load summary' then faithfully re-injected that
+        # garbage as "context" on the next session — not a load-summary
+        # bug, a save-time validation gap. Same _ARG_XML_TAG_RE truncation
+        # already used in _extract_directive for the same failure shape;
+        # if there's nothing usable left after truncating, or it never had
+        # a real bullet to begin with, don't save it — a missing summary
+        # is honest, a corrupted one silently poisons the next session.
+        arg_xml = _ARG_XML_TAG_RE.search(result)
+        if arg_xml:
+            result = result[:arg_xml.start()].rstrip()
+        if "•" not in result or len(result) < 20:
+            log(f"SUMMARIZE_SESSION_REJECTED: malformed/empty output: {result[:120]!r}")
+            return None
+        return result
     except Exception:
         return None
 
@@ -15128,7 +15449,24 @@ def save_session(history, silent=False):
     with open(chat_path, "w") as f:
         for m in msgs:
             label = "You" if m["role"] == "user" else "AI"
-            f.write(f"[{date_str}] {label}: {m['content'][:2000]}\n")
+            # 2026-09-07: reproduced live — a genuinely complete, correct
+            # 800+ word reply displayed in full on-screen got silently
+            # clipped to 2000 chars (mid-sentence) in the SAVED transcript,
+            # meaning `load session` (reads this file) and anything relying
+            # on the persisted record saw a truncated answer even though
+            # the live turn never lost anything. Now that longer replies
+            # are the normal case (max_tokens raised from 1024 to 8192/
+            # 16384 tonight), this bites far more often. 20000 chars covers
+            # a full 8192-token reply (~4-5 chars/token) with real margin.
+            # 2026-09-07: 20000 wasn't "generous," it was just a bigger
+            # number that got hit dead-on (20002 chars observed) the very
+            # first time someone deliberately asked for a genuinely large
+            # (3500-word) reply — proving 4-5 chars/word was too tight an
+            # estimate once markdown tables/headers/code blocks are in the
+            # mix. Raised an order of magnitude — 200000 chars covers a
+            # ~30000-word reply with real margin — instead of guessing at
+            # another number that just moves where the next cutoff lands.
+            f.write(f"[{date_str}] {label}: {m['content'][:200000]}\n")
 
     if not silent:
         play_anim(_A_BOW, delay=0.14, color=C)
@@ -15193,24 +15531,29 @@ def _query_worker(history_ref):
             _QUERY_QUEUE.task_done()
 
 def handle_save_refresh(history):
-    """Snapshot session, flag a full-history resume, soft re-exec. Mirrors L2831-2843 refresh."""
+    """Snapshot session, summarize it, then restart fresh. Does NOT auto-load
+    the old chat back into the window — the user can resume later with
+    'sessions resume <number>' (Hermes-style session browser)."""
     _RESTART_STARTED.set()
     print(f"\n  {BO}════════════════════════════════════════════════════{X}")
     print(f"  {BO}🥷  SAVE + REFRESH{X}")
     print(f"  {BO}════════════════════════════════════════════════════{X}")
     print(f"  {C}Taking notes from this conversation...{X}")
-    print(f"  {C}Sensei will restart and reload the conversation compacted.{X}")
-    print(f"  {D}Your last message is preserved — you'll see it on the other side.{X}", flush=True)
+    print(f"  {C}Sensei will restart with a clean slate.{X}")
+    print(f"  {D}Run 'sessions list' anytime to browse and resume past chats.{X}", flush=True)
     time.sleep(3)
     try:
         save_session(list(history), silent=True)
     except Exception as e:
         log(f"SAVE_REFRESH_SAVE_ERROR: {e}")
+    # 2026-09-08: user wants save+consolidate without repopulating the window.
+    # Previous behavior wrote RESUME_FLAG, which auto-loaded the chat on restart.
+    # Now we intentionally skip that so restart is fresh; saved sessions are
+    # reachable via /sessions resume <N>.
     try:
-        chat_path = CHATS_DIR / f"{SESSION_TS}.chat"
-        RESUME_FLAG.write_text(str(chat_path))
+        RESUME_FLAG.unlink(missing_ok=True)
     except Exception as e:
-        log(f"SAVE_REFRESH_FLAG_ERROR: {e}")
+        log(f"SAVE_REFRESH_FLAG_CLEAR_ERROR: {e}")
     try:
         subprocess.run(["stty", "sane"], check=False)
     except Exception:
@@ -15397,6 +15740,18 @@ def main():
     # the full-screen rendering, often causing a 2-second silent exit.
     if _SENSEI_APP is None:
         os.system('clear')
+
+    # 2026-09-07: refresh OpenRouter model catalog at startup so routing never
+    # uses a stale cache from the previous day. Fetch is non-blocking (short
+    # timeout) and uses the existing configured key; a failure just leaves an
+    # empty cache, which the live fallback below can handle.
+    try:
+        _OPENROUTER_MODELS_CACHE.unlink(missing_ok=True)
+        threading.Thread(target=_openrouter_model_catalog, daemon=True).start()
+        log("OPENROUTER_CATALOG_REFRESH: startup cache cleared, warm fetch started")
+    except Exception as e:
+        log(f"OPENROUTER_CATALOG_REFRESH_ERROR: {e}")
+
     log("=== MASTER AI STARTED ===")
     if _clear_runtime_cache("startup"):
         print(f"  {G}cache cleared for a fresh run{X}")
@@ -15472,6 +15827,10 @@ def main():
 
     show_last_summary()
 
+    # Discoverability hint: saved chats are now browsable like Hermes sessions.
+    show_hint("Past chats are saved",
+              "Type 'sessions list' to browse prior chats, then 'sessions resume <number>' to reload one.")
+
     if not TUTORIAL_FILE.exists():
         show_hint("First time? Try the tutorial",
                   "Type 'tutorial' to learn all features step-by-step.\nOr just start typing — I'll respond to plain English.")
@@ -15518,12 +15877,24 @@ def main():
     except Exception as e:
         log(f"RESUME_ERROR: {e}")
 
-    # Save on any exit — force-close, terminal close, SIGTERM
+    # Save on any exit — force-close, terminal close, SIGTERM. Also summarize
+    # so the session shows up in `sessions list` / `sessions resume` without
+    # repopulating the window next launch.
     def _exit_save(signum=None, frame=None):
-        save_session(GLOBAL_HISTORY, silent=True)
+        try:
+            save_session(GLOBAL_HISTORY, silent=True)
+        except Exception:
+            pass
+        # Always clear any stale resume flag so a closed session doesn't
+        # auto-load back into the next window.
+        try:
+            RESUME_FLAG.unlink(missing_ok=True)
+        except Exception:
+            pass
         sys.exit(0)
 
     atexit.register(lambda: save_session(GLOBAL_HISTORY, silent=True))
+    atexit.register(lambda: RESUME_FLAG.unlink(missing_ok=True))
     # signal.signal() only works in the MAIN thread. In TUI mode main() runs
     # in a worker thread, so installing handlers here would raise ValueError
     # and silently exit. atexit still covers normal shutdown; the TUI owner
@@ -15556,6 +15927,7 @@ def main():
                 start_idle_tips()
             else:
                 _SENSEI_APP.set_label(load_thread_label())
+                _SENSEI_APP.set_chat_id(SESSION_TS)
             try:
                 _lbl = load_thread_label()
                 if _SENSEI_APP is None:
@@ -15714,6 +16086,54 @@ def main():
 
         if lo in ("controls", "shortcuts", "keyboard shortcuts", "terminal controls"):
             show_controls()
+            continue
+
+        # ── TinyFish slash commands ─────────────────────────────
+        if lo.startswith("tinyfish") or lo.startswith("tf ") or lo == "tf":
+            parts = cmd.split(None, 2)
+            sub = parts[1].lower() if len(parts) > 1 else ""
+            rest = parts[2] if len(parts) > 2 else ""
+            try:
+                import tinyfish_client as _tf
+                if not _tf.has_key():
+                    print(f"  {Y}TinyFish API key not found. Run the TinyFish setup first.{X}")
+                    continue
+                if lo in ("tinyfish", "tinyfish status", "tf", "tf status"):
+                    try:
+                        w = _tf.wallet()
+                        balance = w.get("balance_cents", "?")
+                        currency = w.get("currency", "USD")
+                        auto_reload = w.get("auto_reload_enabled", "?")
+                        print(f"  {C}TinyFish wallet:{X} {balance} {currency} cents  auto-reload={auto_reload}{X}")
+                    except Exception as e:
+                        print(f"  {Y}TinyFish wallet check failed: {e}{X}")
+                    continue
+                if sub in ("search", "s"):
+                    q = rest.strip() or "today's top Hacker News story"
+                    print(f"  {BC}[TinyFish search]{X} {q}")
+                    try:
+                        res = _tf.search(q)
+                        out = _tf.format_search(res, max_results=5)
+                        print(f"\n  {C}{out}{X}\n")
+                    except Exception as e:
+                        print(f"  {R}TinyFish search failed: {e}{X}")
+                    continue
+                if sub in ("fetch", "f"):
+                    urls = [u.strip() for u in rest.split() if u.strip().startswith("http")]
+                    if not urls:
+                        print(f"  {Y}usage: tinyfish fetch <url> [<url> ...]{X}")
+                        continue
+                    print(f"  {BC}[TinyFish fetch]{X} {len(urls)} URL(s)")
+                    try:
+                        res = _tf.fetch_content(urls)
+                        out = _tf.format_fetch(res)
+                        print(f"\n  {C}{out}{X}\n")
+                    except Exception as e:
+                        print(f"  {R}TinyFish fetch failed: {e}{X}")
+                    continue
+                print(f"  {Y}usage: tinyfish [search|fetch|status] ...{X}")
+            except Exception as e:
+                print(f"  {R}TinyFish command error: {e}{X}")
             continue
 
         # ── Scheduler slash commands ──────────────────────────
@@ -16036,14 +16456,20 @@ def main():
             else:
                 choice = cmd[6:].strip()
                 choice_lo = choice.lower()
-                _free_prefixes = ("free", "or free", "openrouter free")
+                _or_free_prefixes = ("or free", "openrouter free")
                 _search_prefixes = ("search ", "or search ", "openrouter search ")
                 _matched_prefix = next((p for p in _search_prefixes if choice_lo.startswith(p)), None)
                 if choice.lower() in ("stats", "stat", "usage", "monitor", "monitoring"):
                     print(f"\n  {C}{format_model_monitor()}{X}\n")
                 elif choice.lower() in ("keys", "key"):
                     print(f"\n  {C}{format_model_monitor()}{X}\n")
-                elif choice_lo in _free_prefixes:
+                elif choice_lo == "free":
+                    # 2026-09-07: was OpenRouter-only, silently excluding NVIDIA/
+                    # Cerebras/Groq keys the operator actually has configured.
+                    # "model free" now means every provider, no filter — use
+                    # "model openrouter free" for the OpenRouter-only view.
+                    print_full_model_catalog("", free_only=True)
+                elif choice_lo in _or_free_prefixes:
                     print_openrouter_search("", free_only=True)
                 elif choice_lo == "all" or choice_lo.startswith("all "):
                     print_full_model_catalog(choice[3:].strip())
@@ -16316,6 +16742,44 @@ def main():
             print(f"\n  {D}(now in Auto mode — type 'mode plan' to go back){X}")
             continue
 
+        # 2026-09-07: continuation feature — a reply that hit max_tokens
+        # (finish_reason=="length") sets PENDING_CONTINUATION in ask_cloud()
+        # instead of silently handing back a truncated answer. "proceed"
+        # here re-prompts the SAME provider with the partial reply appended
+        # as its own turn, asking it to continue from the exact stopping
+        # point rather than repeat or re-summarize what's already shown.
+        # Chains automatically if the continuation ALSO hits the limit —
+        # "so_far" accumulates the full text across rounds so the next
+        # "proceed" (or the final saved history entry) has everything, not
+        # just the latest fragment.
+        if PENDING_CONTINUATION and lo in (
+            "proceed", "go", "yes", "y", "continue", "keep going"
+        ) and not PENDING_PLAN_TEXT:
+            _cont = PENDING_CONTINUATION
+            _cont_messages = list(_cont["messages"]) + [
+                {"role": "assistant", "content": _cont["so_far"]},
+                {"role": "user", "content": (
+                    "Continue exactly where you left off — do not repeat or "
+                    "re-summarize anything you already wrote above, just "
+                    "keep going from the precise point you stopped. End with "
+                    "the Summary once the full answer is actually complete."
+                )},
+            ]
+            print(f"\n{C}  ▶ continuing from the length limit...{X}")
+            _cont_reply = ask_cloud(_cont_messages, provider=_cont["provider"])
+            if _cont_reply:
+                history.append({"role": "assistant", "content": _cont_reply})
+                render_reply(_cont_reply, prefix=f"\n{M}  🥋{X} ", suffix="")
+                if PENDING_CONTINUATION:
+                    # ask_cloud hit the limit again — accumulate, don't overwrite.
+                    globals()["PENDING_CONTINUATION"]["so_far"] = (
+                        _cont["so_far"] + "\n\n" + _cont_reply
+                    )
+                    globals()["PENDING_CONTINUATION"]["messages"] = _cont["messages"]
+            else:
+                print(f"  {R}continuation failed — cloud unavailable, try 'proceed' again.{X}")
+            continue
+
         # "go"/"yes"/"proceed" with no pending plan → explain
         if lo in ("go", "yes", "y", "proceed", "execute", "go ahead") and not PENDING_PLAN_TEXT:
             print(f"  {Y}No pending plan. Use 'mode plan' then describe your task.{X}")
@@ -16502,7 +16966,8 @@ def main():
                 for i, e in enumerate(entries, 1):
                     preview = e["preview"] or "(no summary yet)"
                     print(f"  {C}{i:>2}.{X} {e['date']}  {D}{preview}{X}")
-                print(f"\n  {D}Resume: 'sessions resume <number>'{X}\n")
+                    print(f"  {D}    chat id: {e['ts']}{X}")
+                print(f"\n  {D}Resume: 'sessions resume <number>' or 'sessions resume <chat id>'{X}\n")
             continue
 
         if lo.startswith("sessions resume"):
@@ -17784,13 +18249,18 @@ def main():
             #    only fire if the recent user messages DO NOT touch the
             #    project keywords (thread label tokens + active task words).
             #    Saves money: no reminder if we're still on topic.
-            globals()['CHARS_SINCE_REMIND'] = CHARS_SINCE_REMIND + len(user_text) + len(reply or "")
-            if CHARS_SINCE_REMIND >= DRIFT_REMINDER_CHARS:
-                try:
-                    _maybe_drift_reminder(history)
-                except Exception as _e:
-                    log(f"DRIFT_REMINDER_ERROR: {_e}")
-                globals()['CHARS_SINCE_REMIND'] = 0
+            # ── Drift reminder: DISABLED on user request 2026-09-07.
+            #    The keyword-based reminder and the 3000-char counter remain
+            #    available in code but are not evaluated. Re-enable by uncommenting
+            #    the block below and restoring the DRIFT_REMINDER_CHARS logic.
+            # globals()['CHARS_SINCE_REMIND'] = CHARS_SINCE_REMIND + len(user_text) + len(reply or "")
+            # if CHARS_SINCE_REMIND >= DRIFT_REMINDER_CHARS:
+            #     try:
+            #         _maybe_drift_reminder(history)
+            #     except Exception as _e:
+            #         log(f"DRIFT_REMINDER_ERROR: {_e}")
+            #     globals()['CHARS_SINCE_REMIND'] = 0
+            pass
         except Exception as e:
             log(f"HANDLE_ERROR: {e}")
             print(f"  {R}error: {e}{X}")
@@ -17926,12 +18396,58 @@ def _run_with_tui():
         except Exception:
             old_sigwinch = None
 
+    # 2026-09-07: TUI mode had NO SIGTERM handler at all — main()'s own
+    # _exit_save (line ~15613) is gated `if _SENSEI_APP is None`, which is
+    # false here, and a stale comment claimed "the TUI owner installs its
+    # own signal handling in the main thread" — it never did (verified: no
+    # signal.signal(SIGTERM, ...) anywhere in _run_with_tui() or
+    # sensei_tui.py). Every external SIGTERM (master_ai_refresh.sh,
+    # update_master_ai.sh, or any other pkill -TERM against this process)
+    # hit Python's default handler: instant death, no save_session() call,
+    # no traceback — exactly the bare "exited (code=143)" crash-log entries
+    # with no session recovery. This is the actual main thread in TUI mode,
+    # so it's the only place that can legally install the handler.
+    old_sigterm = None
+    try:
+        old_sigterm = signal.getsignal(signal.SIGTERM)
+        def _sigterm_save(_s, _f):
+            # 2026-09-07: reproduced live — save_session() -> summarize_
+            # session() -> _ask_cloud_for_label() chains through multiple
+            # cloud providers sequentially with no bound on this path, so a
+            # slow/hanging provider left the process alive 8+ minutes after
+            # SIGTERM, silently defeating the whole point of this handler
+            # (supervisor can't restart what won't die). A signal handler
+            # blocking forever is worse than the bare-crash bug this was
+            # built to fix in the first place. Run the save on a daemon
+            # thread with a hard wall-clock bound instead — if it hasn't
+            # finished in time, accept the loss and exit anyway; staying
+            # alive and unrestartable is never the better outcome.
+            import threading as _threading
+            _save_done = _threading.Event()
+            def _bg_save():
+                try:
+                    save_session(GLOBAL_HISTORY, silent=True)
+                finally:
+                    _save_done.set()
+            _t = _threading.Thread(target=_bg_save, daemon=True)
+            _t.start()
+            _save_done.wait(timeout=8.0)
+            os._exit(0)
+        signal.signal(signal.SIGTERM, _sigterm_save)
+    except Exception:
+        old_sigterm = None
+
     try:
         _SENSEI_APP.run(on_submit=_on_submit)
     finally:
         if old_sigwinch is not None and hasattr(signal, "SIGWINCH"):
             try:
                 signal.signal(signal.SIGWINCH, old_sigwinch)
+            except Exception:
+                pass
+        if old_sigterm is not None:
+            try:
+                signal.signal(signal.SIGTERM, old_sigterm)
             except Exception:
                 pass
         sys.stdout = _orig_stdout
