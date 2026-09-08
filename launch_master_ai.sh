@@ -14,7 +14,20 @@ SESSION="master-ai"
 # break the loop, but any bug that happened to exit 0 would leave the user
 # stranded at the shell with no obvious way back in. Now only a deliberate
 # 'x' (exit 99) ends the session.
-SUPERVISOR='cd ~ && if grep -q "^SENSEI_MOUSE=0" ~/.master_ai_settings 2>/dev/null; then export SENSEI_MOUSE=0; else export SENSEI_MOUSE=1; fi && while true; do python3 ~/scripts/master_ai.py 2>>~/scripts/master.crash.log; EXIT=$?; if [ $EXIT -eq 99 ]; then break; fi; if [ $EXIT -eq 42 ]; then sleep 1; continue; fi; echo "[$(date)] Master AI exited (code=$EXIT) — auto-restarting in 3s..." >> ~/scripts/master.crash.log 2>&1; sleep 3; done; clear'
+# 2026-09-03: master_ai.py's own process env was confirmed missing
+# DISPLAY entirely (checked /proc/$PID/environ live — XDG_SESSION_TYPE=tty,
+# no DISPLAY at all), even though DBUS_SESSION_BUS_ADDRESS was present and
+# `tmux show-environment -t master-ai DISPLAY` showed :0 — tmux's own
+# per-session variable store doesn't automatically propagate into an
+# already-running shell's environment, only into new panes/windows tmux
+# itself spawns. Root cause of a real bug: _launch_desktop_argv-launched
+# GUI apps (open desktop app requests) had no X server to connect to,
+# so some failed silently (exit 0, no window, no error — DEVNULL ate any
+# message explaining why) depending on how much a given app's toolkit
+# tolerated a missing DISPLAY before giving up. Falls back to :0 (this
+# machine's actual display) only if truly unset, so it's a no-op on any
+# environment that already has DISPLAY correctly set.
+SUPERVISOR='cd ~ && export DISPLAY="${DISPLAY:-:0}" && if grep -q "^SENSEI_MOUSE=0" ~/.master_ai_settings 2>/dev/null; then export SENSEI_MOUSE=0; else export SENSEI_MOUSE=1; fi && while true; do python3 ~/scripts/master_ai.py 2>>~/scripts/master.crash.log; EXIT=$?; if [ $EXIT -eq 99 ]; then break; fi; if [ $EXIT -eq 42 ]; then sleep 1; continue; fi; echo "[$(date)] Master AI exited (code=$EXIT) — auto-restarting in 3s..." >> ~/scripts/master.crash.log 2>&1; sleep 3; done; clear'
 
 engine_alive() { pgrep -f "python3.*master_ai.py" >/dev/null 2>&1; }
 
