@@ -48,6 +48,7 @@ from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition, has_focus
 from prompt_toolkit.formatted_text import ANSI, FormattedText
+from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -362,14 +363,33 @@ def _term_size():
     return shutil.get_terminal_size((80, 24))
 
 def _fit_text(text: str, width: int) -> str:
-    """Clamp one-line chrome text so frame titles/status never spill."""
+    """Clamp one-line chrome text so frame titles/status never spill.
+
+    Measures visual terminal columns via get_cwidth, not len(): emoji and
+    other wide glyphs render as 2 columns but count as 1 codepoint, so a
+    len()-based clamp under-measures any title with an emoji in it (every
+    frame in this UI) and the border drawn around the returned text lands
+    misaligned with what's actually on screen.
+    """
     text = str(text or "").replace("\n", " ")
     width = max(1, int(width or 1))
-    if len(text) <= width:
+    total = sum(get_cwidth(ch) for ch in text)
+    if total <= width:
         return text
+
+    def _clip(budget):
+        out, w = "", 0
+        for ch in text:
+            cw = get_cwidth(ch)
+            if w + cw > budget:
+                break
+            out += ch
+            w += cw
+        return out
+
     if width <= 3:
-        return text[:width]
-    return text[:width - 3].rstrip() + "..."
+        return _clip(width)
+    return _clip(width - 3).rstrip() + "..."
 
 
 class _TUIStdout:
