@@ -18,6 +18,7 @@ import re
 import subprocess
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 
@@ -112,4 +113,67 @@ def verify_process_running(
         time.sleep(poll_s)
 
 
-__all__ = ["VerifyResult", "verify_process_running"]
+def verify_notification_sent(
+    _: Optional[str] = None,
+    max_wait_s: float = 1.0,
+    poll_ms: int = 100,
+) -> VerifyResult:
+    """Verify that desktop notifications are deliverable right now.
+
+    We can't see the user's screen, so we verify the prerequisites:
+      - notify-send binary exists
+      - the D-Bus session bus socket is present at the expected path
+      - sensei-notify.sh wrapper exists and is executable
+
+    Returns ok=True when all prerequisites are satisfied. The executor already
+    performed the actual notify-send call; this verifier just confirms the
+    environment is still healthy enough for future notifications.
+    """
+    import os
+    import shutil
+    start = time.monotonic()
+    wrapper = Path.home() / "scripts" / "sensei-notify.sh"
+    bus_addr = os.environ.get("DBUS_SESSION_BUS_ADDRESS")
+    if not bus_addr:
+        run_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+        bus_addr = f"unix:path={run_dir}/bus"
+
+    # D-Bus socket must exist and be writable.
+    socket_path = bus_addr.replace("unix:path=", "") if bus_addr.startswith("unix:path=") else ""
+    if not socket_path or not os.path.exists(socket_path):
+        elapsed = time.monotonic() - start
+        return VerifyResult(
+            ok=False,
+            observed=None,
+            elapsed_ms=int(elapsed * 1000),
+            reason=f"D-Bus session socket not found: {socket_path}",
+        )
+
+    if not shutil.which("notify-send"):
+        elapsed = time.monotonic() - start
+        return VerifyResult(
+            ok=False,
+            observed=None,
+            elapsed_ms=int(elapsed * 1000),
+            reason="notify-send binary not found in PATH",
+        )
+
+    if not wrapper.is_file():
+        elapsed = time.monotonic() - start
+        return VerifyResult(
+            ok=False,
+            observed=None,
+            elapsed_ms=int(elapsed * 1000),
+            reason=f"sensei-notify.sh wrapper missing: {wrapper}",
+        )
+
+    elapsed = time.monotonic() - start
+    return VerifyResult(
+        ok=True,
+        observed=f"notify-send present, D-Bus socket {socket_path}",
+        elapsed_ms=int(elapsed * 1000),
+        reason="notification prerequisites satisfied",
+    )
+
+
+__all__ = ["VerifyResult", "verify_process_running", "verify_notification_sent"]

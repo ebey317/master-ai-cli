@@ -20,7 +20,7 @@ setup(
         "sensei_reasoning_loop", "sensei_reflect", "sensei_tool_detector",
         "sensei_tui", "setup_email", "setup_wizard", "skill_runtime", "slideshow", "slideshow_uninstall",
         "stt_server", "subagent_registry", "tts_server", "typed_actions", "uninstall_wizard",
-        "url_grounding", "verifiers", "whereisit",
+        "url_grounding", "verifiers", "whereisit", "delegate_runner",
     ],
     packages=["sensei_clean", "sensei_clean.adapters"],
     python_requires=">=3.10",
