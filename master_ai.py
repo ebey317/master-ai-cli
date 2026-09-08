@@ -11741,6 +11741,16 @@ _TOOL_CALL_TAG_RE = re.compile(r'</?\s*tool_call\s*>', re.IGNORECASE)
 # have their own plain-text syntax elsewhere, e.g. READ: path:120-180).
 _ARG_XML_TAG_RE = re.compile(r'</?\s*arg_(?:key|value)\b', re.IGNORECASE)
 
+# 2026-09-08: reasoning models (confirmed live on glm-5.2 via OpenRouter)
+# sometimes leak a trailing `</think>` onto the SAME line as the directive
+# it just emitted, e.g. `RUN: ... | grep -v grep</think>`, instead of
+# cleanly closing the reasoning block before the directive starts. Since
+# `</think>` opens with `<`, bash parses it as a malformed input-redirect
+# token and dies with "syntax error near unexpected token `newline'" --
+# every RUN from that turn fails, not just a cosmetic glitch. Same
+# truncate-at-first-tag treatment as _ARG_XML_TAG_RE above.
+_THINK_TAG_RE = re.compile(r'</?\s*think\s*>', re.IGNORECASE)
+
 def _normalize_directive_lines(reply):
     """Give every parser downstream (_extract_directive, split-on-newline
     per-line matchers, _extract_browser_actions's line.strip()-anchored
@@ -11880,6 +11890,9 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         arg_xml = _ARG_XML_TAG_RE.search(s)
         if arg_xml:
             s = s[:arg_xml.start()].rstrip()
+        think_tag = _THINK_TAG_RE.search(s)
+        if think_tag:
+            s = s[:think_tag.start()].rstrip()
         # Drop bash no-ops / placeholder garbage (`:`, `true`, empty) so
         # the dispatch loop never spawns a terminal that runs nothing.
         return "" if _is_noop_cmd(s) else s
@@ -12302,6 +12315,9 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         arg_xml = _ARG_XML_TAG_RE.search(target)
         if arg_xml:
             target = target[:arg_xml.start()].rstrip()
+        think_tag = _THINK_TAG_RE.search(target)
+        if think_tag:
+            target = target[:think_tag.start()].rstrip()
         m = re.match(r'^(?P<path>.+):(?P<start>\d+)(?:-(?P<end>\d+))?$', target)
         if not m:
             return target, None, None
@@ -15426,6 +15442,9 @@ def summarize_session(history):
         arg_xml = _ARG_XML_TAG_RE.search(result)
         if arg_xml:
             result = result[:arg_xml.start()].rstrip()
+        think_tag = _THINK_TAG_RE.search(result)
+        if think_tag:
+            result = result[:think_tag.start()].rstrip()
         if "•" not in result or len(result) < 20:
             log(f"SUMMARIZE_SESSION_REJECTED: malformed/empty output: {result[:120]!r}")
             return None
