@@ -211,6 +211,310 @@ async function runScheduledWorkflow(scheduleId) {
   return result;
 }
 
+// ─── MCP fallback poller — service-worker-resident, runs only when the side
+// panel is NOT open. side_panel.js owns the primary MCP dispatch path
+// (dispatchMcpAction/mcpPoll there); this exists because MV3 side panels
+// unload like a closed tab, so an MCP tool call made while the panel is
+// closed used to sit in the backend queue until it timed out with no
+// response at all. The side panel opens a long-lived port named
+// "sensei-panel" on load; this poller backs off entirely whenever that
+// port is connected, so the two never race on the same queue.
+//
+// Keepalive note: a plain setInterval() does NOT survive MV3 service-worker
+// idle suspension (~30s with no Chrome-recognized activity) — once the
+// worker is torn down, the timer is gone with it. chrome.alarms is the one
+// primitive Chrome guarantees will wake a terminated worker back up, so
+// it's the primary mechanism here (1-minute minimum period, Chrome-
+// enforced, not adjustable). The setInterval below is a free bonus for
+// whenever the worker happens to already be awake for some other reason —
+// real, but not the guarantee. sensei_mcp_server.py's per-tool wait was
+// bumped past 60s specifically so a panel-closed call has a real chance of
+// landing inside the alarm's window instead of always timing out one tick
+// early.
+let _panelConnected = false;
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== "sensei-panel") return;
+  _panelConnected = true;
+  port.onDisconnect.addListener(() => { _panelConnected = false; });
+});
+
+const SW_MCP_SESSION = "mcp-default";
+const SW_MCP_POLL_INTERVAL_MS = 2000;
+let _swMcpPollRunning = false;
+
+async function _swBackendFetch(path, options = {}) {
+  const stored = await storageGet(["backendUrl"]);
+  const base = stored.backendUrl || DEFAULTS.backendUrl;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs || 5000);
+  try {
+    const res = await fetch(base + path, {
+      method: options.method || "GET",
+      headers: options.body ? { "Content-Type": "application/json" } : undefined,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (_err) {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Reduced version of side_panel.js's sessionTab() — no in-memory "last acted
+// on" pointer (that state lives only in the side panel's JS heap and is gone
+// once it unloads), but the persisted session tab group and Chrome's own
+// focused tab cover the common cases correctly.
+async function _swSessionTab(action) {
+  const explicit = Number(action?.tab_id ?? action?.tabId);
+  if (Number.isFinite(explicit) && explicit > 0) {
+    try { return await chrome.tabs.get(explicit); } catch (_err) { /* fall through */ }
+  }
+  const stored = await storageGet(["sessionTabGroupId"]);
+  const groupId = Number(stored.sessionTabGroupId);
+  if (Number.isFinite(groupId) && groupId > 0) {
+    try {
+      const grouped = await chrome.tabs.query({ groupId });
+      if (Array.isArray(grouped) && grouped.length) {
+        return grouped.find((t) => t.active) || grouped[grouped.length - 1];
+      }
+    } catch (_err) { /* group gone; fall through */ }
+  }
+  try {
+    const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    return active || null;
+  } catch (_err) {
+    return null;
+  }
+}
+
+async function _swDispatchMcpAction(action) {
+  const kind = String(action.kind || "").toUpperCase();
+  try {
+    if (kind === "BROWSER_TAB_LIST") {
+      const stored = await storageGet(["sessionTabGroupId"]);
+      const groupId = Number(stored.sessionTabGroupId) || null;
+      const tabs = await chrome.tabs.query({});
+      const sessionTabs = groupId ? tabs.filter((t) => t.groupId === groupId) : [];
+      return {
+        ok: true,
+        session_group_id: groupId,
+        session_tabs: sessionTabs.map((t) => ({
+          id: t.id, title: t.title, url: t.url, active: t.active, windowId: t.windowId, index: t.index,
+        })),
+        all_tabs: tabs.slice(0, 50).map((t) => ({
+          id: t.id, title: t.title, url: t.url, active: t.active, windowId: t.windowId, index: t.index,
+          in_session: t.groupId === groupId,
+        })),
+      };
+    }
+    if (kind === "BROWSER_TAB_SWITCH") {
+      const tabId = parseInt(String(action.target || ""), 10);
+      if (!tabId) return { ok: false, error: "tab_id required" };
+      await chrome.tabs.update(tabId, { active: true });
+      return { ok: true, tab_id: tabId };
+    }
+    if (kind === "BROWSER_TAB_CLOSE") {
+      const tabId = parseInt(String(action.target || ""), 10);
+      if (!tabId) return { ok: false, error: "tab_id required" };
+      await chrome.tabs.remove(tabId);
+      return { ok: true, tab_id: tabId };
+    }
+    if (kind === "BROWSER_TAB_CREATE") {
+      const url = String(action.target || "about:blank");
+      const newTab = await chrome.tabs.create({ url, active: false });
+      try {
+        const stored = await storageGet(["sessionTabGroupId"]);
+        let groupId = Number(stored.sessionTabGroupId) || null;
+        if (groupId) {
+          try { await chrome.tabGroups.get(groupId); } catch (_err) { groupId = null; }
+        }
+        if (groupId) {
+          await chrome.tabs.group({ groupId, tabIds: [newTab.id] });
+        } else {
+          const created = await chrome.tabs.group({ tabIds: [newTab.id] });
+          await storageSet({ sessionTabGroupId: created });
+        }
+      } catch (_err) { /* grouping is best-effort */ }
+      return { ok: true, tab_created: { id: newTab.id, url, windowId: newTab.windowId } };
+    }
+    if (kind === "BROWSER_SCREENSHOT") {
+      const tab = await _swSessionTab(action);
+      if (!tab?.id) return { ok: false, error: "no active tab" };
+      try {
+        await chrome.windows.update(tab.windowId, { focused: true });
+        await chrome.tabs.update(tab.id, { active: true });
+      } catch (_err) { /* best-effort focus, capture still works without it */ }
+      const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+      return { ok: true, screenshot: "visible_tab_png", dataUrl };
+    }
+    if (kind === "BROWSER_ZOOM") {
+      const tab = await _swSessionTab(action);
+      if (!tab?.id) return { ok: false, error: "no active tab" };
+      try {
+        await chrome.windows.update(tab.windowId, { focused: true });
+        await chrome.tabs.update(tab.id, { active: true });
+      } catch (_err) { /* best-effort focus */ }
+      return await _captureZoom(tab.id, action.target);
+    }
+    if (kind === "BROWSER_SHORTCUTS_LIST") {
+      const stored = await storageGet(["shortcuts"]);
+      const shortcuts = Array.isArray(stored.shortcuts) ? stored.shortcuts : [];
+      return {
+        ok: true,
+        count: shortcuts.length,
+        shortcuts: shortcuts.map((s) => ({
+          id: s.id, name: s.name, startUrl: s.startUrl, steps: (s.steps || []).length,
+        })),
+      };
+    }
+    if (kind === "BROWSER_SHORTCUTS_EXECUTE") {
+      const stored = await storageGet(["shortcuts"]);
+      const shortcuts = Array.isArray(stored.shortcuts) ? stored.shortcuts : [];
+      const query = String(action.target || "").trim();
+      const shortcut = shortcuts.find((s) => s.id === query || s.name === query);
+      if (!shortcut) return { ok: false, error: `shortcut not found: ${query}` };
+      let params = {};
+      try { params = JSON.parse(action.params || "{}"); } catch (_err) { /* default {} */ }
+      return await executeWorkflowShortcut(shortcut, params, { manual: true, mcp: true });
+    }
+    if (kind === "BROWSER_GET_DOM") {
+      const tab = await _swSessionTab(action);
+      if (!tab?.id) return { ok: false, error: "no active tab" };
+      try {
+        await _ensureDebuggerAttached(tab.id);
+        const selector = String(action.target || action.selector || "");
+        const expr = selector
+          ? `(function(){var el=document.querySelector(${JSON.stringify(selector)});return el?el.outerHTML:"selector not found";})()`
+          : "document.documentElement.outerHTML.slice(0,32768)";
+        const res = await _cdpSend(tab.id, "Runtime.evaluate", { expression: expr, returnByValue: true });
+        return { ok: true, html: String(res?.result?.value || "").slice(0, 32768) };
+      } catch (err) {
+        return { ok: false, error: err?.message || String(err) };
+      }
+    }
+    if (kind === "BROWSER_GET_PERFORMANCE") {
+      const tab = await _swSessionTab(action);
+      if (!tab?.id) return { ok: false, error: "no active tab" };
+      try {
+        await _ensureDebuggerAttached(tab.id);
+        await _cdpSend(tab.id, "Performance.enable", {});
+        const metrics = await _cdpSend(tab.id, "Performance.getMetrics", {});
+        const timingRes = await _cdpSend(tab.id, "Runtime.evaluate", {
+          expression: "JSON.stringify({navigation:performance.getEntriesByType('navigation').map(e=>e.toJSON()),resources:performance.getEntriesByType('resource').slice(0,20).map(e=>({name:e.name,duration:Math.round(e.duration),size:e.transferSize}))})",
+          returnByValue: true,
+        });
+        return { ok: true, metrics: metrics.metrics || [], timing: JSON.parse(timingRes?.result?.value || "{}") };
+      } catch (err) {
+        return { ok: false, error: err?.message || String(err) };
+      }
+    }
+    if (kind === "BROWSER_JS") {
+      const tab = await _swSessionTab(action);
+      if (!tab?.id) return { ok: false, error: "no active tab" };
+      const code = String(action.target || action.code || "").trim();
+      if (!code) return { ok: false, error: "no code provided" };
+      try {
+        await _ensureDebuggerAttached(tab.id);
+        const res = await _cdpSend(tab.id, "Runtime.evaluate", { expression: code, returnByValue: true, awaitPromise: true });
+        if (res?.exceptionDetails) {
+          const desc = res.exceptionDetails.exception?.description || res.exceptionDetails.text || "evaluation threw";
+          return { ok: false, error: desc };
+        }
+        return { ok: true, result: res?.result?.value };
+      } catch (err) {
+        return { ok: false, error: err?.message || String(err) };
+      }
+    }
+    if (kind === "BROWSER_FIND") {
+      const tab = await _swSessionTab(action);
+      if (!tab?.id) return { ok: false, error: "no active tab" };
+      const wantsSemantic = /\bsemantic\s*:\s*true\b/i.test(String(action.target || ""));
+      const query = String(action.target || "").replace(/\bsemantic\s*:\s*true\b/ig, "").trim();
+      let regexResult = { ok: false, count: 0, matches: [] };
+      const ready = await _ensureContentScriptForTab(tab.id);
+      if (ready) {
+        regexResult = await Promise.race([
+          chrome.tabs.sendMessage(tab.id, { type: "SENSEI_EXECUTE_ACTION", action: { ...action, target: query } }),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("dispatch timeout")), 15000)),
+        ]).catch((err) => ({ ok: false, error: err.message }));
+      }
+      if (!wantsSemantic && regexResult?.count) return regexResult;
+      try {
+        const snapshot = await buildAxSnapshot(tab.id);
+        const data = await _swBackendFetch("/tool/find", {
+          method: "POST",
+          body: { query, ax_tree: snapshot },
+          timeoutMs: 20000,
+        });
+        return {
+          ok: Boolean(data?.ok),
+          query,
+          count: Array.isArray(data?.matches) ? data.matches.length : 0,
+          matches: Array.isArray(data?.matches) ? data.matches : [],
+          semantic: true,
+          regex_matches: regexResult?.matches || [],
+          regex_count: regexResult?.count || 0,
+        };
+      } catch (err) {
+        return { ok: false, error: err?.message || String(err), regex_matches: regexResult?.matches || [], regex_count: regexResult?.count || 0 };
+      }
+    }
+    if (kind.startsWith("BROWSER_")) {
+      const tab = await _swSessionTab(action);
+      if (!tab?.id) return { ok: false, error: "no active tab" };
+      const ready = await _ensureContentScriptForTab(tab.id);
+      if (!ready) return { ok: false, error: "content script unavailable" };
+      const result = await Promise.race([
+        chrome.tabs.sendMessage(tab.id, { type: "SENSEI_EXECUTE_ACTION", action }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("dispatch timeout")), 15000)),
+      ]).catch((err) => ({ ok: false, error: err.message }));
+      return result || { ok: false, error: "no result" };
+    }
+    return { ok: false, error: `unsupported kind (service-worker fallback path): ${kind}` };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+}
+
+async function swMcpPoll() {
+  if (_panelConnected || _swMcpPollRunning) return;
+  _swMcpPollRunning = true;
+  try {
+    const data = await _swBackendFetch(
+      `/extension/pending?session_id=${encodeURIComponent(SW_MCP_SESSION)}`,
+      { timeoutMs: 3000 }
+    );
+    if (!data?.actions?.length) return;
+    for (const entry of data.actions) {
+      if (_panelConnected) break; // panel came online mid-batch; hand dispatch back to it
+      const action = entry.action || entry;
+      const actionId = entry.action_id || action.id;
+      if (!actionId) continue;
+      const result = await _swDispatchMcpAction(action);
+      await _swBackendFetch("/extension/mcp_result", {
+        method: "POST",
+        body: { action_id: actionId, session_id: SW_MCP_SESSION, result },
+        timeoutMs: 5000,
+      });
+    }
+  } finally {
+    _swMcpPollRunning = false;
+  }
+}
+
+setInterval(() => {
+  chrome.storage.local.get("sensei-sw-heartbeat-tick", () => {});
+  swMcpPoll();
+}, SW_MCP_POLL_INTERVAL_MS);
+
+chrome.alarms?.create("sensei-sw-heartbeat", { periodInMinutes: 1 });
+chrome.alarms?.onAlarm.addListener((alarm) => {
+  if (alarm?.name === "sensei-sw-heartbeat") swMcpPoll().catch(() => {});
+});
+
 // ─── AX-tree snapshot (Claude-Chrome-style page read).
 // Plan: ~/.claude/plans/https-www-claudechrome-com-blog-how-clau-hidden-bentley.md
 // Primary source is the Chrome accessibility tree via CDP, which pierces both
@@ -256,6 +560,34 @@ function _cdpSend(tabId, method, params) {
       resolve(result || {});
     });
   });
+}
+
+// Region/zoom screenshot — claude-in-chrome parity. chrome.tabs.captureVisibleTab
+// has no crop option, but CDP's Page.captureScreenshot does (clip rect), and
+// the debugger permission needed for it is already granted in manifest.json —
+// no new permission prompt. Shared by the SW-resident MCP fallback poller
+// (calls this directly) and the side panel's dispatchMcpAction (calls it via
+// the SENSEI_ZOOM_CAPTURE message below, same as BROWSER_SCREENSHOT does for
+// SENSEI_CAPTURE_VISIBLE_TAB).
+async function _captureZoom(tabId, regionStr) {
+  const parts = String(regionStr || "").split(",").map((n) => Number(String(n).trim()));
+  if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) {
+    return { ok: false, error: "region must be 'x0,y0,x1,y1'" };
+  }
+  const [x0, y0, x1, y1] = parts;
+  const width = Math.max(1, x1 - x0);
+  const height = Math.max(1, y1 - y0);
+  try {
+    await _ensureDebuggerAttached(tabId);
+    const result = await _cdpSend(tabId, "Page.captureScreenshot", {
+      format: "png",
+      clip: { x: x0, y: y0, width, height, scale: 1 },
+    });
+    if (!result?.data) return { ok: false, error: "capture returned no data" };
+    return { ok: true, screenshot: "zoom_png", dataUrl: `data:image/png;base64,${result.data}` };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
 }
 
 chrome.debugger.onDetach.addListener((source, reason) => {
@@ -842,12 +1174,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       : (Number.isInteger(_sender?.tab?.id) ? _sender.tab.id : null);
     const selector = String(message.selector || "").trim();
     const absolutePath = String(message.path || "").trim();
-    if (tabId === null || !selector || !absolutePath) {
-      sendResponse({ ok: false, error: "tabId, selector, and path required" });
+    const absolutePaths = Array.isArray(message.paths) && message.paths.length
+      ? message.paths.map((p) => String(p || "").trim()).filter(Boolean)
+      : (absolutePath ? [absolutePath] : []);
+    if (tabId === null || !selector || !absolutePaths.length) {
+      sendResponse({ ok: false, error: "tabId, selector, and at least one path required" });
       return false;
     }
-    if (!absolutePath.startsWith("/") && !absolutePath.startsWith("~")) {
-      sendResponse({ ok: false, error: `path must be absolute (got ${absolutePath})` });
+    const badPath = absolutePaths.find((p) => !p.startsWith("/") && !p.startsWith("~"));
+    if (badPath) {
+      sendResponse({ ok: false, error: `path must be absolute (got ${badPath})` });
       return false;
     }
     (async () => {
@@ -864,11 +1200,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           sendResponse({ ok: false, error: `element not found: ${selector}` });
           return;
         }
-        // Push the file. CDP accepts an array of absolute paths; the browser
-        // reads the file from disk and treats it as a user-selected file.
+        // Push the file(s). CDP natively accepts an array of absolute paths
+        // for a single file input (multi-select inputs get all of them; a
+        // single-file input silently keeps just the last one — that's
+        // Chrome's own behavior, not something to special-case here).
         await _cdpSend(tabId, "DOM.setFileInputFiles", {
           objectId,
-          files: [absolutePath],
+          files: absolutePaths,
         });
         // Dispatch input + change events so page-side validators / framework
         // listeners (React onChange, Vue v-on:change, vanilla form-validators)
@@ -899,7 +1237,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({
           ok: true,
           selector,
-          path: absolutePath,
+          path: absolutePaths[0],
+          paths: absolutePaths,
           files_length: value.files_length,
           file_name: value.file_name,
           file_size: value.file_size,
@@ -966,6 +1305,53 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return;
       }
       capture(tab.windowId);
+    });
+    return true;
+  }
+
+  // BROWSER_ZOOM's service-worker half — side_panel.js's dispatchMcpAction
+  // calls this the same way it calls SENSEI_CAPTURE_VISIBLE_TAB, since CDP
+  // (chrome.debugger) only works from this context. Shares _captureZoom with
+  // the SW-resident MCP fallback poller so there's one implementation.
+  if (message?.type === "SENSEI_ZOOM_CAPTURE") {
+    const tabId = Number.isInteger(message.tabId) ? message.tabId : null;
+    if (tabId === null) {
+      sendResponse({ ok: false, error: "tabId required" });
+      return false;
+    }
+    _captureZoom(tabId, message.region).then(sendResponse);
+    return true;
+  }
+
+  if (message?.type === "SENSEI_LIST_SHORTCUTS") {
+    storageGet(["shortcuts"]).then((stored) => {
+      const shortcuts = Array.isArray(stored.shortcuts) ? stored.shortcuts : [];
+      sendResponse({
+        ok: true,
+        count: shortcuts.length,
+        shortcuts: shortcuts.map((s) => ({ id: s.id, name: s.name, startUrl: s.startUrl, steps: (s.steps || []).length })),
+      });
+    });
+    return true;
+  }
+
+  if (message?.type === "SENSEI_RUN_SHORTCUT_BY_NAME") {
+    const query = String(message.name || "").trim();
+    if (!query) {
+      sendResponse({ ok: false, error: "name required" });
+      return false;
+    }
+    storageGet(["shortcuts"]).then(async (stored) => {
+      const shortcuts = Array.isArray(stored.shortcuts) ? stored.shortcuts : [];
+      const shortcut = shortcuts.find((s) => s.id === query || s.name === query);
+      if (!shortcut) {
+        sendResponse({ ok: false, error: `shortcut not found: ${query}` });
+        return;
+      }
+      let params = {};
+      try { params = JSON.parse(message.params || "{}"); } catch (_err) { /* default {} */ }
+      const result = await executeWorkflowShortcut(shortcut, params, { manual: true, mcp: true });
+      sendResponse(result);
     });
     return true;
   }

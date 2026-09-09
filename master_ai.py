@@ -11991,10 +11991,22 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         payload = _extract_directive(line, "SEND_TELEGRAM")
         if not payload:
             return None
+        # If a default chat ID is configured, the directive can be just the message text.
+        default_chat_id = None
+        try:
+            import telegram_client
+            default_chat_id = telegram_client._get_default_chat_id()
+        except Exception:
+            pass
         parts = payload.split(None, 1)
-        if len(parts) < 2:
+        if not parts:
             return None
-        chat_id, text = parts[0], parts[1].strip()
+        if len(parts) == 1:
+            if not default_chat_id:
+                return None
+            chat_id, text = default_chat_id, parts[0].strip()
+        else:
+            chat_id, text = parts[0], parts[1].strip()
         # Strip accidental surrounding quotes
         if len(text) >= 2 and text[0] == text[-1] and text[0] in ('"', "'"):
             text = text[1:-1]
@@ -14433,7 +14445,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "REMEMBER: <fact>                         — save a durable note to memory\n"
         "DONE: <one-line summary>                 — explicit completion signal; ends the agent loop\n\n"
         "SEARCH: vs BROWSER_NAV: — two different tools, do not reach for the wrong "
-        "one. SEARCH: is the default for facts, current events, prices, identifying "
+        "one. SEARCH: is the default for facts/current events/prices/identifying "
         "an unfamiliar term/product/name, or anything the user just wants to KNOW. "
         "It runs headless through search engines/APIs — no Chrome, no tab, works "
         "every time keys are configured. BROWSER_NAV (and the rest of the BROWSER_* "
@@ -14447,7 +14459,11 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "search-engine results page — screenshotting a Google Images grid is not "
         "'showing' the user anything useful, it is a fragile workaround for a plain "
         "lookup. Default to SEARCH: first; escalate to BROWSER_NAV only when the "
-        "task genuinely requires the live page itself.\n\n"
+        "task genuinely requires the live page itself. "
+        "CRITICAL: after you emit SEARCH: and the results come back, do NOT stop. "
+        "The next reply must synthesize those results into a plain, useful answer "
+        "for the user's original question — no more than one intermediate thinking "
+        "line, then the answer.\n\n"
         "FORMAT DISCIPLINE — directives must be literal, complete, and executable. "
         "Never put directive examples inside markdown fences. Never wrap directives in a "
         "JSON object (no '{\"actions\": [...]}' shape) — the dispatcher parses bare lines at "
@@ -15857,6 +15873,11 @@ def main():
     history = []
     globals()['GLOBAL_HISTORY'] = history
 
+    # A brand-new chat with no prior content has no label. If a stale label is
+    # left over, clear it so the bottom rule only shows the chat ID.
+    if not RESUME_FLAG.exists():
+        save_thread_label("")
+
     # ── Auto-resume from save-refresh flag (compacted, not full) ──
     resumed_from_notes = False
     try:
@@ -16797,6 +16818,25 @@ def main():
                     globals()["PENDING_CONTINUATION"]["messages"] = _cont["messages"]
             else:
                 print(f"  {R}continuation failed — cloud unavailable, try 'proceed' again.{X}")
+            continue
+
+        # Universal "keep going" — if the model stalled or stopped after a
+        # tool/search without a real closing answer, "proceed/go/yes/y/continue"
+        # re-prompts from current history so the user doesn't have to repeat
+        # themselves. Only fires when there is no pending plan and no explicit
+        # length-limit continuation queued.
+        if lo in ("proceed", "go", "yes", "y", "continue", "keep going") and not PENDING_PLAN_TEXT and not PENDING_CONTINUATION:
+            print(f"\n{C}  ▶ keeping going from here...{X}")
+            _cont_reply = ask_cloud(history, provider=globals().get("_LAST_MODEL", "").split("/")[-1] or "groq")
+            if _cont_reply:
+                result = process_reply(_cont_reply, history, streamed=False, continue_after_tools=True)
+                if result is None:
+                    # Still stalled — keep going again automatically once.
+                    _cont_reply2 = ask_cloud(history, provider=globals().get("_LAST_MODEL", "").split("/")[-1] or "groq")
+                    if _cont_reply2:
+                        process_reply(_cont_reply2, history, streamed=False, continue_after_tools=True)
+            else:
+                print(f"  {R}keep-going failed — cloud unavailable.{X}")
             continue
 
         # "go"/"yes"/"proceed" with no pending plan → explain

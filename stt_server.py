@@ -1,9 +1,25 @@
 #!/usr/bin/env python3
-import sys, os, json, tempfile, re, gzip, urllib.request, urllib.error, urllib.parse, threading, time, uuid, importlib.util
+import sys, os, json, tempfile, re, gzip, urllib.request, urllib.error, urllib.parse, threading, time, uuid, importlib.util, queue
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from datetime import datetime
 
 _CLIENT_DISCONNECTS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+
+_SSE_SUBSCRIBERS = []          # list[queue.Queue] -- one per open /events connection
+_SSE_SUBSCRIBERS_LOCK = threading.Lock()
+
+
+def _sse_publish(event_name, payload):
+    """Fan out an event to every open /events SSE connection. Never blocks the
+    caller -- a full/slow subscriber queue silently drops the event rather than
+    stalling the /chat request thread that's publishing it."""
+    with _SSE_SUBSCRIBERS_LOCK:
+        subs = list(_SSE_SUBSCRIBERS)
+    for q in subs:
+        try:
+            q.put_nowait((event_name, payload))
+        except queue.Full:
+            pass
 
 SCRIPTS    = os.path.expanduser("~/scripts")
 _DEFAULT_CHATS_DIR  = os.path.expanduser("~/.master_ai_chats")
@@ -1991,6 +2007,9 @@ def api_handle(payload):
                 "target": str(detail or "")[:1000],
                 "reason": "api_handle is non-interactive; action returned for extension confirmation",
             })
+            _sse_publish('action_blocked', {'turn_id': turn_id, 'kind': 'ACTION', 'target': str(detail or "")[:1000],
+                                             'reason': captured_blocked[-1]["reason"],
+                                             'ts': datetime.now().astimezone().isoformat(timespec='seconds')})
             try:
                 return _m.RunResult(
                     "Blocked: API requests do not execute TUI-confirmed actions.",
@@ -2008,6 +2027,9 @@ def api_handle(payload):
                 "target": str(filepath or "")[:1000],
                 "reason": "api_handle is non-interactive; create action returned for confirmation",
             })
+            _sse_publish('action_blocked', {'turn_id': turn_id, 'kind': 'CREATE', 'target': str(filepath or "")[:1000],
+                                             'reason': captured_blocked[-1]["reason"],
+                                             'ts': datetime.now().astimezone().isoformat(timespec='seconds')})
             return False
 
         def noninteractive_edit(filepath, find_text="", replace_text="", *args, **kwargs):
@@ -2016,6 +2038,9 @@ def api_handle(payload):
                 "target": str(filepath or "")[:1000],
                 "reason": "api_handle is non-interactive; edit action returned for confirmation",
             })
+            _sse_publish('action_blocked', {'turn_id': turn_id, 'kind': 'EDIT', 'target': str(filepath or "")[:1000],
+                                             'reason': captured_blocked[-1]["reason"],
+                                             'ts': datetime.now().astimezone().isoformat(timespec='seconds')})
             return False
 
         try:
@@ -2073,6 +2098,10 @@ def api_handle(payload):
                 for _action in captured_actions:
                     _kind = (_action.get("kind") or "").upper()
                     _target = _action.get("target") or ""
+                    _t_action_start = time.time()
+                    _results_before = len(_server_results)
+                    _sse_publish('action_started', {'turn_id': turn_id, 'kind': _kind, 'target': _target,
+                                                      'ts': datetime.now().astimezone().isoformat(timespec='seconds')})
                     if _kind.startswith("BROWSER_"):
                         _browser_only.append(_action)
                         continue
@@ -2345,6 +2374,15 @@ def api_handle(payload):
                             "error_code": "dispatcher_error",
                             "error_message": str(_e),
                         })
+                    if len(_server_results) > _results_before:
+                        _r = _server_results[-1]
+                        _sse_publish(
+                            'action_blocked' if _r.get('status') == 'blocked' else 'action_finished',
+                            {'turn_id': turn_id, 'kind': _r.get('kind'), 'target': _r.get('target'),
+                             'status': _r.get('status'), 'reason': _r.get('error_message'),
+                             'elapsed_ms': int((time.time() - _t_action_start) * 1000),
+                             'ts': datetime.now().astimezone().isoformat(timespec='seconds')}
+                        )
                 if _server_out:
                     reply_with_results = (reply or "") + "\n\n— server-dispatched output —\n" + "\n\n".join(_server_out)
                     reply = reply_with_results
@@ -2918,6 +2956,9 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
         # /events — SSE stream. P0.1 ships hello + heartbeat only.
         # Typed-action events (P0.4) and mode_changed (P1.4 wiring) come later.
         if self.path == '/events':
+            q = queue.Queue(maxsize=200)
+            with _SSE_SUBSCRIBERS_LOCK:
+                _SSE_SUBSCRIBERS.append(q)
             try:
                 self.send_response(200)
                 self._cors()
@@ -2932,15 +2973,28 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                     self.wfile.flush()
                 _write_event('hello', {'ts': datetime.now().astimezone().isoformat(timespec='seconds')})
                 # Bounded loop — exits on client disconnect (BrokenPipeError).
-                # 15s heartbeat; max 1 hour per connection so a stuck client doesn't pin a thread.
+                # Waits on the subscriber queue so real events (action_started/
+                # finished/blocked, mode_changed) go out the instant they're
+                # published; a 15s wait timeout still yields the old
+                # heartbeat-only behavior when nothing real happens.
+                # Max 1 hour per connection so a stuck client doesn't pin a thread.
                 end = _time.time() + 3600
                 while _time.time() < end:
-                    _time.sleep(15)
-                    _write_event('heartbeat', {'ts': datetime.now().astimezone().isoformat(timespec='seconds')})
+                    try:
+                        name, payload = q.get(timeout=15)
+                        _write_event(name, payload)
+                    except queue.Empty:
+                        _write_event('heartbeat', {'ts': datetime.now().astimezone().isoformat(timespec='seconds')})
             except _CLIENT_DISCONNECTS:
                 pass
             except Exception:
                 pass
+            finally:
+                with _SSE_SUBSCRIBERS_LOCK:
+                    try:
+                        _SSE_SUBSCRIBERS.remove(q)
+                    except ValueError:
+                        pass
             return
 
         # /thoughts — canonical Master AI voice (trademark quotes + tips +
@@ -3753,6 +3807,7 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                 mp = os.path.expanduser('~/.master_ai_mode')
                 with open(mp, 'w') as f:
                     f.write(mode)
+                _sse_publish('mode_changed', {'mode': mode, 'ts': datetime.now().astimezone().isoformat(timespec='seconds')})
                 self._json({'ok': True, 'mode': mode}); return
             except Exception as e:
                 self._json({'error': str(e)}, 500); return

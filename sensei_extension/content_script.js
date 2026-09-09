@@ -2491,6 +2491,58 @@ async function executeBrowserAction(action) {
     return { ok: true, hovered: action.target, page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 }) };
   }
 
+  if (kind === "BROWSER_TRIPLE_CLICK") {
+    const el = findElement(action.target);
+    if (!el) return { ok: false, error: "target not found" };
+    el.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
+    try { _mirrorMoveGhost(el); } catch (_e) {}
+    const rect = el.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    // Real triple-click is three same-target clicks with detail 1,2,3 in
+    // quick succession (browsers infer "select paragraph/line" from that
+    // sequence natively) — dispatch all three rather than a single
+    // detail:3 event, since some pages listen for click count via detail
+    // on each click rather than trusting a synthesized value.
+    for (let i = 1; i <= 3; i++) {
+      const opts = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, detail: i };
+      el.dispatchEvent(new MouseEvent("mousedown", opts));
+      el.dispatchEvent(new MouseEvent("mouseup", opts));
+      el.dispatchEvent(new MouseEvent("click", opts));
+    }
+    // Text fields don't reliably select-all from synthetic mouse events
+    // (real triple-click selection is a browser-internal behavior synthetic
+    // events don't trigger) — do it explicitly so the common "select this
+    // field's text" use case actually works.
+    if (typeof el.select === "function") {
+      try { el.select(); } catch (_e) {}
+    } else {
+      try {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } catch (_e) {}
+    }
+    await waitForPageStable(250, 800);
+    return { ok: true, triple_clicked: action.target, page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 }) };
+  }
+
+  if (kind === "BROWSER_SCROLL_TO") {
+    const el = findElement(action.target);
+    if (!el) return { ok: false, error: "target not found" };
+    el.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
+    await sleep(300);
+    const rect = el.getBoundingClientRect();
+    return {
+      ok: true,
+      scrolled_to: action.target,
+      rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
+      page_context: await pageContextAsync({ includeVisibleText: false, includeInteractiveElements: false, waitForStableMs: 150 })
+    };
+  }
+
   if (kind === "BROWSER_FILL") {
     const parsed = parseFillTarget(action);
     const fileUpload = action?.extras?.fileUpload || null;
@@ -2634,19 +2686,24 @@ async function executeBrowserAction(action) {
       };
     }
     const selector = sepMatch[1].trim();
-    let absolutePath = sepMatch[2].trim();
-    // Strip surrounding quotes if the model wrapped the path
-    if ((absolutePath.startsWith('"') && absolutePath.endsWith('"')) ||
-        (absolutePath.startsWith("'") && absolutePath.endsWith("'"))) {
-      absolutePath = absolutePath.slice(1, -1);
-    }
-    // Reject relative paths; CDP needs absolute
-    if (!absolutePath.startsWith("/") && !absolutePath.startsWith("~")) {
+    // Multiple files: pipe-separated paths after the selector separator
+    // (e.g. "input[type=file] :: /path/a.pdf|/path/b.pdf"). Single-file
+    // callers are unaffected — this just splits into a 1-element array.
+    const rawPaths = sepMatch[2].split("|").map((p) => p.trim()).filter(Boolean);
+    const absolutePaths = rawPaths.map((p) => {
+      if ((p.startsWith('"') && p.endsWith('"')) || (p.startsWith("'") && p.endsWith("'"))) {
+        return p.slice(1, -1);
+      }
+      return p;
+    });
+    const badPath = absolutePaths.find((p) => !p.startsWith("/") && !p.startsWith("~"));
+    if (badPath) {
       return {
         ok: false,
-        error: `BROWSER_UPLOAD_FILE path must be absolute (got '${absolutePath}'). Use $HOME or ~ prefix.`,
+        error: `BROWSER_UPLOAD_FILE path must be absolute (got '${badPath}'). Use $HOME or ~ prefix.`,
       };
     }
+    const absolutePath = absolutePaths[0];
     // Pre-flight: does the selector resolve to a file input on this page?
     // Don't bail on a miss — let service_worker's CDP path do the real
     // resolution since the page may be deep in iframes/shadow DOM that
@@ -2664,7 +2721,7 @@ async function executeBrowserAction(action) {
     try {
       const result = await new Promise((resolve) => {
         chrome.runtime.sendMessage(
-          { type: "SENSEI_UPLOAD_FILE", selector, path: absolutePath },
+          { type: "SENSEI_UPLOAD_FILE", selector, path: absolutePath, paths: absolutePaths },
           (resp) => {
             const err = chrome.runtime.lastError;
             if (err) {

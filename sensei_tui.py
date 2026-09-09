@@ -93,14 +93,21 @@ COMMAND_MENU_HINTS = {
     "image:": "type an image prompt after the colon",
     "image status": "fetch/show an image job result",
     "image latest": "show latest generated image",
+    "tinyfish": "TinyFish web tools",
+    "tinyfish search": "TinyFish web search",
+    "tinyfish fetch": "TinyFish page fetch",
+    "tinyfish status": "TinyFish wallet/credits",
     "task": "task command help",
     "task add": "type task text after this",
     "task done": "mark a task complete",
     "task clear": "clear tasks",
     "tasks": "show active tasks",
     "save session": "save current chat",
-    "compact": "save + summarize + restart compacted",
+    "compact": "save + summarize + restart fresh",
     "compress": "alias for compact",
+    "sessions": "browse saved sessions",
+    "sessions list": "list saved sessions by date",
+    "sessions resume": "resume a past session by number",
     "load summary": "load compact context",
     "load session": "load saved chat",
     "transcript": "save transcript",
@@ -153,6 +160,7 @@ COMMAND_MENU_HINTS = {
     "search": "web search route",
     "max:": "max reasoning with mandatory self-critique",
     "agent:": "plan/execute/critique task loop",
+    "telegram:": "send a Telegram message (chat_id + text, or text if default chat ID set)",
     "dl": "download helper",
     "gdrive": "Google Drive helper",
     "git": "git command help",
@@ -228,6 +236,7 @@ COMMAND_MENU_GROUPS = {
         "image:", "image status", "image latest", "max:", "agent:",
         "reason:", "reason fast:", "reason standard:", "reason deep:", "reason max:",
         "search", "read", "dl", "gdrive", "mesh",
+        "tinyfish", "tf search", "tf fetch", "tf status",
         "agents", "agents list", "agents inspect", "agents run",
         "hooks", "hooks list", "hooks enable", "hooks disable", "hooks reload",
         "stats", "router", "router stats",
@@ -466,6 +475,7 @@ class SenseiApp:
         self._on_interrupt = on_interrupt
         self._label = ""
         self._status = ""
+        self._chat_id = ""
         self._output_chunks: List[str] = []
         self._output_lock = threading.Lock()
         # Output render cache keyed by a monotonic write-version.
@@ -894,8 +904,16 @@ class SenseiApp:
     def _render_label(self):
         width = max(10, _term_size().columns - 6)
         focus = "[chat]" if self._chat_focused else "[input]"
-        lbl = f" ✏ {self._label} {focus}" if self._label else f" ✏ {focus}"
-        lbl = _fit_text(lbl, min(width, 48 if width >= 80 else width))
+        chat_id = self._chat_id or ""
+        if self._label and chat_id:
+            lbl = f" ✏ {self._label} · id:{chat_id} {focus}"
+        elif self._label:
+            lbl = f" ✏ {self._label} {focus}"
+        elif chat_id:
+            lbl = f" id:{chat_id} {focus}"
+        else:
+            lbl = f" {focus}"
+        lbl = _fit_text(lbl, min(width, 56 if width >= 100 else width))
         return FormattedText([("class:frame.label", lbl)])
 
     def _render_label_with_tip(self):
@@ -1369,6 +1387,11 @@ class SenseiApp:
 
     def set_label(self, label: str) -> None:
         self._label = (label or "").strip()
+        try: self._app.invalidate()
+        except Exception: pass
+
+    def set_chat_id(self, chat_id: str) -> None:
+        self._chat_id = str(chat_id or "").strip()
         try: self._app.invalidate()
         except Exception: pass
 

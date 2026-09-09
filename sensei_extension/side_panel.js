@@ -3512,6 +3512,12 @@ async function prewarmActiveTab() {
   }
 }
 
+// Long-lived port telling service_worker.js's MCP fallback poller that the
+// panel is open and already draining the queue via mcpPoll() below — the
+// fallback backs off entirely while this stays connected, and only takes
+// over once Chrome unloads this document (panel closed) and the port drops.
+try { chrome.runtime.connect({ name: "sensei-panel" }); } catch (_err) { /* non-fatal */ }
+
 async function init() {
   await loadConfig();
   installTabCacheInvalidation();
@@ -3641,6 +3647,26 @@ async function dispatchMcpAction(action) {
       if (!capture?.ok) return { ok: false, error: capture?.error || "capture failed" };
       return { ok: true, screenshot: "visible_tab_png", dataUrl: capture.dataUrl };
     }
+    if (kind === "BROWSER_ZOOM") {
+      const tab = await sessionTab(action).catch(() => null);
+      if (!tab) return { ok: false, error: "no active tab" };
+      await ensureTabInSession(tab);
+      await focusTabForCapture(tab);
+      const capture = await chrome.runtime.sendMessage({
+        type: "SENSEI_ZOOM_CAPTURE", tabId: tab.id, region: action.target,
+      });
+      return capture || { ok: false, error: "no result" };
+    }
+    if (kind === "BROWSER_SHORTCUTS_LIST") {
+      const result = await chrome.runtime.sendMessage({ type: "SENSEI_LIST_SHORTCUTS" });
+      return result || { ok: false, error: "no result" };
+    }
+    if (kind === "BROWSER_SHORTCUTS_EXECUTE") {
+      const result = await chrome.runtime.sendMessage({
+        type: "SENSEI_RUN_SHORTCUT_BY_NAME", name: action.target, params: action.params,
+      });
+      return result || { ok: false, error: "no result" };
+    }
     if (kind === "BROWSER_GET_DOM") {
       const tab = await sessionTab(action).catch(() => null);
       if (!tab?.id) return { ok: false, error: "no active tab" };
@@ -3750,6 +3776,34 @@ async function dispatchMcpAction(action) {
         return { ok: false, error: err.message || String(err) };
       }
     }
+    // BROWSER_FIND: natural-language element locator. approveAction() (the
+    // chat-driven dispatcher) has had this logic since Wave 2 — try the
+    // content-script regex match first, fall back to the backend semantic
+    // matcher (/tool/find, LLM-scored over the AX tree) if the caller asked
+    // for it explicitly or the regex pass found nothing. The MCP bridge path
+    // never had this wired in until now — it just fell through to the
+    // generic sendToContent case below, which only understands a literal
+    // selector/label, not "the button that looks like X".
+    if (kind === "BROWSER_FIND") {
+      const tab = await sessionTab(action).catch(() => null);
+      if (!tab?.id) return { ok: false, error: "no active tab" };
+      await ensureTabInSession(tab);
+      const regexResult = await sendToContent(tab, action, {}).catch((err) => ({ ok: false, error: err.message }));
+      let result;
+      if (actionWantsSemanticFind(action) || !regexResult?.count) {
+        const semanticResult = await semanticFind(tab, action, {}).catch((err) => ({ ok: false, error: err.message }));
+        result = {
+          ...semanticResult,
+          regex_matches: regexResult?.matches || [],
+          regex_count: regexResult?.count || 0,
+        };
+      } else {
+        result = regexResult;
+      }
+      invalidatePageContext(tab.id);
+      return result || { ok: false, error: "no result" };
+    }
+
     // All other BROWSER_* actions route through the existing content-script path
     // (this is where BROWSER_NAV lands)
     if (kind.startsWith("BROWSER_")) {

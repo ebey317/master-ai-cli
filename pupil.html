@@ -327,6 +327,11 @@
       font-size: 0.94rem;
     }
 
+    .action-row { padding: 2px 0; }
+    .action-row .hint { color: var(--muted); font-size: 0.9em; }
+    .action-row.blocked { color: var(--plan); }
+    .action-row.proposed { opacity: 0.85; }
+
     .composer {
       padding: 14px;
       border-top: 1px solid var(--line);
@@ -612,6 +617,54 @@
       margin: 4px 0 0;
     }
 
+    .rd-create {
+      display: flex;
+      gap: 6px;
+      margin: 6px 0 10px;
+    }
+
+    .rd-create input {
+      flex: 1;
+      padding: 6px 8px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      font-size: 0.88rem;
+    }
+
+    .rd-create button {
+      border-radius: 10px;
+      padding: 6px 12px;
+      font-size: 0.85rem;
+    }
+
+    .dash-list .rd-row {
+      cursor: pointer;
+    }
+
+    .dash-list .rd-row:hover {
+      border-color: var(--ink);
+    }
+
+    #rdDetail {
+      margin-top: 10px;
+    }
+
+    .rd-form-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 0;
+      border-bottom: 1px solid var(--line);
+      font-size: 0.88rem;
+      text-transform: capitalize;
+    }
+
+    .rd-form-toggle {
+      font-size: 0.8rem;
+      padding: 4px 10px;
+      border-radius: 10px;
+    }
+
     .skill-row {
       display: flex;
       justify-content: space-between;
@@ -781,6 +834,17 @@
           <p class="sub" id="crSub">—</p>
           <ul class="dash-list" id="crList"></ul>
         </section>
+
+        <section class="dash-panel" aria-label="Reentry Desk clients">
+          <h3>Reentry Desk</h3>
+          <p class="sub" id="rdSub">—</p>
+          <form id="rdCreateForm" class="rd-create">
+            <input type="text" id="rdNewName" placeholder="client name" autocomplete="off" required />
+            <button type="submit">Add client</button>
+          </form>
+          <ul class="dash-list" id="rdList"></ul>
+          <div id="rdDetail"></div>
+        </section>
       </div>
     </section>
   </main>
@@ -830,6 +894,27 @@
       const node = document.createElement("div");
       node.className = `message ${role}`;
       node.textContent = text;
+      messages.appendChild(node);
+      messages.scrollTop = messages.scrollHeight;
+    }
+
+    // Renders a /chat response's actions[] (proposed, not yet executed) and
+    // blocked_actions[] (Pupil chats are non-interactive server-side, so any
+    // RUN/RUNTERM/CREATE/EDIT the model attempted comes back blocked here
+    // rather than silently vanishing). Reuses esc()+innerHTML the same way
+    // renderDashboard() already does elsewhere in this file.
+    function appendActionsMessage(actions, blocked) {
+      const rows = [];
+      actions.forEach(a => rows.push(
+        `<div class="action-row proposed"><b>${esc(a.kind || "?")}</b> ${esc(a.target || "")} <span class="hint">(proposed — not yet executed)</span></div>`
+      ));
+      blocked.forEach(b => rows.push(
+        `<div class="action-row blocked"><b>${esc(b.kind || "?")}</b> ${esc(b.target || "")} <span class="hint">blocked: ${esc(b.reason || "")}</span></div>`
+      ));
+      if (!rows.length) return;
+      const node = document.createElement("div");
+      node.className = "message system actions";
+      node.innerHTML = rows.join("");
       messages.appendChild(node);
       messages.scrollTop = messages.scrollHeight;
     }
@@ -893,6 +978,7 @@
         if (!res.ok) throw new Error(body.error || "chat failed");
         appendMessage("assistant", body.reply || "(empty reply)");
         appendMessage("system", `Route: ${body.route || "unknown"} | Model: ${body.model || "unknown"} | ${body.latency_ms ?? 0} ms`);
+        appendActionsMessage(body.actions || [], body.blocked_actions || []);
         loadStatus();
       } catch (error) {
         messages.lastElementChild.remove();
@@ -916,6 +1002,20 @@
       }
       source.addEventListener("hello", (event) => logEvent("hello", event.data));
       source.addEventListener("heartbeat", (event) => logEvent("heartbeat", event.data));
+      function logAction(event) {
+        let d; try { d = JSON.parse(event.data); } catch { d = {}; }
+        const detail = d.kind
+          ? `${d.kind} ${d.target || ""}${d.status ? ` [${d.status}]` : ""}${d.reason ? ` — ${d.reason}` : ""}`
+          : event.data;
+        logEvent(event.type, detail);
+      }
+      source.addEventListener("action_started", logAction);
+      source.addEventListener("action_finished", logAction);
+      source.addEventListener("action_blocked", logAction);
+      source.addEventListener("mode_changed", (event) => {
+        logEvent("mode_changed", event.data);
+        try { setModeButtons(JSON.parse(event.data).mode); } catch {}
+      });
       source.onerror = () => logEvent("events", "connection issue; browser will retry");
     }
 
@@ -1037,7 +1137,124 @@
       }
     }
 
-    document.querySelector("#dashRefresh").addEventListener("click", loadDashboard);
+    /* ── Reentry Desk (client intake bridge on :8091) — separate service,
+       own poll + own error handling; never blocks the main dashboard. ── */
+    const REENTRY_BASE = "http://127.0.0.1:8091";
+    const rdList = document.querySelector("#rdList");
+    const rdSub = document.querySelector("#rdSub");
+    const rdDetail = document.querySelector("#rdDetail");
+    let rdSelectedId = null;
+
+    function renderReentryClients(clients) {
+      rdSub.textContent = `${clients.length} client${clients.length === 1 ? "" : "s"}`;
+      rdList.innerHTML = clients.map((c) =>
+        `<li class="rd-row" data-id="${esc(c.id)}">
+           <span class="preview">${esc(c.name)}</span>
+           <div class="meta">${c.done}/${c.total} forms complete</div>
+         </li>`
+      ).join("") || "<li>no clients yet</li>";
+    }
+
+    async function loadReentryClients() {
+      try {
+        const res = await fetch(`${REENTRY_BASE}/api/clients`, { cache: "no-store" });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+        renderReentryClients(body);
+      } catch (error) {
+        rdSub.textContent = `bridge unreachable: ${error.message}`;
+        rdList.innerHTML = "";
+      }
+    }
+
+    async function loadClientStatus(clientId) {
+      try {
+        const res = await fetch(`${REENTRY_BASE}/api/clients/${encodeURIComponent(clientId)}/status`, { cache: "no-store" });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+        renderClientForms(body);
+      } catch (error) {
+        rdDetail.innerHTML = `<p class="dash-error">${esc(error.message)}</p>`;
+      }
+    }
+
+    async function toggleReentryForm(clientId, formName, completed) {
+      const path = completed ? "undo" : "complete";
+      const res = await fetch(
+        `${REENTRY_BASE}/api/clients/${encodeURIComponent(clientId)}/forms/${encodeURIComponent(formName)}/${path}`,
+        { method: "POST" }
+      );
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      await loadClientStatus(clientId);
+      await loadReentryClients();
+    }
+
+    function renderClientForms(status) {
+      const rows = Object.entries(status.forms || {}).map(([formName, state]) => {
+        const done = state === "completed";
+        return `<div class="rd-form-row">
+          <span>${esc(formName.replace(/_/g, " "))}</span>
+          <button type="button" class="rd-form-toggle" data-form="${esc(formName)}" data-done="${done}">
+            ${done ? "✓ completed — undo" : "mark complete"}
+          </button>
+        </div>`;
+      }).join("") || "<p class='sub'>no known forms</p>";
+
+      rdDetail.innerHTML = `
+        <h4>${esc(status.name)}</h4>
+        <p class="sub">${status.progress.done}/${status.progress.total} forms complete</p>
+        ${rows}
+      `;
+
+      rdDetail.querySelectorAll(".rd-form-toggle").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const formName = btn.dataset.form;
+          const wasDone = btn.dataset.done === "true";
+          if (wasDone && !confirm(`Undo "${formName.replace(/_/g, " ")}" for ${status.name}?`)) return;
+          btn.disabled = true;
+          try {
+            await toggleReentryForm(status.id, formName, wasDone);
+          } catch (error) {
+            rdDetail.insertAdjacentHTML("beforeend", `<p class="dash-error">${esc(error.message)}</p>`);
+            btn.disabled = false;
+          }
+        });
+      });
+    }
+
+    rdList.addEventListener("click", (event) => {
+      const row = event.target.closest(".rd-row");
+      if (!row) return;
+      rdSelectedId = row.dataset.id;
+      loadClientStatus(rdSelectedId);
+    });
+
+    document.querySelector("#rdCreateForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const input = document.querySelector("#rdNewName");
+      const name = input.value.trim();
+      if (!name) return;
+      try {
+        const res = await fetch(`${REENTRY_BASE}/api/clients`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name })
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+        input.value = "";
+        await loadReentryClients();
+      } catch (error) {
+        rdSub.textContent = `add failed: ${error.message}`;
+      }
+    });
+
+    document.querySelector("#dashRefresh").addEventListener("click", () => {
+      loadDashboard();
+      loadReentryClients();
+      if (rdSelectedId) loadClientStatus(rdSelectedId);
+    });
 
     form.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -1096,6 +1313,8 @@
     setInterval(loadStatus, 15000);
     loadDashboard();
     setInterval(loadDashboard, 30000);
+    loadReentryClients();
+    setInterval(loadReentryClients, 30000);
   </script>
 </body>
 </html>
