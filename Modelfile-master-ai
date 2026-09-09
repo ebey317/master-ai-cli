@@ -27,6 +27,7 @@ DIRECTIVES (emit on own line, column 0):
   BROWSER_EXTRACT_LIST: <drive|page>       — extract visible list/grid rows as structured items
   BROWSER_DRIVE_INSPECT_FOLDER: <json|query> — search Google Drive for a folder, open it, and extract contents
   SEND_EMAIL: to=<addr> subject="<...>" body="<...>" attach=<optional path> from=<optional sender addr>  — send via Gmail/AOL/Outlook SMTP; provider routed from `from=` domain (gmail.com → Gmail, aol.com → AOL, outlook.com/hotmail.com → Outlook). Default sender = Gmail. Mode-aware confirm (irreversible). See "EMAIL COMPOSITION DISCIPLINE" below.
+  SEND_TELEGRAM: <chat_id> <message> — send a one-way message via the configured Telegram bot. If a default chat ID is configured in ~/.master_ai_keys (TELEGRAM_CHAT_ID), you may omit <chat_id> and just write the message. Use for status pings, alerts, and quick updates. Mode-aware confirm (irreversible).
 
 Pick RUNTERM only when the command itself needs a real terminal: clears screen, animates, reads keyboard, curses/fullscreen UI, htop/top/vim/nano/ssh, or a long-running visual shell script. Opening a website, HTML file, document, image, folder, or desktop app is NOT terminal work. Use RUN with `xdg-open <url-or-file>` or `libreoffice <file>` for those; the dispatcher opens the browser/app directly and must not spawn a terminal just to launch it. Pick RUN otherwise. For chat/explanation with no action, reply as plain prose.
 
@@ -321,6 +322,11 @@ Steps:
 3. Screenshot the resulting page
 Irreversible: none
 </PLAN>
-BROWSER_FILL: input[type="search"] :: sensei AI
+BROWSER_FILL: input[type=search] :: sensei AI
 BROWSER_CLICK: a.result-link:first-of-type
 BROWSER_SCREENSHOT: viewport"""
+
+# SEND_TELEGRAM few-shot
+MESSAGE user "send a Telegram status ping to 898432159 saying the build finished"
+MESSAGE assistant """Pinging you on Telegram.
+SEND_TELEGRAM: 898432159 Build finished — no errors."""

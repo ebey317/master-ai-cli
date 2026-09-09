@@ -56,6 +56,7 @@ class Kind:
     THINK = "THINK"
     RUN_SKILL = "RUN_SKILL"
     SEND_EMAIL = "SEND_EMAIL"
+    SEND_TELEGRAM = "SEND_TELEGRAM"
     # 2026-05-12: Chrome extension M1 surface. Browser-side execution only —
     # backend proposes, extension dispatches via content script, posts result
     # to /extension/action_result. Backend never reaches into the DOM directly.
@@ -102,7 +103,7 @@ class Status:
 
 
 DIRECTIVE_KINDS = frozenset({Kind.RUN, Kind.RUNTERM, Kind.READ, Kind.CREATE, Kind.EDIT, Kind.REMEMBER,
-                             Kind.PLAN, Kind.DONE, Kind.THINK, Kind.RUN_SKILL, Kind.SEND_EMAIL,
+                             Kind.PLAN, Kind.DONE, Kind.THINK, Kind.RUN_SKILL, Kind.SEND_EMAIL, Kind.SEND_TELEGRAM,
                              Kind.BROWSER_CLICK, Kind.BROWSER_FILL, Kind.BROWSER_FILL_FORM, Kind.BROWSER_UPLOAD_FILE,
                              Kind.BROWSER_SUBMIT, Kind.BROWSER_READ,
                              Kind.BROWSER_READ_PAGE, Kind.BROWSER_READ_PAGE_FULL, Kind.BROWSER_OBSERVE, Kind.BROWSER_NAV,
@@ -136,7 +137,7 @@ _SAFE_RUN_PREFIXES = (
 )
 
 _DIRECTIVE_LINE_RE = re.compile(
-    r"^\s*(RUN|RUNTERM|READ|CREATE|EDIT|REMEMBER|PLAN|DONE|THINK|RUN_SKILL|SEND_EMAIL|BROWSER_CLICK|BROWSER_FILL|BROWSER_FILL_FORM|BROWSER_UPLOAD_FILE|BROWSER_SUBMIT|BROWSER_READ_PAGE_FULL|BROWSER_READ_PAGE|BROWSER_OBSERVE|BROWSER_READ|BROWSER_NAV|BROWSER_CLOSE_TAB|BROWSER_SCREENSHOT|BROWSER_WAIT|BROWSER_SCROLL|BROWSER_DOUBLE_CLICK|BROWSER_FIND|BROWSER_EXTRACT_LIST|BROWSER_DRIVE_INSPECT_FOLDER|BROWSER_CDP_MOUSE|BROWSER_CDP_KEY|BROWSER_TAB_CREATE|REMOTE_MCP):\s*(.*?)\s*$",
+    r"^\s*(RUN|RUNTERM|READ|CREATE|EDIT|REMEMBER|PLAN|DONE|THINK|RUN_SKILL|SEND_EMAIL|SEND_TELEGRAM|BROWSER_CLICK|BROWSER_FILL|BROWSER_FILL_FORM|BROWSER_UPLOAD_FILE|BROWSER_SUBMIT|BROWSER_READ_PAGE_FULL|BROWSER_READ_PAGE|BROWSER_OBSERVE|BROWSER_READ|BROWSER_NAV|BROWSER_CLOSE_TAB|BROWSER_SCREENSHOT|BROWSER_WAIT|BROWSER_SCROLL|BROWSER_DOUBLE_CLICK|BROWSER_FIND|BROWSER_EXTRACT_LIST|BROWSER_DRIVE_INSPECT_FOLDER|BROWSER_CDP_MOUSE|BROWSER_CDP_KEY|BROWSER_TAB_CREATE|REMOTE_MCP):\s*(.*?)\s*$",
     re.IGNORECASE,
 )
 
@@ -237,7 +238,7 @@ def classify_risk(action: TypedAction) -> str:
     if action.kind in (Kind.THINK, Kind.DONE, Kind.PLAN):
         action.risk = Risk.SAFE
         return action.risk
-    if action.kind in (Kind.RUN_SKILL, Kind.SEND_EMAIL):
+    if action.kind in (Kind.RUN_SKILL, Kind.SEND_EMAIL, Kind.SEND_TELEGRAM):
         action.risk = Risk.NORMAL
         return action.risk
     if action.kind in (Kind.RUN, Kind.RUNTERM):
@@ -298,7 +299,7 @@ def parse_directive(line: str, *, model: str = "", source_text: str = "",
         created_by_model=model or "",
         source_text=source_text or line,
         requires_confirm=(kind in (
-            Kind.RUN, Kind.RUNTERM, Kind.CREATE, Kind.EDIT, Kind.RUN_SKILL, Kind.SEND_EMAIL,
+            Kind.RUN, Kind.RUNTERM, Kind.CREATE, Kind.EDIT, Kind.RUN_SKILL, Kind.SEND_EMAIL, Kind.SEND_TELEGRAM,
             Kind.BROWSER_CLICK, Kind.BROWSER_FILL, Kind.BROWSER_FILL_FORM, Kind.BROWSER_UPLOAD_FILE,
             Kind.BROWSER_SUBMIT, Kind.BROWSER_READ,
             Kind.BROWSER_READ_PAGE, Kind.BROWSER_OBSERVE, Kind.BROWSER_NAV,
@@ -362,7 +363,7 @@ def _strip_wrap(s: str) -> str:
 # instead, with no backtick-parity check (master_ai.py:9260-9298).
 _SINGLE_LINE_KINDS = (
     Kind.RUN, Kind.RUNTERM, Kind.READ, Kind.REMEMBER,
-    Kind.PLAN, Kind.DONE, Kind.THINK, Kind.RUN_SKILL, Kind.SEND_EMAIL,
+    Kind.PLAN, Kind.DONE, Kind.THINK, Kind.RUN_SKILL, Kind.SEND_EMAIL, Kind.SEND_TELEGRAM,
 )
 
 
@@ -382,7 +383,7 @@ def parse_reply_with_bodies(text: str, *, model: str = "", cwd: Optional[str] = 
     enough to compare against master_ai.process_reply()'s actual extraction
     for parity testing. This function mirrors that extraction more closely:
 
-      - RUN/RUNTERM/READ/REMEMBER/PLAN/DONE/THINK/RUN_SKILL/SEND_EMAIL are
+      - RUN/RUNTERM/READ/REMEMBER/PLAN/DONE/THINK/RUN_SKILL/SEND_EMAIL/SEND_TELEGRAM are
         matched by word-boundary search with backtick-parity suppression
         (mirrors master_ai._real_directive, master_ai.py:9180-9184) — a
         directive keyword mentioned in prose inside backticks does not fire.
@@ -435,7 +436,7 @@ def parse_reply_with_bodies(text: str, *, model: str = "", cwd: Optional[str] = 
             action = TypedAction(
                 kind=kind, target=payload, cwd=cwd,
                 created_by_model=model or "", source_text=ln,
-                requires_confirm=(kind in (Kind.RUN, Kind.RUNTERM, Kind.RUN_SKILL, Kind.SEND_EMAIL)),
+                requires_confirm=(kind in (Kind.RUN, Kind.RUNTERM, Kind.RUN_SKILL, Kind.SEND_EMAIL, Kind.SEND_TELEGRAM)),
             )
             classify_risk(action)
             out.append(action)
