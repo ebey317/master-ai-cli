@@ -12246,11 +12246,26 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
     # has_directives is False here too, but this isn't a stall-phrase, it's
     # a malformed-syntax dump that got shown to the user as if it were an
     # answer. No length cap here — these dumps ran long.
+    # 2026-09-08: reproduced live -- a third malformed shape, distinct from
+    # the <tool_call> wrapper above: the model emits a directive keyword
+    # with NO colon at all (`RUN find ...` instead of `RUN: find ...`),
+    # often glued onto the end of a prose sentence ("Let me locate the
+    # file first. RUN find ..."). _DIRECTIVE_KEYWORDS_RE requires the
+    # colon specifically to tell a real directive from prose sharing a
+    # substring, so this never even registers as a directive attempt --
+    # has_directives stays False, nothing executes, and the model's own
+    # leaked <arg_key>/<arg_value> XML fragments (from whatever native
+    # tool-call format it was trained on) get shown to the user raw
+    # instead of triggering repair. Reuse _ARG_XML_TAG_RE as a second
+    # detector: any arg_key/arg_value fragment in undispatched narrative
+    # is just as strong a "the model tried to make a real tool call and
+    # botched the format" signal as a literal <tool_call> tag.
     _malformed_directive_pattern = re.compile(
         r'<tool_call>|\btool_call\b', re.IGNORECASE)
     is_malformed_directive = (
         not has_directives and narrative
-        and _malformed_directive_pattern.search(narrative)
+        and (_malformed_directive_pattern.search(narrative)
+             or _ARG_XML_TAG_RE.search(narrative))
     )
     is_stall = (
         not has_directives

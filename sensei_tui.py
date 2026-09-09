@@ -1397,6 +1397,17 @@ class SenseiApp:
         try: self._app.invalidate()
         except Exception: pass
 
+    def set_chat_id(self, chat_id) -> None:
+        # 2026-09-08: master_ai.main()'s main loop calls this every turn
+        # (right after set_label) with SESSION_TS -- the epoch id of the
+        # active ~/.master_ai_chats/<epoch>.chat file -- but no method by
+        # this name ever existed on SenseiApp, so every single TUI turn
+        # AttributeError'd and crashed the process. Mirrors set_label:
+        # store it, invalidate for redraw, never raise.
+        self._chat_id = chat_id
+        try: self._app.invalidate()
+        except Exception: pass
+
     def set_status(self, text: str) -> None:
         self._status = text or ""
         try: self._app.invalidate()
