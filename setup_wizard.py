@@ -192,6 +192,8 @@ _KV_KEY_MAP = {
     "HUGGINGFACE_TOKEN": "huggingface",
     "HF_TOKEN": "huggingface",
     "NVIDIA_API_KEY": "nvidia",
+    "TELEGRAM_BOT_TOKEN": "telegram",
+    "TELEGRAM_CHAT_ID": "telegram_chat_id",
 }
 _CANONICAL_NAME = {v: k for k, v in _KV_KEY_MAP.items() if k != "HF_TOKEN"}
 
@@ -321,6 +323,39 @@ def _manual_key_collection(keys: dict) -> dict:
         _print(f"{C['green']}  ✓ {provider} — {label}{C['reset']}")
     return keys
 
+def _setup_openrouter(keys: dict) -> dict:
+    """OpenRouter is the primary free-tier cloud lane — ask for it explicitly."""
+    if keys.get("openrouter"):
+        _print(f"{C['green']}  ✓ OpenRouter already configured{C['reset']}")
+        return keys
+    _print(f"\n{C['bold']}OpenRouter setup (recommended free-tier cloud lane){C['reset']}")
+    _print(f"{C['dim']}Get a free key at https://openrouter.ai/settings/keys{C['reset']}")
+    key = getpass.getpass("  Paste OpenRouter API key (hidden, Enter to skip): ").strip()
+    if key and key.startswith("sk-or-v1-"):
+        keys["openrouter"] = key
+        _print(f"{C['green']}  ✓ OpenRouter added{C['reset']}")
+    elif key:
+        _print(f"{C['yellow']}  ? key doesn't look like sk-or-v1- — saved anyway, verify it works{C['reset']}")
+        keys["openrouter"] = key
+    return keys
+
+def _setup_telegram(keys: dict) -> dict:
+    """Telegram outbound messaging setup."""
+    _print(f"\n{C['bold']}Telegram bot setup (optional){C['reset']}")
+    _print(f"{C['dim']}1. Message @BotFather on Telegram and create a bot.{C['reset']}")
+    _print(f"{C['dim']}2. Send your new bot one message so it can message you back.{C['reset']}")
+    _print(f"{C['dim']}3. Paste the bot token BotFather gives you.{C['reset']}")
+    token = getpass.getpass("  Bot token (hidden, Enter to skip): ").strip()
+    if token:
+        if not token.count(":") == 1 or not token.split(":")[0].isdigit():
+            _print(f"{C['yellow']}  ? token usually looks like 123456:ABC... — saved anyway{C['reset']}")
+        keys["telegram"] = token
+        _print(f"{C['green']}  ✓ Telegram bot token added{C['reset']}")
+        chat_id = _input("  Default chat ID (Enter to skip): ").strip()
+        if chat_id:
+            keys["telegram_chat_id"] = chat_id
+            _print(f"{C['green']}  ✓ Default chat ID added — override per message if needed{C['reset']}")
+    return keys
 
 def _interactive_github_setup(token: str) -> dict:
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -349,6 +384,8 @@ def _interactive_github_setup(token: str) -> dict:
 
         lower = user_text.lower()
         if lower == "save":
+            keys = _setup_openrouter(keys)
+            keys = _setup_telegram(keys)
             keys = _manual_key_collection(keys)
             _write_keys(keys)
             _print(f"{C['green']}✓ Saved to {KEYS_FILE} (chmod 600).{C['reset']}")
@@ -361,6 +398,8 @@ def _interactive_github_setup(token: str) -> dict:
         reply = _github_models_chat(messages, token)
         if reply is None:
             _print(f"{C['yellow']}GitHub Models is not answering. Falling back to manual key entry.{C['reset']}")
+            keys = _setup_openrouter(keys)
+            keys = _setup_telegram(keys)
             keys = _manual_key_collection(keys)
             _write_keys(keys)
             break
@@ -376,6 +415,8 @@ def _run_manual_setup() -> dict:
     _print(f"\n{C['bold']}Manual setup mode.{C['reset']}")
     _print("You can re-run this anytime with: master-ai --setup\n")
     keys = _load_keys()
+    keys = _setup_openrouter(keys)
+    keys = _setup_telegram(keys)
     keys = _manual_key_collection(keys)
     _write_keys(keys)
     SETUP_DONE_FILE.touch()

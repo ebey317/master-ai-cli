@@ -15,7 +15,7 @@ setup(
         "ab_few_shot", "approval_queue", "capabilities", "claf_cli_integration",
         "completion", "extract_html", "gate", "harvest", "hooks", "iprice", "loop_fsm",
         "master_ai", "observability", "prewarm_master_ai", "prompt_versions",
-        "router", "sensei_clean", "sensei_clean_app", "sensei_clean_web",
+        "router", "sandbox", "sensei_clean", "sensei_clean_app", "sensei_clean_web",
         "sensei_extractor", "sensei_memory_index", "sensei_native_host",
         "sensei_reasoning_loop", "sensei_reflect", "sensei_tool_detector",
         "sensei_tui", "setup_email", "setup_wizard", "skill_runtime", "slideshow", "slideshow_uninstall",

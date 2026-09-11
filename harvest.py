@@ -24,7 +24,20 @@ MAX_ENTRIES_IN_MEMORY = 2000  # lookup only scans most recent N
 
 _TOKEN_RE = re.compile(r"[a-z0-9]{2,}")
 _PRIVATE_PATH_PATTERNS = (
-    re.compile(r"(?i)(?:^|[\s'\"`])(?:~|/home/[^/\s'\"`]+)/(?:Pictures|Documents|Downloads|Desktop|jobseeker)(?:/|$|[\s'\"`])"),
+    # 2026-09-08: narrowed from a blanket Desktop/Documents/Downloads/
+    # Pictures/jobseeker path block. Desktop and Documents hold ordinary
+    # everyday workspace files too (task lists, study plans, glossaries)
+    # and blanket-blocking the whole folder dead-ended every cloud-first
+    # task that so much as globbed through them, with no local fallback
+    # to fall back to. Path-based blocking was also the wrong tool for
+    # this anyway: it both over-blocked (a harmless .md on the Desktop)
+    # and under-protected (a tax PDF saved anywhere else wasn't caught).
+    # _PRIVATE_TERM_RE below already does real content-based detection
+    # (resume/tax/ssn/credential/etc.) regardless of which folder the
+    # content lives in -- keep the path fence only for folders that are
+    # inherently about identity/sensitive-document storage rather than
+    # everyday workspace files.
+    re.compile(r"(?i)(?:^|[\s'\"`])(?:~|/home/[^/\s'\"`]+)/(?:Pictures|Downloads|jobseeker)(?:/|$|[\s'\"`])"),
     re.compile(r"(?i)(?:^|/)\.(?:ssh|gnupg)(?:/|$)"),
     re.compile(r"(?i)(?:^|/)\.aws/(?:credentials|config)(?:$|[\s'\"`])"),
     re.compile(r"(?i)(?:^|/)\.master_ai_keys(?:$|[\s'\"`])"),
