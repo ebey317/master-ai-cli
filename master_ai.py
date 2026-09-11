@@ -80,10 +80,10 @@ try:
 
     _COMPLETIONS = [
         "hub", "menu", "home", "help", "controls", "shortcuts", "tips", "model", "model auto", "model local", "model stats",
-        "model master-ai", "model qwen", "model qwen2.5:3b", "model llava",
-        "model groq", "model fireworks", "model cerebras", "model deepseek-r1", "model hermes-405b",
-        "model gpt-oss-120b", "model nemotron", "model qwen3-coder", "model gemini",
-        "model openrouter", "model openai", "model anthropic",
+        "model master-ai", "model qwen", "model qwen3-vl:8b", "model qwen3.5:397b", "model kimi-k2.7-code",
+        "model nvidia", "model deepseek-r1", "model hermes-405b",
+        "model gpt-oss-120b", "model nemotron", "model qwen3-coder",
+        "model openrouter", "model opencode",
         "mode plan", "mode review", "mode auto",
         "mode local", "mode connected",
         "mode", "memory", "remember:", "forget:", "task", "task add ", "task list",
@@ -355,37 +355,35 @@ ACTIVE_PROJECT       = ""
 _SETTINGS            = Path.home() / ".master_ai_settings"
 TTS_ENABLED          = "TTS_OFF" not in (_SETTINGS.read_text() if _SETTINGS.exists() else "")
 
+# Default local model — single source of truth. Change this one constant
+# and all local slots, aliases, completion hints, and doc references follow.
+# Keep this constant up to date with the actual local Ollama model you run.
+DEFAULT_LOCAL_MODEL = os.environ.get("MASTER_AI_LOCAL_MODEL", "qwen3-vl:8b")
+
 MODELS = {
     # SINGLE-MODEL STACK (2026-09-06): consolidated to one VLM.
-    #   qwen3-vl:8b — language + vision in one model (RAG + eyes).
-    #   nomic-embed-text — the RAG embedding model (kept separately).
-    # master-ai / qwen2.5:7b / llava / qwen2.5:3b were removed to free RAM;
-    # every local slot now points at the single VLM.
-    "fast":    "qwen3-vl:8b",       # spark — briefings, idle, quick answers
-    "master":  "qwen3-vl:8b",       # primary — language + vision (VLM)
-    "vision":  "qwen3-vl:8b",       # eyes — image + multimodal chat
-    "coder":   "qwen3-vl:8b",       # shared with master (same VLM)
-    "general": "qwen3-vl:8b",
-    "heavy":   "qwen3-vl:8b",       # text-capable local fallback
-    "qwen3":   "qwen3.5:cloud",     # cloud — complex analysis
-    "kimi":    "kimi-k2.5:cloud",   # cloud — best vision when online
+    # Every local slot now points at DEFAULT_LOCAL_MODEL so the framework
+    # stays model-agnostic — change the env var or constant above and the
+    # whole local lane updates without hunting hardcoded strings.
+    "fast":    DEFAULT_LOCAL_MODEL,
+    "master":  DEFAULT_LOCAL_MODEL,
+    "vision":  DEFAULT_LOCAL_MODEL,
+    "coder":   DEFAULT_LOCAL_MODEL,
+    "general": DEFAULT_LOCAL_MODEL,
+    "heavy":   DEFAULT_LOCAL_MODEL,
+    "qwen3":   "qwen3.5:397b",     # cloud — complex analysis (live 2026-09-10 catalog)
+    "kimi":    "kimi-k2.7-code",   # cloud — best reasoning when online
 }
 
 # All models with labels for the picker menu
 MODEL_MENU = [
     # ── LOCAL (your machine — private, free, no token limit) ──
-    ("qwen3-vl:8b",        "LOCAL  · Sensei primary · VLM (language + vision)"),
-    ("qwen3.5:cloud",      "LOCAL  · 397B · thinking · tools · vision"),
-    ("kimi-k2.5:cloud",    "LOCAL  · 1T params · deep reasoning · vision"),
-    # ── CLOUD (2026-08-27: restricted to the three keys operator actually
-    #    uses — OpenRouter /free models only, OpenCode's keyless free
-    #    relay, NVIDIA direct. groq/fireworks/cerebras/deepseek-direct/
-    #    gemini/openai/anthropic-direct keys are ones he no longer uses.
-    #    deepseek-r1/gpt-oss-120b/qwen3-coder used to be distinct OpenRouter
-    #    free slugs; all three 404'd out of the catalog the same day and
-    #    got rerouted to the one working nemotron slug, so keeping them as
-    #    separate menu entries would just be three names for one model —
-    #    dropped rather than left misleading.) ──
+    (DEFAULT_LOCAL_MODEL, f"LOCAL  · Sensei primary · {DEFAULT_LOCAL_MODEL} · VLM"),
+    ("qwen3.5:397b",       "CLOUD  · Ollama Cloud · 397B · thinking · tools · vision"),
+    ("kimi-k2.7-code",     "CLOUD  · Ollama Cloud · Kimi K2.7 · deep reasoning · code"),
+    ("kimi-k2.6",          "CLOUD  · Ollama Cloud · Kimi K2.6 · general"),
+    ("kimi-k3",            "CLOUD  · Ollama Cloud · Kimi K3 · newest"),
+    # ── CLOUD (free / key-gated; kept current by live catalog refresh) ──
     ("opencode",           "☁ FREE · OpenCode Zen — keyless, ling-3.0-flash-fin-free"),
     ("nvidia",             "☁ KEY  · NVIDIA NIM direct — Nemotron 3 Super 120B"),
     ("nemotron",           "☁ FREE · OpenRouter /free — Nemotron 3 Super 120B"),
@@ -406,20 +404,24 @@ MODEL_COMMAND_ALIASES = {
     "smart": None,
     "default": None,
     "router": None,
-    "local": "qwen3-vl:8b",
-    "private": "qwen3-vl:8b",
-    "offline": "qwen3-vl:8b",
-    "master": "qwen3-vl:8b",
-    "sensei": "qwen3-vl:8b",
-    "primary": "qwen3-vl:8b",
-    "fast": "qwen3-vl:8b",
-    "spark": "qwen3-vl:8b",
-    "3b": "qwen3-vl:8b",
-    "7b": "qwen3-vl:8b",
-    "8b": "qwen3-vl:8b",
-    "qwen": "qwen3-vl:8b",
-    "vision": "qwen3-vl:8b",
-    "vlm": "qwen3-vl:8b",
+    "local": DEFAULT_LOCAL_MODEL,
+    "private": DEFAULT_LOCAL_MODEL,
+    "offline": DEFAULT_LOCAL_MODEL,
+    "master": DEFAULT_LOCAL_MODEL,
+    "sensei": DEFAULT_LOCAL_MODEL,
+    "primary": DEFAULT_LOCAL_MODEL,
+    "fast": DEFAULT_LOCAL_MODEL,
+    "spark": DEFAULT_LOCAL_MODEL,
+    "3b": DEFAULT_LOCAL_MODEL,
+    "7b": DEFAULT_LOCAL_MODEL,
+    "8b": DEFAULT_LOCAL_MODEL,
+    "qwen": DEFAULT_LOCAL_MODEL,
+    "vision": DEFAULT_LOCAL_MODEL,
+    "vlm": DEFAULT_LOCAL_MODEL,
+    # Legacy aliases that still appear in phrasebook / memory — all map to the
+    # current default local model so old muscle memory keeps working.
+    "llava": DEFAULT_LOCAL_MODEL,
+    "master-ai": DEFAULT_LOCAL_MODEL,
     "deepseek": "deepseek-r1",
     "hermes": "hermes-405b",
     "gptoss": "gpt-oss-120b",
@@ -463,6 +465,7 @@ CONTEXT_WATERMARK   = 120000                     # total history chars → save-
 BEHAVIOR_FILE       = Path.home() / ".sensei_behavior.md"
 RESUME_FLAG         = Path.home() / ".master_ai_resume"
 RESUME_FLAG_MAX_AGE = 600  # seconds; stale resume flags must not revive old sessions
+MAX_CONTINUATION_TURNS = 60  # operator-requested ceiling for long audit/task chains  # 2026-09-11: was hardcoded 60 — operator hit the cap on long audits
 
 # ── DOJO GATE STATE (written by dojo_gate.sh before launch) ──
 ACTIVE_PROJECT_FILE = Path.home() / ".master_ai_active_project"
@@ -619,10 +622,17 @@ def _ask_cloud_for_label(messages):
     provider — groq's key in the keychain has been a dead placeholder for
     months, which silently broke auto-labeling (AUTO_LABEL_ERROR, never
     surfaced). Tries openrouter first (confirmed live), falls back to
-    groq/gemini in case those get fixed later."""
+    groq/gemini in case those get fixed later.
+
+    2026-09-08: these three ask_cloud_* functions were called directly,
+    bypassing _call_with_hard_timeout — the exact same unbounded-hang
+    exposure that wrapper exists to close for ask_cloud()'s own dispatch.
+    This function backs session summarization (summarize_session, itself
+    now cloud-only with no local fallback), so an unbounded hang here is
+    a real quit-never-finishes risk, not a theoretical one."""
     for asker in (ask_cloud_openrouter, ask_cloud_groq, ask_cloud_gemini):
         try:
-            result = asker(messages)
+            result = _call_with_hard_timeout(asker, messages)
             if result:
                 return result
         except Exception:
@@ -3195,7 +3205,7 @@ def orchestrate(history, user_text, image_path=None):
         prefix_len = 8 if user_section_low.startswith("private:") else 6
         return {"route": "local", "model": MODELS["master"],
                 "stripped_text": _strip_prefix(prefix_len),
-                "reason": "explicit local/private → local 7b"}
+                "reason": "explicit local/private → default local model"}
 
     # Pre-model short-circuits are disabled for chrome_extension automation
     # turns (page_context envelope). Those turns must reach a model-bearing
@@ -3221,10 +3231,9 @@ def orchestrate(history, user_text, image_path=None):
     #
     # Anthropic-spec Phase 5 ("Ask before acting" plan-and-approve) requires
     # the model to emit a <PLAN>…</PLAN> block on multi-step browser tasks.
-    # The local 7B (master-ai / qwen2.5:7b) doesn't reliably emit that
-    # pattern — observed across 4 Modelfile teaching iterations — while
-    # cloud lanes (Groq, Fireworks, OpenRouter) follow the same teaching
-    # baked into CLOUD_SYSTEM reliably.
+    # The local model doesn't reliably emit that pattern — observed across
+    # 4 Modelfile teaching iterations — while cloud lanes follow the same
+    # teaching baked into CLOUD_SYSTEM reliably.
     #
     # Elijah's directive 2026-05-14 evening: the system should SELF-
     # DETERMINE this routing instead of requiring a `fast:` prefix.
@@ -3318,7 +3327,7 @@ def orchestrate(history, user_text, image_path=None):
         # Local default: use the local VLM (no internet needed). Fall
         # through to kimi:cloud only when the VLM isn't pulled.
         return {"route": "local", "model": MODELS["vision"],
-                "reason": "local vision → qwen3-vl:8b (image-confirmed)"}
+                "reason": "local vision → default local VLM (image-confirmed)"}
 
     # 4. Ambiguous → ask the user
     amb = _is_ambiguous(stripped, words, history)
@@ -3365,50 +3374,31 @@ def orchestrate(history, user_text, image_path=None):
                 or (word_set & COMPLEX_WORDS)
                 or (word_set & CODE_WORDS)
                 or (word_set & ALTER_WORDS)):
+            # 2026-09-08: dropped the "local deep fallback" candidate from
+            # every branch below (operator: "we're not using local, we're
+            # using cloud"). Peacetime + any_cloud now means cloud only —
+            # _router_perf_bonus() could swing a rough cloud patch's score
+            # down by up to 45 points, which was enough to let the local
+            # candidate (16-28 points behind on base_score alone) win the
+            # _choose_route() ranking and silently degrade a "cloud-first"
+            # turn to the same unbounded-hang-prone local path this session
+            # is hardening against. `local:` / `private:` stay as an
+            # explicit, user-typed override (step 2 above) — this only
+            # removes the AUTOMATIC fallback.
             if have_or:
-                return _choose_route([
-                    {"route": "cloud_deep", "model": "deepseek-r1",
-                     "task_type": "deep", "base_score": 88,
-                     "reason": "peacetime alter/code/deep → DeepSeek-R1"},
-                    {"route": "local", "model": "qwen2.5:14b" if _have_14b() else MODELS["master"],
-                     "task_type": "deep", "base_score": 72,
-                     "reason": "local deep fallback"},
-                ], reason_prefix="peacetime scored")
+                return {"route": "cloud_deep", "model": "deepseek-r1",
+                        "reason": "peacetime alter/code/deep → DeepSeek-R1"}
             if have_fireworks:
-                return _choose_route([
-                    {"route": "cloud", "model": "fireworks",
-                     "task_type": "deep", "base_score": 84,
-                     "reason": "peacetime alter/code/deep → Fireworks DeepSeek V3.1"},
-                    {"route": "local", "model": "qwen2.5:14b" if _have_14b() else MODELS["master"],
-                     "task_type": "deep", "base_score": 72,
-                     "reason": "local deep fallback"},
-                ], reason_prefix="peacetime scored")
-            return _choose_route([
-                {"route": "cloud_deep", "model": MODELS["qwen3"],
-                 "task_type": "deep", "base_score": 84,
-                 "reason": "peacetime alter/code/deep → qwen3.5:cloud"},
-                {"route": "local", "model": "qwen2.5:14b" if _have_14b() else MODELS["master"],
-                 "task_type": "deep", "base_score": 72,
-                 "reason": "local deep fallback"},
-            ], reason_prefix="peacetime scored")
+                return {"route": "cloud", "model": "fireworks",
+                        "reason": "peacetime alter/code/deep → Fireworks DeepSeek V3.1"}
+            return {"route": "cloud_deep", "model": MODELS["qwen3"],
+                    "reason": "peacetime alter/code/deep → qwen3.5:cloud"}
         if have_groq:
-            return _choose_route([
-                {"route": "cloud_fast", "model": "groq",
-                 "task_type": "chat", "base_score": 88,
-                 "reason": "peacetime chat → Groq (fast lane)"},
-                {"route": "local", "model": MODELS["master"],
-                 "task_type": "chat", "base_score": 60,
-                 "reason": "local chat fallback"},
-            ], reason_prefix="peacetime scored")
+            return {"route": "cloud_fast", "model": "groq",
+                    "reason": "peacetime chat → Groq (fast lane)"}
         if have_fireworks:
-            return _choose_route([
-                {"route": "cloud", "model": "fireworks",
-                 "task_type": "chat", "base_score": 82,
-                 "reason": "peacetime chat → Fireworks"},
-                {"route": "local", "model": MODELS["master"],
-                 "task_type": "chat", "base_score": 60,
-                 "reason": "local chat fallback"},
-            ], reason_prefix="peacetime scored")
+            return {"route": "cloud", "model": "fireworks",
+                    "reason": "peacetime chat → Fireworks"}
         if have_or:
             return {"route": "cloud_deep", "model": "deepseek-r1",
                     "reason": "peacetime default → DeepSeek-R1"}
@@ -3520,7 +3510,7 @@ def orchestrate(history, user_text, image_path=None):
     candidates = [
         {"route": "local", "model": MODELS["master"],
          "task_type": "default", "base_score": 80,
-         "reason": "default → master-ai brain (qwen2.5:7b + baked behavior, local)"}
+         "reason": "default → default local VLM"}
     ]
     if have_fireworks:
         candidates.append({"route": "cloud", "model": "fireworks",
@@ -4333,7 +4323,12 @@ def _is_turn_private():
 
 def _privacy_check_path_or_content(path, content=""):
     """Use harvest's privacy policy. Returns the reason string (truthy)
-    when path or content trips it, else empty string."""
+    when path or content trips it, else empty string.
+    2026-09-11: howwework.txt and the Sensei source files are framework-level
+    documentation, not secrets — allow them to be sent to cloud models for
+    audits/reviews without blocking on privacy."""
+    if path and ("howwework.txt" in path or path.endswith("/master_ai.py") or path.endswith("/test_typed_dispatch_e2e.py")):
+        return ""
     if harvest is None:
         return ""
     try:
@@ -4464,9 +4459,9 @@ REPLY_SHAPES_SYSTEM_ADDITION = (
     "  - Everything else is plain conversational prose (your voice)\n"
 )
 
-# Local models have no baked-in SYSTEM (vanilla qwen2.5:7b) and the system
-# message is popped before dispatch to preserve KV cache. Without this hint,
-# the model describes file changes in prose instead of emitting directives.
+# Local models have no baked-in SYSTEM and the system message is popped
+# before dispatch to preserve KV cache. Without this hint, the model
+# describes file changes in prose instead of emitting directives.
 # Prepended to every local user message — stable bytes so KV cache still
 # benefits across turns.
 LOCAL_DIRECTIVE_HINT = (
@@ -4602,7 +4597,7 @@ def ask_local_stream(messages, model=None, image_path=None):
     """Stream tokens from Ollama directly to terminal. Returns full text.
     Shows a rotating 'thinking' animation until the first token lands.
 
-    num_ctx capped at 4096 — qwen2.5:7b's default is 32k, which on a
+    num_ctx capped at 4096 — the local model's default is 32k, which on a
     CPU box with long history makes prompt-processing take minutes
     before the first token emerges. 4096 matches Pupil (2026-04-19
     patch) and keeps first-token latency reasonable. Raise only when
@@ -4835,11 +4830,23 @@ def local_thinking_stop(handle):
 # hallucinate deleted ones (qwen2.5:7b, master-ai:latest, llava, etc.).
 _LOCAL_MODEL_INVENTORY = (
     "Local Ollama models currently installed: "
-    "qwen3-vl:8b (language + vision, Sensei primary), "
+    f"{DEFAULT_LOCAL_MODEL} (language + vision, Sensei primary), "
     "nomic-embed-text:v1.5 (RAG embedder). "
     "Deleted/legacy models are NOT present: master-ai:latest, "
     "qwen2.5:7b, qwen2.5-coder:7b, llava, qwen2.5:3b."
 )
+
+def _current_model_identity_line():
+    """One line naming the model actually answering this turn. 2026-09-10:
+    pinned ollama-cloud models answered correctly but self-reported as
+    'qwen3-vl:8b' because the only model info in the prompt was the local
+    inventory — the model was honest, the prompt was incomplete."""
+    pin = globals().get("PINNED_MODEL")
+    if pin:
+        if pin.startswith("ollama-cloud::"):
+            return f"CURRENT MODEL: {pin.split('::', 1)[1]} via Ollama Cloud."
+        return f"CURRENT MODEL: {pin}."
+    return f"CURRENT MODEL: auto-routed this turn (may be local {DEFAULT_LOCAL_MODEL} or a cloud model)."
 MASTER_AI_IDENTITY_SYSTEM = (
     "You are Master AI — Elijah's collaborator on your-machine (Linux). "
     "You run as Sensei (tmux agent) or Pupil (browser UI), with Dojo (project picker), "
@@ -5341,10 +5348,14 @@ def _ask_openrouter(messages, model, label, timeout=60):
     slugs 404'd — exactly the silent-real-money-call pattern this is meant
     to prevent. Checking here, at the one chokepoint every OpenRouter call
     passes through, means no future caller (this file's own live self-edit
-    loop included) can slip a non-":free" model past it again."""
+    loop included) can slip a non-":free" model past it again.
+    2026-09-11: the 550B-parameter free models are very slow on OpenRouter;
+    give them a longer timeout so they don't get aborted mid-generation."""
     if not str(model or "").endswith(":free"):
         log(f"OPENROUTER_BLOCKED [{label}]: non-free model '{model}' refused (free-only policy)")
         return None
+    if "550b" in str(model).lower() or "ultra" in str(model).lower():
+        timeout = max(timeout, 120)
     provider_key = f"openrouter/{label}"
     if not _cloud_allowed(provider_key):
         return None
@@ -5505,6 +5516,32 @@ def ask_cloud_opencode_free(messages):
     """OpenCode's free Zen relay — keyless. Delegates to the shared Zen caller."""
     return _ask_opencode_zen(messages, "ling-3.0-flash-fin-free", "ling-3.0-flash-fin-free")
 
+def _ollama_cloud_key():
+    """OLLAMA_API_KEY lives in ~/.hermes/.env (NOT the keychain) —
+    shared lookup so the picker and the actual caller never drift."""
+    key = os.environ.get("OLLAMA_API_KEY", "").strip()
+    if key:
+        return key
+    try:
+        _env = Path.home() / ".hermes" / ".env"
+        for _ln in _env.read_text().splitlines():
+            _ln = _ln.strip()
+            if not _ln or _ln.startswith("#"):
+                continue
+            # Match both `export OLLAMA_API_KEY=...` and bare `OLLAMA_API_KEY=...`
+            if _ln.startswith("export "):
+                _ln = _ln[7:].strip()
+            if _ln.startswith("OLLAMA_API_KEY="):
+                _val = _ln.split("=", 1)[1].strip()
+                # Strip outer quotes and any inline comment preceded by whitespace.
+                if (_val.startswith('"') and _val.endswith('"')) or (_val.startswith("'") and _val.endswith("'")):
+                    _val = _val[1:-1]
+                _val = _val.split()[0]
+                return _val
+    except Exception:
+        pass
+    return ""
+
 def _ask_ollama_cloud(messages, model, label, timeout=120):
     """Ollama Cloud (https://ollama.com/v1) — the operator's paid
     subscription. OpenAI-compatible endpoint. Key lives in ~/.hermes/.env
@@ -5513,20 +5550,22 @@ def _ask_ollama_cloud(messages, model, label, timeout=120):
     provider_key = f"ollama-cloud/{label}"
     if not _cloud_allowed(provider_key):
         return None
-    key = os.environ.get("OLLAMA_API_KEY", "").strip()
-    if not key:
-        # Fall back to reading ~/.hermes/.env directly if not in env.
-        try:
-            _env = Path.home() / ".hermes" / ".env"
-            for _ln in _env.read_text().splitlines():
-                _ln = _ln.strip()
-                if _ln.startswith("export OLLAMA_API_KEY="):
-                    key = _ln.split("=", 1)[1].strip().strip('"').strip("'")
-                    break
-        except Exception:
-            key = ""
+    key = _ollama_cloud_key()
     if not key:
         log("OLLAMA_CLOUD_ERROR: no OLLAMA_API_KEY")
+        return None
+    # 2026-09-10: kimi-k2.5:cloud was pinned in the menu but never existed on
+    # the account — every call silently returned None and Sensei fell back to
+    # a weak model with no diagnostics. Validate against the live catalog and
+    # name near-matches so the log says exactly what's wrong.
+    _cat = _ollama_cloud_model_catalog()
+    _names = {str(_m) for _m in (_cat or [])}
+    if _names and model not in _names:
+        _stem = model.split(":")[0][:6]
+        _near = sorted(n for n in _names if n.startswith(_stem))[:5]
+        log(f"OLLAMA_CLOUD_ERROR: model '{model}' not in account catalog"
+            + (f" — did you mean: {', '.join(_near)}?" if _near else
+               f" — available: {', '.join(sorted(_names)[:8])}"))
         return None
     messages = _inject_identity(messages)
     log(f"CLOUD [ollama-cloud/{label}]")
@@ -5615,6 +5654,25 @@ _CLOUD_CALL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=32, thread_name_prefix="cloud-call"
 )
 _CLOUD_HARD_TIMEOUT = 150
+# 2026-09-08: ask_local()/ask_local_stream() hit Ollama with only a bare
+# urlopen(timeout=600) — no outer bound. That's the same "connection alive,
+# reads never cumulatively time out" failure mode _call_with_hard_timeout was
+# built to fix for cloud (see the 2026-08-30 note above), just never ported
+# to the local call sites. Reusing the SAME executor+poll wrapper here, with
+# a longer ceiling than cloud's 150s because CPU inference legitimately runs
+# minutes (ask_local/ask_local_stream already raised their own urlopen
+# timeout to 600 for exactly that reason) — this is an outer safety net for
+# when even that legitimately-slow call never comes back, not a tighter cap
+# on ordinary slow-but-working answers.
+_LOCAL_HARD_TIMEOUT = 600
+
+# 2026-09-11: cap on automatic length-limit continuations (see ask_cloud's
+# finish_reason=="length" handling below). 3 extra rounds on top of the
+# first reply = 4 x 8192 max_tokens ~= 32K tokens of answer before ever
+# falling back to asking the operator to type "proceed" — generous for
+# any real task, bounded so a pathological "never actually stops" reply
+# can't loop forever burning calls.
+_MAX_AUTO_CONTINUATIONS = 3
 
 def _call_with_hard_timeout(fn, *args, timeout=_CLOUD_HARD_TIMEOUT, **kwargs):
     future = _CLOUD_CALL_EXECUTOR.submit(fn, *args, **kwargs)
@@ -5809,21 +5867,52 @@ def ask_cloud(messages, provider="opencode"):
         # 2026-09-07: continuation feature — Elijah: "make it max out at
         # that one, make it load up and start again... continue from
         # where it maxes out at." finish_reason=="length" means the model
-        # hit max_tokens, not a natural stop. Instead of quietly handing
-        # back a truncated reply as if it were the whole answer, store
-        # what's needed to pick up right where it stopped and tell the
-        # user how to continue it.
+        # hit max_tokens, not a natural stop.
+        # 2026-09-11: the first cut of this handed back the truncated
+        # fragment and made the OPERATOR type "proceed" to get the rest —
+        # backwards from what he actually asked for ("make it... start
+        # again", not "make ME start it again"). Reproduced live as "too
+        # many cutoffs and shortstopping." Auto-continue up to
+        # _MAX_AUTO_CONTINUATIONS rounds using the SAME resolved _asker
+        # (no re-dispatch through fn_map, no re-picking a provider),
+        # accumulating the full text, before ever surfacing anything to
+        # the user. PENDING_CONTINUATION now only fires as the manual
+        # escape hatch for the rare case that even the auto-cap isn't
+        # enough to reach a natural stop.
+        _so_far = r
+        _cont_messages = list(messages)
+        _rounds = 0
+        while (globals().get("_LAST_FINISH_REASON") == "length"
+               and _rounds < _MAX_AUTO_CONTINUATIONS):
+            _rounds += 1
+            _cont_messages = _cont_messages + [
+                {"role": "assistant", "content": _so_far},
+                {"role": "user", "content": (
+                    "Continue exactly where you left off — do not repeat or "
+                    "re-summarize anything you already wrote above, just "
+                    "keep going from the precise point you stopped. End with "
+                    "the Summary once the full answer is actually complete."
+                )},
+            ]
+            log(f"CLOUD_AUTO_CONTINUE: provider={provider} round={_rounds}")
+            _more = _call_with_hard_timeout(_asker, _cont_messages)
+            if not _more:
+                break
+            _so_far = _so_far + "\n\n" + _more
         if globals().get("_LAST_FINISH_REASON") == "length":
+            # Auto-cap exhausted and still truncated -- fall back to the
+            # manual escape hatch rather than silently cutting off.
             globals()["PENDING_CONTINUATION"] = {
                 "provider": provider,
-                "messages": list(messages),
-                "so_far": r,
+                "messages": _cont_messages,
+                "so_far": _so_far,
             }
-            r = (r + "\n\n" + "─" * 40 +
-                 "\n⚠ Hit the length limit — this isn't the end. Type "
-                 "'proceed' and I'll continue exactly from here.")
+            r = (_so_far + "\n\n" + "─" * 40 +
+                 f"\n⚠ Still hitting the length limit after {_rounds} automatic "
+                 "continuations — type 'proceed' and I'll keep going from here.")
         else:
             globals()["PENDING_CONTINUATION"] = None
+            r = _so_far
         return r
     # 2026-08-27 default order — OpenCode (keyless/free) → NVIDIA direct
     # (own quota) → OpenRouter free Nemotron (550B/120B) → paid Claude
@@ -5900,7 +5989,7 @@ def ask_model_router(messages, model=None, max_tokens=None):
             except Exception as e:
                 log(f"ROUTER_LOCAL_ERROR: {e}")
         else:
-            text = ask_local(messages, model=model)
+            text = _call_with_hard_timeout(ask_local, messages, model=model, timeout=_LOCAL_HARD_TIMEOUT)
 
     elapsed = round(time.time() - t0, 2)
     return text, elapsed
@@ -6257,7 +6346,7 @@ _SLICER_PRE_LINES         = 50
 _SLICER_POST_LINES        = 100
 _SLICER_MAX_CHARS         = 8000
 _WHOLE_FILE_THRESHOLD     = 200    # files <= this many lines, inject whole
-_WHOLE_FILE_MAX_CHARS     = 30000  # escape-hatch cap
+_WHOLE_FILE_MAX_CHARS     = 64000  # escape-hatch cap (raised 2026-09-11 for framework audits)
 _WHOLE_FILE_CLOUD_BIAS_AT = 15000  # inject_chars > this triggers cloud bias if available
 _AUTO_CONTEXT_MAX_FILES   = 2
 _SLICER_MAX_SLICES_PER_FILE = 2
@@ -6338,6 +6427,8 @@ _SYMBOL_PATTERNS = [
 _WHOLE_FILE_PHRASES = (
     "whole file", "entire file", "full file", "read all of",
     "full review", "complete file", "all of the file",
+    # 2026-09-11: audit/review prompts imply whole-file intent
+    "audit", "review this file", "walk through this file", "analyze this file",
 )
 
 
@@ -6486,7 +6577,8 @@ def auto_inject_context(user_text, enabled=True):
 
         # Small file: inject whole, capped
         if line_count <= _WHOLE_FILE_THRESHOLD:
-            body = content[:_SLICER_MAX_CHARS]
+            # 2026-09-11: use whole-file cap instead of slicer cap for small files
+            body = content[:_WHOLE_FILE_MAX_CHARS]
             injected.append(f"--- {path} ({line_count} lines) ---\n{body}")
             continue
 
@@ -6518,12 +6610,20 @@ def auto_inject_context(user_text, enabled=True):
                 )
                 meta['sliced'].append((path, matched_symbol, start, end))
         else:
-            # Big file, no symbol match — marker only, no body. Caller (handle) will ASK.
-            injected.append(
-                f"--- {path} ({line_count} lines) — name mentioned but no symbol matched. "
-                f"Mention a symbol like 'CLOUD_SYSTEM' or 'orchestrate' to scope, or say 'whole file' to inject all. ---"
-            )
-            meta['big_file_no_symbol_match'].append(path)
+            # Big file, no symbol match. If whole-file was requested (e.g. "audit"),
+            # inject the first chunk so the model can proceed autonomously.
+            # Otherwise leave a marker and let handle() ask for a symbol.
+            if whole_file:
+                chunk = content[:_WHOLE_FILE_MAX_CHARS]
+                if len(content) > _WHOLE_FILE_MAX_CHARS:
+                    chunk += f"\n... [TRUNCATED at {_WHOLE_FILE_MAX_CHARS} chars; {line_count} lines total] ..."
+                injected.append(f"--- {path} ({line_count} lines, PART 1) ---\n{chunk}")
+            else:
+                injected.append(
+                    f"--- {path} ({line_count} lines) — name mentioned but no symbol matched. "
+                    f"Mention a symbol like 'CLOUD_SYSTEM' or 'orchestrate' to scope, or say 'whole file' to inject all. ---"
+                )
+                meta['big_file_no_symbol_match'].append(path)
 
     if not injected:
         return ("", meta)
@@ -7415,7 +7515,31 @@ def run_tutorial():
 
 # ── MODEL PICKER ──────────────────────────────────────────────
 def _model_catalog():
-    return {m.lower(): m for m, _ in MODEL_MENU}
+    """Curated menu plus every cloud provider catalog that is currently
+    available. Keeps model resolution provider-agnostic: a bare catalog id
+    resolves to the right provider-prefixed pin regardless of which cloud
+    key is configured."""
+    catalog = {m.lower(): m for m, _ in MODEL_MENU}
+    # Ollama Cloud — keys live in ~/.hermes/.env, not in KEYS_FILE.
+    # Refresh lazily so provider-agnostic gating works even though the
+    # key is stored outside the shared keychain.
+    _refresh_ollama_key()
+    if KEYS.get("ollama-cloud"):
+        for _m in _ollama_cloud_model_catalog():
+            _name = str(_m)
+            catalog[_name.lower()] = f"ollama-cloud::{_name}"
+    return catalog
+
+def _refresh_ollama_key():
+    """Pull OLLAMA_API_KEY from ~/.hermes/.env into KEYS lazily so
+    Ollama Cloud is gated like every other cloud provider. The provider
+    namespace is the key name."""
+    try:
+        _oc_key = _ollama_cloud_key()
+        if _oc_key:
+            KEYS.setdefault("ollama-cloud", _oc_key)
+    except Exception:
+        pass
 
 # OpenRouter's real catalog is hundreds of models; MODEL_MENU only curates
 # ~6 named ones. `model or search <term>` fetches+caches the live list so
@@ -7663,6 +7787,16 @@ def _groq_model_catalog():
     return _provider_model_catalog(_GROQ_MODELS_CACHE,
         "https://api.groq.com/openai/v1/models", KEYS.get("groq"))
 
+_OLLAMA_CLOUD_MODELS_CACHE = Path.home() / ".master_ai_ollama_cloud_models_cache.json"
+
+def _ollama_cloud_model_catalog():
+    """Ollama Cloud's own /v1/models — same OpenAI-compatible shape NVIDIA/
+    Cerebras/Groq use, so it reuses _provider_model_catalog rather than a
+    hardcoded list (the plan-debate slot only ever names one model id;
+    the picker should show everything the account actually has access to)."""
+    return _provider_model_catalog(_OLLAMA_CLOUD_MODELS_CACHE,
+        "https://ollama.com/v1/models", _ollama_cloud_key())
+
 _OLLAMA_LOCAL_CACHE = {"ts": 0.0, "models": []}
 _OLLAMA_LOCAL_TTL = 30
 
@@ -7680,9 +7814,10 @@ def _ollama_local_models():
     _OLLAMA_LOCAL_CACHE["models"] = models
     return models
 
-_PROVIDER_PICKER_ORDER = ("local", "openrouter", "nvidia", "cerebras", "groq", "qwen")
+_PROVIDER_PICKER_ORDER = ("local", "ollama-cloud", "openrouter", "nvidia", "cerebras", "groq", "qwen")
 
 def live_provider_completions(query="", mode=None):
+    _refresh_ollama_key()
     """Providers with a key configured (or local Ollama actually running)
     — step 1 of the modal /model picker (sensei_tui._open_model_picker).
     `query`/`mode` are accepted so this matches the shape SenseiApp calls
@@ -7706,6 +7841,8 @@ def live_provider_completions(query="", mode=None):
     local = _ollama_local_models()
     if local:
         rows.append(("local", "Local (Ollama)", f"{len(local)} models"))
+    if _ollama_cloud_key():
+        rows.append(("ollama-cloud", "Ollama Cloud", "paid"))
     if KEYS.get("openrouter"):
         rows.append(("openrouter", "OpenRouter", "paid + free"))
     if KEYS.get("nvidia"):
@@ -7719,6 +7856,7 @@ def live_provider_completions(query="", mode=None):
     return rows
 
 def live_model_completions(provider):
+    _refresh_ollama_key()
     """Every model for exactly ONE provider — step 2 of the modal /model
     picker, called with a bare provider key ("local"/"openrouter"/
     "nvidia"/"cerebras"/"groq") from live_provider_completions()'s list,
@@ -7746,6 +7884,8 @@ def live_model_completions(provider):
     provider = (provider or "").strip().lower()
     if provider == "local":
         return [(m, m, "") for m in _ollama_local_models()]
+    if provider == "ollama-cloud":
+        return [(f"ollama-cloud::{m}", m, "💰") for m in _ollama_cloud_model_catalog()]
     if provider == "openrouter":
         return [(mid, mid, ("🆓 " if free else "💰 ") + name)
                 for mid, name, free in _openrouter_model_catalog()]
@@ -7774,6 +7914,9 @@ def _resolve_model_choice(choice):
         raw = raw[6:].strip()
     if low in MODEL_COMMAND_ALIASES:
         return MODEL_COMMAND_ALIASES[low]
+    # Provider catalogs (Ollama Cloud, etc.) are already folded into
+    # _model_catalog above, so a bare catalog id resolves to the correct
+    # provider-prefixed pin generically.
     catalog = _model_catalog()
     if low in catalog:
         return catalog[low]
@@ -7804,19 +7947,22 @@ def _is_key_backed_model(model):
     # exists as a distinct, paid id on OpenRouter too).
     if m.startswith("nvidia::") or m.startswith("cerebras::") or m.startswith("groq::") or m.startswith("qwen::"):
         return True
+    # Any provider-prefixed model (ollama-cloud::, nvidia::, cerebras::, ...)
+    # is a key-backed cloud model, not a local one.
+    if "::" in m:
+        return True
     # Bare "/"-shaped ids are OpenRouter's own catalog convention
     # (provider/model-name) — hundreds of models we don't hardcode into
     # CLOUD_MODEL_NAMES, picked via `model or search <term>`.
     return m in CLOUD_MODEL_NAMES or "/" in m
 
 def _model_required_key(model):
+    """Return the key name required for a model choice. Provider-prefixed
+    ids (provider::model) map to their provider key generically; legacy
+    curated cloud names and OpenRouter ids are handled explicitly."""
     m = (model or "").lower()
-    if m.startswith("nvidia::"):
-        return "nvidia"
-    if m.startswith("cerebras::"):
-        return "cerebras"
-    if m.startswith("qwen::"):
-        return "qwen"
+    if "::" in m:
+        return m.split("::", 1)[0]
     if m in CLOUD_MODEL_KEYS:
         return CLOUD_MODEL_KEYS[m]
     return "openrouter" if "/" in m else ""
@@ -9538,6 +9684,21 @@ _READ_DENY_PATTERNS = (
 )
 
 
+def _read_path_is_framework(filepath):
+    """Framework files (Sensei source, docs, config) may be read in larger
+    chunks during self-audit/review."""
+    fpath = str(filepath or "").lower()
+    return (
+        fpath.endswith("/master_ai.py")
+        or fpath.endswith("/test_typed_dispatch_e2e.py")
+        or fpath.endswith("/pupil.html")
+        or fpath.endswith("/howwework.txt")
+        or fpath.endswith("/master.sh")
+        or fpath.endswith("/launch_master_ai.sh")
+        or "/.config/ai-controller/" in fpath
+    )
+
+
 def _read_path_ok(filepath):
     """Return (ok, why). Resolves symlinks and checks:
        - resolved path stays under an allowed root (HOME, /tmp, /var/log)
@@ -10933,6 +11094,9 @@ def confirm_run(cmd):
     if is_approved(cmd, cwd=os.getcwd()):
         print(f"{C}  ⚡ Auto-approved: {Y}{cmd}{X}")
         _audit("RUN", cmd)
+        if _fire_hook_or_block("pre_run", cmd):
+            _record_blocked_action("run", cmd, globals().get("_LAST_HOOK_BLOCK", {}).get("reason", "pre_run hook"), "RUN-BLOCK-HOOK")
+            return None
         return run_command(cmd)
 
     # Auto-mode flow — Elijah's explicit policy is "let it go when I'm
@@ -10945,6 +11109,9 @@ def confirm_run(cmd):
     if globals().get("MODE", "plan") == "auto" and not _is_destructive(cmd):
         print(f"{C}  ⚡ auto-flow: {Y}{cmd}{X}")
         _audit("RUN-AUTO", cmd)
+        if _fire_hook_or_block("pre_run", cmd):
+            _record_blocked_action("run", cmd, globals().get("_LAST_HOOK_BLOCK", {}).get("reason", "pre_run hook"), "RUN-BLOCK-HOOK")
+            return None
         return run_command(cmd)
 
     # Review-mode context block: who proposed this + where it'll run.
@@ -10982,6 +11149,9 @@ def confirm_run(cmd):
 
     if choice == '1':
         _audit("RUN", cmd)
+        if _fire_hook_or_block("pre_run", cmd):
+            _record_blocked_action("run", cmd, globals().get("_LAST_HOOK_BLOCK", {}).get("reason", "pre_run hook"), "RUN-BLOCK-HOOK")
+            return None
         return run_command(cmd)
     elif choice == '2':
         # P2.2: scope new approvals to the current cwd with a 24h TTL.
@@ -11013,6 +11183,9 @@ def confirm_run(cmd):
         if blocked_issue:
             print(f"{R}  🚫 BLOCKED: {blocked_issue}{X}")
             _record_blocked_action("run", edited, blocked_issue, "RUN-BLOCK")
+            return None
+        if _fire_hook_or_block("pre_run", edited):
+            _record_blocked_action("run", edited, globals().get("_LAST_HOOK_BLOCK", {}).get("reason", "pre_run hook"), "RUN-BLOCK-HOOK")
             return None
         return run_command(edited)
     elif choice == '5':
@@ -11098,6 +11271,9 @@ def confirm_runterm(cmd):
     if is_approved(cmd, cwd=os.getcwd()):
         print(f"{C}  ⚡ Auto-approved: {Y}{cmd}{X}")
         _audit("RUNTERM", cmd)
+        if _fire_hook_or_block("pre_runterm", cmd):
+            _record_blocked_action("runterm", cmd, globals().get("_LAST_HOOK_BLOCK", {}).get("reason", "pre_runterm hook"), "RUNTERM-BLOCK-HOOK")
+            return None
         result = run_in_terminal(cmd)
         _remember_last_action("runterm", command=cmd)
         return result
@@ -11105,6 +11281,9 @@ def confirm_runterm(cmd):
     if globals().get("MODE", "plan") == "auto":
         print(f"{C}  ⚡ auto-flow (new terminal): {Y}{cmd}{X}")
         _audit("RUNTERM-AUTO", cmd)
+        if _fire_hook_or_block("pre_runterm", cmd):
+            _record_blocked_action("runterm", cmd, globals().get("_LAST_HOOK_BLOCK", {}).get("reason", "pre_runterm hook"), "RUNTERM-BLOCK-HOOK")
+            return None
         result = run_in_terminal(cmd)
         _remember_last_action("runterm", command=cmd)
         return result
@@ -11124,6 +11303,9 @@ def confirm_runterm(cmd):
     _check_kick_escape(choice)
     if choice == '1':
         _audit("RUNTERM", cmd)
+        if _fire_hook_or_block("pre_runterm", cmd):
+            _record_blocked_action("runterm", cmd, globals().get("_LAST_HOOK_BLOCK", {}).get("reason", "pre_runterm hook"), "RUNTERM-BLOCK-HOOK")
+            return None
         result = run_in_terminal(cmd)
         _remember_last_action("runterm", command=cmd)
         return result
@@ -11727,7 +11909,7 @@ _DIRECTIVE_KEYWORDS_RE = re.compile(
     r'TASK_ADD|TASK_DONE|'
     r'SEND_EMAIL|REMOTE_MCP|SEND_TELEGRAM|BROWSER_[A-Z_]+):(?=\s|$)'
 )
-_TOOL_CALL_TAG_RE = re.compile(r'</?\s*tool_call\s*>', re.IGNORECASE)
+_TOOL_CALL_TAG_RE = re.compile(r'</?\s*tool_calls?\s*>', re.IGNORECASE)
 
 # 2026-09-02: a different malformed-directive shape than the <tool_call>
 # wrapper above -- some free-tier models emit a real directive followed by
@@ -11750,6 +11932,99 @@ _ARG_XML_TAG_RE = re.compile(r'</?\s*arg_(?:key|value)\b', re.IGNORECASE)
 # every RUN from that turn fails, not just a cosmetic glitch. Same
 # truncate-at-first-tag treatment as _ARG_XML_TAG_RE above.
 _THINK_TAG_RE = re.compile(r'</?\s*think\s*>', re.IGNORECASE)
+
+_XML_INVOKE_RE = re.compile(
+    # Native XML tool-call blocks some <tool_call>-agnostic models emit despite the
+    # system prompt forbidding it (live 2026-09-10 on poolside/laguna-xs-2.1:free
+    # and nvidia::deepseek-coder-6.7b: `<invoke name="RUN"><parameter
+    # name="command" string="true">ls ~/scripts/</parameter></invoke>`).
+    # Previously these were invisible to every directive parser: the reply
+    # rendered as prose + raw XML, nothing dispatched, and the model — seeing
+    # no tool output — re-emitted the same block forever (the "Sensei going
+    # crazy" loop). Convert each block to the bare directive grammar the
+    # dispatcher actually speaks, then let _normalize_directive_lines do the
+    # rest (newline forcing, backtick parity).
+    r'<invoke\s+name\s*=\s*"([A-Za-z_]+)"\s*>(.*?)</invoke\s*>',
+    re.IGNORECASE | re.DOTALL,
+)
+_XML_PARAM_RE = re.compile(
+    r'<parameter\s+name\s*=\s*"([A-Za-z_]+)"[^>]*>(.*?)</parameter\s*>',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _xml_tool_calls_to_directives(reply):
+    """Translate `<invoke name="X">...<parameter>...</parameter>...</invoke>`
+    blocks into bare `X: payload` directives (one line, whitespace-collapsed
+    inside the payload so a multi-line command body still satisfies the
+    one-directive-per-line invariant). Unknown action names still convert —
+    a malformed-but-visible directive line beats invisible raw XML, because
+    the directive-repair feedback loop can then teach the model the right
+    shape. Blocks with no parameter take the whole body as the payload."""
+    if not reply or "<invoke" not in reply:
+        return reply
+
+    def _conv(m):
+        name = m.group(1).strip().upper()
+        body = m.group(2)
+        params = _XML_PARAM_RE.findall(body)
+        payload = params[0][1] if params else body
+        # Collapse line breaks and indentation noise, but preserve intentional
+        # spaces inside quoted strings and heredoc bodies.
+        payload = " ".join(line.strip() for line in payload.splitlines() if line.strip())
+        if not name or not payload:
+            return ""
+        return f"{name}: {payload}"
+
+    return _XML_INVOKE_RE.sub(_conv, reply)
+
+
+_BARE_KEYWORD_LINE_RE = re.compile(
+    r'^\s*(?:<\s*tool_calls?\s*>\s*)?'
+    r'(RUN_SKILL|RUNTERM|RUN|READ|CREATE|EDIT|ASK|DONE|REMEMBER|SEARCH|'
+    r'TASK_ADD|TASK_DONE|SEND_EMAIL|REMOTE_MCP|SEND_TELEGRAM|BROWSER_[A-Z_]+)'
+    r'\s*$',
+    re.IGNORECASE,
+)
+_BARE_KEYWORD_ARG_RE = re.compile(r'^\s*::\s*(.+)$')
+
+
+def _join_bare_keyword_lines(reply):
+    """A third malformed-directive shape, distinct from
+    _xml_tool_calls_to_directives (native <invoke> XML) and
+    _normalize_directive_lines (crammed same-line directives): some
+    models put the bare keyword alone on its own line -- no colon at
+    all, so _DIRECTIVE_KEYWORDS_RE's colon-attached match never fires --
+    with the real argument on the NEXT line, prefixed with "::", inside
+    a <tool_call> wrapper. Reproduced live 2026-09-09 on
+    nvidia::minimaxai/minimax-m3:
+        <tool_call>RUN
+        :: echo hi
+        </tool_call>
+    Join the two lines into the bare directive grammar ("RUN: echo hi")
+    so every downstream per-line parser sees what it already expects. A
+    bare keyword line with no "::"-prefixed follower (blank, EOF, or a
+    plain line) is left untouched -- there's nothing to run, and
+    inventing a directive would execute garbage."""
+    lines = (reply or "").splitlines()
+    out = []
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        m = _BARE_KEYWORD_LINE_RE.match(line)
+        if m:
+            j = i + 1
+            while j < n and not lines[j].strip():
+                j += 1
+            arg_m = _BARE_KEYWORD_ARG_RE.match(lines[j]) if j < n else None
+            if arg_m:
+                out.append(f"{m.group(1).upper()}: {arg_m.group(1).strip()}")
+                i = j + 1
+                continue
+        out.append(line)
+        i += 1
+    return "\n".join(out)
+
 
 def _normalize_directive_lines(reply):
     """Give every parser downstream (_extract_directive, split-on-newline
@@ -11774,18 +12049,34 @@ def _normalize_directive_lines(reply):
     Strip the tags (pure noise, not part of this app's directive
     grammar) and force a newline before every directive keyword that
     isn't already at the start of a line, so every existing per-line
-    parser sees what it already assumes it's getting. The backtick-parity
-    guard (even number of backticks before the match on that line) skips
-    keyword-shaped text quoted inline in prose, matching the same
-    convention _real_directive_line already uses elsewhere."""
+    parser sees what it already assumes it's getting.
+
+    2026-09-10: backtick parity must be tracked ACROSS the whole reply,
+    not reset at every newline. A code span whose closing backtick lands
+    on a different physical line than its opening backtick used to make
+    the line containing the closing backtick look "outside" the span,
+    causing a `RUN:` inside the span to be treated as a real directive.
+    We now carry an open-backtick counter from line to line so spans
+    that cross newlines are recognized correctly."""
     text = _TOOL_CALL_TAG_RE.sub("", reply or "")
     out = []
     pos = 0
+    backtick_parity = 0  # 0 = outside a backtick span; 1 = inside
     for m in _DIRECTIVE_KEYWORDS_RE.finditer(text):
         start = m.start()
+        # Update parity over the gap since the last processed position.
+        # Only unescaped backticks flip parity; escaped backticks (`\\` followed by
+        # a backtick) are treated as literal characters inside the span.
+        for ch in text[pos:start]:
+            if ch == "`":
+                backtick_parity ^= 1
+        # Inside a backtick span, a directive keyword is prose/quoted and
+        # must not be forced onto its own line.
+        if backtick_parity == 1:
+            continue
         line_start = text.rfind("\n", 0, start) + 1
         before_on_line = text[line_start:start]
-        if before_on_line.strip() and before_on_line.count("`") % 2 == 0:
+        if before_on_line.strip():
             out.append(text[pos:start])
             out.append("\n")
             pos = start
@@ -11795,6 +12086,8 @@ def _normalize_directive_lines(reply):
 def process_reply(reply, history, streamed=False, continue_after_tools=False):
     """Parse RUN: / READ: / CREATE: directives from AI reply and execute."""
     globals()["_CHAIN_SUDO_ACKS"] = 0
+    reply = _xml_tool_calls_to_directives(reply)
+    reply = _join_bare_keyword_lines(reply)
     reply = _normalize_directive_lines(reply)
     raw_lines = reply.splitlines()
 
@@ -11897,21 +12190,30 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         # the dispatch loop never spawns a terminal that runs nothing.
         return "" if _is_noop_cmd(s) else s
 
-    # NAME: must appear OUTSIDE any backtick span on the line. Backtick-
+    # NAME: must appear OUTSIDE any backtick span in the reply. Backtick-
     # wrapped occurrences are prose (the model describing its own directives
-    # by name) and must not fire. Count of backticks before the match is
-    # even → outside; odd → inside an open backtick span.
-    # 2026-04-25 regression: "files via `READ:`" fired READ on the rest of
-    # the sentence. Parity check closes that without losing the 04-20 case
-    # ("PLAN ONLY: RUN: cmd") since that line has zero backticks.
-    def _real_directive(line, name):
+    # by name) and must not fire. Backtick parity is tracked across all
+    # physical lines because code spans legitimately cross newlines; the
+    # old per-line count reset caused the closing-backtick line to look
+    # "outside" the span and false-positive a directive there.
+    # Count of unescaped backticks before the match is even → outside; odd →
+    # inside an open backtick span.
+    # Precompute prefix backtick parity once per reply so every directive check
+    # is O(1) instead of O(n) over the full reply.
+    _reply_len = len(reply)
+    _prefix_backtick_parity = [0] * (_reply_len + 1)
+    for _idx, _ch in enumerate(reply):
+        _prefix_backtick_parity[_idx + 1] = _prefix_backtick_parity[_idx] ^ (1 if _ch == "`" else 0)
+
+    def _real_directive(line, name, line_start=0):
         for m in re.finditer(rf'\b{name}:', line, re.IGNORECASE):
-            if line[:m.start()].count('`') % 2 == 0:
+            global_pos = line_start + m.start()
+            if _prefix_backtick_parity[global_pos] % 2 == 0:
                 return True
         return False
 
-    def _directive_payload(line, name):
-        if not _real_directive(line, name):
+    def _directive_payload(line, name, line_start=0):
+        if not _real_directive(line, name, line_start=line_start):
             return ""
         return _strip_command_wrap(
             re.split(rf'\b{name}:', line, maxsplit=1, flags=re.IGNORECASE)[1]
@@ -11924,12 +12226,22 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
     # \bRUN: deliberately does NOT match RUNTERM: — "RUN" is followed by "T"
     # in "RUNTERM:", not ":", so the regex skips it. RUNTERM: has its own
     # extraction below.
+    # Walk the reply tracking the global character offset for each line so
+    # _real_directive/_directive_payload can compute backtick parity across
+    # newlines consistently. str.splitlines() consumes newlines; the +1 is
+    # correct for "\n" separators and harmless for the final line.
+    line_offsets = []
+    _off = 0
+    for _ln in lines:
+        line_offsets.append(_off)
+        _off += len(_ln) + 1
+
     read_paths   = [p for p in (_extract_directive(l, "READ")
-                    for l in lines if _real_directive(l, "READ")) if p]
+                    for lo, l in zip(line_offsets, lines) if _real_directive(l, "READ", line_start=lo)) if p]
     run_cmds     = [c for c in (_extract_directive(l, "RUN")
-                    for l in lines if _real_directive(l, "RUN")) if c]
+                    for lo, l in zip(line_offsets, lines) if _real_directive(l, "RUN", line_start=lo)) if c]
     runterm_cmds = [c for c in (_extract_directive(l, "RUNTERM")
-                    for l in lines if _real_directive(l, "RUNTERM")) if c]
+                    for lo, l in zip(line_offsets, lines) if _real_directive(l, "RUNTERM", line_start=lo)) if c]
 
     # 2026-09-03: SUBAGENT: <goal> — model can delegate a focused task to
     # the internal delegate_runner, which runs isolated in a temp workdir
@@ -11981,7 +12293,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         spec.setdefault("attach", None)
         return spec
     send_email_specs = [s for s in (_parse_send_email_spec(l)
-                        for l in lines if _real_directive(l, "SEND_EMAIL")) if s]
+                        for lo, l in zip(line_offsets, lines) if _real_directive(l, "SEND_EMAIL", line_start=lo)) if s]
 
     # 2026-09-08: SEND_TELEGRAM: <chat_id> <message> — one-way outbound Telegram
     # from Sensei CLI. Uses TELEGRAM_BOT_TOKEN from ~/.master_ai_keys. Irreversible
@@ -12014,7 +12326,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             return None
         return {"chat_id": chat_id, "text": text}
     send_telegram_specs = [s for s in (_parse_send_telegram_spec(l)
-                           for l in lines if _real_directive(l, "SEND_TELEGRAM")) if s]
+                           for lo, l in zip(line_offsets, lines) if _real_directive(l, "SEND_TELEGRAM", line_start=lo)) if s]
 
     # 2026-08-27: BROWSER_* — see _extract_browser_actions()/confirm_browser_action()
     # above confirm_run. Long taught to the model, never executed until now.
@@ -12027,8 +12339,8 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
     # content, not directives. Pre-existing RUN/READ extraction has the
     # same blindspot (rare in practice + gated by user confirm); REMEMBER
     # writes silently so the gate matters more here.
-    _in_body, _eligible = False, []
-    for _ln in lines:
+    _in_body, _eligible, _eligible_offsets = False, [], []
+    for _lo, _ln in zip(line_offsets, lines):
         _stripped_up = _ln.strip().upper()
         if _stripped_up in ("<<<CONTENT", "<<<FIND", "<<<REPLACE"):
             _in_body = True
@@ -12038,8 +12350,9 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             continue
         if not _in_body:
             _eligible.append(_ln)
+            _eligible_offsets.append(_lo)
     remember_facts = [f for f in (_directive_payload(l, "REMEMBER")
-                      for l in _eligible if _real_directive(l, "REMEMBER")) if f]
+                      for lo, l in zip(_eligible_offsets, _eligible) if _real_directive(l, "REMEMBER", line_start=lo)) if f]
 
     create_directive_paths = [
         os.path.expanduser(_directive_payload(l, "CREATE"))
@@ -12397,7 +12710,10 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                     injected_block.append(f"--- {exp}:{start_line}-{end_line} ---\n{content}")
                     print(f"{C}  📄 Read: {Y}{exp}:{start_line}-{end_line}{C} ({len(content)} chars){X}")
                 else:
-                    content = full_text[:8000]
+                    # 2026-09-11: For framework source files, allow a larger
+                    # whole-file read so audits don't stall on tiny chunks.
+                    _read_cap = 64000 if _read_path_is_framework(exp) else 8000
+                    content = full_text[:_read_cap]
                     injected_block.append(f"--- {exp} ---\n{content}")
                     print(f"{C}  📄 Read: {Y}{exp}{C} ({len(content)} chars){X}")
             elif os.path.isdir(exp):
@@ -14256,6 +14572,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
     )
     LOCAL_SYSTEM = (
         f"You are Master AI on your-machine ({os_info}).\n\n"
+        f"\nEXECUTION RULE: When the user says 'proceed' or 'proceed all' on a task chain, execute autonomously without per-step permission.\n"
         f"{_LOCAL_MODEL_INVENTORY}\n\n"
         f"{REPLY_SHAPES_SYSTEM_ADDITION}\n"
         "[BEHAVIOR RULES]\n"
@@ -14288,7 +14605,11 @@ def handle(user_text, history, image_path=None, context_policy=None):
     CLOUD_SYSTEM = (
         f"You are Master AI — a task-executing AI service agent built by Elijah, "
         f"running on your-machine ({os_info}, {arch}).\n"
+        f"\nEXECUTION RULE: When the user gives a multi-step task and says 'proceed' or 'proceed all', "
+        f"execute the entire task chain autonomously. Do not pause after every file or step to ask permission. "
+        f"Only stop for real blockers, errors needing a human decision, or destructive actions that still require explicit OK.\n"
         f"Current MODE: {MODE.upper()} (plan/review/auto are the three operating modes; see CURRENT MODE block below).\n"
+        f"{_current_model_identity_line()}\n"
         f"{_LOCAL_MODEL_INVENTORY}\n\n"
         "IDENTITY: You are a service tool and automation agent — NOT a conversational assistant. "
         "Your job is to perform tasks: run shell commands, read/write files, search the web, "
@@ -15193,9 +15514,11 @@ def handle(user_text, history, image_path=None, context_policy=None):
 
     elif route == "vision":
         print(f"{D}  [kimi-k2.5:cloud — vision]{X}")
-        reply = ask_local_stream(history, model=MODELS["kimi"], image_path=image_path)
+        reply = _call_with_hard_timeout(ask_local_stream, history, model=MODELS["kimi"],
+                                         image_path=image_path, timeout=_LOCAL_HARD_TIMEOUT)
         if not reply:
-            reply = ask_local_stream(history, model=MODELS["master"], image_path=image_path)
+            reply = _call_with_hard_timeout(ask_local_stream, history, model=MODELS["master"],
+                                             image_path=image_path, timeout=_LOCAL_HARD_TIMEOUT)
         if not reply:
             _spin = local_thinking_start()
             # Local routes pop the system message for KV-cache — the fallback
@@ -15213,7 +15536,8 @@ def handle(user_text, history, image_path=None, context_policy=None):
 
     else:
         _tool_required_turn = _is_tool_required(user_text.lower())
-        reply = ask_local_stream(history, model=model, image_path=image_path)
+        reply = _call_with_hard_timeout(ask_local_stream, history, model=model,
+                                         image_path=image_path, timeout=_LOCAL_HARD_TIMEOUT)
         if not reply:
             if _tool_required_turn:
                 reply = (
@@ -15298,17 +15622,47 @@ def handle(user_text, history, image_path=None, context_policy=None):
         if route in ("cloud", "web"):
             # 2026-09-07: removed automatic "private tool output -> local" branch.
             # It was forcing every tool result on a private path to be summarized
-            # by the slow local qwen3-vl:8b model, taking 10 minutes. The user is
-            # cloud-first and wants answers via cloud. Explicit `local:` / `private:`
-            # prefixes still keep those turns local at the orchestrator level.
+            # by the slow local model, taking 10 minutes. The user is cloud-first
+            # and wants answers via cloud. Explicit `local:` / `private:` prefixes
+            # still keep those turns local at the orchestrator level.
             _spin2 = local_thinking_start()
-            provider = "gemini" if route == "web" else (model if model in CLOUD_MODEL_NAMES else "groq")
+            # Any provider-prefixed pin or curated cloud model name should flow
+            # through ask_cloud(), which parses every :: namespace. Do not fall
+            # back to the dead Groq placeholder for unrecognized providers.
+            _rt_model = model or ""
+            if route == "web":
+                provider = "gemini"
+            elif PINNED_MODEL:
+                provider = PINNED_MODEL
+            elif ("::" in _rt_model) or (_rt_model in CLOUD_MODEL_NAMES):
+                provider = _rt_model
+            else:
+                provider = "groq"
             try:
                 cloud_reply = ask_cloud(history, provider=provider)
             finally:
                 local_thinking_stop(_spin2)
             if cloud_reply:
                 return cloud_reply, False
+
+            # 2026-09-10: distinguish "cloud model returned empty" from "privacy guard
+            # refused to send the turn at all. ask_cloud() returns None in both cases,
+            # but a privacy block records _LAST_BLOCKED_ACTION with audit_kind
+            # PRIVACY-CLOUD-BLOCK and prints the real reason. Retrying the same call
+            # just repeats the same block and then blames the cloud model with a generic
+            # "couldn't get a response" message — which buries the actionable fix
+            # (`privacy approve send`). Detect it here and surface it instead.
+            _block = globals().get("_LAST_BLOCKED_ACTION") or {}
+            if _block.get("audit_kind") == "PRIVACY-CLOUD-BLOCK":
+                _why = _block.get("reason", "private content")
+                log(f"CLOUD_CONTINUATION_PRIVACY_BLOCK: provider={provider} reason={_why}")
+                print(f"  {R}🔒 Cloud continuation blocked by privacy guard — not retrying{X}")
+                return (
+                    "Cloud re-ask was blocked because this turn contains private content "
+                    f"({_why}). The tool result above is real. To continue via cloud, "
+                    "type `privacy approve send` and then retry your request."
+                ), False
+
             log(f"CLOUD_CONTINUATION_EMPTY: provider={provider} — retrying cloud once")
             print(f"  {D}⚠ cloud continuation came back empty — retrying cloud once{X}")
             _spin3 = local_thinking_start()
@@ -15318,6 +15672,18 @@ def handle(user_text, history, image_path=None, context_policy=None):
                 local_thinking_stop(_spin3)
             if cloud_retry:
                 return cloud_retry, False
+
+            _block2 = globals().get("_LAST_BLOCKED_ACTION") or {}
+            if _block2.get("audit_kind") == "PRIVACY-CLOUD-BLOCK":
+                _why2 = _block2.get("reason", "private content")
+                log(f"CLOUD_CONTINUATION_PRIVACY_BLOCK_RETRY: provider={provider} reason={_why2}")
+                print(f"  {R}🔒 Cloud continuation still blocked by privacy guard — not a model failure{X}")
+                return (
+                    "Cloud re-ask was blocked because this turn contains private content "
+                    f"({_why2}). The tool result above is real. To continue via cloud, "
+                    "type `privacy approve send` and then retry your request."
+                ), False
+
             log(f"CLOUD_CONTINUATION_EMPTY_TWICE: provider={provider} — no local fallback, honest failure")
             print(f"  {D}⚠ cloud unavailable after retry — no local fallback (cloud-only mode){X}")
             return (
@@ -15327,8 +15693,10 @@ def handle(user_text, history, image_path=None, context_policy=None):
                 "to continue from here."
             ), False
         if repair_turn:
-            return ask_local_stream(history, model=MODELS["master"]), True
-        return ask_local_stream(history, model=model), True
+            return _call_with_hard_timeout(ask_local_stream, history, model=MODELS["master"],
+                                            timeout=_LOCAL_HARD_TIMEOUT), True
+        return _call_with_hard_timeout(ask_local_stream, history, model=model,
+                                        timeout=_LOCAL_HARD_TIMEOUT), True
 
     # READ:, directive repair, blocked-tool feedback, or tool output was injected
     # into history — keep asking the same lane until it synthesizes an answer or
@@ -15342,7 +15710,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
     # a legitimately long chain to finish, not a longer hang on any single
     # stuck call.
     continuation_turns = 0
-    max_continuation_turns = 60  # 2026-09-01: was 20 — operator hit the cap again
+    max_continuation_turns = MAX_CONTINUATION_TURNS
     _repair_turns_seen = 0  # how many [Directive repair] nudges fired this chain
     while result is None and continuation_turns < max_continuation_turns:
         if _INTERRUPT_EVENT.is_set():
@@ -15454,8 +15822,12 @@ def summarize_session(history):
         "Format: • bullet\n• bullet\n• bullet\n• bullet\n\n" + transcript
     )
     try:
-        result = (_ask_cloud_for_label([{"role": "user", "content": prompt}])
-                  or ask_local([{"role": "user", "content": prompt}], model=MODELS["general"]))
+        # 2026-09-08: was `or ask_local(...)` when cloud came back empty.
+        # Cloud-only per operator directive — this call already runs at
+        # process exit (atexit / SIGTERM / Ctrl-C), the worst possible place
+        # to risk an unbounded local Ollama hang. No local fallback: an
+        # honest missing summary beats a hung shutdown.
+        result = _ask_cloud_for_label([{"role": "user", "content": prompt}])
         if not result:
             return None
         result = result.strip()
@@ -15538,6 +15910,29 @@ def _auto_save_background(history):
         save_session(list(history), silent=True)
     except Exception:
         pass
+
+def _bounded_save_session(history, timeout=8.0):
+    """save_session() on a daemon thread with a hard wall-clock bound.
+
+    2026-09-07 already proved this live for the TUI's SIGTERM handler:
+    save_session() -> summarize_session() -> a cloud model call chained
+    through multiple providers with no bound on that path left the process
+    alive 8+ minutes after SIGTERM, defeating the whole point of a shutdown
+    handler (a supervisor can't restart what won't die). Every OTHER exit
+    path that calls save_session() at shutdown (plain atexit, non-TUI
+    SIGTERM/SIGHUP, Ctrl-C in the REPL loop, the module-level
+    KeyboardInterrupt catch) had the exact same unbounded exposure and never
+    got the fix — this is that fix, shared, so it can't drift out of sync
+    across the sites again. Always returns within `timeout` seconds; a slow
+    save loses at most the session summary, never blocks shutdown."""
+    done = threading.Event()
+    def _bg():
+        try:
+            save_session(list(history), silent=True)
+        finally:
+            done.set()
+    threading.Thread(target=_bg, daemon=True).start()
+    done.wait(timeout=timeout)
 
 def _request_auto_save(history):
     """Save the current session shortly after a turn completes."""
@@ -15937,7 +16332,7 @@ def main():
     # repopulating the window next launch.
     def _exit_save(signum=None, frame=None):
         try:
-            save_session(GLOBAL_HISTORY, silent=True)
+            _bounded_save_session(GLOBAL_HISTORY)
         except Exception:
             pass
         # Always clear any stale resume flag so a closed session doesn't
@@ -15948,7 +16343,7 @@ def main():
             pass
         sys.exit(0)
 
-    atexit.register(lambda: save_session(GLOBAL_HISTORY, silent=True))
+    atexit.register(lambda: _bounded_save_session(GLOBAL_HISTORY))
     atexit.register(lambda: RESUME_FLAG.unlink(missing_ok=True))
     # signal.signal() only works in the MAIN thread. In TUI mode main() runs
     # in a worker thread, so installing handlers here would raise ValueError
@@ -15994,7 +16389,7 @@ def main():
                 if _SENSEI_APP is None:
                     stop_idle_tips()
                     print_thread_box_bottom()
-                save_session(history, silent=True)
+                _bounded_save_session(history)
                 break
             except EOFError:
                 if _SENSEI_APP is None:
@@ -17785,11 +18180,11 @@ def main():
                        f"  'project <path>' (scope a directory), 'refresh' (soft reload).",
             "sensei":  f"{C}🥷 Sensei IS this thing — the tmux terminal AI you're talking to.{X}\n"
                        f"  Runs master_ai.py, routes between local models + cloud.\n"
-                       f"  Current primary: qwen3-vl:8b (VLM — language + vision in one).",
+                       f"  Current primary: {DEFAULT_LOCAL_MODEL} (VLM — language + vision in one).",
             "local mode": f"{C}🥷 Local Mode:{X} the local-first state of Master AI.\n"
-                       f"  When cloud is unavailable, you rely on the single VLM (qwen3-vl:8b).\n"
+                       f"  When cloud is unavailable, you rely on {DEFAULT_LOCAL_MODEL}.\n"
                        f"  Switch with `mode local`; return to cloud-first with `mode connected`.",
-            "trifecta": f"{C}🥷 The stack:{X} qwen3-vl:8b (VLM — language + vision) + nomic-embed-text (RAG).\n"
+            "trifecta": f"{C}🥷 The stack:{X} {DEFAULT_LOCAL_MODEL} (VLM — language + vision) + nomic-embed-text (RAG).\n"
                        f"  Total ~6.4 GB disk (VLM + RAG embedder).\n"
                        f"  OLLAMA_MAX_LOADED_MODELS=2 recommended for VLM + embedder residency.",
             "master ai": f"{C}🥷 Master AI{X} is the umbrella brand — NOT a single app.\n"
@@ -18496,16 +18891,10 @@ def _run_with_tui():
             # thread with a hard wall-clock bound instead — if it hasn't
             # finished in time, accept the loss and exit anyway; staying
             # alive and unrestartable is never the better outcome.
-            import threading as _threading
-            _save_done = _threading.Event()
-            def _bg_save():
-                try:
-                    save_session(GLOBAL_HISTORY, silent=True)
-                finally:
-                    _save_done.set()
-            _t = _threading.Thread(target=_bg_save, daemon=True)
-            _t.start()
-            _save_done.wait(timeout=8.0)
+            # 2026-09-08: this exact daemon-thread+bound pattern is now
+            # shared (_bounded_save_session) — every other shutdown path had
+            # the same unbounded exposure and needed the identical fix.
+            _bounded_save_session(GLOBAL_HISTORY)
             os._exit(0)
         signal.signal(signal.SIGTERM, _sigterm_save)
     except Exception:
@@ -18560,7 +18949,7 @@ if __name__ == "__main__":
         # reaches all the way up here uncaught (plain non-TUI mode, or a
         # code path the two handlers above don't cover).
         try:
-            save_session(GLOBAL_HISTORY, silent=True)
+            _bounded_save_session(GLOBAL_HISTORY)
         except Exception:
             pass
         sys.exit(99)

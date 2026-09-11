@@ -114,5 +114,106 @@ class StandardsCheckReflectsLiveDispatch(unittest.TestCase):
         self.assertEqual(row[0], "PASS")
 
 
+
+
+class DirectiveBacktickParity(unittest.TestCase):
+    """2026-09-09: cross-line backtick spans used to false-positive directives.
+
+    A directive wrapped inside a multi-line code span (`` `RUN:
+ls -la` ``)
+    must be treated as prose and ignored. A real directive outside any
+    backtick span must still be extracted and dispatched.
+    """
+
+    def setUp(self):
+        master_ai._LAST_LIVE_TYPED_ACTIONS.clear()
+
+    def test_run_inside_cross_line_backtick_span_is_ignored(self):
+        # On the closing backtick line, per-line parity used to be 0, so this
+        # looked like a real RUN: directive and executed.
+        reply = "Use `RUN:\nls -la` to list files."
+        master_ai.process_reply(reply, [], streamed=False, continue_after_tools=False)
+        # No live typed action should have been recorded for a skipped directive.
+        self.assertTrue(
+            all(a.get("kind") != "RUN" for a in master_ai._LAST_LIVE_TYPED_ACTIONS),
+            "backtick-wrapped RUN: must not dispatch",
+        )
+
+    def test_real_run_outside_backtick_span_is_dispatched(self):
+        reply = "PLAN ONLY: RUN: echo parity-ok"
+        master_ai.process_reply(reply, [], streamed=False, continue_after_tools=False)
+        self.assertTrue(
+            any(a.get("kind") == "RUN" and "parity-ok" in str(a.get("target", ""))
+                for a in master_ai._LAST_LIVE_TYPED_ACTIONS),
+            "real RUN: outside backticks must dispatch",
+        )
+
+    def test_read_token_inside_inline_backtick_span_is_ignored(self):
+        reply = "files via `READ:` are safe"
+        master_ai.process_reply(reply, [], streamed=False, continue_after_tools=False)
+        self.assertTrue(
+            all(a.get("kind") != "READ" for a in master_ai._LAST_LIVE_TYPED_ACTIONS),
+            "backtick-wrapped READ: must not dispatch",
+        )
+
+
+class PreRunSyntaxGate(unittest.TestCase):
+    """2026-09-09: pre_run/pre_runterm hook must block malformed shell strings."""
+
+    def test_pre_run_blocks_unclosed_backtick(self):
+        fr = master_ai._fire_hook_or_block("pre_run", "echo hi `")
+        self.assertTrue(fr)
+        self.assertIn("syntax", str(master_ai._LAST_HOOK_BLOCK.get("reason", "")).lower())
+
+    def test_pre_run_passes_valid_command(self):
+        fr = master_ai._fire_hook_or_block("pre_run", "echo hi")
+        self.assertFalse(fr)
+
+
+
+class TestXmlToolCallDirectives(unittest.TestCase):
+    """2026-09-10: live failure on poolside/laguna-xs-2.1:free — model emitted
+    native XML tool-call blocks (<invoke name="RUN"><parameter name="command"
+    string="true">...</parameter></invoke>) which were invisible to every
+    directive parser. Nothing dispatched; the model re-emitted the same block
+    forever. _xml_tool_calls_to_directives() must convert them to bare
+    directives before normalization/dispatch."""
+
+    def _conv(self, reply):
+        return master_ai._xml_tool_calls_to_directives(
+            master_ai._TOOL_CALL_TAG_RE.sub("", reply))
+
+    def test_live_invoke_run_block(self):
+        reply = (
+            'Freedom work, not free tool.\n\n'
+            '<invoke name="RUN">\n'
+            '<parameter name="command" string="true">ls ~/scripts/ ; echo done</parameter>\n'
+            '</invoke>'
+        )
+        conv = self._conv(reply)
+        self.assertNotIn("<invoke", conv)
+        self.assertNotIn("<parameter", conv)
+        run_lines = [l for l in conv.splitlines() if l.startswith("RUN:")]
+        self.assertTrue(run_lines, "no bare RUN: directive")
+        self.assertIn("ls ~/scripts/", run_lines[0])
+
+    def test_tool_calls_wrapper_and_multiline_payload(self):
+        reply = (
+            "<tool_calls>\n<invoke name=\"RUN\">\n"
+            "<parameter name=\"command\">echo one\necho two</parameter>\n"
+            "</invoke>\n</tool_calls>"
+        )
+        conv = self._conv(reply)
+        self.assertIn("RUN: echo one echo two", conv)
+
+    def test_read_with_path_param(self):
+        reply = '<invoke name="READ"><parameter name="path">/tmp/x.md</parameter></invoke>'
+        self.assertEqual(self._conv(reply).strip(), "READ: /tmp/x.md")
+
+    def test_plain_reply_passthrough(self):
+        plain = "Just chatting.\nRUN: echo hi"
+        self.assertEqual(master_ai._xml_tool_calls_to_directives(plain), plain)
+
+
 if __name__ == "__main__":
     unittest.main()
