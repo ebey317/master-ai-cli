@@ -5,44 +5,38 @@ one-way outbound messages. Inbound polling is deliberately out of scope;
 Sensei will call this via SEND_TELEGRAM: <chat_id> <message> directives.
 """
 
+import html
 import json
 import urllib.request
 import urllib.error
 from pathlib import Path
 
+_KEY_FILE = Path.home() / ".master_ai_keys"
+_TELEGRAM_MSG_LIMIT = 4096  # Telegram Bot API max text length
 
-def _get_token():
-    """Read TELEGRAM_BOT_TOKEN from ~/.master_ai_keys (plain KEY=VALUE)."""
-    keyfile = Path.home() / ".master_ai_keys"
+
+def _get_key(name):
+    """Read a plain KEY=VALUE from ~/.master_ai_keys."""
     try:
-        text = keyfile.read_text()
+        text = _KEY_FILE.read_text()
     except Exception:
         return None
     for line in text.splitlines():
         line = line.strip()
-        if line.startswith("#") or "=" not in line:
+        if not line or line.startswith("#") or "=" not in line:
             continue
         k, _, v = line.partition("=")
-        if k.strip() == "TELEGRAM_BOT_TOKEN":
+        if k.strip() == name:
             return v.strip()
     return None
+
+
+def _get_token():
+    return _get_key("TELEGRAM_BOT_TOKEN")
 
 
 def _get_default_chat_id():
-    """Read TELEGRAM_CHAT_ID from ~/.master_ai_keys (plain KEY=VALUE)."""
-    keyfile = Path.home() / ".master_ai_keys"
-    try:
-        text = keyfile.read_text()
-    except Exception:
-        return None
-    for line in text.splitlines():
-        line = line.strip()
-        if line.startswith("#") or "=" not in line:
-            continue
-        k, _, v = line.partition("=")
-        if k.strip() == "TELEGRAM_CHAT_ID":
-            return v.strip()
-    return None
+    return _get_key("TELEGRAM_CHAT_ID")
 
 
 def send_message(chat_id, text, token=None, silent=False):
@@ -55,10 +49,12 @@ def send_message(chat_id, text, token=None, silent=False):
         return {"ok": False, "error": "chat_id is empty and no TELEGRAM_CHAT_ID default set", "message_id": None}
     if not text:
         return {"ok": False, "error": "message text is empty", "message_id": None}
+    if len(text) > _TELEGRAM_MSG_LIMIT:
+        text = text[:_TELEGRAM_MSG_LIMIT - 3] + "..."
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
         "chat_id": chat_id,
-        "text": text,
+        "text": html.escape(text),
         "parse_mode": "HTML",
     }
     if silent:
@@ -111,7 +107,7 @@ def get_updates(token=None, limit=10):
         return {"ok": False, "error": str(e)}
 
 
-if __name__ == "__main__":
+if __name__ == "__main__:
     import sys
     if len(sys.argv) >= 3 and sys.argv[1] == "send":
         chat_id = sys.argv[2]
