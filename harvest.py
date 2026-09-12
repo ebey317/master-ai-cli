@@ -47,10 +47,17 @@ _PRIVATE_TERM_RE = re.compile(
     r"(?i)\b("
     r"resume|cover letter|job application|tax|w-?2|1099|irs|bank statement|"
     r"routing number|account number|social security|ssn|medical|doctor|patient|"
-    r"prescription|password|credential|api key|secret token|private key|"
+    r"prescription|"
     r"driver'?s license|passport"
     r")\b"
 )
+# 2026-09-12: dropped password|credential|api key|secret token|private key from
+# the term list above -- those are generic security jargon that fires on any
+# mention (filenames, code comments, casual conversation about auth), not just
+# actual leaked secrets. _SECRET_VALUE_PATTERNS below already catches real
+# secret VALUES by shape (AKIA/gh_/sk-/PEM) regardless of surrounding wording,
+# which is the actual leak risk this gate exists to prevent. Elijah: privacy
+# gate was "too harsh" -- narrowed to real PII categories + real secret shapes.
 _SECRET_VALUE_PATTERNS = (
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(r"\bASIA[0-9A-Z]{16}\b"),

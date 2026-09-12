@@ -64,6 +64,7 @@ import concurrent.futures
 from datetime import datetime
 from pathlib import Path
 from url_grounding import resolve_open_target_url
+import approval_queue
 
 try:
     import harvest  # local cache + few-shot injection; ~/scripts/harvest.py
@@ -4299,6 +4300,13 @@ def _inject_few_shot(messages, model):
 _TURN_PRIVATE = False
 _TURN_PRIVATE_REASONS = []
 _TURN_PRIVATE_APPROVED = False  # one-shot; consumed by next ask_cloud check
+# Session-wide "always approve" — set via the 'a' choice on the privacy prompt.
+# Deliberately NOT touched by _reset_turn_privacy() (that clears PER-TURN state
+# on every user input); this persists for the life of the process and only
+# goes away on /new (which execvp's a fresh process, resetting all globals).
+# Elijah 2026-09-12: wanted a session-scope approve-all, not a per-command
+# file-persisted approval like confirm_run's "Always" option.
+_PRIVACY_APPROVED_FOR_SESSION = False
 
 
 def _reset_turn_privacy():
@@ -4346,10 +4354,13 @@ def _approve_cloud_send_once():
 
 def _check_cloud_send_allowed():
     """Returns (ok, reason). When turn is private and not approved, ok=False.
-    When approved, the one-shot token is consumed."""
+    When approved, the one-shot token is consumed; session-wide approval
+    (_PRIVACY_APPROVED_FOR_SESSION) never gets consumed."""
     global _TURN_PRIVATE_APPROVED
     if not _TURN_PRIVATE:
         return True, ""
+    if _PRIVACY_APPROVED_FOR_SESSION:
+        return True, "approved (session)"
     if _TURN_PRIVATE_APPROVED:
         _TURN_PRIVATE_APPROVED = False
         return True, "approved (one-shot)"
@@ -5774,23 +5785,47 @@ def _save_fallback_order(names):
 
 
 def ask_cloud(messages, provider="opencode"):
-    # Privacy guard: if READ injected private content into this turn,
-    # block cloud send unless the user explicitly approved via the
-    # `privacy approve send` REPL command. One-shot consume.
+    # Privacy guard: if READ injected private content into this turn, ask
+    # for one-shot approval right here (TTY present -> interactive y/N,
+    # same "absent user is not a consenting user" rule as confirm_run's
+    # _safe_input) instead of a static refusal that made the user retype
+    # `privacy approve send` and resend the same prompt. No TTY -> queue
+    # for later approval like every other confirm_* gate, rather than
+    # silently vanishing.
     _ok, _why = _check_cloud_send_allowed()
     if not _ok:
-        print(f"{R}  🔒 Cloud send blocked: private READ content in this turn{X}")
-        print(f"  {D}reason: {_why}{X}")
-        print(f"  {D}approve with: privacy approve send  (then retry the prompt){X}")
-        try:
-            _audit("PRIVACY-CLOUD-BLOCK", f"{provider} :: {_why}")
-        except Exception:
-            pass
-        try:
-            _record_blocked_action("cloud", provider, _why, "PRIVACY-CLOUD-BLOCK")
-        except Exception:
-            pass
-        return None
+        choice = _safe_input(
+            f"{R}  🔒 Cloud send wants to include private content ({_why}).{X}\n"
+            f"  {D}Send to cloud anyway? (y = once / a = always this session / N = no): {X}",
+            audit_cmd=f"{provider} :: {_why}",
+        )
+        _choice_norm = choice.strip().lower() if choice is not None else ""
+        if _choice_norm in ("a", "always", "all", "yes to all", "session"):
+            global _PRIVACY_APPROVED_FOR_SESSION
+            _PRIVACY_APPROVED_FOR_SESSION = True
+            _ok = True
+            _audit("PRIVACY-CLOUD-APPROVED-SESSION", f"{provider} :: {_why}")
+            print(f"{G}  ✅ Privacy approved for the rest of this session — won't ask again until /new.{X}")
+        elif _choice_norm in ("y", "yes"):
+            _ok = True
+            _audit("PRIVACY-CLOUD-APPROVED", f"{provider} :: {_why}")
+        else:
+            if choice is None:
+                _queue_for_approval(
+                    "cloud_send", who="master_ai.ask_cloud", what=provider,
+                    where=os.getcwd(), why=_why,
+                    how="ask_cloud(messages, provider) on approval",
+                    payload={"provider": provider, "reason": _why},
+                )
+            try:
+                _audit("PRIVACY-CLOUD-BLOCK", f"{provider} :: {_why}")
+            except Exception:
+                pass
+            try:
+                _record_blocked_action("cloud", provider, _why, "PRIVACY-CLOUD-BLOCK")
+            except Exception:
+                pass
+            return None
     # 2026-08-27: restricted to the three keys operator actually wants used
     # (OpenRouter, OpenCode, NVIDIA) — groq/fireworks/gemini/deepseek-direct/
     # anthropic-direct/cerebras keys are ones he no longer uses; leaving
@@ -9447,6 +9482,91 @@ def _safe_input(prompt, audit_cmd=None):
             _audit("DENY-EOF", audit_cmd)
         return None
 
+# ── NO-TTY QUEUE (2026-09-11) ────────────────────────────────────────
+# _safe_input()'s no-TTY branch above is correct to refuse rather than
+# hang — but a flat refusal with no way to reconsider means every RUN/
+# CREATE/EDIT/RUNTERM/browser confirm issued from a pane with no live
+# stdin (detached session, cron, piped invocation) just vanishes. Queue
+# it into approval_queue instead: Elijah reviews and approves later from
+# a real terminal (`approval_queue.py pending` / `approve <id>`) or from
+# inside a live Sensei session (`pending` / `approve <id>` REPL commands).
+def _queue_for_approval(entry_type, who, what, where, why, how, payload, trigger="", diff=""):
+    """No live TTY to confirm — queue the action instead of just denying it.
+
+    Returns the approval_queue entry id."""
+    entry_id = approval_queue.queue(
+        entry_type=entry_type, who=who, what=what, where=where, why=why,
+        how=how, payload=payload, trigger=trigger, diff=diff,
+    )
+    print(f"{Y}  ⏳ no live terminal — queued as [{entry_id}] for later approval.{X}")
+    print(f"{D}     review:  python3 ~/scripts/approval_queue.py pending{X}")
+    print(f"{D}     approve: python3 ~/scripts/approval_queue.py approve {entry_id}{X}")
+    _audit("QUEUED-NO-TTY", f"{entry_type}:{what}")
+    return entry_id
+
+# ── APPROVAL HANDLERS ────────────────────────────────────────────────
+# Registered so `approval_queue.approve(<id>)` can actually replay a
+# queued action later. Each one just calls the same execution primitive
+# the live-TTY confirm path already uses (run_command / run_in_terminal /
+# _dispatch_browser_action) — one code path for "actually do the thing",
+# whether it runs immediately or gets approved after the fact.
+
+@approval_queue.register_handler("run_command")
+def _approval_run_command(entry):
+    return run_command(entry["payload"]["cmd"])
+
+@approval_queue.register_handler("run_terminal")
+def _approval_run_terminal(entry):
+    return run_in_terminal(entry["payload"]["cmd"])
+
+@approval_queue.register_handler("browser_action")
+def _approval_browser_action(entry):
+    p = entry["payload"]
+    return _dispatch_browser_action(p["kind"], p["target"], p.get("value"))
+
+@approval_queue.register_handler("file_create")
+def _approval_file_create(entry):
+    filepath, content = entry["payload"]["filepath"], entry["payload"]["content"]
+    Path(filepath).parent.mkdir(parents=True, exist_ok=True)
+    Path(filepath).write_text(content)
+    if content.startswith("#!"):
+        try:
+            st = os.stat(filepath)
+            os.chmod(filepath, st.st_mode | 0o111)
+        except Exception:
+            pass
+    _audit("CREATE-APPROVED", filepath)
+    _remember_created_file(filepath)
+    if _fire_hook_or_block("post_create", filepath):
+        raise RuntimeError("post_create hook blocked")
+    return f"created {filepath}"
+
+@approval_queue.register_handler("file_edit")
+def _approval_file_edit(entry):
+    """Replay a queued find/replace edit once Elijah approves it.
+
+    Re-reads filepath fresh at approval time rather than trusting a
+    snapshot taken when it was queued — the file may have changed in the
+    gap between "no TTY, queued" and "Elijah approves it later". Raises
+    if find_text is no longer present instead of silently no-op'ing, so
+    approve() marks the entry FAILED with a clear reason rather than RAN
+    with nothing changed."""
+    p = entry["payload"]
+    filepath, find_text, replace_text = p["filepath"], p["find_text"], p["replace_text"]
+    content = Path(filepath).read_text()
+    if find_text not in content:
+        raise RuntimeError(
+            f"find_text no longer present in {filepath} — file changed since "
+            f"this edit was queued; re-issue the edit against current content"
+        )
+    new_content = content.replace(find_text, replace_text, 1)
+    Path(filepath).write_text(new_content)
+    log(f"PC_EDIT: {filepath}")
+    _audit("EDIT-APPROVED", filepath)
+    if _fire_hook_or_block("post_edit", filepath):
+        raise RuntimeError("post_edit hook blocked")
+    return f"edited {filepath}"
+
 def _is_sudo_cmd(cmd):
     """Cheap detector — does this command invoke privilege escalation?
     Used in auto mode to force a manual accept-every-time flow and to
@@ -11000,6 +11120,12 @@ def confirm_browser_action(kind, target, value):
     choice = _safe_input(f"  {BOLD}Choose (1/2): {X}", audit_cmd=label)
     if choice is None:
         _record_blocked_action("browser", label, "no live terminal for confirmation", "BROWSER-BLOCK-NO-TTY")
+        _queue_for_approval(
+            "browser_action", who="master_ai.confirm_browser", what=label,
+            where="browser", why="no live terminal to confirm",
+            how="dispatch via sensei bridge on approval",
+            payload={"kind": kind, "target": target, "value": value},
+        )
         return None
     _check_kick_escape(choice)
     if choice != "1":
@@ -11142,8 +11268,12 @@ def confirm_run(cmd):
     # waits as long as it takes. Only a stdin-less caller is refused.
     choice = _safe_input(f"  {BOLD}Choose (1/2/3/4/5): {X}", audit_cmd=cmd)
     if choice is None:
-        print(f"{R}  🚫 no live terminal — refusing this run. Re-issue from an interactive Sensei pane.{X}")
         _record_blocked_action("run", cmd, "no live terminal for confirmation", "RUN-BLOCK-NO-TTY")
+        _queue_for_approval(
+            "run_command", who="master_ai.confirm_run", what=cmd,
+            where=os.getcwd(), why="no live terminal to confirm",
+            how="run_command(cmd) on approval", payload={"cmd": cmd},
+        )
         return None
     _check_kick_escape(choice)
 
@@ -11297,8 +11427,12 @@ def confirm_runterm(cmd):
     print(f"{D}╚══════════════════════════════════════════════════════╝{X}")
     choice = _safe_input(f"  {BOLD}Choose (1/3): {X}", audit_cmd=cmd)
     if choice is None:
-        print(f"{R}  🚫 no live terminal — refusing this run.{X}")
         _record_blocked_action("runterm", cmd, "no live terminal for confirmation", "RUNTERM-BLOCK-NO-TTY")
+        _queue_for_approval(
+            "run_terminal", who="master_ai.confirm_runterm", what=cmd,
+            where=os.getcwd(), why="no live terminal to confirm",
+            how="run_in_terminal(cmd) on approval", payload={"cmd": cmd},
+        )
         return None
     _check_kick_escape(choice)
     if choice == '1':
@@ -11440,7 +11574,11 @@ def confirm_create(filepath, content):
     print(f"{D}╚══════════════════════════════════════════════════════╝{X}")
     choice = _safe_input(f"  {BOLD}Choose (1/2/3): {X}", audit_cmd=f"CREATE:{filepath}")
     if choice is None:
-        print(f"{R}  🚫 no live terminal — refusing this create. Re-issue from an interactive Sensei pane.{X}")
+        _queue_for_approval(
+            "file_create", who="master_ai.confirm_create", what=filepath,
+            where=filepath, why="no live terminal to confirm",
+            how="write file on approval", payload={"filepath": filepath, "content": content},
+        )
         return False
     _check_kick_escape(choice)
 
@@ -11641,7 +11779,13 @@ def confirm_edit(filepath, find_text, replace_text):
     print(f"{D}╚══════════════════════════════════════════════════════╝{X}")
     choice = _safe_input(f"  {BOLD}Choose (1/2): {X}", audit_cmd=f"EDIT:{filepath}")
     if choice is None:
-        print(f"{R}  🚫 no live terminal — refusing this edit. Re-issue from an interactive Sensei pane.{X}")
+        _queue_for_approval(
+            "file_edit", who="master_ai.confirm_edit", what=filepath,
+            where=filepath, why="no live terminal to confirm",
+            how="apply find/replace on approval",
+            payload={"filepath": filepath, "find_text": find_text, "replace_text": replace_text},
+            diff="\n".join(f"-{l}" for l in old_lines) + "\n" + "\n".join(f"+{l}" for l in new_lines),
+        )
         return False
     _check_kick_escape(choice)
     if choice == '1':
@@ -18055,6 +18199,55 @@ def main():
                     print(f"  {W}usage: agents [list|inspect <name>|run <name> <task>]{X}\n")
             except Exception as e:
                 print(f"  {W}agents command error: {e}{X}\n")
+            continue
+
+        # No-TTY approval queue — Elijah reviews/approves actions that got
+        # queued (instead of denied) when confirm_run/confirm_create/
+        # confirm_edit/confirm_runterm/browser-confirm had no live stdin.
+        # Mirrors approval_queue.py's own standalone CLI so it also works
+        # from inside a live Sensei session without dropping to a terminal.
+        if lo in ("pending", "queue") or lo.startswith("diff ") or lo.startswith("approve ") or lo.startswith("approve") or lo.startswith("reject "):
+            try:
+                if lo in ("pending", "queue"):
+                    entries = approval_queue.list_pending()
+                    if not entries:
+                        print(f"  {D}(approval queue empty){X}\n")
+                    else:
+                        print(f"\n  {C}{len(entries)} pending:{X}")
+                        for e in entries:
+                            print(f"    [{e['id']}] {e['who']:<28} → {e['what']}")
+                        print(f"\n  {D}diff <id>  ·  approve <id|all>  ·  reject <id>{X}\n")
+                elif lo.startswith("diff "):
+                    entry_id = cmd[len("diff "):].strip()
+                    e = approval_queue.get(entry_id)
+                    if not e:
+                        print(f"  {W}no entry {entry_id}{X}\n")
+                    else:
+                        print(f"\n  {C}[{e['id']}] {e['what']}{X}")
+                        print(f"    status: {e['status']}  who: {e['who']}  why: {e['why']}")
+                        if e.get("diff"):
+                            print(f"\n{e['diff']}\n")
+                elif lo == "approve" or lo.startswith("approve "):
+                    arg = cmd[len("approve"):].strip()
+                    if not arg:
+                        print(f"  {W}usage: approve <id|all>{X}\n")
+                    elif arg == "all":
+                        entries = approval_queue.list_pending()
+                        if not entries:
+                            print(f"  {D}(nothing pending){X}\n")
+                        else:
+                            for e in entries:
+                                ok, msg = approval_queue.approve(e["id"])
+                                print(f"  {G if ok else R}{'✓' if ok else '✗'} [{e['id']}] {msg}{X}")
+                    else:
+                        ok, msg = approval_queue.approve(arg)
+                        print(f"  {G if ok else R}{'✓' if ok else '✗'} {msg}{X}\n")
+                elif lo.startswith("reject "):
+                    entry_id = cmd[len("reject "):].strip()
+                    ok, msg = approval_queue.reject(entry_id)
+                    print(f"  {G if ok else R}{'✓' if ok else '✗'} {msg}{X}\n")
+            except Exception as e:
+                print(f"  {W}approval queue error: {e}{X}\n")
             continue
 
         # P1.8 delegation runner — isolated subagent spawn inside Master AI CLI.

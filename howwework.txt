@@ -115,6 +115,18 @@ OpenRouter: nvidia/nemotron-3-ultra-550b-a55b:free — 550B free (slow)
 Ollama Cloud: qwen3.5:397b                        — thinking, tools, vision
 Ollama Cloud: kimi-k2.7-code                      — deep reasoning, code
 
+## HERMES — Elijah's separate coding-agent CLI (2026-09-12)
+"Hermes" is ALSO the name of Elijah's own separate coding-agent product —
+not the same thing as any "hermes"-named model in CLOUD PROVIDERS above.
+Source: ~/hermes-webui and ~/projects/hermes-agent. Installed/running copy:
+~/.hermes/hermes-agent. Real config file: ~/.hermes/config.yaml — NOT
+config.json or settings.json, those don't exist and asking for them will
+fail. Live session logs: ~/.hermes/logs/agent.log. Master AI has no direct
+view into a running Hermes session (it's a separate tmux pane/process) — if
+asked to "check the Hermes thread," read the config.yaml/agent.log paths
+above; if that's not enough to answer, say so plainly instead of guessing at
+other file paths.
+
 ## SMART ROUTING (fully automatic — type 'model' to override)
 Briefings / quick     → <DEFAULT_LOCAL_MODEL> (local)
 General / chat / code → <DEFAULT_LOCAL_MODEL> (local) or ollama-cloud::kimi-k2.7-code if online
