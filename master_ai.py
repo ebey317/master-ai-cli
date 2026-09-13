@@ -497,6 +497,22 @@ LAST_MODEL = ""  # model name used by the most recent handle() — for Review's 
 PENDING_PLAN_TEXT = ""
 PENDING_PLAN_REQUEST = ""
 PENDING_USER_NOTE = ""
+
+# 2026-09-13: live-code-reload detector. Reproduced repeatedly the same
+# night: a real bug got fixed and committed, but whichever session Elijah
+# was actually typing into had started earlier and kept running the old
+# code in memory (Python doesn't hot-reload), so the fix silently never
+# took effect until someone remembered to type "new" -- which itself only
+# happened after multiple rounds of "why isn't this fixed" confusion.
+# Snapshot this file's mtime once at import time; _reload_if_code_changed()
+# compares against it on every turn and, if the file has changed since this
+# process started, does the same save+execvp restart "new" already does --
+# just automatically, instead of depending on anyone noticing or
+# remembering. os.path.getmtime follows symlinks, so this is correct
+# whether launched via the direct path or the ~/scripts/master_ai.py
+# symlink to this same file.
+_STARTUP_CODE_MTIME = os.path.getmtime(os.path.abspath(__file__))
+_RELOAD_CARRY_FILE = Path.home() / ".master_ai_reload_carry"
 # 2026-09-07: continuation feature — set when a cloud reply's finish_reason
 # comes back "length" (cut off at max_tokens). Holds what's needed to
 # re-prompt the SAME model to pick up exactly where it stopped: the
@@ -20243,6 +20259,61 @@ def _is_simple_search_query(q):
     return True
 
 
+def _reload_if_code_changed(history, pending_cmd):
+    """If master_ai.py's own file has changed on disk since this process
+    started, transparently save+restart (execvp) instead of continuing to
+    run stale in-memory code -- see _STARTUP_CODE_MTIME's comment for why
+    this exists. Never returns if it reloads.
+
+    Unlike the "new"/"clear" command, this must NOT blank history or the
+    thread label -- the user didn't ask to start over, a fix just landed.
+    Conversation continuity is preserved the same way a manual `new` would
+    resume it: write RESUME_FLAG pointing at the just-saved chat log, so
+    the fresh process's own existing resume-from-notes logic loads history
+    back in automatically. `pending_cmd` (whatever the user just typed,
+    which triggered this check) is carried across separately via
+    _RELOAD_CARRY_FILE and replayed as PENDING_USER_NOTE on the other
+    side, so the reload is invisible from the user's perspective -- they
+    typed a message, it just took slightly longer to answer."""
+    try:
+        current_mtime = os.path.getmtime(os.path.abspath(__file__))
+    except OSError:
+        return
+    if current_mtime == _STARTUP_CODE_MTIME:
+        return
+
+    print(
+        f"  {C}🔄 Master AI's code changed since this session started — "
+        f"reloading to pick up the fix...{X}",
+        flush=True,
+    )
+    try:
+        save_session(list(history), silent=True)
+        RESUME_FLAG.write_text(str(CHATS_DIR / f"{SESSION_TS}.chat"))
+    except Exception as e:
+        log(f"AUTO_RELOAD_SAVE_ERROR: {e}")
+    try:
+        if pending_cmd:
+            _RELOAD_CARRY_FILE.write_text(pending_cmd)
+        else:
+            _RELOAD_CARRY_FILE.unlink(missing_ok=True)
+    except Exception as e:
+        log(f"AUTO_RELOAD_CARRY_ERROR: {e}")
+    if _SENSEI_APP is not None:
+        try:
+            _SENSEI_APP.clear_output()
+        except Exception:
+            pass
+    _clear_tmux_scrollback("auto-reload")
+    try:
+        subprocess.run(["stty", "sane"], check=False)
+    except Exception:
+        pass
+    sys.stdout.write("\033c\033[2J\033[H")
+    sys.stdout.flush()
+    os.execvp(sys.executable, [sys.executable, str(Path.home() / "scripts/master_ai.py")])
+
+
 def main():
     if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
         print(
@@ -20510,6 +20581,21 @@ def main():
     except Exception as e:
         log(f"RESUME_ERROR: {e}")
 
+    # Other half of _reload_if_code_changed()'s auto-reload: whatever the
+    # user had just typed when the code-change was detected gets carried
+    # across the execvp as a plain file (history itself already came back
+    # via RESUME_FLAG above) and replayed here as PENDING_USER_NOTE, so the
+    # main loop processes it on the very first iteration -- the reload is
+    # invisible from the user's side, not a dropped message.
+    try:
+        if _RELOAD_CARRY_FILE.exists():
+            carried = _RELOAD_CARRY_FILE.read_text()
+            _RELOAD_CARRY_FILE.unlink(missing_ok=True)
+            if carried:
+                globals()["PENDING_USER_NOTE"] = carried
+    except Exception as e:
+        log(f"AUTO_RELOAD_CARRY_RESTORE_ERROR: {e}")
+
     # Save on any exit — force-close, terminal close, SIGTERM. Also summarize
     # so the session shows up in `sessions list` / `sessions resume` without
     # repopulating the window next launch.
@@ -20590,6 +20676,8 @@ def main():
 
         if not cmd:
             continue
+
+        _reload_if_code_changed(history, cmd)  # never returns if it reloads
 
         lo = cmd.lower()
 
