@@ -25,7 +25,10 @@ jobs:
       run: |
         pip install --upgrade pip
         pip install -e .[dev]
-        pip install ruff black pytest pytest-cov shellcheck pre-commit
+        pip install ruff black pytest pytest-cov pre-commit
+
+    - name: Install shellcheck (native binary, not on PyPI)
+      run: sudo apt-get update && sudo apt-get install -y shellcheck
     
     - name: Run pre-commit
       run: |
