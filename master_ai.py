@@ -82,6 +82,7 @@ from datetime import datetime
 from pathlib import Path
 
 import approval_queue
+import perpetual_review
 from url_grounding import resolve_open_target_url
 
 try:
@@ -22688,6 +22689,58 @@ def main():
                     print(f"  {G if ok else R}{'✓' if ok else '✗'} {msg}{X}\n")
             except Exception as e:
                 print(f"  {W}approval queue error: {e}{X}\n")
+            continue
+
+        # Perpetual-watcher review gate -- SKILL.md has always specified
+        # `review_gate: sensei`, but nothing ever implemented it: generated
+        # proposals in ~/.master_ai_proposals/ just sat as plain files with
+        # no way to see or act on them from inside a live Sensei session.
+        # Verb comes SECOND ("proposal approve <id>", not "approve
+        # proposal <id>") deliberately -- the approval_queue block right
+        # below matches any "approve "/"reject "-prefixed input for its own
+        # queued actions (a different kind of pending decision, different
+        # id space), and would swallow "approve proposal <id>" before this
+        # block ever saw it, since dispatch is sequential top-to-bottom.
+        # This phrasing sidesteps that collision without having to touch or
+        # reorder the pre-existing approval_queue block at all.
+        if (
+            lo in ("proposals", "pending proposals")
+            or lo.startswith("proposal ")
+        ):
+            try:
+                if lo in ("proposals", "pending proposals"):
+                    entries = perpetual_review.list_pending()
+                    if not entries:
+                        print(f"  {D}(no pending proposals){X}\n")
+                    else:
+                        print(f"\n  {C}{len(entries)} pending proposal(s):{X}")
+                        for e in entries:
+                            print(
+                                f"    [{e['id']}] {e['source']:<16} "
+                                f"priority={e['priority']:<6} {e['category']}"
+                            )
+                        print(
+                            f"\n  {D}proposal <id>  ·  proposal approve <id>  ·  "
+                            f"proposal reject <id>{X}\n"
+                        )
+                else:
+                    rest = cmd[len("proposal ") :].strip()
+                    if rest.lower().startswith("approve "):
+                        proposal_id = rest[len("approve ") :].strip()
+                        ok, msg = perpetual_review.approve(proposal_id)
+                        print(f"  {G if ok else R}{'ok' if ok else 'x'} {msg}{X}\n")
+                    elif rest.lower().startswith("reject "):
+                        proposal_id = rest[len("reject ") :].strip()
+                        ok, msg = perpetual_review.reject(proposal_id)
+                        print(f"  {G if ok else R}{'ok' if ok else 'x'} {msg}{X}\n")
+                    else:
+                        p = perpetual_review.get(rest)
+                        if not p:
+                            print(f"  {W}no proposal matching '{rest}'{X}\n")
+                        else:
+                            print(f"\n{p['text']}\n")
+            except Exception as e:
+                print(f"  {W}proposal review error: {e}{X}\n")
             continue
 
         # P1.8 delegation runner — isolated subagent spawn inside Master AI CLI.
