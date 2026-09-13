@@ -108,6 +108,75 @@ class PerpetualReviewTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("no proposal matching", msg)
 
+    def test_checkbox_outside_decision_section_is_ignored(self):
+        # CodeRabbit finding, 2026-09-13: decision matching used to search
+        # the whole file. A stray "- [x] Reject"-shaped line anywhere else
+        # (e.g. someone's own note in the Summary, or a future template
+        # change) must not be mistaken for an actual decision, and
+        # approve()/reject() must never touch it.
+        stem = self._write("theta")
+        path = pr.PROPOSALS_DIR / f"{stem}.md"
+        text = path.read_text()
+        text = text.replace(
+            "## Summary\nSome commits happened.",
+            "## Summary\nSome commits happened.\n- [x] Reject (this is just a note, not a decision)",
+        )
+        path.write_text(text)
+
+        self.assertIsNone(pr.get(stem)["decision"])
+        pending = pr.list_pending()
+        self.assertEqual(len(pending), 1)
+
+        ok, msg = pr.approve(stem)
+        self.assertTrue(ok, msg)
+        text_after = path.read_text()
+        # The real Decision section got the approve mark...
+        self.assertIn("- [x] Approve", text_after)
+        # ...and the stray note-line above it was never touched.
+        self.assertIn(
+            "- [x] Reject (this is just a note, not a decision)", text_after
+        )
+
+    def test_path_traversal_via_absolute_id_is_rejected(self):
+        # CodeRabbit finding, 2026-09-13 (CWE-22): Path(base) / "/abs/x"
+        # silently discards `base` in pathlib, so an absolute proposal_id
+        # used to let _find() escape PROPOSALS_DIR entirely.
+        outside = Path(tempfile.mkdtemp()) / "not-a-real-proposal"
+        outside.write_text("not a proposal, just a decoy file")
+        try:
+            self.assertIsNone(pr.get(str(outside)))
+            ok, msg = pr.approve(str(outside))
+            self.assertFalse(ok)
+            self.assertIn("no proposal matching", msg)
+            # And the decoy file itself must be untouched.
+            self.assertEqual(
+                outside.read_text(), "not a proposal, just a decoy file"
+            )
+        finally:
+            shutil.rmtree(outside.parent, ignore_errors=True)
+
+    def test_path_traversal_via_dotdot_is_rejected(self):
+        stem = self._write("iota")
+        outside_name = f"../{Path(tempfile.mkdtemp()).name}/escaped"
+        self.assertIsNone(pr.get(outside_name))
+
+    def test_symlink_escaping_proposals_dir_is_rejected(self):
+        outside_dir = Path(tempfile.mkdtemp())
+        outside_file = outside_dir / "real_secret.md"
+        outside_file.write_text("outside content")
+        link = pr.PROPOSALS_DIR / "2026-09-13_sneaky_proposal.md"
+        try:
+            link.symlink_to(outside_file)
+            self.assertIsNone(pr.get("sneaky"))
+        finally:
+            shutil.rmtree(outside_dir, ignore_errors=True)
+
+    def test_decision_write_is_atomic_no_temp_file_left_behind(self):
+        stem = self._write("kappa")
+        pr.approve(stem)
+        leftovers = list(pr.PROPOSALS_DIR.glob(f".{stem}.md.*"))
+        self.assertEqual(leftovers, [])
+
 
 if __name__ == "__main__":
     unittest.main()
