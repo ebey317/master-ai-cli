@@ -125,28 +125,55 @@ class DirectiveParserTests(unittest.TestCase):
         )
         self.assertEqual(self.calls, [("run", "echo hi")])
 
-    def test_repeated_directive_line_is_capped_not_run_unbounded(self):
-        # Reproduced live 2026-09-13: once a malformed shape wasn't
-        # recognized, the model didn't emit it once and stop -- it
-        # repeated the identical broken pair ~40 times in a single
-        # reply. This is the circuit-breaker: whatever the line is,
-        # recognized directive or not, more than _MAX_LINE_REPEATS
-        # identical repeats in one reply gets truncated rather than
-        # run (or silently ignored) unboundedly.
-        master_ai.process_reply(
-            "\n".join(["RUN: echo hi"] * 6), [], streamed=False
-        )
-        self.assertEqual(self.calls, [("run", "echo hi")] * master_ai._MAX_LINE_REPEATS)
+    def test_repeated_directive_line_runs_exactly_once_not_capped_copies(self):
+        # Reproduced live 2026-09-13: the guard originally kept up to
+        # _MAX_LINE_REPEATS (3) copies of a detected repeat before
+        # truncating. When the repeated line was a real READ directive,
+        # that meant 3 identical executions, each injecting its own
+        # copy of the same file's content into history -- the model's
+        # next turn saw the file three times over in one bloated
+        # context block, and went off to read something else entirely
+        # instead of answering, faced with that redundant noise. A
+        # detected repeat must now survive as exactly ONE execution,
+        # not up to max_repeats.
+        master_ai.process_reply("\n".join(["RUN: echo hi"] * 6), [], streamed=False)
+        self.assertEqual(self.calls, [("run", "echo hi")])
 
-    def test_repeated_unrecognized_shape_is_still_capped(self):
+    def test_repeated_unrecognized_shape_runs_at_most_once(self):
         # The guard is shape-agnostic on purpose -- it must catch a
         # FUTURE malformed shape nobody has written a parser fix for
         # yet, not just the three <tool_call> variants already fixed.
         master_ai.process_reply(
-            "\n".join(["<totally_unknown_wrapper>RUN: echo hi</totally_unknown_wrapper>"] * 6),
-            [], streamed=False,
+            "\n".join(
+                ["<totally_unknown_wrapper>RUN: echo hi</totally_unknown_wrapper>"] * 6
+            ),
+            [],
+            streamed=False,
         )
-        self.assertLessEqual(len(self.calls), master_ai._MAX_LINE_REPEATS)
+        self.assertLessEqual(len(self.calls), 1)
+
+    def test_repeated_read_does_not_duplicate_injected_file_content(self):
+        # The exact live failure chain: a READ directive repeated past
+        # the detection threshold used to execute multiple times, each
+        # appending its own copy of the file's content to history via
+        # injected_block in the READ-handling code -- bloating context
+        # with duplicates instead of injecting the file once.
+        probe = Path("/tmp/sensei-repeated-read-test.txt")
+        probe.write_text("unique-marker-content\n")
+        history = []
+        try:
+            master_ai.process_reply(
+                "\n".join([f"READ: {probe}"] * 6), history, streamed=False
+            )
+        finally:
+            try:
+                probe.unlink()
+            except FileNotFoundError:
+                pass
+        injected = "\n".join(
+            m["content"] for m in history if m.get("role") == "user"
+        )
+        self.assertEqual(injected.count("unique-marker-content"), 1)
 
     def test_bare_keyword_line_without_colon_prefix_is_not_joined(self):
         # A bare keyword line followed by plain prose (no colon prefix

@@ -15482,12 +15482,29 @@ def _truncate_repeated_lines(reply, max_repeats=_MAX_LINE_REPEATS):
     a parser gap AND plain model looping (e.g. repeating a sentence)
     with the same one mechanism, including future shapes nobody has
     seen yet. Counts each exact (stripped) non-blank line's occurrences
-    across the whole reply; once any single line's count exceeds
-    max_repeats, everything from its (max_repeats + 1)-th occurrence
-    onward is cut and replaced with one marker line. max_repeats=3
+    across the whole reply; once any single line's count EXCEEDS
+    max_repeats (i.e. the model is genuinely stuck, not just
+    legitimately repeating something 2-3 times), every occurrence past
+    the first is cut and replaced with one marker line. max_repeats=3
     matches this project's existing hard-cap-at-3 convention for
-    repeated attempts (see retry_policy.yaml) rather than inventing a
-    new threshold."""
+    repeated attempts (see retry_policy.yaml) for the DETECTION
+    threshold, but only the first copy of a detected line survives --
+    not up to max_repeats copies.
+
+    2026-09-13: reproduced live why keeping multiple copies is actively
+    harmful, not just wasteful, when the repeated line is a real
+    directive: three identical `READ: ~/.master_ai_memory` survivors
+    each executed and each injected their own copy of that file's
+    content into history, so the model's next turn saw the same file
+    three times over in one bloated context block -- and, faced with
+    that redundant noise instead of a clean single copy, went off to
+    read something else entirely rather than answering. By the time
+    this function runs, lines are already directive-shaped
+    (_normalize_directive_lines already ran), so a genuine repeat here
+    is never "the model deliberately doing something 3 times" -- it is
+    always the stuck-loop failure mode this guard exists to catch, and
+    running it even once more than necessary just spends a tool call
+    and pollutes context for nothing."""
     lines = (reply or "").splitlines()
     counts = {}
     for line in lines:
@@ -15504,7 +15521,7 @@ def _truncate_repeated_lines(reply, max_repeats=_MAX_LINE_REPEATS):
         stripped = line.strip()
         if stripped in over_limit:
             seen[stripped] = seen.get(stripped, 0) + 1
-            if seen[stripped] > max_repeats:
+            if seen[stripped] > 1:
                 cut = True
                 continue
         out.append(line)
