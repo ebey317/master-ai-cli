@@ -7737,6 +7737,17 @@ def _refresh_ollama_key():
     except Exception:
         pass
 
+def _refresh_opencode_go_key():
+    """Pull the OpenCode Go key into KEYS lazily (keychain via
+    _opencode_go_key()'s KEYS lookup, or ~/.hermes/.env fallback) so the
+    Go provider is gated like every other cloud provider."""
+    try:
+        _og_key = _opencode_go_key()
+        if _og_key:
+            KEYS.setdefault("opencode_go", _og_key)
+    except Exception:
+        pass
+
 # OpenRouter's real catalog is hundreds of models; MODEL_MENU only curates
 # ~6 named ones. `model or search <term>` fetches+caches the live list so
 # any of them can be picked by exact id, not just the curated shortlist.
@@ -8049,6 +8060,13 @@ def live_provider_completions(query="", mode=None):
         rows.append(("groq", "Groq", "paid"))
     if KEYS.get("qwen"):
         rows.append(("qwen", "Qwen (Token Plan)", "paid — $6/mo plan"))
+    # 2026-09-12: OpenCode Go ($10/mo subscription) — key resolves from the
+    # keychain (opencode_go) or ~/.hermes/.env (OPENCODE_API_KEY/_GO_API_KEY).
+    # Lazy KEYS refresh mirrors the Ollama Cloud pattern so gating works
+    # no matter where the key lives.
+    _refresh_opencode_go_key()
+    if KEYS.get("opencode_go"):
+        rows.append(("opencode-go", "OpenCode Go", "sub — $10/mo"))
     return rows
 
 def live_model_completions(provider):
@@ -8093,6 +8111,13 @@ def live_model_completions(provider):
         return [(f"groq::{m}", m, "💰") for m in _groq_model_catalog()]
     if provider == "qwen":
         return [(f"qwen::{m}", m, "💰") for m in _qwen_model_catalog()]
+    if provider == "opencode-go":
+        # OpenCode Go — curated open models on the $10/mo subscription lane.
+        # Hint tags the flagship picks so the 37-model list is navigable.
+        _go_flagships = {"kimi-k3", "kimi-k2.7-code", "glm-5.3", "glm-5.3-flash",
+                         "minimax-m3", "deepseek-v4-pro", "qwen3.8-max"}
+        return [(f"opencode-go::{m}", m, ("★ " if m in _go_flagships else "sub "))
+                for m in _opencode_go_model_catalog()]
     return []
 
 def _resolve_model_choice(choice):
