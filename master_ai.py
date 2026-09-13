@@ -390,6 +390,8 @@ MODEL_MENU = [
     ("nemotron",           "☁ FREE · OpenRouter /free — Nemotron 3 Super 120B"),
     ("hermes-405b",        "☁ FREE · OpenRouter /free — Nemotron 3 Ultra 550B (larger, slower)"),
     ("openrouter",         "☁ FREE · OpenRouter /free — auto (tries 120B, then 550B)"),
+    ("opencode-go",        "☁ GO   · OpenCode Go $10/mo — kimi-k3 (strongest reasoning)"),
+    ("glm-5.3-flash",      "☁ GO   · OpenCode Go — GLM-5.3 Flash (fast, cheap)"),
 ]
 
 CLOUD_MODEL_KEYS = {
@@ -398,6 +400,11 @@ CLOUD_MODEL_KEYS = {
     "nemotron": "openrouter",
     "hermes-405b": "openrouter",
     "openrouter": "openrouter",
+    "kimi-k2": "opencode",
+    "kimi-k2.6": "opencode",
+    "kimi-k3": "opencode",
+    "opencode-go": "opencode_go",
+    "glm-5.3-flash": "opencode_go",
 }
 CLOUD_MODEL_NAMES = frozenset(CLOUD_MODEL_KEYS)
 MODEL_COMMAND_ALIASES = {
@@ -740,6 +747,11 @@ _KV_KEY_MAP = {
     "QWEN_TOKENPLAN_WS_API_KEY": "qwen_ws",
     "TINYFISH_API_KEY": "tinyfish",
     "TELEGRAM_BOT_TOKEN": "telegram",
+    # 2026-09-12: OpenCode Go ($10/mo subscription, https://opencode.ai/go)
+    # — same Zen API shape as the keyless free relay but requires Bearer
+    # auth and hits /zen/go/v1. Key created in the OpenCode console as
+    # "open code key. 😊". Wired per operator request 2026-09-12.
+    "OPENCODE_API_KEY": "opencode_go",
 }
 
 def _looks_like_real_key(val):
@@ -4335,7 +4347,7 @@ def _privacy_check_path_or_content(path, content=""):
     2026-09-11: howwework.txt and the Sensei source files are framework-level
     documentation, not secrets — allow them to be sent to cloud models for
     audits/reviews without blocking on privacy."""
-    if path and ("howwework.txt" in path or path.endswith("/master_ai.py") or path.endswith("/test_typed_dispatch_e2e.py")):
+    if path and (path.endswith("howwework.txt") or path.endswith("/master_ai.py") or path.endswith("/test_typed_dispatch_e2e.py")):
         return ""
     if harvest is None:
         return ""
@@ -5206,6 +5218,136 @@ def ask_cloud_opencode_free(messages):
     2-7s responses. Matches sensei_bridge.py's _OPENCODE_FREE_MODEL."""
     return _ask_opencode_zen(messages, "ling-3.0-flash-fin-free", "ling-3.0-flash-fin-free")
 
+
+# ── OpenCode Go ($10/mo subscription, https://opencode.ai/go) ──
+# Same Zen API shape as the keyless free relay, but:
+#   • requires Authorization: Bearer <key> (OPENCODE_API_KEY in the keychain)
+#   • hits /zen/go/v1 instead of /zen/v1
+#   • serves curated open models (kimi-k3, glm-5.3, minimax-m3, ...) with
+#     generous monthly usage limits
+# Validated-client note: OpenCode asks coding agents to identify themselves
+# via User-Agent and a stable x-opencode-session per conversation — Go
+# traffic monitoring expects it, and Hermes is on their validated list.
+_OPENCODE_GO_MODELS_CACHE = Path.home() / ".master_ai_opencode_go_models_cache.json"
+_OPENCODE_GO_MODELS_TTL = 24 * 3600
+
+def _opencode_go_key():
+    """OPENCODE_API_KEY — keychain first (canonical), ~/.hermes/.env as
+    fallback, matching the Ollama Cloud lazy-lookup pattern."""
+    key = (KEYS.get("opencode_go") or "").strip()
+    if key:
+        return key
+    try:
+        _env = Path.home() / ".hermes" / ".env"
+        for _ln in _env.read_text().splitlines():
+            _ln = _ln.strip()
+            if not _ln or _ln.startswith("#"):
+                continue
+            if _ln.startswith("export "):
+                _ln = _ln[7:].strip()
+            if _ln.startswith("OPENCODE_API_KEY=") or _ln.startswith("OPENCODE_GO_API_KEY="):
+                _val = _ln.split("=", 1)[1].strip()
+                if (_val.startswith('"') and _val.endswith('"')) or (_val.startswith("'") and _val.endswith("'")):
+                    _val = _val[1:-1]
+                _val = _val.split()[0] if _val.split() else ""
+                if _looks_like_real_key(_val):
+                    return _val
+    except Exception:
+        pass
+    return ""
+
+def _opencode_go_model_catalog():
+    """Live model list from https://opencode.ai/zen/go/v1/models, cached to
+    disk for a day (public endpoint — works with or without the key)."""
+    import time as _time
+    def _read_cache():
+        try:
+            _d = json.loads(_OPENCODE_GO_MODELS_CACHE.read_text())
+            if _time.time() - float(_d.get("ts", 0)) < _OPENCODE_GO_MODELS_TTL:
+                return [str(_m) for _m in _d.get("models", [])]
+        except Exception:
+            pass
+        return None
+    def _write_cache(models):
+        try:
+            _OPENCODE_GO_MODELS_CACHE.write_text(
+                json.dumps({"ts": _time.time(), "models": models}))
+        except Exception:
+            pass
+    cached = _read_cache()
+    if cached is not None:
+        return cached
+    _headers = {"User-Agent": "master-ai-cli/1.0 (Sensei agent loop)",
+                "Accept": "application/json"}
+    _key = _opencode_go_key()
+    if _key:
+        _headers["Authorization"] = f"Bearer {_key}"
+    try:
+        _req = urllib.request.Request("https://opencode.ai/zen/go/v1/models",
+                                      headers=_headers)
+        with urllib.request.urlopen(_req, timeout=30) as _resp:
+            _data = json.loads(_resp.read())
+        _models = sorted(str(_m.get("id")) for _m in _data.get("data", []))
+        if _models:
+            _write_cache(_models)
+        return _models
+    except Exception:
+        try:
+            return [str(_m) for _m in json.loads(
+                _OPENCODE_GO_MODELS_CACHE.read_text()).get("models", [])]
+        except Exception:
+            return []
+
+def _ask_opencode_go(messages, model, label, timeout=120):
+    """OpenCode Go relay — paid $10/mo subscription lane. Authenticated
+    via Bearer key; failure paths mirror the Zen free relay (rate-limit
+    trips, network-error backoff) so the fallback chain treats it
+    identically."""
+    provider_key = f"opencode-go/{label}"
+    if not _cloud_allowed(provider_key):
+        return None
+    key = _opencode_go_key()
+    if not key:
+        log("OPENCODE_GO_ERROR: no OPENCODE_API_KEY")
+        return None
+    log(f"CLOUD [opencode-go/{label}]")
+    payload = {"model": model, "messages": _inject_identity(messages),
+               "max_tokens": 8192, "stream": False}
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        "https://opencode.ai/zen/go/v1/chat/completions", data=data,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}",
+            "x-opencode-session": _opencode_session_id(),
+            "User-Agent": "master-ai-cli/1.0 (Sensei agent loop)",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            result = json.loads(resp.read())
+            msg = result["choices"][0]["message"]
+            content = msg.get("content") or ""
+            if not content.strip():
+                content = msg.get("reasoning") or ""
+            return content
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")[:200]
+        except Exception:
+            pass
+        log(f"OPENCODE_GO_ERROR [{label}]: HTTP {e.code} — {body}")
+        if e.code == 429:
+            _cloud_trip(provider_key, "rate limit", 30)
+        return None
+    except Exception as e:
+        log(f"OPENCODE_GO_ERROR [{label}]: {e}")
+        if _network_error(e):
+            _cloud_trip_network(e, 60)
+        return None
+
 def ask_cloud_openai(messages):
     if not _cloud_allowed("openai"):
         return None
@@ -5839,6 +5981,8 @@ def ask_cloud(messages, provider="opencode"):
     # anthropic` (see _VALID_FALLBACK_NAMES) if that's ever wanted later.
     fn_map = {
         "opencode":     ask_cloud_opencode_free,
+        "opencode-go":  lambda msgs: _ask_opencode_go(msgs, "kimi-k3", "kimi-k3"),
+        "glm-5.3-flash": lambda msgs: _ask_opencode_go(msgs, "glm-5.3-flash", "glm-5.3-flash"),
         "nvidia":       ask_cloud_nvidia,
         "nvidia-nano":  ask_cloud_nvidia_nano,
         "hermes-405b":  ask_cloud_openrouter_405b,
@@ -5883,6 +6027,11 @@ def ask_cloud(messages, provider="opencode"):
     elif (provider or "").startswith("opencode::"):
         _m = provider[len("opencode::"):]
         _asker = lambda msgs, _m=_m: _ask_opencode_zen(msgs, _m, _m)
+    elif (provider or "").startswith("opencode-go::"):
+        # OpenCode Go pick from the live picker — authenticated Go lane,
+        # not the keyless Zen free relay.
+        _m = provider[len("opencode-go::"):]
+        _asker = lambda msgs, _m=_m: _ask_opencode_go(msgs, _m, _m)
     elif "/" in (provider or ""):
         # Arbitrary OpenRouter catalog id (e.g. "anthropic/claude-3.5-sonnet")
         # picked via `model or search ...` — not one of the curated named
@@ -7563,6 +7712,18 @@ def _model_catalog():
         for _m in _ollama_cloud_model_catalog():
             _name = str(_m)
             catalog[_name.lower()] = f"ollama-cloud::{_name}"
+    # OpenCode Go — OPENCODE_API_KEY lives in the keychain (mapped to
+    # KEYS['opencode_go'] by _KV_KEY_MAP) or ~/.hermes/.env. Refresh
+    # lazily so provider-agnostic gating works either way.
+    try:
+        _og_key = _opencode_go_key()
+        if _og_key:
+            KEYS.setdefault("opencode_go", _og_key)
+    except Exception:
+        pass
+    if KEYS.get("opencode_go"):
+        for _m in _opencode_go_model_catalog():
+            catalog[_m.lower()] = f"opencode-go::{_m}"
     return catalog
 
 def _refresh_ollama_key():
@@ -17391,6 +17552,7 @@ def main():
                         process_reply(_cont_reply2, history, streamed=False, continue_after_tools=True)
             else:
                 print(f"  {R}keep-going failed — cloud unavailable.{X}")
+            globals()["PENDING_CONTINUATION"] = None
             continue
 
         # "go"/"yes"/"proceed" with no pending plan → explain
