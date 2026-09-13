@@ -12316,7 +12316,7 @@ _BARE_KEYWORD_LINE_RE = re.compile(
     r'\s*$',
     re.IGNORECASE,
 )
-_BARE_KEYWORD_ARG_RE = re.compile(r'^\s*::\s*(.+)$')
+_BARE_KEYWORD_ARG_RE = re.compile(r'^\s*:{1,2}\s*(.+)$')
 
 
 def _join_bare_keyword_lines(reply):
@@ -12325,17 +12325,30 @@ def _join_bare_keyword_lines(reply):
     _normalize_directive_lines (crammed same-line directives): some
     models put the bare keyword alone on its own line -- no colon at
     all, so _DIRECTIVE_KEYWORDS_RE's colon-attached match never fires --
-    with the real argument on the NEXT line, prefixed with "::", inside
-    a <tool_call> wrapper. Reproduced live 2026-09-09 on
-    nvidia::minimaxai/minimax-m3:
-        <tool_call>RUN
-        :: echo hi
-        </tool_call>
+    with the real argument on the NEXT line, prefixed with 1 or 2
+    colons, inside a <tool_call> wrapper. The colon count is not a
+    fixed contract -- it's just whatever punctuation the model's own
+    tool-call template glues on -- so this matches 1-or-2 colons
+    generically rather than pinning to whichever count was last seen
+    live, which is what let this same bug reappear as a single-colon
+    variant after only the double-colon shape had been fixed. Two
+    reproductions on nvidia::minimaxai/minimax-m3 / opencode-go::
+    minimax-m3 (same underlying model, different provider lane):
+        2026-09-09, double colon:
+            <tool_call>RUN
+            :: echo hi
+            </tool_call>
+        2026-09-12, single colon:
+            <tool_call>RUN
+            : ls -la ~/Desktop/AI_CONTEXT/
+            </tool_call>
     Join the two lines into the bare directive grammar ("RUN: echo hi")
-    so every downstream per-line parser sees what it already expects. A
-    bare keyword line with no "::"-prefixed follower (blank, EOF, or a
-    plain line) is left untouched -- there's nothing to run, and
-    inventing a directive would execute garbage."""
+    so every downstream per-line parser sees what it already expects.
+    Deliberately does NOT match a zero-colon follower (blank, EOF, or a
+    plain prose line) -- a colon prefix, however many, is the model's
+    own signal that the line is a tool-call payload; a bare keyword
+    followed by ordinary prose has no such signal, and joining it in
+    would execute that prose as a command."""
     lines = (reply or "").splitlines()
     out = []
     i, n = 0, len(lines)

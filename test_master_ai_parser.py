@@ -87,6 +87,32 @@ class DirectiveParserTests(unittest.TestCase):
         master_ai.process_reply("runterm: htop", [], streamed=False)
         self.assertEqual(self.calls, [("runterm", "htop")])
 
+    def test_bare_keyword_line_joins_double_colon_argument(self):
+        # Reproduced live 2026-09-09 on nvidia::minimaxai/minimax-m3.
+        master_ai.process_reply(
+            "<tool_call>RUN\n:: echo hi\n</tool_call>", [], streamed=False)
+        self.assertEqual(self.calls, [("run", "echo hi")])
+
+    def test_bare_keyword_line_joins_single_colon_argument(self):
+        # Reproduced live 2026-09-12 on opencode-go::minimax-m3 -- same
+        # malformed shape as the double-colon case above, one colon
+        # instead of two. This is the variant that slipped through the
+        # original double-colon-only regex and froze a live session.
+        master_ai.process_reply(
+            "<tool_call>RUN\n: echo hi\n</tool_call>", [], streamed=False)
+        self.assertEqual(self.calls, [("run", "echo hi")])
+
+    def test_bare_keyword_line_without_colon_prefix_is_not_joined(self):
+        # A bare keyword line followed by plain prose (no colon prefix
+        # at all) must NOT be joined into a directive -- there is no
+        # signal that the next line is a tool-call payload rather than
+        # ordinary text, and joining it in would execute that prose as
+        # a shell command.
+        master_ai.process_reply(
+            "<tool_call>RUN\nLet me check disk space first.\n</tool_call>",
+            [], streamed=False)
+        self.assertEqual(self.calls, [])
+
     def test_read_directive_accepts_line_range_and_comment(self):
         probe = Path("/tmp/sensei-read-range-test.txt")
         probe.write_text("alpha\nbeta\ngamma\ndelta\n")
