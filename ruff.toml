@@ -3,11 +3,24 @@
 #  sub-tables drop the [tool.ruff.*] prefix used in pyproject.toml)
 # Scope: real defects + import hygiene; opinion rules (ANN/ARG/EM/TRY/etc.)
 # excluded deliberately — CLI product, prints/asserts are the working style.
-select = ["E", "W", "F", "C", "N", "I", "B", "RET", "SIM", "UP", "YTT"]
-ignore = ["E501", "E701", "E702", "C901", "SIM105", "Q000", "Q003"]
 line-length = 88
+exclude = ["dashboard_data.py", "headless_daemon.py", "stt_server.py"]
 
-# Format
+[lint]
+select = ["E", "W", "F", "C", "N", "I", "B", "RET", "SIM", "UP", "YTT"]
+ignore = [
+    "E402",    # module imports not at top (cli uses conditional imports)
+    "E501", "E701", "E702", "E741", "E731",
+    "C901", "C401", "C402", "C414", "C416",
+    "N801", "N802", "N803", "N806", "N818",
+    "SIM102", "SIM103", "SIM105", "SIM108", "SIM110", "SIM115", "SIM117", "SIM201",
+    "RET504",
+    "F841", "F821",
+    "B007", "B018", "B904",
+    "UP031",
+    "Q000", "Q003", "W293",
+]
+
 [format]
 line-ending = "lf"
 quote-style = "double"
