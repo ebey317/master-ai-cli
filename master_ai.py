@@ -280,6 +280,10 @@ _INTERRUPT_EVENT = threading.Event()
 _RESTART_STARTED = threading.Event()
 
 # ── SENSEI TUI — full-screen app, default ON; opt out with SENSEI_TUI=0 ──
+# 2026-09-13: import deferred until TUI mode actually starts. Importing
+# prompt_toolkit/rich/markdown_it at module load costs ~0.12s even for
+# `--help`, `--update`, and non-TUI sessions. `_run_with_tui()` performs
+# the import and builds the app just-in-time.
 _SENSEI_APP = None
 _SENSEI_ENABLED = os.environ.get("SENSEI_TUI", "1") != "0"
 try:
@@ -289,22 +293,21 @@ try:
             if _line.startswith("SENSEI_MOUSE="):
                 os.environ["SENSEI_MOUSE"] = _line.split("=", 1)[1].strip() or "1"
                 break
-    # Default ON (matches sensei_tui.py's own documented default at its
-    # mouse_support= line) — wheel-scroll should work out of the box, no
-    # "mouse remote" opt-in needed, the same way Claude Code's own CLI
-    # scrolls without a mode switch. `mouse local` remains available to
-    # opt OUT for native terminal drag-select copy.
     os.environ.setdefault("SENSEI_MOUSE", "1")
 except Exception:
     os.environ.setdefault("SENSEI_MOUSE", "1")
-if _SENSEI_ENABLED:
+
+
+def _ensure_sensei_app():
+    """Lazily create the SenseiApp when TUI mode is actually entered."""
+    global _SENSEI_APP, _SENSEI_ENABLED
+    if _SENSEI_APP is not None:
+        return _SENSEI_APP
+    if not _SENSEI_ENABLED:
+        return None
     try:
         from sensei_tui import SenseiApp
 
-        # Lambda, not the function itself — live_model_completions is defined
-        # later in this module; the lambda only resolves the name when the
-        # completer actually calls it (interactive use, long after module
-        # load finishes), so the forward reference is safe.
         _SENSEI_APP = SenseiApp(
             model_catalog_fn=lambda q, mode=None: (
                 live_provider_completions(q, mode=mode)
@@ -313,9 +316,18 @@ if _SENSEI_ENABLED:
             ),
             on_interrupt=lambda: _INTERRUPT_EVENT.set(),
         )
+        # Sync TUI chrome to the persisted mode — SenseiApp() constructs with
+        # a hardcoded "plan" style; repaint to match what was loaded from disk.
+        try:
+            _SENSEI_APP.set_mode(MODE)
+        except Exception:
+            pass
     except Exception as _e:
         _SENSEI_APP = None
         _SENSEI_ENABLED = False
+        log(f"SENSEI_TUI_INIT_ERROR: {_e}")
+    return _SENSEI_APP
+
 
 # ── PROFILE-AWARE PATHS ──────────────────────────────────────
 # If ~/.master_ai_active_profile exists AND names a profile dir under
@@ -481,17 +493,6 @@ def save_mode(mode):
 MODE = (
     _load_saved_mode()
 )  # Plan is the default if no file exists. Review = per-command confirm; Auto = flow-through.
-# Sync TUI chrome to the persisted mode — SenseiApp() at line 107 above
-# constructs with a hardcoded "plan" style; this repaints the chrome to
-# match what was actually loaded from disk. Without this, user types
-# `mode auto` and exits, then on reopen internals say auto but the
-# chrome shows plan — "looks like it didn't save" even though it did.
-# 2026-04-22.
-if _SENSEI_APP is not None:
-    try:
-        _SENSEI_APP.set_mode(MODE)
-    except Exception:
-        pass
 LAST_ROUTE = ""  # route used by the most recent handle() — for Review's "who" line
 LAST_MODEL = ""  # model name used by the most recent handle() — for Review's "who" line
 PENDING_PLAN_TEXT = ""
@@ -9075,16 +9076,27 @@ def save_approved(cmd, cwd=None, scope="cwd"):
     APPROVED_FILE.write_text("\n".join(keep) + "\n")
 
 
-# ── RESPONSE CACHE ───────────────────────────────────────────
+# ── RESPONSE CACHE ─────────────────────────────
 _RICH_OK = False
-try:
-    from rich.console import Console as _RichConsole
-    from rich.markdown import Markdown as _RichMarkdown
+_RICH_CONSOLE = None
+_RICH_MARKDOWN = None
 
-    _RICH_CONSOLE = _RichConsole(soft_wrap=True)
-    _RICH_OK = True
-except ImportError:
-    pass
+
+def _ensure_rich():
+    """Lazy-load rich + markdown_it only when rendering a reply."""
+    global _RICH_OK, _RICH_CONSOLE, _RICH_MARKDOWN
+    if _RICH_OK or _RICH_CONSOLE is not None:
+        return _RICH_OK
+    try:
+        from rich.console import Console as _RichConsole
+        from rich.markdown import Markdown as _RichMarkdown
+
+        _RICH_CONSOLE = _RichConsole(soft_wrap=True)
+        _RICH_MARKDOWN = _RichMarkdown
+        _RICH_OK = True
+    except ImportError:
+        _RICH_OK = False
+    return _RICH_OK
 
 
 def render_reply(text, prefix=None, suffix=None):
@@ -9109,11 +9121,11 @@ def render_reply(text, prefix=None, suffix=None):
         print(prefix, end="", flush=True)
 
     rendered = text or ""
-    if _RICH_OK:
+    if _ensure_rich():
         try:
-            cons = _RichConsole(width=SENSEI_REPLY_WRAP, file=sys.stdout)
+            cons = _RICH_CONSOLE.__class__(width=SENSEI_REPLY_WRAP, file=sys.stdout)
             with cons.capture() as cap:
-                cons.print(_RichMarkdown(rendered, code_theme="monokai"))
+                cons.print(_RICH_MARKDOWN(rendered, code_theme="monokai"))
             rendered = cap.get()
         except Exception:
             pass
@@ -20696,6 +20708,7 @@ def main():
     # TUI mode rolls the brand/status through the chat frame like opening
     # credits, then leaves the cleaned Sensei input box ready. Classic mode
     # keeps the full shell banner.
+    _ensure_sensei_app()
     try:
         if _SENSEI_APP is not None:
             _show_tui_credit_roll(cloud_status, mem_count, update_color, update_message)
@@ -23839,6 +23852,12 @@ def _run_with_tui():
     - builtins.input() pulls from a submit queue filled by the TUI's Enter key.
     - main() runs in a daemon worker thread; the app owns the main thread.
     """
+    _ensure_sensei_app()
+    if _SENSEI_APP is None:
+        # TUI requested but failed to initialize — fall back to classic mode.
+        main()
+        return
+
     import builtins
     import queue
 
