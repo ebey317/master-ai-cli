@@ -12,8 +12,9 @@
 # SC2012: ls | head
 # SC2015: A && B || C is not if-then-else
 # SC2016: single quotes around $-expression (often intentional)
-# SC2028: echo may not expand escape sequences (style)
 # SC2001: sed used instead of ${var//search/replace}
+# SC2002: cat file | cmd (style)
+# SC2028: echo may not expand escape sequences (style)
 # SC2059: printf format string safety (project uses dynamic formats)
 # SC2066: shell glob in quotes
 # SC2078: test on string with spaces
@@ -25,9 +26,10 @@
 # SC2181: exit code indirect check
 # SC2207: read/mapfile for splitting
 # SC2221/SC2222: duplicate case labels
+# SC2317: command appears unreachable (false positives for sourced functions)
 # SC2329: function never invoked
 
-disable=SC2034,SC2086,SC2154,SC2164,SC1090,SC1091,SC2010,SC2012,SC2015,SC2016,SC2001,SC2028,SC2059,SC2066,SC2078,SC2088,SC2128,SC2153,SC2155,SC2178,SC2181,SC2207,SC2221,SC2222,SC2329
+disable=SC2034,SC2086,SC2154,SC2164,SC1090,SC1091,SC2010,SC2012,SC2015,SC2016,SC2001,SC2002,SC2028,SC2059,SC2066,SC2078,SC2088,SC2128,SC2153,SC2155,SC2178,SC2181,SC2207,SC2221,SC2222,SC2317,SC2329
 
 # Exclude files that are not shell scripts
 exclude-path=*.py,*.md,*.json,*.toml,*.yaml
