@@ -83,6 +83,7 @@ from pathlib import Path
 
 import approval_queue
 import perpetual_review
+import verifiers
 from url_grounding import resolve_open_target_url
 
 try:
