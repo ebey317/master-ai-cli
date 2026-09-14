@@ -1,0 +1,74 @@
+{
+  "findings": [
+    {
+      "id": "stale-command-hints",
+      "severity": "warning",
+      "file": "sensei_tui.py",
+      "line": 84,
+      "description": "COMMAND_MENU_HINTS retains entries for 4 model commands (model groq, model deepseek-r1, model qwen3-coder, model gemini) that were removed from COMMAND_MENU_GROUPS. These hints are now dead code — the commands don't appear in the slash palette so hints are never displayed. The comment at line 275-283 documents the removal rationale but the hints dict wasn't cleaned up.",
+      "action": "auto-fix",
+      "review_scope": "source"
+    },
+    {
+      "id": "mouse-handler-fix",
+      "severity": "info",
+      "file": "sensei_tui.py",
+      "line": 800,
+      "description": "Mouse handler for chat pane changed from returning None to NotImplemented for non-MOUSE_UP events. This fixes a bug where wheel events were being swallowed (returning None unconditionally prevented Window's default _scroll_up/_scroll_down from firing). The change is correct and improves scroll behavior.",
+      "action": "no-op",
+      "review_scope": "source"
+    },
+    {
+      "id": "gdrive-payload-fix",
+      "severity": "info",
+      "file": "sensei_tui.py",
+      "line": 399,
+      "description": "Added 'gdrive' to _is_payload_command() payload list. Previously selecting 'gdrive' from the slash palette auto-submitted bare, but the dispatcher only matches lo.startswith('gdrive ') — so selecting it did nothing. Now it correctly leaves the cursor ready for argument input. This is a targeted bug fix.",
+      "action": "no-op",
+      "review_scope": "source"
+    },
+    {
+      "id": "dead-model-entries-removed",
+      "severity": "info",
+      "file": "sensei_tui.py",
+      "line": 275,
+      "description": "Removed 6 dead model menu entries (model groq, model deepseek-r1, model qwen3-coder, model gemini, model qwen3.5:397b-cloud, model kimi-k2.5:cloud) from COMMAND_MENU_GROUPS. The comment documents that none resolve in MODEL_MENU, MODEL_COMMAND_ALIASES, or catalog ids — _resolve_model_choice() returns empty for all. Users should use the live two-step /model picker instead. This reduces palette clutter.",
+      "action": "no-op",
+      "review_scope": "source"
+    },
+    {
+      "id": "alphabetical-palette-sort",
+      "severity": "info",
+      "file": "sensei_tui.py",
+      "line": 374,
+      "description": "COMPLETER_WORDS now sorts case-insensitively (key=str.lower) per user request ('I need my slash command to be alphabetically aesthetic'). Source COMMAND_MENU_GROUPS remains grouped by category for maintainability. This is a deliberate UX improvement for voice/controller predictability.",
+      "action": "no-op",
+      "review_scope": "source"
+    },
+    {
+      "id": "model-picker-styling",
+      "severity": "info",
+      "file": "sensei_tui.py",
+      "line": 990,
+      "description": "Added comprehensive styling for /model picker dialog (dialog, dialog.body, dialog frame.label, radio, radio-selected, radio-checked, radio-number) to match app chrome stoplight accent colors. Uses explicit dark panel fill (#1c1c1c) with light foreground (#dddddd) so contrast doesn't depend on terminal defaults. Visual improvement only.",
+      "action": "no-op",
+      "review_scope": "source"
+    },
+    {
+      "id": "method-reorganization",
+      "severity": "info",
+      "file": "sensei_tui.py",
+      "line": 1642,
+      "description": "_focus_chat() and _focus_input() methods moved from inside __init__ to the public API section at end of class. Functionally identical — same logic, same call sites (mouse handlers, escape key). Pure code organization improvement.",
+      "action": "no-op",
+      "review_scope": "source"
+    }
+  ],
+  "tested": [
+    "python3 -m py_compile sensei_tui.py"
+  ],
+  "testing_summary": "Syntax validation passes. No runtime tests executed per review phase constraints. The changes are primarily formatting, code organization, dead code removal, and targeted bug fixes (mouse wheel handling, gdrive payload command). No public API changes.",
+  "risk_level": "low",
+  "risk_rationale": "Changes are well-bounded UI improvements: dead model entries removed with documentation, palette alphabetized per user request, two bug fixes (mouse wheel, gdrive), visual styling for model picker, and code reorganization. No authorization, privacy, or breaking changes. Stale hints in COMMAND_MENU_HINTS are the only code quality issue (auto-fix).",
+  "risk_scope": "source-or-external"
+}
