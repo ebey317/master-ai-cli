@@ -24076,7 +24076,7 @@ if __name__ == "__main__":
         _CLI_FLAGS = ("-h", "--help", "--setup", "--uninstall", "update", "--update")
         if any(arg in _CLI_FLAGS for arg in sys.argv[1:]):
             main()
-        elif _SENSEI_ENABLED and _SENSEI_APP is not None:
+        elif _SENSEI_ENABLED and _ensure_sensei_app() is not None:
             _run_with_tui()
         else:
             main()
