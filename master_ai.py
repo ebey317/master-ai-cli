@@ -19837,22 +19837,29 @@ def handle(user_text, history, image_path=None, context_policy=None):
                 "synthesize a closing answer from it right now. Try again, or ask me "
                 "to continue from here."
             ), False
-        if repair_turn:
-            return (
-                _call_with_hard_timeout(
-                    ask_local_stream,
-                    history,
-                    model=MODELS["master"],
-                    timeout=_LOCAL_HARD_TIMEOUT,
-                ),
-                True,
-            )
-        return (
-            _call_with_hard_timeout(
-                ask_local_stream, history, model=model, timeout=_LOCAL_HARD_TIMEOUT
-            ),
-            True,
+        _local_model = MODELS["master"] if repair_turn else model
+        _local_reply = _call_with_hard_timeout(
+            ask_local_stream, history, model=_local_model, timeout=_LOCAL_HARD_TIMEOUT
         )
+        if not _local_reply:
+            # 2026-09-13: every CHAIN_CONTINUATION_STOP in master.log shows
+            # turns=0 -- the chain dies on the very FIRST continuation
+            # attempt. ask_local_stream returns None on any transient
+            # failure (connection error, empty stream, model swap
+            # mid-request) and had zero retry of its own here, while the
+            # cloud branch above already retries once. One flaky Ollama
+            # call was enough to kill the whole turn and dump the user
+            # into the REPL's manual "type continue" path. Mirror the
+            # cloud branch's single retry.
+            log(f"LOCAL_CONTINUATION_EMPTY: model={_local_model} — retrying local once")
+            print(f"  {D}⚠ local continuation came back empty — retrying local once{X}")
+            _local_reply = _call_with_hard_timeout(
+                ask_local_stream,
+                history,
+                model=_local_model,
+                timeout=_LOCAL_HARD_TIMEOUT,
+            )
+        return (_local_reply, True)
 
     # READ:, directive repair, blocked-tool feedback, or tool output was injected
     # into history — keep asking the same lane until it synthesizes an answer or
@@ -21778,11 +21785,23 @@ def main():
                         or "groq",
                     )
                     if _cont_reply2:
-                        process_reply(
+                        result = process_reply(
                             _cont_reply2,
                             history,
                             streamed=False,
                             continue_after_tools=True,
+                        )
+                    # 2026-09-13: this used to fall through silently here --
+                    # no message, nothing added to history -- when the
+                    # second attempt also came back empty or also stalled.
+                    # The user just saw the turn go quiet with no sign
+                    # "continue" had even run, and typed it again into the
+                    # same dead end. Say so honestly instead.
+                    if result is None:
+                        print(
+                            f"  {R}Still stuck after two tries — the model isn't "
+                            f"producing a real answer from here. Try a narrower "
+                            f"request or a different model.{X}"
                         )
             else:
                 print(f"  {R}keep-going failed — cloud unavailable.{X}")
