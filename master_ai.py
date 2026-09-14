@@ -15335,6 +15335,45 @@ _TOOL_CALL_TAG_RE = re.compile(r"</?\s*tool_calls?\s*>", re.IGNORECASE)
 # have their own plain-text syntax elsewhere, e.g. READ: path:120-180).
 _ARG_XML_TAG_RE = re.compile(r"</?\s*arg_(?:key|value)\b", re.IGNORECASE)
 
+
+def _strip_arg_xml_noise(s):
+    """Remove leaked <arg_key>/<arg_value> XML fragments a small model
+    glues onto directive payloads, without discarding the real content.
+
+    Two shapes seen live, both handled:
+    - TRAILING garbage (the shape _ARG_XML_TAG_RE was originally written
+      for): real content first, then a leaked tag afterward, e.g.
+      `echo hi</tool_call><arg_value>` -- truncate at the tag, keep
+      what's before it.
+    - 2026-09-14: WRAPPING garbage, reproduced live on the real running
+      session (`RUN: <arg_value>cd ~/scripts && gh pr list ...</arg_value>`,
+      `SEARCH: <arg_value>three day weather forecast</arg_value>`): the
+      model wraps the ENTIRE payload in matched open/close tags. The
+      opening tag is the very first thing after the directive's colon,
+      so "truncate everything before the first tag" (the trailing-garbage
+      case above) wiped the whole command to "" -- the directive then
+      silently vanished (RUN/SEARCH already have a colon, so
+      has_directives is True and the malformed-directive stall detector,
+      which only fires when it's False, never saw it either). Detect an
+      opening tag sitting at position 0 specifically and strip the
+      wrapper instead of the payload: drop the opening tag through its
+      closing '>', then trim at a matching closing tag if one follows,
+      keeping the middle.
+    """
+    m = _ARG_XML_TAG_RE.search(s)
+    if not m:
+        return s
+    is_opening = not m.group(0).lstrip().startswith("</")
+    if is_opening and m.start() == 0:
+        open_end = s.find(">", m.end())
+        inner = s[open_end + 1 :] if open_end != -1 else s[m.end() :]
+        close_m = re.search(r"</\s*arg_(?:key|value)\b[^>]*>", inner, re.IGNORECASE)
+        if close_m:
+            inner = inner[: close_m.start()]
+        return inner.strip()
+    return s[: m.start()].rstrip()
+
+
 # 2026-09-08: reasoning models (confirmed live on glm-5.2 via OpenRouter)
 # sometimes leak a trailing `</think>` onto the SAME line as the directive
 # it just emitted, e.g. `RUN: ... | grep -v grep</think>`, instead of
@@ -15746,9 +15785,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         if len(parts) != 2:
             return ""
         s = _strip_command_wrap(parts[1])
-        arg_xml = _ARG_XML_TAG_RE.search(s)
-        if arg_xml:
-            s = s[: arg_xml.start()].rstrip()
+        s = _strip_arg_xml_noise(s)
         think_tag = _THINK_TAG_RE.search(s)
         if think_tag:
             s = s[: think_tag.start()].rstrip()
@@ -16355,9 +16392,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         # this READ-specific parser never got that same protection — so a
         # genuine path with XML noise trailing it just silently fails to
         # match any real file on disk instead of being cleaned first.
-        arg_xml = _ARG_XML_TAG_RE.search(target)
-        if arg_xml:
-            target = target[: arg_xml.start()].rstrip()
+        target = _strip_arg_xml_noise(target)
         think_tag = _THINK_TAG_RE.search(target)
         if think_tag:
             target = target[: think_tag.start()].rstrip()
@@ -20174,9 +20209,7 @@ def summarize_session(history):
         # if there's nothing usable left after truncating, or it never had
         # a real bullet to begin with, don't save it — a missing summary
         # is honest, a corrupted one silently poisons the next session.
-        arg_xml = _ARG_XML_TAG_RE.search(result)
-        if arg_xml:
-            result = result[: arg_xml.start()].rstrip()
+        result = _strip_arg_xml_noise(result)
         think_tag = _THINK_TAG_RE.search(result)
         if think_tag:
             result = result[: think_tag.start()].rstrip()
