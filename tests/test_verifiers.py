@@ -13,7 +13,7 @@ class TestVerifyProcessRunning(unittest.TestCase):
         self.assertIsNone(result.observed)
         self.assertEqual(result.reason, "empty process name")
     
-    @patch('master_ai.verifiers.subprocess.run')
+    @patch('verifiers.subprocess.run')
     def test_process_found_immediately(self, mock_run):
         """Test that process found immediately returns success"""
         # Mock successful pgrep call
@@ -29,7 +29,7 @@ class TestVerifyProcessRunning(unittest.TestCase):
         self.assertEqual(result.observed, "1234 /usr/bin/python3 -m master_ai")
         self.assertEqual(result.reason, "process 'master_ai' found")
         
-    @patch('master_ai.verifiers.subprocess.run')
+    @patch('verifiers.subprocess.run')
     def test_process_not_found(self, mock_run):
         """Test that process not found returns failure after timeout"""
         # Mock pgrep returning no matches (returncode 1)
@@ -45,7 +45,7 @@ class TestVerifyProcessRunning(unittest.TestCase):
         self.assertIsNone(result.observed)
         self.assertIn("not found within 0.1s", result.reason)
         
-    @patch('master_ai.verifiers.subprocess.run')
+    @patch('verifiers.subprocess.run')
     def test_pgrep_not_available(self, mock_run):
         """Test that pgrep not available returns appropriate error"""
         # Mock FileNotFoundError when pgrep command is not found
@@ -57,7 +57,7 @@ class TestVerifyProcessRunning(unittest.TestCase):
         self.assertIsNone(result.observed)
         self.assertEqual(result.reason, "pgrep not available on this system")
         
-    @patch('master_ai.verifiers.subprocess.run')
+    @patch('verifiers.subprocess.run')
     def test_pgrep_timeout(self, mock_run):
         """Test that pgrep timeout returns appropriate error"""
         # Mock subprocess.TimeoutExpired
