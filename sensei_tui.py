@@ -26,44 +26,48 @@ Public API (used by master_ai.py):
     app.scroll("up" | "down" | "top" | "bottom")
     app.exit()                         # clean shutdown
 """
+
 from __future__ import annotations
 
 import itertools
 import os
 import re
 import shutil
-import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, List, Optional
 
 from prompt_toolkit import Application
-from prompt_toolkit.application.current import get_app_or_none
-from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import Completer, Completion
-from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.data_structures import Point
-from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition, has_focus
 from prompt_toolkit.formatted_text import ANSI, FormattedText
-from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import (
-    ConditionalContainer, Float, FloatContainer, HSplit, Window, WindowAlign,
+    ConditionalContainer,
+    Float,
+    FloatContainer,
+    HSplit,
+    Window,
+    WindowAlign,
     to_container,
 )
-from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl, UIContent
+from prompt_toolkit.layout.controls import (
+    FormattedTextControl,
+)
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.layout.menus import CompletionsMenu
+from prompt_toolkit.mouse_events import MouseEventType
+from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.styles import Style
-from prompt_toolkit.widgets import Frame, TextArea, RadioList, Box, Dialog
-
+from prompt_toolkit.utils import get_cwidth
+from prompt_toolkit.widgets import Box, Dialog, Frame, RadioList, TextArea
 
 HISTORY_FILE = str(Path.home() / ".master_ai_history")
 
@@ -201,58 +205,174 @@ COMMAND_MENU_HINTS = {
 # Payload commands (the ones that need an argument) keep a trailing space or
 # colon so the cursor lands ready for input.
 PAYLOAD_COMMANDS = {
-    "remember:", "forget:", "task add", "git commit",
-    "image:", "image status", "image latest", "max:", "agent:",
-    "reason:", "reason fast:", "reason standard:", "reason deep:", "reason max:",
-    "agents run", "agents inspect",
-    "hooks enable", "hooks disable",
+    "remember:",
+    "forget:",
+    "task add",
+    "git commit",
+    "image:",
+    "image status",
+    "image latest",
+    "max:",
+    "agent:",
+    "reason:",
+    "reason fast:",
+    "reason standard:",
+    "reason deep:",
+    "reason max:",
+    "agents run",
+    "agents inspect",
+    "hooks enable",
+    "hooks disable",
 }
 
 COMMAND_MENU_GROUPS = {
     "/": [
         # general
-        "hub", "help", "controls", "tips", "commands",
-        "update", "master update", "refresh", "restart", "kick",
-        "save session", "load summary", "load session", "transcript", "log",
-        "compact", "compress", "preview", "clear", "clear history", "clear cache",
-        "clear approved", "clear chats", "chats", "doctor", "clean",
-        "projects", "apps", "autotips", "slideshow", "tour",
-        "keys", "approved", "cache", "perms", "tutorial", "project",
+        "hub",
+        "help",
+        "controls",
+        "tips",
+        "commands",
+        "update",
+        "master update",
+        "refresh",
+        "restart",
+        "kick",
+        "save session",
+        "load summary",
+        "load session",
+        "transcript",
+        "log",
+        "compact",
+        "compress",
+        "preview",
+        "clear",
+        "clear history",
+        "clear cache",
+        "clear approved",
+        "clear chats",
+        "chats",
+        "doctor",
+        "clean",
+        "projects",
+        "apps",
+        "autotips",
+        "slideshow",
+        "tour",
+        "keys",
+        "approved",
+        "cache",
+        "perms",
+        "tutorial",
+        "project",
         # settings / model
-        "mode plan", "mode review", "mode auto", "mode local", "mode connected", "mode",
-        "model", "model auto", "model local", "model qwen3-vl:8b",
-        "model groq", "model deepseek-r1", "model qwen3-coder", "model gemini",
-        "model stats", "model qwen3.5:397b-cloud", "model kimi-k2.5:cloud",
-        "tts on", "tts off", "tts",
-        "hints on", "hints off", "hints",
-        "mouse remote", "mouse local", "mouse status",
-        "few_shot on", "few_shot off", "few_shot status",
-        "privacy status", "privacy approve send",
+        "mode plan",
+        "mode review",
+        "mode auto",
+        "mode local",
+        "mode connected",
+        "mode",
+        # 2026-09-14: dropped "model groq"/"model deepseek-r1"/"model
+        # qwen3-coder"/"model gemini"/"model qwen3.5:397b-cloud"/"model
+        # kimi-k2.5:cloud" — leftovers from the flat pre-2026-08-30 model
+        # menu (Elijah: "get rid of stuff that's not even available or
+        # don't use anymore"). None of those exact strings resolve: not in
+        # MODEL_MENU, not in MODEL_COMMAND_ALIASES, not catalog ids —
+        # _resolve_model_choice() returns "" (unknown model) for all six.
+        # Use the live two-step `/model` picker (or "model <provider>::"
+        # picks) instead. "model qwen3-vl:8b" stays: it equals
+        # DEFAULT_LOCAL_MODEL and is a real locally-pulled Ollama model.
+        "model",
+        "model auto",
+        "model local",
+        "model qwen3-vl:8b",
+        "model stats",
+        "tts on",
+        "tts off",
+        "tts",
+        "hints on",
+        "hints off",
+        "hints",
+        "mouse remote",
+        "mouse local",
+        "mouse status",
+        "few_shot on",
+        "few_shot off",
+        "few_shot status",
+        "privacy status",
+        "privacy approve send",
         "accessibility",
         # navigation / status
-        "up", "down", "top", "bottom", "last",
+        "up",
+        "down",
+        "top",
+        "bottom",
+        "last",
         # payload / tools
-        "remember:", "forget:", "task add", "task done", "task clear", "tasks", "task",
-        "git commit", "git status", "git diff", "git log", "git",
-        "image:", "image status", "image latest", "max:", "agent:",
-        "reason:", "reason fast:", "reason standard:", "reason deep:", "reason max:",
-        "search", "read", "dl", "gdrive", "mesh",
-        "tinyfish", "tf search", "tf fetch", "tf status",
-        "agents", "agents list", "agents inspect", "agents run",
-        "hooks", "hooks list", "hooks enable", "hooks disable", "hooks reload",
-        "stats", "router", "router stats",
+        "remember:",
+        "forget:",
+        "task add",
+        "task done",
+        "task clear",
+        "tasks",
+        "task",
+        "git commit",
+        "git status",
+        "git diff",
+        "git log",
+        "git",
+        "image:",
+        "image status",
+        "image latest",
+        "max:",
+        "agent:",
+        "reason:",
+        "reason fast:",
+        "reason standard:",
+        "reason deep:",
+        "reason max:",
+        "search",
+        "read",
+        "dl",
+        "gdrive",
+        "mesh",
+        "tinyfish",
+        "tf search",
+        "tf fetch",
+        "tf status",
+        "agents",
+        "agents list",
+        "agents inspect",
+        "agents run",
+        "hooks",
+        "hooks list",
+        "hooks enable",
+        "hooks disable",
+        "hooks reload",
+        "stats",
+        "router",
+        "router stats",
         # plan approval
-        "go", "cancel", "e", "only",
+        "go",
+        "cancel",
+        "e",
+        "only",
         # exit
         "x",
     ],
 }
 
-COMPLETER_WORDS: List[str] = []
+COMPLETER_WORDS: list[str] = []
 for _group in COMMAND_MENU_GROUPS.values():
     for _cmd in _group:
         if _cmd not in COMPLETER_WORDS:
             COMPLETER_WORDS.append(_cmd)
+# 2026-09-14: Elijah — "I need my slash command to be alphabetically
+# aesthetic." Source stays grouped by category above (easier to maintain),
+# but the palette itself sorts case-insensitively so it's scannable/
+# predictable by voice/controller instead of following curation order.
+COMPLETER_WORDS.sort(key=str.lower)
+
 
 # Any command that legitimately needs an argument before it can run is a
 # payload command; selecting it from the slash palette leaves the cursor at
@@ -263,15 +383,32 @@ def _is_payload_command(command: str) -> bool:
     if command.endswith(":"):
         return True
     # subcommands that are known to need an argument
-    return command in ("task add", "task done", "agents run", "agents inspect",
-                       "hooks enable", "hooks disable", "git commit", "image status",
-                       "search", "read", "dl", "mesh ask")
+    return command in (
+        "task add",
+        "task done",
+        "agents run",
+        "agents inspect",
+        "hooks enable",
+        "hooks disable",
+        "git commit",
+        "image status",
+        "search",
+        "read",
+        "dl",
+        "mesh ask",
+        # 2026-09-14: "gdrive" was auto-submitting bare from the
+        # palette, but the dispatcher only matches
+        # lo.startswith("gdrive ") — selecting it did nothing.
+        "gdrive",
+    )
 
-def _menu_prefix(text: str) -> Optional[str]:
-    text = (text or "")
+
+def _menu_prefix(text: str) -> str | None:
+    text = text or ""
     return text[:1] if text[:1] in COMMAND_MENU_GROUPS else None
 
-def _menu_command_matches(text: str) -> List[str]:
+
+def _menu_command_matches(text: str) -> list[str]:
     prefix = _menu_prefix(text)
     if not prefix:
         return []
@@ -301,6 +438,7 @@ def _menu_command_matches(text: str) -> List[str]:
             continue
         ranked.append((score, idx, command))
     return [command for _, _, command in sorted(ranked)]
+
 
 class SlashCommandCompleter(Completer):
     """Popup command palette triggered by the single '/' prefix.
@@ -333,8 +471,14 @@ class SlashCommandCompleter(Completer):
                 display_meta=hint,
             )
 
+
 LEGEND_WORDS = [
-    "/help", "/model", "/mode plan", "/chats", "/tts", "/slash",
+    "/help",
+    "/model",
+    "/mode plan",
+    "/chats",
+    "/tts",
+    "/slash",
     "e=edit label",
 ]
 
@@ -372,6 +516,7 @@ IDLE_TIPS = [
 def _term_size():
     return shutil.get_terminal_size((80, 24))
 
+
 def _fit_text(text: str, width: int) -> str:
     """Clamp one-line chrome text so frame titles/status never spill.
 
@@ -406,7 +551,8 @@ class _TUIStdout:
     """Replacement for sys.stdout that writes to the TUI's output buffer.
     Every write is defensively try/excepted — a raise from here would take
     down the worker thread and silently exit the app."""
-    def __init__(self, app: "SenseiApp", original):
+
+    def __init__(self, app: SenseiApp, original):
         self._app = app
         self._original = original
         self._buf = ""
@@ -421,8 +567,10 @@ class _TUIStdout:
                 self._buf = ""
             return len(s)
         except Exception:
-            try: self._original.write(s)
-            except Exception: pass
+            try:
+                self._original.write(s)
+            except Exception:
+                pass
             return len(s) if s else 0
 
     def flush(self):
@@ -437,8 +585,10 @@ class _TUIStdout:
         return True
 
     def fileno(self):
-        try: return self._original.fileno()
-        except Exception: return -1
+        try:
+            return self._original.fileno()
+        except Exception:
+            return -1
 
 
 class SafeFormattedTextControl(FormattedTextControl):
@@ -463,11 +613,13 @@ class SafeFormattedTextControl(FormattedTextControl):
         if getattr(content.get_line, "_sensei_safe_wrapped", False):
             return content
         original_get_line = content.get_line
+
         def safe_get_line(i):
             try:
                 return original_get_line(i)
             except IndexError:
                 return []
+
         safe_get_line._sensei_safe_wrapped = True
         content.get_line = safe_get_line
         return content
@@ -496,7 +648,7 @@ class SenseiApp:
         self._label = ""
         self._status = ""
         self._chat_id = ""
-        self._output_chunks: List[str] = []
+        self._output_chunks: list[str] = []
         self._output_lock = threading.Lock()
         # Output render cache keyed by a monotonic write-version.
         # prompt_toolkit calls the text getter multiple times per frame;
@@ -514,11 +666,17 @@ class SenseiApp:
         # Thinking-mode state: when the AI is generating, we rotate a different
         # set of narrative lines in the tip slot every 1.8s.
         self._thinking = False
-        self._thinking_cycle = itertools.cycle([
-            "Grinding...", "Pushing through...", "In deep meditation...",
-            "Leveling up...", "Getting to the goal...", "Ninja-ing...",
-            "Doing what ninjas do...",
-        ])
+        self._thinking_cycle = itertools.cycle(
+            [
+                "Grinding...",
+                "Pushing through...",
+                "In deep meditation...",
+                "Leveling up...",
+                "Getting to the goal...",
+                "Ninja-ing...",
+                "Doing what ninjas do...",
+            ]
+        )
         self._thinking_line = "Grinding..."
         self._thinking_last = 0.0
         self._thinking_interval = 1.8
@@ -534,13 +692,15 @@ class SenseiApp:
         # modes for the thoughts."
         self._plan_pending = False
         self._handoff_active = False
-        self._handoff_cycle = itertools.cycle([
-            "⚡ handing off to Review...",
-            "🥋 → 🔴 mode flipping...",
-            "plan accepted — Review taking over...",
-            "executing plan step by step...",
-            "🥋 Review mode active...",
-        ])
+        self._handoff_cycle = itertools.cycle(
+            [
+                "⚡ handing off to Review...",
+                "🥋 → 🔴 mode flipping...",
+                "plan accepted — Review taking over...",
+                "executing plan step by step...",
+                "🥋 Review mode active...",
+            ]
+        )
         self._handoff_line = "⚡ handing off to Review..."
         self._handoff_last = 0.0
         self._handoff_interval = 1.0
@@ -578,14 +738,6 @@ class SenseiApp:
             get_cursor_position=self._get_output_cursor,
         )
 
-        # Click/activate the chat output pane so wheel/arrow keys scroll it.
-        def _chat_mouse_handler(mouse_event):
-            if mouse_event.event_type == MouseEventType.MOUSE_UP:
-                self._focus_chat()
-            return None
-
-        self._output_control.mouse_handler = _chat_mouse_handler
-
         self._output_window = Window(
             content=self._output_control,
             wrap_lines=True,
@@ -603,6 +755,7 @@ class SenseiApp:
             # drop the arrows. Typed `up`/`down`/`top`/`bottom` still scroll.
             right_margins=[ScrollbarMargin(display_arrows=False)],
         )
+
         # Route mouse-wheel events on the chat window into OUR scroll_offset.
         # Window's default handlers bump self.vertical_scroll, but our
         # rendering re-anchors to the invisible cursor each frame, so the
@@ -610,13 +763,17 @@ class SenseiApp:
         # two methods keeps wheel and page-up/down on the same offset.
         def _wheel_up():
             self._scroll_offset += 3
-            try: self._app.invalidate()
-            except Exception: pass
+            try:
+                self._app.invalidate()
+            except Exception:
+                pass
 
         def _wheel_down():
             self._scroll_offset = max(0, self._scroll_offset - 3)
-            try: self._app.invalidate()
-            except Exception: pass
+            try:
+                self._app.invalidate()
+            except Exception:
+                pass
 
         self._output_window._scroll_up = _wheel_up
         self._output_window._scroll_down = _wheel_down
@@ -644,6 +801,7 @@ class SenseiApp:
                 self._focus_chat()
                 return None
             return NotImplemented
+
         self._output_control.mouse_handler = _chat_mouse_handler
 
         self._status_control = FormattedTextControl(text=self._render_status)
@@ -656,26 +814,33 @@ class SenseiApp:
 
         self._legend_control = FormattedTextControl(text=self._render_legend)
         self._legend_window = Window(
-            content=self._legend_control, height=1, style="class:legend",
+            content=self._legend_control,
+            height=1,
+            style="class:legend",
         )
 
         self._tip_control = FormattedTextControl(text=self._render_tip)
         self._tip_window = Window(
-            content=self._tip_control, height=1, style="class:tip",
+            content=self._tip_control,
+            height=1,
+            style="class:tip",
         )
 
         # Tip/thinking slot ABOVE the ninja — rotating idle hints (💭) or
         # thinking animation (🥷 [thinking] ...) depending on state.
         # Restored 2026-04-20 per Elijah: "make sure the thoughts for
         # idle and thinking are on" — 1 row cost, real feedback benefit.
-        input_stack = HSplit([
-            ConditionalContainer(self._tip_window, filter=Condition(self._show_tip_row)),
-            self._input,
-            self._legend_window,
-        ])
+        input_stack = HSplit(
+            [
+                ConditionalContainer(
+                    self._tip_window, filter=Condition(self._show_tip_row)
+                ),
+                self._input,
+                self._legend_window,
+            ]
+        )
 
-        self._frame = Frame(input_stack, title=self._render_label,
-                            style="class:frame")
+        self._frame = Frame(input_stack, title=self._render_label, style="class:frame")
 
         # Clicking anywhere on the input frame returns focus to input.
         # Same fix as _chat_mouse_handler above: only claim MOUSE_UP, else
@@ -697,23 +862,27 @@ class SenseiApp:
             text=self._render_header,
         )
         self._header_window = Window(
-            content=self._header_control, height=1,
-            align=WindowAlign.CENTER, style="class:header",
+            content=self._header_control,
+            height=1,
+            align=WindowAlign.CENTER,
+            style="class:header",
         )
 
-        root = HSplit([
-            self._header_window,
-            self._status_window,
-            self._output_frame,
-            self._frame,
-        ])
+        root = HSplit(
+            [
+                self._header_window,
+                self._status_window,
+                self._output_frame,
+                self._frame,
+            ]
+        )
         # Modal /model picker — pure arrow-key + Enter navigation, no typing
         # at any step (see _open_model_picker). Floats full-screen above
         # everything else when active; a placeholder Window the rest of the
         # time so it costs nothing when hidden.
         self._picker_visible = False
-        self._picker_radio = None       # currently-shown RadioList
-        self._picker_on_select = None   # callback(value) fired on Enter
+        self._picker_radio = None  # currently-shown RadioList
+        self._picker_on_select = None  # callback(value) fired on Enter
         self._picker_container = ConditionalContainer(
             Window(width=0, height=0),
             filter=Condition(lambda: self._picker_visible),
@@ -728,13 +897,16 @@ class SenseiApp:
                     content=CompletionsMenu(max_height=8, display_arrows=True),
                 ),
                 Float(
-                    left=0, top=0, right=0, bottom=0,
+                    left=0,
+                    top=0,
+                    right=0,
+                    bottom=0,
                     content=self._picker_container,
                 ),
             ],
         )
 
-        self._on_submit: Optional[Callable[[str], None]] = None
+        self._on_submit: Callable[[str], None] | None = None
 
         # Mode-aware palette — set_mode() rebuilds the Style with one of
         # these accent colors so the header, frame, status, and legend
@@ -778,9 +950,9 @@ class SenseiApp:
         # Elijah locked 2026-04-20 after the full tuning walk (#8b1a1a →
         # #b91c1c → #ef4444 → #dc2626 → #ef4444 → #dc143c → #ef4444 →
         # #c0392b → #ef4444 → #cc0000). Do NOT re-tune without his ask.
-        "plan":   "#cc0000",  # true red — STOP: drafting only, no execution. Approved hex 2026-04-20.
+        "plan": "#cc0000",  # true red — STOP: drafting only, no execution. Approved hex 2026-04-20.
         "review": "#c7761a",  # amber — CAUTION: per-command confirm, press 1/Enter to approve each
-        "auto":   "#1a7a3a",  # forest green — GO: runs without asking (destructive still pauses)
+        "auto": "#1a7a3a",  # forest green — GO: runs without asking (destructive still pauses)
     }
 
     def _build_style(self, mode: str) -> Style:
@@ -789,32 +961,58 @@ class SenseiApp:
         # label all shift color when the mode changes. Plan=muted red,
         # Review=amber, Auto=green. The stoplight signal spans the full
         # chrome so the mode is visible at a glance, not just in status.
-        return Style.from_dict({
-            "status":      f"{accent} bold",
-            "frame":       f"{accent} bold",
-            "frame.label": f"{accent} bold",
-            "legend":      f"{accent}",
-            "sep":         "#999999",
-            "tip":         "#1a7a3a italic bold",
-            "thinking":    "#c7761a bold",
-            "textinput":   "#ffffff noinherit",
-            "header":      f"{accent} bold",
-            # Chat content — noinherit so the Frame's mode color doesn't
-            # bleed onto text. Semantic ANSI codes from _paint_line render
-            # true (blue=file/info, yellow=plan, green=voice, red=warning).
-            "chat":        "noinherit",
-            # Scrollbar (2026-05-11) — was unset, falling to prompt_toolkit
-            # defaults which render as reverse-video against the frame
-            # (effectively invisible, ungrabbable). Thumb gets the mode
-            # accent so the scrollbar reads as chrome and follows the
-            # stoplight — Plan red / Review amber / Auto green. Track stays
-            # neutral gray so the thumb has contrast. Mouse drag works when
-            # SENSEI_MOUSE=1 (Elijah's remote/phone profile).
-            "scrollbar":            "#666666 noinherit",
-            "scrollbar.background": "#444444 noinherit",
-            "scrollbar.button":     f"bg:{accent} {accent} bold noinherit",
-            "scrollbar.arrow":      f"{accent} bold noinherit",
-        })
+        return Style.from_dict(
+            {
+                "status": f"{accent} bold",
+                "frame": f"{accent} bold",
+                "frame.label": f"{accent} bold",
+                "legend": f"{accent}",
+                "sep": "#999999",
+                "tip": "#1a7a3a italic bold",
+                "thinking": "#c7761a bold",
+                "textinput": "#ffffff noinherit",
+                "header": f"{accent} bold",
+                # Chat content — noinherit so the Frame's mode color doesn't
+                # bleed onto text. Semantic ANSI codes from _paint_line render
+                # true (blue=file/info, yellow=plan, green=voice, red=warning).
+                "chat": "noinherit",
+                # Scrollbar (2026-05-11) — was unset, falling to prompt_toolkit
+                # defaults which render as reverse-video against the frame
+                # (effectively invisible, ungrabbable). Thumb gets the mode
+                # accent so the scrollbar reads as chrome and follows the
+                # stoplight — Plan red / Review amber / Auto green. Track stays
+                # neutral gray so the thumb has contrast. Mouse drag works when
+                # SENSEI_MOUSE=1 (Elijah's remote/phone profile).
+                "scrollbar": "#666666 noinherit",
+                "scrollbar.background": "#444444 noinherit",
+                "scrollbar.button": f"bg:{accent} {accent} bold noinherit",
+                "scrollbar.arrow": f"{accent} bold noinherit",
+                # /model picker (Dialog+RadioList, _show_picker) — 2026-09-14,
+                # Elijah: "solid blue screen is dull, doesn't match the brand."
+                # Unstyled, this falls through to prompt_toolkit's own built-in
+                # defaults: dialog=bg:#4444ff (flat blue box), dialog.body=
+                # bg:#ffffff (white body), dialog frame.label=#ff0000 bold
+                # (hardcoded red title that ignores mode) — none of it follows
+                # the stoplight accent the rest of this app's chrome uses.
+                # First pass used bare "bg:default" with no foreground, which
+                # went the other way (Elijah live: "too dark, I can barely see
+                # it") — "bg:default" alone leaves the foreground unset, so it
+                # fell through to whatever dim default the terminal profile
+                # uses instead of a color this app actually chose. Every rule
+                # below now sets both an explicit dark panel fill (distinct
+                # from pure terminal-default black so the dialog reads as a
+                # surfaced card, not a transparent hole) and an explicit
+                # light foreground, so contrast doesn't depend on the
+                # terminal's own default colors.
+                "dialog": "bg:#1c1c1c",
+                "dialog.body": "bg:#1c1c1c #dddddd",
+                "dialog frame.label": f"{accent} bold",
+                "radio": "bg:#1c1c1c #dddddd",
+                "radio-selected": f"bg:{accent} #ffffff bold",
+                "radio-checked": f"{accent} bold",
+                "radio-number": "#888888 bg:#1c1c1c",
+            }
+        )
 
     def set_mode(self, mode: str) -> None:
         """Swap the accent color when MODE changes. Called by master_ai.py
@@ -824,30 +1022,6 @@ class SenseiApp:
         self._mode = mode
         try:
             self._app.style = self._build_style(mode)
-            self._app.invalidate()
-        except Exception:
-            pass
-
-    def _focus_chat(self):
-        """Move focus to chat pane and enable scroll-via-arrow-keys behavior."""
-        self._chat_focused = True
-        try:
-            self._app.layout.focus(self._output_window)
-        except Exception:
-            pass
-        try:
-            self._app.invalidate()
-        except Exception:
-            pass
-
-    def _focus_input(self):
-        """Return focus to the input box."""
-        self._chat_focused = False
-        try:
-            self._app.layout.focus(self._input)
-        except Exception:
-            pass
-        try:
             self._app.invalidate()
         except Exception:
             pass
@@ -916,8 +1090,8 @@ class SenseiApp:
         clock = time.strftime("%m/%d/%Y %I:%M:%S %p")
         title = (
             f" MASTER AI - SENSEI  {clock} "
-            if width < 76 else
-            f" 🥷  MASTER  AI  —  SENSEI  {clock} "
+            if width < 76
+            else f" 🥷  MASTER  AI  —  SENSEI  {clock} "
         )
         return FormattedText([("class:header", _fit_text(title, width))])
 
@@ -947,26 +1121,30 @@ class SenseiApp:
             if now - self._tip_last >= self._tip_interval:
                 self._tip = next(self._tip_cycle)
                 self._tip_last = now
-        return FormattedText([
-            ("class:frame.label", lbl),
-            ("class:tip", f"  💭 {self._tip} "),
-        ])
+        return FormattedText(
+            [
+                ("class:frame.label", lbl),
+                ("class:tip", f"  💭 {self._tip} "),
+            ]
+        )
 
     def _render_legend(self):
         # Single slash-command namespace. The legend advertises the one
         # prefix that opens the command palette, plus the edit-label shortcut.
         current_mode = getattr(self, "_mode", "plan").upper()
-        return FormattedText([
-            ("class:legend", f"MODE:{current_mode}"),
-            ("class:sep", "  and  "),
-            ("class:legend", "slash"),
-        ])
+        return FormattedText(
+            [
+                ("class:legend", f"MODE:{current_mode}"),
+                ("class:sep", "  and  "),
+                ("class:legend", "slash"),
+            ]
+        )
 
     def _render_tip(self):
         """Tip line has three states:
-          - typing    → empty (disappears completely)
-          - thinking  → '🥷 [thinking] <rotating>' every 1.8s
-          - idle      → '💭 <rotating hint>' every 30s
+        - typing    → empty (disappears completely)
+        - thinking  → '🥷 [thinking] <rotating>' every 1.8s
+        - idle      → '💭 <rotating hint>' every 30s
         """
         typing = bool(self._input.text)
         if typing:
@@ -981,24 +1159,31 @@ class SenseiApp:
                 total = max(0, int(now - self._thinking_started))
                 mm, ss = divmod(total, 60)
                 elapsed = f" [{mm}:{ss:02d}]"
-            line = _fit_text(f"🥷 [thinking]{elapsed} {self._thinking_line}", _term_size().columns - 4)
-            return FormattedText([
-                ("class:thinking", line),
-            ])
+            line = _fit_text(
+                f"🥷 [thinking]{elapsed} {self._thinking_line}",
+                _term_size().columns - 4,
+            )
+            return FormattedText(
+                [
+                    ("class:thinking", line),
+                ]
+            )
         if now - self._tip_last >= self._tip_interval:
             self._tip = next(self._tip_cycle)
             self._tip_last = now
         line = _fit_text(f"💭 {self._tip}", _term_size().columns - 4)
         return FormattedText([("class:tip", line)])
 
-    def _active_comma_completion(self) -> Optional[str]:
+    def _active_comma_completion(self) -> str | None:
         """Return the selected punctuation-menu command, or the first match."""
         buf = self._input.buffer
         state = getattr(buf, "complete_state", None)
         if not state or not getattr(state, "completions", None):
             return self._menu_query_match(buf.document.text_before_cursor)
         original = getattr(state, "original_document", None)
-        source = original.text_before_cursor if original else buf.document.text_before_cursor
+        source = (
+            original.text_before_cursor if original else buf.document.text_before_cursor
+        )
         if "\n" in source or not _menu_prefix(source):
             return None
         index = state.complete_index if state.complete_index is not None else 0
@@ -1007,7 +1192,7 @@ class SenseiApp:
         except Exception:
             return None
 
-    def _menu_query_match(self, text: str) -> Optional[str]:
+    def _menu_query_match(self, text: str) -> str | None:
         """Fallback when Enter lands before prompt_toolkit opens completions."""
         if "\n" in text or not _menu_prefix(text):
             return None
@@ -1020,8 +1205,10 @@ class SenseiApp:
             return False
         suffix = "" if command.endswith(":") else " "
         self._input.buffer.document = Document(command + suffix, len(command + suffix))
-        try: self._app.invalidate()
-        except Exception: pass
+        try:
+            self._app.invalidate()
+        except Exception:
+            pass
         return True
 
     # ── key bindings ───────────────────────────────────────────
@@ -1115,7 +1302,9 @@ class SenseiApp:
                 self.write(f"\n\033[1m> {text}\033[0m\n")
                 if self._on_submit:
                     t = threading.Thread(
-                        target=self._safe_dispatch, args=(text,), daemon=True,
+                        target=self._safe_dispatch,
+                        args=(text,),
+                        daemon=True,
                     )
                     t.start()
                 return
@@ -1128,8 +1317,9 @@ class SenseiApp:
             # get chopped into per-line submissions and Plan mode never
             # sees the full request (the slideshow-prompt-fragmented bug).
             import time as _t
+
             _now = _t.monotonic()
-            _last = getattr(self, '_last_enter_time', 0.0)
+            _last = getattr(self, "_last_enter_time", 0.0)
             self._last_enter_time = _now
             if (_now - _last) < 0.05:
                 self._input.buffer.insert_text("\n")
@@ -1145,7 +1335,9 @@ class SenseiApp:
             if self._on_submit:
                 # run handler in worker so the app keeps repainting
                 t = threading.Thread(
-                    target=self._safe_dispatch, args=(text,), daemon=True,
+                    target=self._safe_dispatch,
+                    args=(text,),
+                    daemon=True,
                 )
                 t.start()
 
@@ -1207,11 +1399,15 @@ class SenseiApp:
                     self._on_interrupt()
                 except Exception:
                     pass
-                self.write("\n\033[33m  ⏹ Interrupt requested — stopping after the current step...\033[0m\n")
+                self.write(
+                    "\n\033[33m  ⏹ Interrupt requested — stopping after the current step...\033[0m\n"
+                )
                 return
             if self._on_submit:
                 threading.Thread(
-                    target=self._safe_dispatch, args=("x",), daemon=True,
+                    target=self._safe_dispatch,
+                    args=("x",),
+                    daemon=True,
                 ).start()
             else:
                 event.app.exit()
@@ -1272,7 +1468,9 @@ class SenseiApp:
             self.write(f"\n\033[1m> {text}\033[0m\n")
             if self._on_submit:
                 t = threading.Thread(
-                    target=self._safe_dispatch, args=(text,), daemon=True,
+                    target=self._safe_dispatch,
+                    args=(text,),
+                    daemon=True,
                 )
                 t.start()
 
@@ -1291,7 +1489,9 @@ class SenseiApp:
         @kb.add("s-down", filter=Condition(lambda: not self._chat_focused))
         @kb.add("pagedown", filter=Condition(lambda: not self._chat_focused))
         def _scroll_down_shift(event):
-            self._scroll_offset = max(0, self._scroll_offset - max(8, _term_size().lines - 8))
+            self._scroll_offset = max(
+                0, self._scroll_offset - max(8, _term_size().lines - 8)
+            )
             event.app.invalidate()
 
         # Chat-pane focus, plain Up/Down: owned by the global _global_up/
@@ -1305,7 +1505,9 @@ class SenseiApp:
 
         @kb.add("pagedown", filter=Condition(lambda: self._chat_focused))
         def _chat_page_down(event):
-            self._scroll_offset = max(0, self._scroll_offset - max(8, _term_size().lines - 8))
+            self._scroll_offset = max(
+                0, self._scroll_offset - max(8, _term_size().lines - 8)
+            )
             event.app.invalidate()
 
         @kb.add("home", filter=Condition(lambda: self._chat_focused))
@@ -1382,8 +1584,10 @@ class SenseiApp:
             if self._on_submit:
                 self._on_submit(text)
         except SystemExit:
-            try: self._app.exit()
-            except Exception: pass
+            try:
+                self._app.exit()
+            except Exception:
+                pass
         except Exception as e:
             self.write(f"\n[tui handler error: {e}]\n")
 
@@ -1394,21 +1598,27 @@ class SenseiApp:
         self._thinking = True
         self._thinking_started = time.time()
         self._thinking_last = 0.0  # force immediate refresh
-        try: self._app.invalidate()
-        except Exception: pass
+        try:
+            self._app.invalidate()
+        except Exception:
+            pass
 
     def stop_thinking(self) -> None:
         """Return the tip line to idle mode."""
         self._thinking = False
         self._thinking_started = 0.0
         self._tip_last = 0.0  # force idle tip to refresh
-        try: self._app.invalidate()
-        except Exception: pass
+        try:
+            self._app.invalidate()
+        except Exception:
+            pass
 
     def set_label(self, label: str) -> None:
         self._label = (label or "").strip()
-        try: self._app.invalidate()
-        except Exception: pass
+        try:
+            self._app.invalidate()
+        except Exception:
+            pass
 
     def set_chat_id(self, chat_id: str) -> None:
         # 2026-09-08: this method existed only in the master-ai-cli clone
@@ -1417,13 +1627,17 @@ class SenseiApp:
         # supervisor respawned into the same crash. Fixed by merging the
         # two clones; keep caller and callee in one tree.
         self._chat_id = str(chat_id or "").strip()
-        try: self._app.invalidate()
-        except Exception: pass
+        try:
+            self._app.invalidate()
+        except Exception:
+            pass
 
     def set_status(self, text: str) -> None:
         self._status = text or ""
-        try: self._app.invalidate()
-        except Exception: pass
+        try:
+            self._app.invalidate()
+        except Exception:
+            pass
 
     def _focus_chat(self):
         """Move focus to the chat pane and switch Up/Down to scrolling."""
@@ -1462,16 +1676,20 @@ class SenseiApp:
                 self._scroll_offset += add_lines
             self._output_chunks.append(str(text))
             self._output_version += 1
-        try: self._app.invalidate()
-        except Exception: pass
+        try:
+            self._app.invalidate()
+        except Exception:
+            pass
 
     def clear_output(self) -> None:
         with self._output_lock:
             self._output_chunks.clear()
             self._scroll_offset = 0
             self._output_version += 1
-        try: self._app.invalidate()
-        except Exception: pass
+        try:
+            self._app.invalidate()
+        except Exception:
+            pass
 
     def run(self, on_submit: Callable[[str], None]) -> None:
         """Blocks until the app exits. Caller is responsible for any stdout
@@ -1560,7 +1778,9 @@ class SenseiApp:
             text = f"model {model_id}"
             self.write(f"\n\033[1m> {text}\033[0m\n")
             if self._on_submit:
-                t = threading.Thread(target=self._safe_dispatch, args=(text,), daemon=True)
+                t = threading.Thread(
+                    target=self._safe_dispatch, args=(text,), daemon=True
+                )
                 t.start()
 
         def _after_provider(provider):
@@ -1574,10 +1794,17 @@ class SenseiApp:
                 self._close_picker()
                 self.write(f"\n{Y}No models found for provider '{provider}'.{X}\n")
                 return
-            model_values = [(pin, f"{disp}  {hint}" if hint else disp) for pin, disp, hint in models]
-            self._show_picker(model_values, f" {provider.upper()} Models ", _after_model)
+            model_values = [
+                (pin, f"{disp}  {hint}" if hint else disp) for pin, disp, hint in models
+            ]
+            self._show_picker(
+                model_values, f" {provider.upper()} Models ", _after_model
+            )
 
-        provider_values = [(key, f"{label}  {hint}" if hint else label) for key, label, hint in providers]
+        provider_values = [
+            (key, f"{label}  {hint}" if hint else label)
+            for key, label, hint in providers
+        ]
         self._show_picker(provider_values, " Select Provider ", _after_provider)
 
     def scroll(self, direction: str, n: int = 10) -> None:
@@ -1589,15 +1816,20 @@ class SenseiApp:
             self._scroll_offset = 10_000
         elif direction == "bottom":
             self._scroll_offset = 0
-        try: self._app.invalidate()
-        except Exception: pass
+        try:
+            self._app.invalidate()
+        except Exception:
+            pass
 
     def exit(self) -> None:
-        try: self._app.exit()
-        except Exception: pass
+        try:
+            self._app.exit()
+        except Exception:
+            pass
 
-    def enable_number_confirm(self, check_fn: Callable[[], bool],
-                               submit_fn: Callable[[str], None]) -> None:
+    def enable_number_confirm(
+        self, check_fn: Callable[[], bool], submit_fn: Callable[[str], None]
+    ) -> None:
         """Make number keys (1-5) auto-submit during confirm prompts.
 
         check_fn() — return True when a confirm prompt is awaiting input.
@@ -1628,6 +1860,7 @@ class SenseiApp:
                     submit_fn(digit)
                 except Exception:
                     pass
+
             return _h
 
         for d in ("1", "2", "3", "4", "5"):
@@ -1635,7 +1868,10 @@ class SenseiApp:
 
 
 __all__ = [
-    "SenseiApp", "COMPLETER_WORDS", "LEGEND_WORDS", "IDLE_TIPS",
+    "SenseiApp",
+    "COMPLETER_WORDS",
+    "LEGEND_WORDS",
+    "IDLE_TIPS",
     "TUIStdout",
 ]
 
