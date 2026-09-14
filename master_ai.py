@@ -17537,7 +17537,134 @@ def startup_check():
     return errors
 
 
-def _show_tui_credit_roll(cloud_status, mem_count):
+def _check_update_status(
+    repo_dir: str | None = None,
+    interval_days: int = 14,
+) -> tuple[str, str]:
+    """Check how far behind origin this repo is, throttled to `interval_days`.
+
+    Returns (color_code, message). On success the message includes the
+    branch and commit count; on failure it is empty and the color is the
+    neutral dim code. Result is cached in ~/.master_ai_last_update_check.json
+    so slow/git-less machines don't pay the network cost on every boot.
+    """
+    cache_path = Path.home() / ".master_ai_last_update_check.json"
+    now = time.time()
+    day = 24 * 60 * 60
+
+    # Use the real repo path because master_ai.py is usually symlinked.
+    if repo_dir is None:
+        repo_dir = os.path.dirname(os.path.realpath(__file__))
+
+    # Try cache first.
+    try:
+        data = json.loads(cache_path.read_text())
+        cached_at = data.get("checked_at", 0)
+        cached_branch = data.get("branch", "")
+        cached_message = data.get("message", "")
+        if now - cached_at < interval_days * day and cached_branch == (
+            subprocess.run(
+                ["git", "-C", repo_dir, "branch", "--show-current"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ).stdout.strip()
+            or ""
+        ):
+            return data.get("color", ""), cached_message
+    except Exception:
+        pass
+
+    color = ""
+    message = ""
+    try:
+        # Confirm this is actually a git repo.
+        git_dir = subprocess.run(
+            ["git", "-C", repo_dir, "rev-parse", "--git-dir"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if git_dir.returncode != 0:
+            return color, message
+
+        # Fetch quietly; don't fail startup if network is down.
+        subprocess.run(
+            ["git", "-C", repo_dir, "fetch", "origin"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        branch = subprocess.run(
+            ["git", "-C", repo_dir, "branch", "--show-current"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip()
+        if not branch:
+            return color, message
+
+        # Prefer the upstream tracking branch if set, otherwise origin/<branch>.
+        upstream = subprocess.run(
+            [
+                "git",
+                "-C",
+                repo_dir,
+                "rev-parse",
+                "--abbrev-ref",
+                f"{branch}@{{upstream}}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip()
+        if not upstream or " " in upstream:
+            upstream = f"origin/{branch}"
+
+        count_proc = subprocess.run(
+            ["git", "-C", repo_dir, "rev-list", "--count", f"HEAD..{upstream}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if count_proc.returncode != 0:
+            return color, message
+
+        try:
+            behind = int(count_proc.stdout.strip())
+        except ValueError:
+            return color, message
+
+        if behind == 0:
+            color = G
+            message = f"repo up to date on {branch}"
+        else:
+            color = Y
+            noun = "commit" if behind == 1 else "commits"
+            message = f"{behind} {noun} behind {upstream} on {branch} — run: master-ai --update"
+    except Exception:
+        return color, message
+
+    try:
+        cache_path.write_text(
+            json.dumps(
+                {
+                    "checked_at": now,
+                    "branch": branch,
+                    "upstream": upstream,
+                    "behind": behind,
+                    "color": color,
+                    "message": message,
+                }
+            )
+        )
+    except Exception:
+        pass
+    return color, message
+
+
+def _show_tui_credit_roll(cloud_status, mem_count, update_color="", update_message=""):
     """Opening-credit style brand roll inside the TUI chat frame."""
     if _SENSEI_APP is None:
         return False
@@ -17551,6 +17678,10 @@ def _show_tui_credit_roll(cloud_status, mem_count):
         f"{BC}    HOST:{BW} {host}{X}",
         f"{BC}    USER:{BW} {user}{X}",
         f"{BC}    STATUS:{BG} ● ONLINE{X}",
+    ]
+    if update_message:
+        lines.append(f"{update_color or BC}    UPDATE:{BW} {update_message}{X}")
+    lines += [
         f"{BC}  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{X}",
         "",
     ]
@@ -20555,13 +20686,19 @@ def main():
             pass
     _clear_tmux_scrollback("startup")
 
+    update_color, update_message = "", ""
+    try:
+        update_color, update_message = _check_update_status(interval_days=14)
+    except Exception:
+        pass
+
     # ── Branded opening ─
     # TUI mode rolls the brand/status through the chat frame like opening
     # credits, then leaves the cleaned Sensei input box ready. Classic mode
     # keeps the full shell banner.
     try:
         if _SENSEI_APP is not None:
-            _show_tui_credit_roll(cloud_status, mem_count)
+            _show_tui_credit_roll(cloud_status, mem_count, update_color, update_message)
         else:
             subprocess.run(
                 "source ~/scripts/brand.sh && banner_master_ai",
@@ -20569,11 +20706,15 @@ def main():
                 executable="/bin/bash",
                 check=False,
             )
+            if update_message:
+                print(f"\n  {update_color or BC}● update check:{X} {update_message}")
     except Exception:
         # Fallback if brand.sh is missing
         print(f"{BC}  ╔══════════════════════════════════════════╗{X}")
         print(f"{BC}  ║  🥷  MASTER  AI  — ready                  ║{X}")
         print(f"{BC}  ╚══════════════════════════════════════════╝{X}")
+        if update_message:
+            print(f"  {update_color or BC}● update check:{X} {update_message}")
 
     startup_check()
 
