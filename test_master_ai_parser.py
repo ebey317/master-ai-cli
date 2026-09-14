@@ -125,6 +125,40 @@ class DirectiveParserTests(unittest.TestCase):
         )
         self.assertEqual(self.calls, [("run", "echo hi")])
 
+    def test_bare_keyword_line_joins_command_prefix_argument(self):
+        # Reproduced live 2026-09-13 on opencode-go::deepseek-v4-pro -- a
+        # fourth variant: the argument line is prefixed with the word
+        # "Command" instead of a colon or a tag.
+        master_ai.process_reply("RUN\nCommand: echo hi", [], streamed=False)
+        self.assertEqual(self.calls, [("run", "echo hi")])
+
+    def test_bare_keyword_line_joins_unwrapped_argument_with_shell_syntax(self):
+        # Reproduced live 2026-09-13 on opencode-go::deepseek-v4-pro,
+        # including right after a [Directive repair] correction telling
+        # the model the right format -- the argument line carries NO
+        # wrapper at all: no colon, no tag, nothing. It's only
+        # distinguishable from ordinary prose by its shell syntax (here,
+        # "~/" and "&&"), which is exactly what
+        # _SHELL_SYNTAX_MARKER_RE requires before joining an unwrapped
+        # line, so a plain English sentence still cannot be joined in.
+        # process_reply splits && chains into separate confirm_run calls
+        # via _shell_and_parts -- that's pre-existing, intentional behavior
+        # for per-command approval, unrelated to this fix. What this test
+        # verifies is that the line got joined into a RUN directive AT ALL
+        # instead of being silently dropped.
+        master_ai.process_reply(
+            'RUN\nls ~/.master_ai_tasks/ 2>/dev/null && echo "---TASKS DIR---"',
+            [],
+            streamed=False,
+        )
+        self.assertEqual(
+            self.calls,
+            [
+                ("run", "ls ~/.master_ai_tasks/ 2>/dev/null"),
+                ("run", 'echo "---TASKS DIR---"'),
+            ],
+        )
+
     def test_repeated_directive_line_runs_exactly_once_not_capped_copies(self):
         # Reproduced live 2026-09-13: the guard originally kept up to
         # _MAX_LINE_REPEATS (3) copies of a detected repeat before
@@ -170,9 +204,7 @@ class DirectiveParserTests(unittest.TestCase):
                 probe.unlink()
             except FileNotFoundError:
                 pass
-        injected = "\n".join(
-            m["content"] for m in history if m.get("role") == "user"
-        )
+        injected = "\n".join(m["content"] for m in history if m.get("role") == "user")
         self.assertEqual(injected.count("unique-marker-content"), 1)
 
     def test_bare_keyword_line_without_colon_prefix_is_not_joined(self):

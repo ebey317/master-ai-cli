@@ -15396,8 +15396,27 @@ _BARE_KEYWORD_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 _BARE_KEYWORD_ARG_RE = re.compile(
-    r"^\s*(?:</?\s*tool_calls?\s*>\s*|:{1,2}\s*)(.+)$", re.IGNORECASE
+    r"^\s*(?:</?\s*tool_calls?\s*>\s*|(?:Command)?:{1,2}\s*)(.+)$", re.IGNORECASE
 )
+
+# 2026-09-13: a fourth variant, reproduced repeatedly (including right after
+# a [Directive repair] correction telling the model the right format) on
+# opencode-go::deepseek-v4-pro: the argument line carries NO wrapper at all
+# -- no colon, no tag, nothing -- just the bare command directly:
+#     RUN
+#     ls ~/.master_ai_tasks/ 2>/dev/null && echo "---TASKS DIR---"
+# _BARE_KEYWORD_ARG_RE deliberately does not match this (see
+# _join_bare_keyword_lines's docstring: a bare keyword followed by ordinary
+# prose has no signal it's a payload, and joining it in would execute prose
+# as a command). But a real command line and a prose sentence are
+# distinguishable on their own content, without needing a wrapper: real
+# shell commands carry shell syntax (paths, redirects, operators); English
+# sentences don't. Require at least one unambiguous shell-syntax marker
+# before treating a completely unwrapped line as the payload -- this is a
+# positive allowlist (safe default: no match), not a denylist, so it only
+# ever WIDENS what gets joined, never risks executing a sentence that
+# happens to lack these specific markers.
+_SHELL_SYNTAX_MARKER_RE = re.compile(r"~/|\.\./|/[a-zA-Z0-9_.]|&&|\|\||`|\$\(")
 
 
 def _join_bare_keyword_lines(reply):
@@ -15432,14 +15451,24 @@ def _join_bare_keyword_lines(reply):
         guard this triggered elsewhere in process_reply:
             <tool_call>RUN
             <tool_call>ls ~/scripts/ 2>/dev/null; echo "===DONE==="
+        2026-09-13, completely unwrapped -- reproduced repeatedly on
+        opencode-go::deepseek-v4-pro, including immediately after a
+        [Directive repair] message explicitly telling it the correct
+        format, still without a colon:
+            RUN
+            ls ~/.master_ai_tasks/ 2>/dev/null && echo "---TASKS DIR---"
     Join the two lines into the bare directive grammar ("RUN: echo hi")
     so every downstream per-line parser sees what it already expects.
-    Deliberately does NOT match a bare, unwrapped follower (blank, EOF,
-    or a plain prose line with no colon and no tag) -- some wrapper
-    punctuation, however it's shaped, is the model's own signal that
-    the line is a tool-call payload; a bare keyword followed by
-    ordinary prose has no such signal, and joining it in would execute
-    that prose as a command."""
+    A bare keyword followed by a colon/tag-wrapped line always joins
+    (some wrapper punctuation, however it's shaped, is the model's own
+    signal the line is a payload). A bare keyword followed by a
+    completely UNWRAPPED line only joins if that line's own content
+    carries positive shell-syntax evidence (_SHELL_SYNTAX_MARKER_RE --
+    a path, a redirect, an operator); otherwise it's left alone, since
+    ordinary prose has no such markers and joining it in would execute
+    that prose as a command. This is a widen-only allowlist: it can
+    never make a real command that already worked stop matching, only
+    catch bare commands that previously fell through entirely."""
     lines = (reply or "").splitlines()
     out = []
     i, n = 0, len(lines)
@@ -15450,9 +15479,18 @@ def _join_bare_keyword_lines(reply):
             j = i + 1
             while j < n and not lines[j].strip():
                 j += 1
-            arg_m = _BARE_KEYWORD_ARG_RE.match(lines[j]) if j < n else None
+            next_line = lines[j] if j < n else None
+            arg_m = _BARE_KEYWORD_ARG_RE.match(next_line) if next_line else None
             if arg_m:
                 out.append(f"{m.group(1).upper()}: {arg_m.group(1).strip()}")
+                i = j + 1
+                continue
+            if (
+                next_line
+                and next_line.strip()
+                and _SHELL_SYNTAX_MARKER_RE.search(next_line)
+            ):
+                out.append(f"{m.group(1).upper()}: {next_line.strip()}")
                 i = j + 1
                 continue
         out.append(line)
@@ -20328,7 +20366,9 @@ def _reload_if_code_changed(history, pending_cmd):
         pass
     sys.stdout.write("\033c\033[2J\033[H")
     sys.stdout.flush()
-    os.execvp(sys.executable, [sys.executable, str(Path.home() / "scripts/master_ai.py")])
+    os.execvp(
+        sys.executable, [sys.executable, str(Path.home() / "scripts/master_ai.py")]
+    )
 
 
 def main():
@@ -22808,10 +22848,7 @@ def main():
         # block ever saw it, since dispatch is sequential top-to-bottom.
         # This phrasing sidesteps that collision without having to touch or
         # reorder the pre-existing approval_queue block at all.
-        if (
-            lo in ("proposals", "pending proposals")
-            or lo.startswith("proposal ")
-        ):
+        if lo in ("proposals", "pending proposals") or lo.startswith("proposal "):
             try:
                 if lo in ("proposals", "pending proposals"):
                     entries = perpetual_review.list_pending()
