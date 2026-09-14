@@ -5501,10 +5501,6 @@ def ask_cloud_openrouter(messages):
     # 2026-09-07: OpenRouter /free models only, from live catalog.
     return ask_cloud_openrouter_generic(messages)
 
-def ask_cloud_opencode_free(messages):
-    """OpenCode's free Zen relay — keyless. Delegates to the shared Zen caller."""
-    return _ask_opencode_zen(messages, "ling-3.0-flash-fin-free", "ling-3.0-flash-fin-free")
-
 def _ask_ollama_cloud(messages, model, label, timeout=120):
     """Ollama Cloud (https://ollama.com/v1) — the operator's paid
     subscription. OpenAI-compatible endpoint. Key lives in ~/.hermes/.env

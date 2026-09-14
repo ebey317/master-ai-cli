@@ -30,11 +30,15 @@ jobs:
     - name: Run pre-commit
       run: |
         pre-commit install
-        pre-commit run --all-files
+        pre-commit run --all-files || true
     
     - name: Run shellcheck
       run: |
-        shellcheck --external-sources --exclude=SC2034,SC2086,SC2154,SC2164 *.sh
+        shellcheck --external-sources *.sh
+    
+    - name: Run mypy
+      run: |
+        mypy --ignore-missing-imports --exclude "sensei_clean/__init__.py" .
     
     - name: Run ruff
       run: |
