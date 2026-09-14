@@ -312,7 +312,7 @@ def _load_handlers():
     if _sys_path_add not in sys.path:
         sys.path.insert(0, _sys_path_add)
     # Each import is optional — missing consumers don't block the CLI.
-    for mod_name in ("sensei_extractor",):
+    for mod_name in ("sensei_extractor", "master_ai"):
         try:
             __import__(mod_name)
         except Exception as e:
@@ -400,4 +400,12 @@ def _cli():
 
 
 if __name__ == "__main__":
+    # Alias this running __main__ module into sys.modules["approval_queue"]
+    # BEFORE _load_handlers() imports master_ai. Otherwise `import
+    # approval_queue` inside master_ai.py creates a second, separate module
+    # object, and every @register_handler decorator it fires registers into
+    # that copy's _HANDLERS dict — invisible to the approve() below, which
+    # reads the __main__ copy's _HANDLERS. This makes both names point at
+    # the same module object so registrations land in one place.
+    sys.modules.setdefault("approval_queue", sys.modules[__name__])
     sys.exit(_cli())

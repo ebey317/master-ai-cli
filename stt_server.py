@@ -1,1 +1,0 @@
-/home/elijah/master-ai-cli/stt_server.py
