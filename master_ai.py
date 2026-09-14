@@ -7324,13 +7324,6 @@ def ask_cloud_openrouter(messages):
     return ask_cloud_openrouter_generic(messages)
 
 
-def ask_cloud_opencode_free(messages):
-    """OpenCode's free Zen relay — keyless. Delegates to the shared Zen caller."""
-    return _ask_opencode_zen(
-        messages, "ling-3.0-flash-fin-free", "ling-3.0-flash-fin-free"
-    )
-
-
 def _ollama_cloud_key():
     """OLLAMA_API_KEY lives in ~/.hermes/.env (NOT the keychain) —
     shared lookup so the picker and the actual caller never drift."""
