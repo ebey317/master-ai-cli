@@ -16252,13 +16252,23 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         r"\b(on it\b|on it\s+[🔍🚀⚙️✅👍]|i\'?ll\s+\w+\s+(?:that|this|it|up|now)\b|"
         r"i\'?ll (?:set|get|check|investigate|look|create|start|do|run|write|build|make|dig|take)|"
         r"let me (?:\w+\s+)?(?:check|see|look|investigate|create|dig|take|pivot)|"
+        r"one moment|give me a (?:second|moment|sec)|working on it|hold on)\b"
         # 2026-09-15: gerund-lead announcements ("Checking environment
         # first.", "Verifying the setup now.") reproduced live — they
         # don't match any "i'll "/"let me " form above, so a bare backtick-
         # wrapped directive right after one slipped through both repair
         # paths and rendered as a finished answer with nothing executed.
-        r"(?:checking|verifying|confirming|inspecting|scanning|looking at)\s+\w+|"
-        r"one moment|give me a (?:second|moment|sec)|working on it|hold on)\b",
+        # A review pass caught a first version of this that matched the
+        # gerund lead ANYWHERE via .search(), false-firing on legitimate
+        # complete answers that merely open with or contain one of these
+        # words ("Looking at the logs, the issue is the missing key.",
+        # "Checking the config, it's fine."). A real stall IS the entire
+        # narrative -- no comma-joined follow-on clause with actual
+        # information -- so this alternative is anchored to the WHOLE
+        # narrative and requires no comma anywhere after the gerund lead;
+        # kept outside the shared \b(...)\b group above since anchoring
+        # ^...$ inside it wouldn't compose the same way.
+        r"|^\s*(?:checking|verifying|confirming|inspecting|scanning|looking at)\s+[^,\n]*$",
         re.IGNORECASE,
     )
     # Second shape seen tonight: the model attempts directives but wraps
@@ -20798,10 +20808,17 @@ def main():
 
     # ── 2026-09-15: auto-resume-with-full-thread retired at the user's ──
     # request — 'load summary' (manual, on-demand) already does this job
-    # correctly, so _reload_if_code_changed()'s hot-reload continuity no
-    # longer needs to dump the prior thread back onto the screen. Startup
-    # always lands on a clear screen now; both carry files are still
-    # cleaned up so they never leak into a later, unrelated session.
+    # correctly, so RESUME_FLAG's full-thread dump-to-screen is gone.
+    # _RELOAD_CARRY_FILE is a DIFFERENT mechanism and is NOT retired: it's
+    # the other half of _reload_if_code_changed()'s hot-reload continuity
+    # (the user's just-typed, not-yet-answered message, carried across the
+    # execvp), and that function's own docstring still promises the reload
+    # is invisible from the user's side. A review pass on this branch
+    # caught a first version of this change that deleted BOTH files
+    # without restoring PENDING_USER_NOTE from the carry file first --
+    # that silently dropped an in-flight message on every hot-reload
+    # instead of preserving it. Startup still always lands on a clear
+    # screen; only the carry (not the full-thread dump) survives here.
     resumed_from_notes = False
     try:
         if RESUME_FLAG.exists():
@@ -20810,7 +20827,10 @@ def main():
         log(f"RESUME_ERROR: {e}")
     try:
         if _RELOAD_CARRY_FILE.exists():
+            carried = _RELOAD_CARRY_FILE.read_text()
             _RELOAD_CARRY_FILE.unlink(missing_ok=True)
+            if carried:
+                globals()["PENDING_USER_NOTE"] = carried
     except Exception as e:
         log(f"AUTO_RELOAD_CARRY_RESTORE_ERROR: {e}")
 
