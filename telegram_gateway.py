@@ -31,7 +31,10 @@ UPDATE_INTERVAL_SECONDS = 2
 TOKEN_PATH = Path.home() / ".master_ai_keys"
 LOG_FILE = Path.home() / ".master_ai_telegram_gateway.log"
 PID_FILE = Path.home() / ".master_ai_telegram_gateway.pid"
+MODEL_STATE_FILE = Path.home() / ".master_ai_telegram_model"
 MASTER_AI_DIR = Path(__file__).resolve().parent
+DEFAULT_MODEL = "glm-5.3-flash"
+_START_TIME = time.time()
 
 
 def _read_key(name: str) -> str | None:
@@ -117,10 +120,26 @@ def _send_reply(token: str, chat_id: str, text: str) -> bool:
     return True
 
 
+def _get_current_model() -> str:
+    """Model state file (set via /model <name>) wins; falls back to the
+    TELEGRAM_SENSEI_MODEL env var, then DEFAULT_MODEL."""
+    try:
+        stored = MODEL_STATE_FILE.read_text(encoding="utf-8").strip()
+        if stored:
+            return stored
+    except Exception:
+        pass
+    return os.environ.get("TELEGRAM_SENSEI_MODEL", DEFAULT_MODEL)
+
+
+def _set_current_model(name: str) -> None:
+    MODEL_STATE_FILE.write_text(name.strip() + "\n", encoding="utf-8")
+
+
 def _run_sensei_task(task_text: str, max_turns: int = 5) -> str:
     env = os.environ.copy()
     env["SENSEI_TUI"] = "0"
-    model = os.environ.get("TELEGRAM_SENSEI_MODEL", "glm-5.3-flash")
+    model = _get_current_model()
     cmd = [
         sys.executable,
         str(MASTER_AI_DIR / "headless_runner.py"),
@@ -160,6 +179,51 @@ def _make_reply(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+# ── Slash commands ──────────────────────────────────────────────────
+# 2026-09-15: before this, every message -- including /status and /model --
+# was forwarded as literal chat text to headless_runner, which has no
+# concept of a bot command. The model just tried (and usually failed) to
+# answer "/status" as a question. These are real Telegram bot commands,
+# handled here, never reaching the LLM.
+
+_COMMAND_HELP = (
+    "Commands:\n"
+    "/help - show this list\n"
+    "/status - gateway uptime + current model\n"
+    "/model - show the model currently answering you\n"
+    "/model &lt;name&gt; - switch models (e.g. /model glm-5.3-flash)\n"
+    "Anything else is sent to Sensei as a normal task."
+)
+
+
+def _handle_command(text: str) -> str | None:
+    """Return a reply for a recognized /command, or None to fall through
+    to the normal Sensei task path."""
+    stripped = text.strip()
+    if not stripped.startswith("/"):
+        return None
+    parts = stripped.split(None, 1)
+    cmd = parts[0].lower()
+    arg = parts[1].strip() if len(parts) > 1 else ""
+
+    if cmd in ("/help", "/start"):
+        return _COMMAND_HELP
+    if cmd == "/status":
+        uptime_s = int(time.time() - _START_TIME)
+        hours, rem = divmod(uptime_s, 3600)
+        minutes, seconds = divmod(rem, 60)
+        return (
+            f"Gateway uptime: {hours}h {minutes}m {seconds}s\n"
+            f"Current model: {_get_current_model()}"
+        )
+    if cmd == "/model":
+        if not arg:
+            return f"Current model: {_get_current_model()}"
+        _set_current_model(arg)
+        return f"Model switched to: {arg}"
+    return f"Unknown command: {cmd}\n\n{_COMMAND_HELP}"
+
+
 def _process_message(token: str, allowed_ids: list[str], msg: dict) -> None:
     chat = msg.get("chat", {})
     chat_id = str(chat.get("id") or "")
@@ -179,6 +243,10 @@ def _process_message(token: str, allowed_ids: list[str], msg: dict) -> None:
         from_user.get("last_name"),
         text[:80],
     )
+    command_reply = _handle_command(text)
+    if command_reply is not None:
+        _send_reply(token, chat_id, command_reply)
+        return
     reply = _run_sensei_task(text)
     reply = _make_reply(reply)
     _send_reply(token, chat_id, reply)
