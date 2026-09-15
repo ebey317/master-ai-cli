@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Telegram gateway daemon for Master AI CLI.
 
-Polls Telegram getUpdates and feeds each incoming message into the
-headless Sensei runner. Replies are sent back to the same chat.
+Built on python-telegram-bot's Application/CommandHandler framework instead
+of a hand-rolled getUpdates polling loop -- 2026-09-15 migration. That
+library owns polling retry/backoff and command-name dispatch, which used to
+be bespoke code here (a manual offset-tracked getUpdates loop plus an
+if/elif string-matching `_handle_command`). The actual Sensei-facing logic
+(model state, the REPL bridge, the free-text task path) is unchanged.
 
 Credentials read from ~/.master_ai_keys:
     TELEGRAM_BOT_TOKEN=...
@@ -16,21 +20,27 @@ Or as a systemd user service via telegram-gateway.service.
 
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
 import os
 import subprocess
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
+
+from telegram import Update
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 import sensei_repl_bridge
 
 LOG = logging.getLogger(__name__)
-UPDATE_INTERVAL_SECONDS = 2
 TOKEN_PATH = Path.home() / ".master_ai_keys"
 LOG_FILE = Path.home() / ".master_ai_telegram_gateway.log"
 PID_FILE = Path.home() / ".master_ai_telegram_gateway.pid"
@@ -60,69 +70,6 @@ def _load_allowed_chat_ids() -> list[str]:
     return [c.strip() for c in raw.split(",") if c.strip()]
 
 
-def _telegram_api(method: str, token: str, **params) -> dict:
-    url = f"https://api.telegram.org/bot{token}/{method}"
-    data = json.dumps(params).encode("utf-8") if params else None
-    headers = {"Content-Type": "application/json"} if data else {}
-    req = urllib.request.Request(
-        url, data=data, headers=headers, method="POST" if data else "GET"
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        try:
-            detail = json.loads(e.read().decode("utf-8")).get("description", str(e))
-        except Exception:
-            detail = str(e)
-        return {"ok": False, "description": detail}
-    except Exception as e:
-        return {"ok": False, "description": str(e)}
-
-
-def _get_updates(
-    token: str, offset: int, limit: int = 10
-) -> tuple[bool, list[dict], int]:
-    body = _telegram_api("getUpdates", token, offset=offset, limit=limit)
-    if not body.get("ok"):
-        LOG.error("getUpdates failed: %s", body.get("description"))
-        return False, [], offset
-    updates = body.get("result", []) or []
-    new_offset = offset
-    for upd in updates:
-        upd_id = upd.get("update_id")
-        if isinstance(upd_id, int) and upd_id >= new_offset:
-            new_offset = upd_id + 1
-    return True, updates, new_offset
-
-
-def _send_reply(token: str, chat_id: str, text: str) -> bool:
-    if not text:
-        return True
-    # Telegram max message length is 4096; chunk if needed
-    max_len = 4000
-    chunks = []
-    while len(text) > max_len:
-        idx = text.rfind("\n", 0, max_len)
-        if idx == -1:
-            idx = max_len
-        chunks.append(text[:idx])
-        text = text[idx:].lstrip()
-    chunks.append(text)
-    for chunk in chunks:
-        body = _telegram_api(
-            "sendMessage", token, chat_id=chat_id, text=chunk, parse_mode="HTML"
-        )
-        if not body.get("ok"):
-            # If HTML parse fails, retry as plain text
-            if "can't parse" in str(body.get("description", "")).lower():
-                body = _telegram_api("sendMessage", token, chat_id=chat_id, text=chunk)
-            if not body.get("ok"):
-                LOG.error("sendMessage failed: %s", body.get("description"))
-                return False
-    return True
-
-
 def _get_current_model() -> str:
     """Model state file (set via /model <name>) wins; falls back to the
     TELEGRAM_SENSEI_MODEL env var, then DEFAULT_MODEL."""
@@ -140,6 +87,8 @@ def _set_current_model(name: str) -> None:
 
 
 def _run_sensei_task(task_text: str, max_turns: int = 5) -> str:
+    """Free-text path: spawns headless_runner.py fresh per message (no
+    persisted conversation state to reset -- see the /new handler's note)."""
     env = os.environ.copy()
     env["SENSEI_TUI"] = "0"
     model = _get_current_model()
@@ -177,24 +126,12 @@ def _run_sensei_task(task_text: str, max_turns: int = 5) -> str:
         return f"Sensei failed: {e}"[:4000]
 
 
-def _make_reply(text: str) -> str:
-    # Escape HTML special chars so Telegram doesn't choke on parse_mode=HTML
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
-# ── Slash commands ──────────────────────────────────────────────────
-# 2026-09-15: before this, every message -- including /status and /model --
-# was forwarded as literal chat text to headless_runner, which has no
-# concept of a bot command. The model just tried (and usually failed) to
-# answer "/status" as a question. These are real Telegram bot commands,
-# handled here, never reaching the LLM.
-
 _COMMAND_HELP = (
     "Commands:\n"
     "/help - show this list\n"
     "/status - gateway uptime + current model\n"
     "/model - show the model currently answering you\n"
-    "/model &lt;name&gt; - switch models (e.g. /model glm-5.3-flash)\n"
+    "/model <name> - switch models (e.g. /model glm-5.3-flash)\n"
     "/new - fresh Sensei REPL session (doctor/sessions/tasks/etc. state resets)\n"
     "Plus any Sensei REPL command (doctor, sessions list, memory, tasks, "
     "git, save session, ...) works directly, e.g. /doctor or /sessions list.\n"
@@ -210,11 +147,10 @@ _COMMAND_HELP = (
 # (SENSEI_TUI=0) as a persistent subprocess instead, so these commands work
 # exactly as they do in the terminal, with zero changes to master_ai.py.
 #
-# Deliberately excludes "new"/"clear"/"kick"/"x" -- these restart or exit
-# the underlying engine process, which would kill this bridge's subprocess
-# out from under it. Handling that gracefully (detect the exit, respawn,
-# don't lose a message in flight) is real work saved for a follow-up
-# rather than rushed in here.
+# Deliberately excludes "clear"/"kick"/"x" (and handles "new" itself via a
+# dedicated command below rather than piping the text through) -- these
+# restart or exit the underlying engine process, which the bridge's pipes
+# and prompt-detection logic aren't built to survive mid-command.
 _SENSEI_EXACT_COMMANDS = {
     "doctor",
     "standards",
@@ -285,88 +221,36 @@ def _run_sensei_repl_command(command: str) -> str:
         return f"Sensei command failed: {e}"
 
 
-def _handle_command(text: str) -> str | None:
-    """Return a reply for a recognized /command, or None to fall through
-    to the normal Sensei task path."""
-    stripped = text.strip()
-    if not stripped.startswith("/"):
-        return None
-    parts = stripped.split(None, 1)
-    cmd = parts[0].lower()
-    arg = parts[1].strip() if len(parts) > 1 else ""
-
-    if cmd in ("/help", "/start"):
-        return _COMMAND_HELP
-    if cmd == "/status":
-        uptime_s = int(time.time() - _START_TIME)
-        hours, rem = divmod(uptime_s, 3600)
-        minutes, seconds = divmod(rem, 60)
-        return (
-            f"Gateway uptime: {hours}h {minutes}m {seconds}s\n"
-            f"Current model: {_get_current_model()}"
-        )
-    if cmd == "/model":
-        if not arg:
-            return f"Current model: {_get_current_model()}"
-        _set_current_model(arg)
-        return f"Model switched to: {arg}"
-    if cmd == "/new":
-        # Deliberately NOT sending Sensei's own "new"/"clear" text into the
-        # bridge -- that command restarts the engine process from the
-        # INSIDE (execvp), which the bridge's stdin/stdout pipes and
-        # prompt-detection logic aren't built to survive. Controlling the
-        # subprocess's lifecycle ourselves (close + drop the reference) is
-        # simpler and predictable: the next bridged command lazily spins up
-        # a fresh one via _get_repl(). Free-text chat (headless_runner.py)
-        # already starts a brand-new, history-less process per message, so
-        # there's nothing to reset there.
-        global _repl
-        with _repl_lock:
-            if _repl is not None:
-                try:
-                    _repl.close()
-                except Exception:
-                    LOG.exception("error closing sensei repl during /new")
-                _repl = None
-        return "New session started. Sensei's REPL bridge will spin up fresh on your next command."
-
-    # Anything else recognized as a genuine Sensei REPL command (doctor,
-    # sessions list, memory, tasks, git, ...) gets driven through the real
-    # REPL instead of being reported unknown.
-    bridged = (cmd[1:] + (f" {arg}" if arg else "")).strip()
-    target = _sensei_command_target(bridged)
-    if target is not None:
-        return _run_sensei_repl_command(target)
-
-    return f"Unknown command: {cmd}\n\n{_COMMAND_HELP}"
+def _close_repl() -> None:
+    global _repl
+    with _repl_lock:
+        if _repl is not None:
+            try:
+                _repl.close()
+            except Exception:
+                LOG.exception("error closing sensei repl during /new")
+            _repl = None
 
 
-def _process_message(token: str, allowed_ids: list[str], msg: dict) -> None:
-    chat = msg.get("chat", {})
-    chat_id = str(chat.get("id") or "")
-    if not chat_id:
-        return
+def _is_allowed(update: Update, allowed_ids: list[str]) -> bool:
+    chat_id = str(update.effective_chat.id) if update.effective_chat else ""
     if allowed_ids and chat_id not in allowed_ids:
         LOG.warning("Ignoring message from unallowed chat %s", chat_id)
-        return
-    text = msg.get("text", "")
-    if not text:
-        return
-    from_user = msg.get("from", {})
+        return False
+    return True
+
+
+def _log_incoming(update: Update) -> None:
+    chat_id = str(update.effective_chat.id) if update.effective_chat else "?"
+    user = update.effective_user
+    text = update.message.text if update.message else ""
     LOG.info(
         "Processing message from %s (%s %s): %r",
         chat_id,
-        from_user.get("first_name"),
-        from_user.get("last_name"),
-        text[:80],
+        getattr(user, "first_name", None),
+        getattr(user, "last_name", None),
+        (text or "")[:80],
     )
-    command_reply = _handle_command(text)
-    if command_reply is not None:
-        _send_reply(token, chat_id, command_reply)
-        return
-    reply = _run_sensei_task(text)
-    reply = _make_reply(reply)
-    _send_reply(token, chat_id, reply)
 
 
 def _write_pid():
@@ -401,21 +285,114 @@ def main():
             logging.StreamHandler(sys.stdout),
         ],
     )
-    LOG.info("Telegram gateway starting; allowed chats: %s", allowed_ids)
+    # python-telegram-bot's own libraries are chatty at INFO; keep this
+    # gateway's own logger at INFO but quiet the library internals down to
+    # WARNING so the journal stays readable.
+    logging.getLogger("telegram").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    LOG.info(
+        "Telegram gateway starting (python-telegram-bot); allowed chats: %s",
+        allowed_ids,
+    )
     _write_pid()
 
-    offset = 0
+    async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not _is_allowed(update, allowed_ids):
+            return
+        _log_incoming(update)
+        await update.message.reply_text(_COMMAND_HELP)
+
+    async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not _is_allowed(update, allowed_ids):
+            return
+        _log_incoming(update)
+        uptime_s = int(time.time() - _START_TIME)
+        hours, rem = divmod(uptime_s, 3600)
+        minutes, seconds = divmod(rem, 60)
+        await update.message.reply_text(
+            f"Gateway uptime: {hours}h {minutes}m {seconds}s\n"
+            f"Current model: {_get_current_model()}"
+        )
+
+    async def model_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not _is_allowed(update, allowed_ids):
+            return
+        _log_incoming(update)
+        arg = " ".join(context.args).strip() if context.args else ""
+        if not arg:
+            await update.message.reply_text(f"Current model: {_get_current_model()}")
+            return
+        _set_current_model(arg)
+        await update.message.reply_text(f"Model switched to: {arg}")
+
+    async def new_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not _is_allowed(update, allowed_ids):
+            return
+        _log_incoming(update)
+        # Deliberately NOT sending Sensei's own "new"/"clear" text into the
+        # bridge -- that command restarts the engine process from the
+        # INSIDE (execvp), which the bridge's pipes and prompt-detection
+        # logic aren't built to survive. Controlling the subprocess's
+        # lifecycle ourselves is simpler and predictable: the next bridged
+        # command lazily spins up a fresh one. Free-text chat already
+        # starts a brand-new, history-less process per message.
+        await asyncio.to_thread(_close_repl)
+        await update.message.reply_text(
+            "New session started. Sensei's REPL bridge will spin up fresh on your next command."
+        )
+
+    async def generic_command_handler(
+        update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Catches any /command not claimed by an explicit handler above --
+        checked against the Sensei REPL bridge allowlist."""
+        if not _is_allowed(update, allowed_ids):
+            return
+        _log_incoming(update)
+        text = update.message.text or ""
+        parts = text.strip().split(None, 1)
+        cmd = parts[0].lstrip("/").lower()
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        bridged = (cmd + (f" {arg}" if arg else "")).strip()
+        target = _sensei_command_target(bridged)
+        if target is not None:
+            reply = await asyncio.to_thread(_run_sensei_repl_command, target)
+        else:
+            reply = f"Unknown command: /{cmd}\n\n{_COMMAND_HELP}"
+        await update.message.reply_text(reply)
+
+    async def free_text_handler(
+        update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        if not _is_allowed(update, allowed_ids):
+            return
+        _log_incoming(update)
+        text = update.message.text or ""
+        reply = await asyncio.to_thread(_run_sensei_task, text)
+        await update.message.reply_text(reply)
+
+    async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        LOG.error(
+            "Unhandled error processing update %r", update, exc_info=context.error
+        )
+
+    app = Application.builder().token(token).build()
+    app.add_handler(CommandHandler(["help", "start"], help_cmd))
+    app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(CommandHandler("model", model_cmd))
+    app.add_handler(CommandHandler("new", new_cmd))
+    # Registered after the named handlers above -- PTB tries handlers in
+    # registration order within a group and stops at the first match, so
+    # this only fires for commands none of those already claimed.
+    app.add_handler(MessageHandler(filters.COMMAND, generic_command_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, free_text_handler))
+    app.add_error_handler(on_error)
+
     try:
-        while True:
-            ok, updates, offset = _get_updates(token, offset)
-            if ok:
-                for upd in updates:
-                    msg = upd.get("message") or upd.get("edited_message")
-                    if msg:
-                        _process_message(token, allowed_ids, msg)
-            time.sleep(UPDATE_INTERVAL_SECONDS)
-    except KeyboardInterrupt:
-        LOG.info("Stopping on interrupt")
+        # run_polling() owns retry/backoff on network hiccups (read
+        # timeouts, connection resets) internally -- the bespoke getUpdates
+        # loop this replaced only logged those and hoped for the best.
+        app.run_polling(drop_pending_updates=False, close_loop=False)
     finally:
         _remove_pid()
 
