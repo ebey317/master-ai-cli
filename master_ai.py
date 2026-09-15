@@ -80,16 +80,16 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import approval_queue
 import perpetual_review
-import verifiers
 from url_grounding import resolve_open_target_url
 
 try:
     import harvest  # local cache + few-shot injection; ~/scripts/harvest.py
 except Exception:
-    harvest = None
+    harvest = None  # type: ignore[assignment]
 
 try:
     import readline
@@ -491,9 +491,7 @@ def save_mode(mode):
         pass
 
 
-MODE = (
-    _load_saved_mode()
-)  # Plan is the default if no file exists. Review = per-command confirm; Auto = flow-through.
+MODE = _load_saved_mode()  # Plan is the default if no file exists. Review = per-command confirm; Auto = flow-through.
 LAST_ROUTE = ""  # route used by the most recent handle() — for Review's "who" line
 LAST_MODEL = ""  # model name used by the most recent handle() — for Review's "who" line
 PENDING_PLAN_TEXT = ""
@@ -527,13 +525,13 @@ _NEXT_TURN_MARKER = ""
 _THINKING_T0 = 0.0
 _LAST_MEMORY_SLICE_HASH = ""
 _LAST_MEMORY_SLICE_AT_S = 0.0
-_LAST_DENIED_ACTION = {}
-_LAST_BLOCKED_ACTION = (
-    {}
-)  # safeguard-blocked directive; consumed in process_reply to feed the BLOCKED back to the LLM next turn
-_LAST_HOOK_BLOCK = (
-    {}
-)  # P1.4: hook-blocked action (CREATE/EDIT); consumed in process_reply's action_failed branch to feed [HOOK BLOCKED] back
+_LAST_DENIED_ACTION: dict[str, Any] = {}
+_LAST_BLOCKED_ACTION: dict[
+    str, Any
+] = {}  # safeguard-blocked directive; consumed in process_reply to feed the BLOCKED back to the LLM next turn
+_LAST_HOOK_BLOCK: dict[
+    str, Any
+] = {}  # P1.4: hook-blocked action (CREATE/EDIT); consumed in process_reply's action_failed branch to feed [HOOK BLOCKED] back
 HINTS = 0 if HINTS_FILE.exists() else 1
 ACTIVE_PROJECT = ""
 _SETTINGS = Path.home() / ".master_ai_settings"
@@ -648,7 +646,7 @@ PLAN_DEBATE_FALLBACK = os.environ.get(
 PLAN_DEBATE_MAX_ROUNDS = int(os.environ.get("PLAN_DEBATE_MAX_ROUNDS", "6"))
 
 # ── AUTO-SAVE STATE ───────────────────────────────────────────
-GLOBAL_HISTORY = []  # shared reference for signal handlers
+GLOBAL_HISTORY: list[Any] = []  # shared reference for signal handlers
 CHARS_SINCE_SAVE = 0  # chars accumulated since last auto-save
 CHARS_SINCE_REMIND = 0  # chars accumulated since last drift reminder
 AUTO_SAVE_THRESHOLD = 10000  # update session file every ~10000 chars (was 3000)
@@ -899,7 +897,7 @@ def maybe_auto_label(history):
 # ── QUERY QUEUE (up to 3 live) ───────────────────────────────
 # User types Q1, Q2, Q3 while Sensei is still answering Q1 — each queues.
 # Worker thread pops FIFO, runs handle() serially, prints reply.
-_QUERY_QUEUE = queue.Queue(maxsize=3)
+_QUERY_QUEUE: queue.Queue[Any] = queue.Queue(maxsize=3)
 _WORKER_BUSY = threading.Event()
 _WORKER_LOCK = threading.Lock()
 
@@ -917,7 +915,7 @@ _TMUX_LAST_CLIENT_DIMS = ""
 # routes submits to _CONFIRM_IQ while _AWAITING_CONFIRM is set, and to the
 # normal _iq otherwise. _tui_input pulls from whichever queue matches the
 # flag. Confirm prompts wrap themselves via @_awaiting_confirm.
-_CONFIRM_IQ = queue.Queue()
+_CONFIRM_IQ: queue.Queue[Any] = queue.Queue()
 _AWAITING_CONFIRM = threading.Event()
 
 
@@ -2405,7 +2403,7 @@ def _show_recent_log(lines=80):
     print(f"{C}  ─────────────────────────────{X}\n")
 
 
-_CLOUD_CIRCUITS = {}
+_CLOUD_CIRCUITS: dict[str, float] = {}
 _NETWORK_DOWN_UNTIL = 0.0
 
 
@@ -5706,7 +5704,7 @@ def _inject_few_shot(messages, model):
 # blocks until the user explicitly approves THIS send via the
 # `privacy approve send` REPL command (one-shot consume).
 _TURN_PRIVATE = False
-_TURN_PRIVATE_REASONS = []
+_TURN_PRIVATE_REASONS: list[str] = []
 _TURN_PRIVATE_APPROVED = False  # one-shot; consumed by next ask_cloud check
 # Session-wide "always approve" — set via the 'a' choice on the privacy prompt.
 # Deliberately NOT touched by _reset_turn_privacy() (that clears PER-TURN state
@@ -10927,9 +10925,8 @@ def show_hub():
             if gidx < total - 1:
                 gidx += 1
                 continue
-            else:
-                print(f"  {G}── end of hub ──{X}")
-                return None
+            print(f"  {G}── end of hub ──{X}")
+            return None
         # User typed a number → pick that action
         try:
             n = int(ans) - 1
@@ -11003,9 +11000,8 @@ def show_projects():
             if idx < total - 1:
                 idx += 1
                 continue
-            else:
-                print(f"  {G}── end of projects ──{X}")
-                return None
+            print(f"  {G}── end of projects ──{X}")
+            return None
         return ans  # user typed a question → caller sends it as a message
 
 
@@ -14399,7 +14395,7 @@ def confirm_run(cmd):
             )
             return None
         return run_command(cmd)
-    elif choice == "2":
+    if choice == "2":
         # P2.2: scope new approvals to the current cwd with a 24h TTL.
         # User can promote to global scope via the file directly. Old
         # bare-command lines stay match-everywhere-forever (backward
@@ -14408,7 +14404,7 @@ def confirm_run(cmd):
         print(f"{G}  ✅ Added to approved list (cwd={os.getcwd()}, 24h TTL).{X}")
         _audit("RUN-ALWAYS", cmd)
         return run_command(cmd)
-    elif choice == "4":
+    if choice == "4":
         try:
             edited = input(f"{C}  Edit command (shell): {X}").strip() or cmd
         except Exception:
@@ -14441,7 +14437,7 @@ def confirm_run(cmd):
             )
             return None
         return run_command(edited)
-    elif choice == "5":
+    if choice == "5":
         try:
             note = input(f"{C}  Tell the AI what to do instead: {X}").strip()
         except Exception:
@@ -14452,12 +14448,11 @@ def confirm_run(cmd):
         else:
             print(f"{Y}  ⏭  Skipped.{X}")
         return None
-    else:
-        print(f"{Y}  ⏭  Skipped.{X}")
-        globals()["_LAST_DENIED_ACTION"] = {"kind": "run", "command": cmd}
-        _record_blocked_action("run", cmd, "user declined RUN command", "RUN-DENIED")
-        _remember_last_action("run_denied", command=cmd)
-        return None
+    print(f"{Y}  ⏭  Skipped.{X}")
+    globals()["_LAST_DENIED_ACTION"] = {"kind": "run", "command": cmd}
+    _record_blocked_action("run", cmd, "user declined RUN command", "RUN-DENIED")
+    _remember_last_action("run_denied", command=cmd)
+    return None
 
 
 @_awaiting_confirm
@@ -14879,7 +14874,7 @@ def confirm_send_email(spec):
             print(_pill("FAILED", f"{R}{result.get('error','')}{X}"))
             _audit("SEND_EMAIL-FAIL", f"to={to} err={result.get('error','')}")
         return result
-    elif ans in ("3", "e", "edit"):
+    if ans in ("3", "e", "edit"):
         print(
             _pill(
                 "SKIPPED",
@@ -14888,10 +14883,9 @@ def confirm_send_email(spec):
         )
         _audit("SEND_EMAIL-EDIT-REQUEST", f"to={to}")
         return {"ok": False, "error": "user requested edit", "recipient": to}
-    else:
-        print(_pill("CANCELLED"))
-        _audit("SEND_EMAIL-CANCELLED", f"to={to}")
-        return {"ok": False, "error": "user cancelled", "recipient": to}
+    print(_pill("CANCELLED"))
+    _audit("SEND_EMAIL-CANCELLED", f"to={to}")
+    return {"ok": False, "error": "user cancelled", "recipient": to}
 
 
 @_awaiting_confirm
@@ -14926,10 +14920,9 @@ def confirm_send_telegram(spec):
                 "SEND_TELEGRAM-FAIL", f"chat_id={chat_id} err={result.get('error','')}"
             )
         return result
-    else:
-        print(_pill("CANCELLED"))
-        _audit("SEND_TELEGRAM-CANCELLED", f"chat_id={chat_id}")
-        return {"ok": False, "error": "user cancelled", "chat_id": chat_id}
+    print(_pill("CANCELLED"))
+    _audit("SEND_TELEGRAM-CANCELLED", f"chat_id={chat_id}")
+    return {"ok": False, "error": "user cancelled", "chat_id": chat_id}
 
 
 # ── FILE EDIT CONFIRM ────────────────────────────────────────
@@ -17541,6 +17534,57 @@ def startup_check():
         time.sleep(0.6)
     print()
     return errors
+
+
+def _run_git_update(repo_dir: str | None = None) -> tuple[bool, str]:
+    """Pull the repo master_ai.py (and everything alongside it, incl.
+    sensei_tui.py) is symlinked from — the one real update mechanism,
+    shared by the CLI-flag path (`master-ai --update`, `sensei update`)
+    and the live in-REPL `update`/`master update` command. Refuses on
+    local dirty changes or a diverged branch rather than force-merging.
+    Returns (ok, message); message is printable either way."""
+    if repo_dir is None:
+        repo_dir = os.path.dirname(os.path.realpath(__file__))
+    try:
+        dirty = subprocess.run(
+            ["git", "-C", repo_dir, "status", "--porcelain", "--", "master_ai.py"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+        if dirty:
+            return False, (
+                "Local changes to master_ai.py would be overwritten by "
+                "an update — resolve or stash them first, then re-run."
+            )
+        before = subprocess.run(
+            ["git", "-C", repo_dir, "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+        r = subprocess.run(
+            ["git", "-C", repo_dir, "pull", "--ff-only"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if r.returncode != 0:
+            return False, (
+                (r.stdout.strip() + "\n" + r.stderr.strip()).strip()
+                + "\nUpdate failed — repo may have diverged from origin. Not applied."
+            )
+        after = subprocess.run(
+            ["git", "-C", repo_dir, "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+        if before == after:
+            return True, "Already up to date."
+        return True, f"Updated {before} -> {after}. Restarting to pick it up..."
+    except Exception as e:
+        return False, f"Update failed: {e}"
 
 
 def _check_update_status(
@@ -20546,53 +20590,9 @@ def main():
         # symlinks to it the same way, with no separate deploy step.
         repo_dir = os.path.dirname(os.path.realpath(__file__))
         print(f"Updating Master AI / Sensei ({repo_dir}) ...")
-        try:
-            dirty = subprocess.run(
-                ["git", "-C", repo_dir, "status", "--porcelain", "--", "master_ai.py"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            ).stdout.strip()
-            if dirty:
-                print(
-                    "Local changes to master_ai.py would be overwritten by "
-                    "an update — resolve or stash them first, then re-run."
-                )
-                sys.exit(1)
-            before = subprocess.run(
-                ["git", "-C", repo_dir, "rev-parse", "--short", "HEAD"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            ).stdout.strip()
-            r = subprocess.run(
-                ["git", "-C", repo_dir, "pull", "--ff-only"],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            print(r.stdout.strip())
-            if r.returncode != 0:
-                print(r.stderr.strip())
-                print(
-                    "Update failed — repo may have diverged from origin. "
-                    "Not applied."
-                )
-                sys.exit(1)
-            after = subprocess.run(
-                ["git", "-C", repo_dir, "rev-parse", "--short", "HEAD"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            ).stdout.strip()
-            if before == after:
-                print("Already up to date.")
-            else:
-                print(f"Updated {before} -> {after}. Restart sensei to pick it up.")
-        except Exception as e:
-            print(f"Update failed: {e}")
-            sys.exit(1)
-        sys.exit(0)
+        ok, msg = _run_git_update(repo_dir)
+        print(msg)
+        sys.exit(0 if ok else 1)
 
     if any(arg == "--setup" for arg in sys.argv[1:]):
         import setup_wizard
@@ -22178,10 +22178,10 @@ def main():
                 print(f"  {Y}No other saved sessions found.{X}")
             else:
                 print(f"\n  {BOLD}Saved sessions ({len(entries)}):{X}")
-                for i, e in enumerate(entries, 1):
-                    preview = e["preview"] or "(no summary yet)"
-                    print(f"  {C}{i:>2}.{X} {e['date']}  {D}{preview}{X}")
-                    print(f"  {D}    chat id: {e['ts']}{X}")
+                for i, entry in enumerate(entries, 1):
+                    preview = entry["preview"] or "(no summary yet)"
+                    print(f"  {C}{i:>2}.{X} {entry['date']}  {D}{preview}{X}")
+                    print(f"  {D}    chat id: {entry['ts']}{X}")
                 print(
                     f"\n  {D}Resume: 'sessions resume <number>' or 'sessions resume <chat id>'{X}\n"
                 )
@@ -22369,6 +22369,24 @@ def main():
         # clear it" — no, it did nothing at all. Distinct from "new"/
         # "clear" below, which is a full wipe; this keeps history.
         if lo == "refresh":
+            handle_save_refresh(history)  # execvp — never returns
+            continue  # unreachable
+
+        # ── Update — pull the repo, restart only if something changed ──
+        # 2026-09-14: same class of bug "refresh" had until 2026-08-27 —
+        # "update"/"master update" were in the slash palette and help text
+        # implying they work mid-session, but had zero REPL dispatch; the
+        # only real path was the CLI flag (`sensei update`, exits before
+        # the TUI even starts). Elijah: "wire update to actually work."
+        # Shares _run_git_update() with that CLI-flag path so there's one
+        # update mechanism, not two copies that can drift.
+        if lo in ("update", "master update"):
+            print(f"\n  {C}Checking for updates...{X}", flush=True)
+            ok, msg = _run_git_update()
+            if not ok or msg == "Already up to date.":
+                print(f"  {msg}\n")
+                continue
+            print(f"  {G}{msg}{X}")
             handle_save_refresh(history)  # execvp — never returns
             continue  # unreachable
 
@@ -22587,7 +22605,9 @@ def main():
             new_name = (
                 cmd.split(":", 1)[1].strip()
                 if ":" in cmd
-                else cmd.split(None, 1)[1].strip() if len(cmd.split()) > 1 else ""
+                else cmd.split(None, 1)[1].strip()
+                if len(cmd.split()) > 1
+                else ""
             )
             if new_name:
                 save_thread_label(new_name)
@@ -22961,23 +22981,25 @@ def main():
                         print(f"  {D}(approval queue empty){X}\n")
                     else:
                         print(f"\n  {C}{len(entries)} pending:{X}")
-                        for e in entries:
-                            print(f"    [{e['id']}] {e['who']:<28} → {e['what']}")
+                        for entry in entries:
+                            print(
+                                f"    [{entry['id']}] {entry['who']:<28} → {entry['what']}"
+                            )
                         print(
                             f"\n  {D}diff <id>  ·  approve <id|all>  ·  reject <id>{X}\n"
                         )
                 elif lo.startswith("diff "):
                     entry_id = cmd[len("diff ") :].strip()
-                    e = approval_queue.get(entry_id)
-                    if not e:
+                    entry = approval_queue.get(entry_id)
+                    if not entry:
                         print(f"  {W}no entry {entry_id}{X}\n")
                     else:
-                        print(f"\n  {C}[{e['id']}] {e['what']}{X}")
+                        print(f"\n  {C}[{entry['id']}] {entry['what']}{X}")
                         print(
-                            f"    status: {e['status']}  who: {e['who']}  why: {e['why']}"
+                            f"    status: {entry['status']}  who: {entry['who']}  why: {entry['why']}"
                         )
-                        if e.get("diff"):
-                            print(f"\n{e['diff']}\n")
+                        if entry.get("diff"):
+                            print(f"\n{entry['diff']}\n")
                 elif lo == "approve" or lo.startswith("approve "):
                     arg = cmd[len("approve") :].strip()
                     if not arg:
@@ -22987,10 +23009,10 @@ def main():
                         if not entries:
                             print(f"  {D}(nothing pending){X}\n")
                         else:
-                            for e in entries:
-                                ok, msg = approval_queue.approve(e["id"])
+                            for entry in entries:
+                                ok, msg = approval_queue.approve(entry["id"])
                                 print(
-                                    f"  {G if ok else R}{'✓' if ok else '✗'} [{e['id']}] {msg}{X}"
+                                    f"  {G if ok else R}{'✓' if ok else '✗'} [{entry['id']}] {msg}{X}"
                                 )
                     else:
                         ok, msg = approval_queue.approve(arg)
@@ -23023,10 +23045,10 @@ def main():
                         print(f"  {D}(no pending proposals){X}\n")
                     else:
                         print(f"\n  {C}{len(entries)} pending proposal(s):{X}")
-                        for e in entries:
+                        for entry in entries:
                             print(
-                                f"    [{e['id']}] {e['source']:<16} "
-                                f"priority={e['priority']:<6} {e['category']}"
+                                f"    [{entry['id']}] {entry['source']:<16} "
+                                f"priority={entry['priority']:<6} {entry['category']}"
                             )
                         print(
                             f"\n  {D}proposal <id>  ·  proposal approve <id>  ·  "
@@ -23353,7 +23375,7 @@ def main():
         # full instruction, can emit its own SEARCH: directive, and the
         # normal continue_after_tools=True chain (verified working) takes
         # it from there.
-        elif lo.startswith("search ") and _is_simple_search_query(cmd[7:]):
+        if lo.startswith("search ") and _is_simple_search_query(cmd[7:]):
             q = cmd[7:].strip()
             results = web_search(q)
             print(f"\n{C}  🌐 Results:\n{results}{X}\n")
@@ -23369,7 +23391,7 @@ def main():
         # `read:` fetches ONE page's full clean content. Prints the markdown
         # inline and saves to history so follow-up questions ("summarize
         # it", "what did it say about X") have real content to work with.
-        elif lo.startswith("read ") or lo.startswith("read:"):
+        if lo.startswith("read ") or lo.startswith("read:"):
             raw = cmd[5:].strip() if lo.startswith("read ") else cmd[5:].strip()
             # Allow `read: http...` too
             if raw.startswith(":"):
@@ -23400,7 +23422,7 @@ def main():
             continue
 
         # ── Image ─────────────────────────────────────────────
-        elif lo.startswith("i "):
+        if lo.startswith("i "):
             candidate = cmd[2:].strip()
             # Only treat as image command if the arg actually looks like a path
             # (contains / or ~ or has an image extension). Otherwise pass through.
