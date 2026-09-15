@@ -7892,6 +7892,7 @@ def ask_model_router(messages, model=None, max_tokens=None):
                 "qwen::",
                 "ollama-cloud::",
                 "opencode::",
+                "opencode-go::",
             )
         )
     ):
@@ -16251,6 +16252,12 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         r"\b(on it\b|on it\s+[🔍🚀⚙️✅👍]|i\'?ll\s+\w+\s+(?:that|this|it|up|now)\b|"
         r"i\'?ll (?:set|get|check|investigate|look|create|start|do|run|write|build|make|dig|take)|"
         r"let me (?:\w+\s+)?(?:check|see|look|investigate|create|dig|take|pivot)|"
+        # 2026-09-15: gerund-lead announcements ("Checking environment
+        # first.", "Verifying the setup now.") reproduced live — they
+        # don't match any "i'll "/"let me " form above, so a bare backtick-
+        # wrapped directive right after one slipped through both repair
+        # paths and rendered as a finished answer with nothing executed.
+        r"(?:checking|verifying|confirming|inspecting|scanning|looking at)\s+\w+|"
         r"one moment|give me a (?:second|moment|sec)|working on it|hold on)\b",
         re.IGNORECASE,
     )
@@ -19227,6 +19234,21 @@ def handle(user_text, history, image_path=None, context_policy=None):
         "SEND_EMAIL: when the user explicitly names a non-Gmail sender account "
         "(aol.com/outlook.com/hotmail.com in a `from=` they specify) that this "
         "skill can't send as.\n\n"
+        "TELEGRAM INTENT — when the user asks to send/test/notify via Telegram "
+        '("send a test message to the telegram bot," "notify me on telegram," '
+        '"text me through the bot"), emit a bare SEND_TELEGRAM: directive — do NOT '
+        "hand-roll this with RUN:/curl or by shelling out to telegram_send.sh. "
+        "SEND_TELEGRAM: is a first-class typed directive with its own parser, "
+        "dispatcher, and audit trail (same tier as RUN_SKILL/SEND_EMAIL); the bot "
+        "token and a default chat ID are already configured in ~/.master_ai_keys.\n"
+        "Shape: SEND_TELEGRAM: <message>   (uses the configured default chat ID)\n"
+        "   or: SEND_TELEGRAM: <chat_id> <message>   (only when a different chat "
+        "is explicitly named)\n"
+        'Example — User: "send a test message to the telegram bot"\n'
+        "Reply:\nSEND_TELEGRAM: Sensei test — all systems go\n"
+        "Sent a test message via the configured Telegram bot.\n"
+        "If the result shows a failure/refusal, report the actual error — do not "
+        "silently fall back to a shell script or curl to route around it.\n\n"
         'AUTHORING A NEW SKILL — when the user explicitly asks to "save this as a '
         'skill" / "make this repeatable" / "turn this into a skill," OR you notice '
         "a multi-step workflow that will obviously recur (not a one-off), write a new "
@@ -19254,6 +19276,23 @@ def handle(user_text, history, image_path=None, context_policy=None):
         'and calls run_skill("<name>", {...minimal params...}) and prints state.done/'
         "state.aborted/state.errors. Do not tell the user a new skill works until that "
         "verification actually ran clean.\n\n"
+        "AUTOMATION / BUILD REQUESTS — EXECUTE FIRST, DON'T INTERVIEW: when the user says "
+        '"build me a cron," "automate X," "turn on Y," or otherwise names a concrete thing '
+        "to build, that is a build request, not an invitation to a design conversation. "
+        "Pick the most reasonable interpretation from context you already have (this "
+        "session's history, ~/.master_ai_skills, project docs, the task list, prior "
+        "turns) and build it — write the skill files, install the crontab line, wire the "
+        "actual thing — THEN show what you built and ask if it matches. Under-specified is "
+        "not the same as ambiguous: a vague target still has a default worth trying. Only "
+        "stop to ask BEFORE building when the choice is genuinely destructive (e.g. which "
+        "of two conflicting existing crontab entries to overwrite) or requires a credential "
+        "you don't have — not merely because the user didn't spell out every parameter. "
+        '"Want me to walk you through creating one?" and "before I proceed, what do you '
+        "mean by X?\" are banned as a FIRST reply to a build/automate ask — they're only "
+        "earned after you've already produced something concrete for the user to react to. "
+        "If a persistence gate (crontab write, file overwrite) legitimately needs approval, "
+        "that gate firing IS the concrete attempt — do not pre-empt it by asking your own "
+        "clarifying question first.\n\n"
         'EMAIL COMPOSITION DISCIPLINE — when the user asks to send an email ("send an email to X", "email this to X", "shoot it to X", "send a bug report to X"), follow this workflow:\n'
         " 1. INFER the right template from ~/.master_ai_email_templates/ based on intent: bug_report.md for errors / 404s / something broke; feedback.md for feature asks; error_report.md for incident summaries with logs; business.md for formal/professional; personal.md for casual; default.md when no clearer fit. If the directory doesn't exist or no template matches, compose without a template (still polished prose).\n"
         " 2. READ the template (READ: ~/.master_ai_email_templates/<name>.md) if you want to honor its structure / signature. Templates have {{placeholder}} slots — fill them from the user's request, current page, recent chat context, or sensible defaults.\n"
@@ -20750,61 +20789,21 @@ def main():
     if not RESUME_FLAG.exists():
         save_thread_label("")
 
-    # ── Auto-resume from save-refresh flag (compacted, not full) ──
+    # ── 2026-09-15: auto-resume-with-full-thread retired at the user's ──
+    # request — 'load summary' (manual, on-demand) already does this job
+    # correctly, so _reload_if_code_changed()'s hot-reload continuity no
+    # longer needs to dump the prior thread back onto the screen. Startup
+    # always lands on a clear screen now; both carry files are still
+    # cleaned up so they never leak into a later, unrelated session.
     resumed_from_notes = False
     try:
         if RESUME_FLAG.exists():
-            flag_age = time.time() - RESUME_FLAG.stat().st_mtime
-            chat_path = Path(RESUME_FLAG.read_text().strip())
-            if flag_age > RESUME_FLAG_MAX_AGE:
-                print(f"  {D}stale resume flag ignored — starting fresh.{X}")
-            elif chat_path.exists():
-                for line in chat_path.read_text().splitlines():
-                    m = re.match(r"^\[[\d\-]+\s+[\d:]+\]\s+(You|AI):\s+(.*)$", line)
-                    if m:
-                        role = "user" if m.group(1) == "You" else "assistant"
-                        history.append({"role": role, "content": m.group(2)})
-                total_loaded = len(history)
-                # Compact immediately so we don't re-trigger save_refresh on the next turn
-                compact_history(history)
-                # If STILL over half the watermark, trim further (keep last 20 turns)
-                total_chars = sum(len(m.get("content", "") or "") for m in history)
-                if total_chars > CONTEXT_WATERMARK // 2 and len(history) > 20:
-                    history[:] = history[-20:]
-                    total_chars = sum(len(m.get("content", "") or "") for m in history)
-                print(
-                    f"  {G}🥷 Resumed from notes — {total_loaded} turns loaded, "
-                    f"compacted to {len(history)} ({total_chars} chars).{X}"
-                )
-                if history and history[-1].get("role") == "user":
-                    pending = (history[-1].get("content") or "").strip()
-                    if pending:
-                        preview = pending[:300] + ("…" if len(pending) > 300 else "")
-                        print(
-                            f"  {BY}📌 Your last message (unanswered — re-send to get the answer):{X}"
-                        )
-                        print(f"  {BY}   {preview}{X}")
-                print()
-                resumed_from_notes = True
-            try:
-                RESUME_FLAG.unlink()
-            except Exception:
-                pass
+            RESUME_FLAG.unlink()
     except Exception as e:
         log(f"RESUME_ERROR: {e}")
-
-    # Other half of _reload_if_code_changed()'s auto-reload: whatever the
-    # user had just typed when the code-change was detected gets carried
-    # across the execvp as a plain file (history itself already came back
-    # via RESUME_FLAG above) and replayed here as PENDING_USER_NOTE, so the
-    # main loop processes it on the very first iteration -- the reload is
-    # invisible from the user's side, not a dropped message.
     try:
         if _RELOAD_CARRY_FILE.exists():
-            carried = _RELOAD_CARRY_FILE.read_text()
             _RELOAD_CARRY_FILE.unlink(missing_ok=True)
-            if carried:
-                globals()["PENDING_USER_NOTE"] = carried
     except Exception as e:
         log(f"AUTO_RELOAD_CARRY_RESTORE_ERROR: {e}")
 
