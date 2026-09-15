@@ -195,6 +195,7 @@ _COMMAND_HELP = (
     "/status - gateway uptime + current model\n"
     "/model - show the model currently answering you\n"
     "/model &lt;name&gt; - switch models (e.g. /model glm-5.3-flash)\n"
+    "/new - fresh Sensei REPL session (doctor/sessions/tasks/etc. state resets)\n"
     "Plus any Sensei REPL command (doctor, sessions list, memory, tasks, "
     "git, save session, ...) works directly, e.g. /doctor or /sessions list.\n"
     "Anything else is sent to Sensei as a normal task."
@@ -309,6 +310,25 @@ def _handle_command(text: str) -> str | None:
             return f"Current model: {_get_current_model()}"
         _set_current_model(arg)
         return f"Model switched to: {arg}"
+    if cmd == "/new":
+        # Deliberately NOT sending Sensei's own "new"/"clear" text into the
+        # bridge -- that command restarts the engine process from the
+        # INSIDE (execvp), which the bridge's stdin/stdout pipes and
+        # prompt-detection logic aren't built to survive. Controlling the
+        # subprocess's lifecycle ourselves (close + drop the reference) is
+        # simpler and predictable: the next bridged command lazily spins up
+        # a fresh one via _get_repl(). Free-text chat (headless_runner.py)
+        # already starts a brand-new, history-less process per message, so
+        # there's nothing to reset there.
+        global _repl
+        with _repl_lock:
+            if _repl is not None:
+                try:
+                    _repl.close()
+                except Exception:
+                    LOG.exception("error closing sensei repl during /new")
+                _repl = None
+        return "New session started. Sensei's REPL bridge will spin up fresh on your next command."
 
     # Anything else recognized as a genuine Sensei REPL command (doctor,
     # sessions list, memory, tasks, git, ...) gets driven through the real
