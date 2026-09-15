@@ -21,10 +21,13 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+import sensei_repl_bridge
 
 LOG = logging.getLogger(__name__)
 UPDATE_INTERVAL_SECONDS = 2
@@ -192,8 +195,93 @@ _COMMAND_HELP = (
     "/status - gateway uptime + current model\n"
     "/model - show the model currently answering you\n"
     "/model &lt;name&gt; - switch models (e.g. /model glm-5.3-flash)\n"
+    "Plus any Sensei REPL command (doctor, sessions list, memory, tasks, "
+    "git, save session, ...) works directly, e.g. /doctor or /sessions list.\n"
     "Anything else is sent to Sensei as a normal task."
 )
+
+# ── Sensei REPL bridge ───────────────────────────────────────────────
+# 2026-09-15: most of Sensei's own commands (doctor, sessions list, memory,
+# tasks, git, ...) only exist as `if lo == "...":` handlers deeply closed
+# over master_ai.py's interactive main() loop -- not importable as
+# functions, and not reachable through headless_runner.py's model-driven
+# RUN/READ path. sensei_repl_bridge.py drives the real classic REPL
+# (SENSEI_TUI=0) as a persistent subprocess instead, so these commands work
+# exactly as they do in the terminal, with zero changes to master_ai.py.
+#
+# Deliberately excludes "new"/"clear"/"kick"/"x" -- these restart or exit
+# the underlying engine process, which would kill this bridge's subprocess
+# out from under it. Handling that gracefully (detect the exit, respawn,
+# don't lose a message in flight) is real work saved for a follow-up
+# rather than rushed in here.
+_SENSEI_EXACT_COMMANDS = {
+    "doctor",
+    "standards",
+    "memory",
+    "sessions list",
+    "load summary",
+    "load session",
+    "tasks",
+    "task clear",
+    "git",
+    "git log",
+    "git diff",
+    "save session",
+    "help",
+    "tips",
+    "keys",
+    "approved",
+    "clear approved",
+    "clear history",
+    "clear cache",
+    "model stats",
+    "model auto",
+}
+_SENSEI_PREFIX_COMMANDS = (
+    "sessions resume ",
+    "task add ",
+    "task done ",
+    "task ",
+    "git commit ",
+    "model ",
+    "remember:",
+    "forget:",
+)
+
+_repl_lock = threading.Lock()
+_repl: sensei_repl_bridge.SenseiRepl | None = None
+
+
+def _sensei_command_target(text: str) -> str | None:
+    """The exact Sensei REPL command to send for a bridgeable request, or
+    None if `text` isn't one of the allowlisted safe/non-interactive
+    commands."""
+    stripped = text.strip()
+    lo = stripped.lower()
+    if lo in _SENSEI_EXACT_COMMANDS:
+        return stripped
+    for prefix in _SENSEI_PREFIX_COMMANDS:
+        if lo.startswith(prefix):
+            return stripped
+    return None
+
+
+def _get_repl() -> sensei_repl_bridge.SenseiRepl:
+    global _repl
+    with _repl_lock:
+        if _repl is None or _repl.proc.poll() is not None:
+            LOG.info("Starting Sensei REPL bridge subprocess")
+            _repl = sensei_repl_bridge.SenseiRepl()
+        return _repl
+
+
+def _run_sensei_repl_command(command: str) -> str:
+    try:
+        repl = _get_repl()
+        return repl.send(command, timeout=45)
+    except Exception as e:
+        LOG.exception("sensei_repl_bridge command failed: %r", command)
+        return f"Sensei command failed: {e}"
 
 
 def _handle_command(text: str) -> str | None:
@@ -221,6 +309,15 @@ def _handle_command(text: str) -> str | None:
             return f"Current model: {_get_current_model()}"
         _set_current_model(arg)
         return f"Model switched to: {arg}"
+
+    # Anything else recognized as a genuine Sensei REPL command (doctor,
+    # sessions list, memory, tasks, git, ...) gets driven through the real
+    # REPL instead of being reported unknown.
+    bridged = (cmd[1:] + (f" {arg}" if arg else "")).strip()
+    target = _sensei_command_target(bridged)
+    if target is not None:
+        return _run_sensei_repl_command(target)
+
     return f"Unknown command: {cmd}\n\n{_COMMAND_HELP}"
 
 
