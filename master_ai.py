@@ -3715,7 +3715,19 @@ def _is_ambiguous(stripped, words, history):
     # mean?", "did you mean the other file?") -- a long, detailed, clearly-
     # instructed message is never actually asking Sensei to guess between
     # options just because one of those phrases appears somewhere in it.
-    if len(words) <= 20 and any(
+    #
+    # 2026-09-15: reproduced live again at the ORIGINAL <=20 threshold, not
+    # just the extreme 900-word case this guard was built for -- "How many
+    # Python files are in ~/ai-controller and which one has the most
+    # lines?" (14 words) got the same false "guess between options" clarify
+    # prompt in 0.3s, with no investigation attempted at all. "which one
+    # has the most lines" is a normal, answerable, INVESTIGABLE sub-clause
+    # (Sensei can find out by counting), not a bare request for Sensei to
+    # pick from unstated options. Genuine "you choose for me" asks are
+    # almost always short standalone phrases; tightened 20 -> 8 so a real
+    # question with substantive content elsewhere in it no longer gets
+    # caught just because "which one" appears in one clause of it.
+    if len(words) <= 8 and any(
         p in low for p in ("did you mean", "which one", "which of", "pick for me")
     ):
         return "explicit which/did-you-mean"
