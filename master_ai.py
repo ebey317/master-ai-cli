@@ -16280,7 +16280,16 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         # narrative and requires no comma anywhere after the gerund lead;
         # kept outside the shared \b(...)\b group above since anchoring
         # ^...$ inside it wouldn't compose the same way.
-        r"|^\s*(?:checking|verifying|confirming|inspecting|scanning|looking at)\s+[^,\n]*$",
+        # 2026-09-16: the first gerund-anchored version matched ANY comma-free
+        # sentence opening with those gerunds, false-firing on legitimate short
+        # completed-action final answers ("Verifying the deploy finished
+        # successfully."). A real stall announces intent to act next and never
+        # claims the action already concluded. Two extra guards: the remainder
+        # is very short (<=5 words) and contains no completed-action marker
+        # (successfully/complete/done/finished/...).
+        r"|^\s*(?:checking|verifying|confirming|inspecting|scanning|looking at)\s+"
+        r"(?![^,\n]*\b(?:successfully|complete|completed|done|finished|fixed|ready|clean|passed|confirmed|ok|okay|resolved|sent)\b)"
+        r"(?:[^,\s\n]+\s*){1,5}$",
         re.IGNORECASE,
     )
     # Second shape seen tonight: the model attempts directives but wraps

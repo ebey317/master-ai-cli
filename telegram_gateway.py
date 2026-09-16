@@ -131,7 +131,9 @@ _COMMAND_HELP = (
     "/help - show this list\n"
     "/status - gateway uptime + current model\n"
     "/model - show the model currently answering you\n"
-    "/model <name> - switch models (e.g. /model glm-5.3-flash)\n"
+    "/model <name> - switch which model answers your free-text chat "
+    "(e.g. /model glm-5.3-flash; affects headless chat only, not Sensei's own "
+    "REPL /model picker)\n"
     "/new - fresh Sensei REPL session (doctor/sessions/tasks/etc. state resets)\n"
     "Plus any Sensei REPL command (doctor, sessions list, memory, tasks, "
     "git, save session, ...) works directly, e.g. /doctor or /sessions list.\n"
@@ -172,7 +174,6 @@ _SENSEI_EXACT_COMMANDS = {
     "clear history",
     "clear cache",
     "model stats",
-    "model auto",
 }
 _SENSEI_PREFIX_COMMANDS = (
     "sessions resume ",
@@ -180,7 +181,6 @@ _SENSEI_PREFIX_COMMANDS = (
     "task done ",
     "task ",
     "git commit ",
-    "model ",
     "remember:",
     "forget:",
 )
