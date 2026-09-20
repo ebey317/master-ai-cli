@@ -4590,12 +4590,34 @@ def orchestrate(history, user_text, image_path=None):
         )
     # 2026-08-27: OpenRouter /free models only. Route chat to the fastest
     # verified free slug (nvidia/nemotron-3-super-120b-a12b:free, ~0.7s).
-    # 2026-09-20: gate this lane on have_or. Before the gate, this block fired
-    # for EVERY chat-class turn whether or not an OpenRouter key existed, so on
-    # a keyless/offline box "hi" and "what is the capital of France" still
-    # routed to a cloud lane that could not answer — the local-first goldens in
-    # test_router_golden.py pin the opposite. have_or is computed above and was
-    # previously unused here.
+    # 2026-09-20: gate on have_or AND run_mode. Before this, this block
+    # fired for EVERY chat-class turn whether or not an OpenRouter key
+    # existed and regardless of mode, so on a keyless/offline box "hi"
+    # and "what is the capital of France" still routed to a cloud lane
+    # that could not answer — the local-first goldens in
+    # test_router_golden.py pin the opposite. In apocalypse/local-first
+    # mode, plain chat stays local; in peacetime the cloud lane is offered
+    # when a key exists, as the "convenience optional" path.
+    if is_chat_class and have_or and run_mode == "peacetime":
+        return _choose_route(
+            [
+                {
+                    "route": "cloud",
+                    "model": "openrouter",
+                    "task_type": "chat",
+                    "base_score": 80,
+                    "reason": "chat → OpenRouter /free (content-routed)",
+                },
+                {
+                    "route": "local",
+                    "model": MODELS["master"],
+                    "task_type": "chat",
+                    "base_score": 62,
+                    "reason": "chat → local master fallback",
+                },
+            ],
+            reason_prefix="chat scored",
+        )
     if is_chat_class:
         _chat_candidates = [
             {
@@ -4606,7 +4628,7 @@ def orchestrate(history, user_text, image_path=None):
                 "reason": "chat → local master fallback",
             },
         ]
-        if have_or:
+        if have_or and run_mode == "peacetime":
             _chat_candidates.insert(
                 0,
                 {

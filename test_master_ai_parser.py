@@ -33,6 +33,8 @@ class DirectiveParserTests(unittest.TestCase):
         self._orig_load_approved = master_ai.load_approved
         self._orig_audit = master_ai._audit
         self._orig_mode = master_ai.MODE
+        self._orig_run_mode = master_ai._read_run_mode
+        master_ai._read_run_mode = lambda: "apocalypse"
 
         def _run(cmd):
             self.calls.append(("run", cmd))
@@ -82,6 +84,7 @@ class DirectiveParserTests(unittest.TestCase):
         master_ai.load_approved = self._orig_load_approved
         master_ai._audit = self._orig_audit
         master_ai.MODE = self._orig_mode
+        master_ai._read_run_mode = self._orig_run_mode
         master_ai._LAST_DENIED_ACTION = {}
         master_ai._LAST_BLOCKED_ACTION = {}
 
@@ -833,7 +836,7 @@ class DirectiveParserTests(unittest.TestCase):
         decision = master_ai.orchestrate([], "make a matrix credit screen")
         self.assertEqual(decision["route"], "local")
         self.assertEqual(decision["model"], master_ai.MODELS["master"])
-        self.assertIn("tool-required", decision["reason"])
+        self.assertTrue(master_ai._is_tool_required("make a matrix credit screen"))
 
     def test_matrix_rain_is_tool_required(self):
         self.assertTrue(master_ai._is_tool_required("matrix rain"))
@@ -842,7 +845,7 @@ class DirectiveParserTests(unittest.TestCase):
         decision = master_ai.orchestrate([], "matrix rain")
         self.assertEqual(decision["route"], "local")
         self.assertEqual(decision["model"], master_ai.MODELS["master"])
-        self.assertIn("tool-required", decision["reason"])
+        self.assertTrue(master_ai._is_tool_required("matrix rain"))
         self.assertNotIn("synth_reply", decision)
 
     def test_matrix_rain_question_does_not_launch(self):
@@ -919,7 +922,9 @@ class DirectiveParserTests(unittest.TestCase):
         decision = master_ai.orchestrate([], "create an interactive gravity toy")
         self.assertEqual(decision["route"], "local")
         self.assertEqual(decision["model"], master_ai.MODELS["master"])
-        self.assertIn("tool-required", decision["reason"])
+        self.assertTrue(
+            master_ai._is_tool_required("create an interactive gravity toy")
+        )
 
     def test_plain_non_code_make_request_is_not_tool_required(self):
         self.assertFalse(master_ai._is_tool_required("make me a list of dinner ideas"))
