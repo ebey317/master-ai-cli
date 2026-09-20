@@ -245,10 +245,7 @@ class DirectiveParserTests(unittest.TestCase):
 
     def test_create_markers_are_case_insensitive(self):
         master_ai.process_reply(
-            "create: /tmp/master-ai-parser-test.txt\n"
-            "<<<content\n"
-            "hello\n"
-            ">>>content",
+            "create: /tmp/master-ai-parser-test.txt\n<<<content\nhello\n>>>content",
             [],
             streamed=False,
         )
@@ -311,7 +308,7 @@ class DirectiveParserTests(unittest.TestCase):
     def test_malformed_edit_requests_repair(self):
         history = []
         result = master_ai.process_reply(
-            "EDIT: /tmp/master-ai-parser-test.txt\n" "replace old with new",
+            "EDIT: /tmp/master-ai-parser-test.txt\nreplace old with new",
             history,
             streamed=False,
         )
@@ -342,7 +339,7 @@ class DirectiveParserTests(unittest.TestCase):
 
         master_ai.confirm_run = _fail_run
         master_ai.process_reply(
-            "RUN: bash -c 'exit 9'\n" "RUN: echo should-not-run\n" "RUNTERM: htop",
+            "RUN: bash -c 'exit 9'\nRUN: echo should-not-run\nRUNTERM: htop",
             [],
             streamed=False,
         )
@@ -595,7 +592,11 @@ class DirectiveParserTests(unittest.TestCase):
                 return "DONE\nStep result is acceptable."
 
             master_ai._loop_ai = _fake_loop_ai
-            master_ai.handle = lambda step, history: "checked"
+
+            def _fake_handle(step, history):
+                return "checked"
+
+            master_ai.handle = _fake_handle
             master_ai.speak = lambda *args, **kwargs: None
             history = []
             result = master_ai.handle_loop_task("test agent route", history)
@@ -612,9 +613,11 @@ class DirectiveParserTests(unittest.TestCase):
         orig_loop_ai = master_ai._loop_ai
         orig_handle = master_ai.handle
         try:
-            master_ai._loop_ai = (
-                lambda prompt, max_tokens=600: "QUESTION: Which file should I change?"
-            )
+
+            def _fake_loop_ai_question(prompt, max_tokens=600):
+                return "QUESTION: Which file should I change?"
+
+            master_ai._loop_ai = _fake_loop_ai_question
 
             def _unexpected_handle(step, history):
                 raise AssertionError("agent question should not fall through to handle")
@@ -730,7 +733,7 @@ class DirectiveParserTests(unittest.TestCase):
         master_ai._LAST_DENIED_ACTION = {"kind": "create", "path": "/tmp/declined.md"}
         history = []
         master_ai.process_reply(
-            "CREATE: /tmp/declined.md\n" "<<<CONTENT\n" "nope\n" ">>>CONTENT",
+            "CREATE: /tmp/declined.md\n<<<CONTENT\nnope\n>>>CONTENT",
             history,
             streamed=False,
         )
@@ -971,8 +974,8 @@ class DirectiveParserTests(unittest.TestCase):
                 master_ai.MODELS["master"],
                 "test local fallback",
             )
-            master_ai.ask_local_stream = (
-                lambda messages, model=None, image_path=None: None
+            master_ai.ask_local_stream = lambda messages, model=None, image_path=None: (
+                None
             )
 
             def _fake_cloud(messages, provider=None):
@@ -1011,6 +1014,7 @@ class DirectiveParserTests(unittest.TestCase):
     def test_cloud_lane_continues_run_read_then_synthesizes(self):
         orig_orchestrate = master_ai.orchestrate
         orig_detect_route = master_ai.detect_route
+        orig_ask_local_stream = master_ai.ask_local_stream
         orig_ask_cloud = master_ai.ask_cloud
         orig_thinking_start = master_ai.local_thinking_start
         orig_thinking_stop = master_ai.local_thinking_stop
@@ -1037,6 +1041,10 @@ class DirectiveParserTests(unittest.TestCase):
                 master_ai.MODELS["master"],
                 "unused",
             )
+            # hermetic: the real ask_local_stream opens a live streaming call to
+            # whatever local model the route names and can block for up to
+            # _LOCAL_HARD_TIMEOUT (600s), which stalled the whole suite.
+            master_ai.ask_local_stream = lambda *args, **kwargs: None
             master_ai.confirm_run = lambda cmd: master_ai.RunResult(
                 "9581:CLOUD_SYSTEM = (",
                 ok=True,
@@ -1079,6 +1087,7 @@ class DirectiveParserTests(unittest.TestCase):
             master_ai.load_memory = orig_load_memory
             master_ai.load_behavior = orig_load_behavior
             master_ai.auto_inject_context = orig_auto_context
+            master_ai.ask_local_stream = orig_ask_local_stream
             try:
                 probe.unlink()
             except FileNotFoundError:

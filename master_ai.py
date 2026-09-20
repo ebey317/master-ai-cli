@@ -3844,8 +3844,7 @@ def _maybe_drift_reminder(history_ref) -> None:
     if ACTIVE_TASK:
         proj = ACTIVE_PROJECT or "(no project)"
         print(
-            f"\n  {BC}🥷 [reminder]{X} still on: {BW}{ACTIVE_TASK}{X}  "
-            f"{D}({proj}){X}"
+            f"\n  {BC}🥷 [reminder]{X} still on: {BW}{ACTIVE_TASK}{X}  {D}({proj}){X}"
         )
         print(
             f"  {D}   type 'done' when finished · 'dojo' to see status · "
@@ -4591,9 +4590,25 @@ def orchestrate(history, user_text, image_path=None):
         )
     # 2026-08-27: OpenRouter /free models only. Route chat to the fastest
     # verified free slug (nvidia/nemotron-3-super-120b-a12b:free, ~0.7s).
+    # 2026-09-20: gate this lane on have_or. Before the gate, this block fired
+    # for EVERY chat-class turn whether or not an OpenRouter key existed, so on
+    # a keyless/offline box "hi" and "what is the capital of France" still
+    # routed to a cloud lane that could not answer — the local-first goldens in
+    # test_router_golden.py pin the opposite. have_or is computed above and was
+    # previously unused here.
     if is_chat_class:
-        return _choose_route(
-            [
+        _chat_candidates = [
+            {
+                "route": "local",
+                "model": MODELS["master"],
+                "task_type": "chat",
+                "base_score": 62,
+                "reason": "chat → local master fallback",
+            },
+        ]
+        if have_or:
+            _chat_candidates.insert(
+                0,
                 {
                     "route": "cloud",
                     "model": "openrouter",
@@ -4601,16 +4616,8 @@ def orchestrate(history, user_text, image_path=None):
                     "base_score": 80,
                     "reason": "chat → OpenRouter /free (content-routed)",
                 },
-                {
-                    "route": "local",
-                    "model": MODELS["master"],
-                    "task_type": "chat",
-                    "base_score": 62,
-                    "reason": "chat → local master fallback",
-                },
-            ],
-            reason_prefix="chat scored",
-        )
+            )
+        return _choose_route(_chat_candidates, reason_prefix="chat scored")
 
     # 6b. SCRAPPY — survival/off-grid specialist takes precedence over generic
     #     local models when the question is clearly on its home turf AND the
@@ -5312,9 +5319,7 @@ def firecrawl_fetch(url, timeout=45):
         log(f"FIRECRAWL_ERROR: {e}")
         return f"Firecrawl unavailable: {e}"
     if not body.get("success"):
-        return (
-            f"Firecrawl returned unsuccessful: {body.get('error','(no error message)')}"
-        )
+        return f"Firecrawl returned unsuccessful: {body.get('error', '(no error message)')}"
     data = body.get("data", {}) or {}
     markdown = (data.get("markdown") or "").strip()
     meta = data.get("metadata", {}) or {}
@@ -8197,7 +8202,7 @@ def show_tasks():
     for i, t in enumerate(tasks, 1):
         done = t.get("done", False)
         icon = f"{G}✅{X}" if done else f"{Y}○ {X}"
-        print(f"  {icon} {i}) {W}{t.get('text','')}{X}")
+        print(f"  {icon} {i}) {W}{t.get('text', '')}{X}")
     print()
 
 
@@ -8233,7 +8238,7 @@ def handle_task_cmd(cmd):
                 save_tasks(tasks)
                 print(f"  {G}✅ Done: {W}{tasks[n]['text']}{X}")
             else:
-                print(f"  {R}❌ No task #{n+1}{X}")
+                print(f"  {R}❌ No task #{n + 1}{X}")
         except (ValueError, IndexError):
             print(f"  {Y}Usage: task done <number>{X}")
         return True
@@ -8888,15 +8893,15 @@ def _show_schedules():
     if not rows:
         print(f"  {D}no schedules set{X}")
         return
-    print(f"\n{BC}  ╔{'═'*70}╗{X}")
-    print(f"{BC}  ║{X}  {BW}Schedules{' '*61}{BC}║{X}")
-    print(f"{BC}  ╠{'═'*70}╣{X}")
+    print(f"\n{BC}  ╔{'═' * 70}╗{X}")
+    print(f"{BC}  ║{X}  {BW}Schedules{' ' * 61}{BC}║{X}")
+    print(f"{BC}  ╠{'═' * 70}╣{X}")
     for sid, when, cadence, cmd, enabled in rows:
         flag = f"{G}on{X}" if enabled else f"{R}off{X}"
         print(
             f"{BC}  ║{X}  {Y}{sid:<16}{X} {flag:<8} {C}{when:<6} {cadence:<8}{X} {cmd:<24}{BC}║{X}"
         )
-    print(f"{BC}  ╚{'═'*70}╝{X}\n")
+    print(f"{BC}  ╚{'═' * 70}╝{X}\n")
 
 
 # ── MCP SERVERS — Sensei as MCP CLIENT ─────────────────────────
@@ -9522,11 +9527,11 @@ def show_hint(title, body):
     if not HINTS:
         return
     print(f"\n  {C}◈ {Y}{title}{X}")
-    print(f"  {C}{'─'*55}{X}")
+    print(f"  {C}{'─' * 55}{X}")
     for line in body.strip().splitlines():
         if line.strip():
             print(f"  {W}▸ {line}{X}")
-    print(f"  {C}{'─'*55}{X}")
+    print(f"  {C}{'─' * 55}{X}")
     print(f"  {W}{Y}type hints off to disable tips{X}\n")
 
 
@@ -9574,7 +9579,7 @@ def show_plan_demo():
             f"  {W}mode auto{X}     — run ALL commands without any prompts",
         ),
     ]
-    bar = f"{BC}{'═'*60}{X}"
+    bar = f"{BC}{'═' * 60}{X}"
     print(f"\n{bar}")
     print(f"{BC}  🥷  PLAN MODE — How it works{X}")
     print(f"{bar}\n")
@@ -9653,7 +9658,7 @@ def show_mode_status():
         _last = globals().get("_LAST_MODEL") or ""
         selected_model = f"AUTO→{_last}" if _last else "AUTO"
     print(
-        f"  {C}Mode: {mode_label()}  ·  Model: {W}{selected_model}{C}  —  {contract.get('tagline','')}{X}\n"
+        f"  {C}Mode: {mode_label()}  ·  Model: {W}{selected_model}{C}  —  {contract.get('tagline', '')}{X}\n"
     )
     # Always print the full contract so switching modes never leaves an
     # older mode's hint as the last visible text in scrollback.
@@ -9704,14 +9709,14 @@ def run_tutorial():
     step = 0
     while step < total:
         os.system("clear")
-        print(f"\n{D}  {'━'*60}{X}")
-        print(f"  {C}Tutorial  —  Step {step+1} of {total}{X}")
-        print(f"{D}  {'━'*60}{X}\n")
+        print(f"\n{D}  {'━' * 60}{X}")
+        print(f"  {C}Tutorial  —  Step {step + 1} of {total}{X}")
+        print(f"{D}  {'━' * 60}{X}\n")
         title, body = STEPS[step]
         print(f"  {BOLD}{W}{title}{X}\n")
         for line in body.strip().splitlines():
             print(f"  {W}{line}{X}")
-        print(f"\n{D}  {'━'*60}{X}\n")
+        print(f"\n{D}  {'━' * 60}{X}\n")
         if step == total - 1:
             input(f"  {G}Press Enter to finish...{X}")
             break
@@ -10459,14 +10464,14 @@ def show_model_menu():
     os.system("clear")
     play_anim(_A_SHURIKEN, delay=0.1, color=BC)
     width = 78
-    print(f"\n{BC}  ╔{'═'*width}╗{X}")
+    print(f"\n{BC}  ╔{'═' * width}╗{X}")
     print(
-        f"{BC}  ║{X}  {BW}🥷  Model Selector{X}  {D}select one model/provider, or type auto{X}{' '*19}{BC}║{X}"
+        f"{BC}  ║{X}  {BW}🥷  Model Selector{X}  {D}select one model/provider, or type auto{X}{' ' * 19}{BC}║{X}"
     )
     print(
         f"{BC}  ║{X}  {C}Current:{X} MODE:{W}{MODE.upper()}{X}  MODEL:{W}{PINNED_MODEL or 'AUTO'}{X}"
     )
-    print(f"{BC}  ╠{'═'*width}╣{X}")
+    print(f"{BC}  ╠{'═' * width}╣{X}")
     print(f"{BC}  ║{X}  {D}LOCAL / OLLAMA — private, monitorable, no API key{X}")
     local_entries = [
         (i + 1, m, d)
@@ -10496,7 +10501,7 @@ def show_model_menu():
         )
     else:
         print(f"{BC}  ║{X}  {C}Routing: {G}AUTO{X}  {D}(smart routing by task type){X}")
-    print(f"{BC}  ╚{'═'*width}╝{X}")
+    print(f"{BC}  ╚{'═' * width}╝{X}")
     print(
         f"\n  {D}Direct commands: model local · model groq · model cerebras · model deepseek-r1 · model stats · model auto{X}"
     )
@@ -10826,14 +10831,14 @@ def show_autotips(slide_delay=4.0):
         if not first:
             print(f"\n{D}  {'─' * w}  auto-tip  {'─' * 4}{X}\n")
         first = False
-        head = f"🥷  TIP {idx+1}/{len(slides)} — {title}"
+        head = f"🥷  TIP {idx + 1}/{len(slides)} — {title}"
         pad = max(0, w - len(head))
-        print(f"\n{BC}  ╔{'═'*w}╗{X}")
-        print(f"{BC}  ║{X}  {BW}{head}{' '*pad}{BC}║{X}")
-        print(f"{BC}  ╠{'═'*w}╣{X}")
+        print(f"\n{BC}  ╔{'═' * w}╗{X}")
+        print(f"{BC}  ║{X}  {BW}{head}{' ' * pad}{BC}║{X}")
+        print(f"{BC}  ╠{'═' * w}╣{X}")
         for b in bullets:
             print(f"{BC}  ║{X}  {Y}  • {C}{b}{X}")
-        print(f"{BC}  ╚{'═'*w}╝{X}")
+        print(f"{BC}  ╚{'═' * w}╝{X}")
         dots = "●" * (idx + 1) + "○" * (len(slides) - idx - 1)
         print(
             f"  {D}── auto-advancing in {int(slide_delay)}s  {BC}{dots}{X}  {D}── press any key to skip  {BC}q{X}=quit{X}"
@@ -10911,14 +10916,14 @@ def show_hub():
         if not first:
             print(f"\n{D}  {'─' * w}  page break  {'─' * 4}{X}\n")
         first = False
-        print(f"\n{BC}  ╔{'═'*w}╗{X}")
-        print(f"{BC}  ║{X}  {BW}{title}{' '*pad}{BC}║{X}")
-        print(f"{BC}  ╠{'═'*w}╣{X}")
+        print(f"\n{BC}  ╔{'═' * w}╗{X}")
+        print(f"{BC}  ║{X}  {BW}{title}{' ' * pad}{BC}║{X}")
+        print(f"{BC}  ╠{'═' * w}╣{X}")
         for i in idxs:
             cmd_txt, desc = items[i]
             num = i + 1
             print(f"{BC}  ║{X}   {Y}{num:>2}.{X} {W}{cmd_txt:<18}{X}{C}{desc}{X}")
-        print(f"{BC}  ╚{'═'*w}╝{X}")
+        print(f"{BC}  ╚{'═' * w}╝{X}")
         dots = "●" * (gidx + 1) + "○" * (total - gidx - 1)
         print(
             f"  {D}── hub  {BC}{dots}{X}  {D}── {X}{BC}#{X}=pick  {BC}n{X}=next  {BC}b{X}=back  {BC}q{X}=close"
@@ -10984,16 +10989,16 @@ def show_projects():
         if not first:
             print(f"\n{D}  {'─' * w}  page break  {'─' * 4}{X}\n")
         first = False
-        print(f"\n{BC}  ╔{'═'*w}╗{X}")
-        print(f"{BC}  ║{X}  {BW}{title}{' '*pad}{BC}║{X}")
-        print(f"{BC}  ╠{'═'*w}╣{X}")
+        print(f"\n{BC}  ╔{'═' * w}╗{X}")
+        print(f"{BC}  ║{X}  {BW}{title}{' ' * pad}{BC}║{X}")
+        print(f"{BC}  ╠{'═' * w}╣{X}")
         print(f"{BC}  ║{X}  {Y}  type    {X}{C}{p['kind']}{X}")
         print(f"{BC}  ║{X}  {Y}  local   {X}{C}{p['url']}{X}")
         if p.get("tailscale"):
             print(f"{BC}  ║{X}  {Y}  phone   {X}{G}{p['tailscale']}{X}")
         print(f"{BC}  ║{X}  {Y}  launch  {X}{C}{p['launch']}{X}")
         print(f"{BC}  ║{X}  {Y}  status  {X}{C}{p['status']}{X}")
-        print(f"{BC}  ╚{'═'*w}╝{X}")
+        print(f"{BC}  ╚{'═' * w}╝{X}")
         dots = "●" * (idx + 1) + "○" * (total - idx - 1)
         print(
             f"  {D}── project  {BC}{dots}{X}  {D}── {X}{BC}n{X}=next  {BC}b{X}=back  {BC}q{X}=quit"
@@ -11223,12 +11228,12 @@ def show_help():
         if not first:
             print(f"\n{D}  {'─' * w}  page break  {'─' * 4}{X}\n")
         first = False
-        print(f"\n{BC}  ╔{'═'*w}╗{X}")
-        print(f"{BC}  ║{X}  {BW}{title}{' '*pad}{BC}║{X}")
-        print(f"{BC}  ╠{'═'*w}╣{X}")
+        print(f"\n{BC}  ╔{'═' * w}╗{X}")
+        print(f"{BC}  ║{X}  {BW}{title}{' ' * pad}{BC}║{X}")
+        print(f"{BC}  ╠{'═' * w}╣{X}")
         for cmd_txt, desc in rows:
             print(f"{BC}  ║{X}  {Y}  {cmd_txt:<28}{C}{desc}{X}")
-        print(f"{BC}  ╚{'═'*w}╝{X}")
+        print(f"{BC}  ╚{'═' * w}╝{X}")
         dots = "●" * (idx + 1) + "○" * (total - idx - 1)
         print(
             f"  {D}── help  {BC}{dots}{X}  {D}── {X}{BC}n{X}=next  {BC}b{X}=back  {BC}q{X}=quit  {D}(Enter also = next; type a question to ask){X}"
@@ -11273,7 +11278,7 @@ def show_tips():
         print(f"{BC}  ║{X}")
 
     print(f"\n{BC}  ╔{bar}╗{X}")
-    print(f"{BC}  ║{X}  {BW}🥷  MASTER AI — Tips & Tricks{' '*(w-28)}{BC}║{X}")
+    print(f"{BC}  ║{X}  {BW}🥷  MASTER AI — Tips & Tricks{' ' * (w - 28)}{BC}║{X}")
 
     section("QUICK INPUT")
     blank()
@@ -11598,7 +11603,7 @@ _EMBEDDED_DIRECTIVE_RE = re.compile(
     re.IGNORECASE,
 )
 _STRAY_EMOJI_RE = re.compile(
-    "[" "\U0001f300-\U0001faff" "\U00002600-\U000027bf" "\U0001f1e6-\U0001f1ff" "]"
+    "[\U0001f300-\U0001faff\U00002600-\U000027bf\U0001f1e6-\U0001f1ff]"
 )
 # 2026-08-31: caught in the audit log — the model wrote its whole rambling
 # continuation on the same line as 'RUN: echo "check"...' with no newline,
@@ -12742,12 +12747,7 @@ def _format_tool_result(kind, cmd, result):
     if len(output) > max_chars:
         omitted = len(output) - max_chars
         output = output[:max_chars].rstrip() + f"\n... [truncated {omitted} chars]"
-    return (
-        f"[{kind} RESULT]\n"
-        f"Command: {cmd}\n"
-        f"Exit: {exit_code}\n"
-        f"Output:\n{output}"
-    )
+    return f"[{kind} RESULT]\nCommand: {cmd}\nExit: {exit_code}\nOutput:\n{output}"
 
 
 def _extract_path_lines(output):
@@ -14884,8 +14884,8 @@ def confirm_send_email(spec):
             print(_pill("SENT", f"{D}to {to}{X}"))
             _audit("SEND_EMAIL-OK", f"to={to} subject={subject}")
         else:
-            print(_pill("FAILED", f"{R}{result.get('error','')}{X}"))
-            _audit("SEND_EMAIL-FAIL", f"to={to} err={result.get('error','')}")
+            print(_pill("FAILED", f"{R}{result.get('error', '')}{X}"))
+            _audit("SEND_EMAIL-FAIL", f"to={to} err={result.get('error', '')}")
         return result
     if ans in ("3", "e", "edit"):
         print(
@@ -14928,9 +14928,9 @@ def confirm_send_telegram(spec):
             print(_pill("SENT", f"{D}to {chat_id}{X}"))
             _audit("SEND_TELEGRAM-OK", f"chat_id={chat_id}")
         else:
-            print(_pill("FAILED", f"{R}{result.get('error','')}{X}"))
+            print(_pill("FAILED", f"{R}{result.get('error', '')}{X}"))
             _audit(
-                "SEND_TELEGRAM-FAIL", f"chat_id={chat_id} err={result.get('error','')}"
+                "SEND_TELEGRAM-FAIL", f"chat_id={chat_id} err={result.get('error', '')}"
             )
         return result
     print(_pill("CANCELLED"))
@@ -17168,20 +17168,21 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         if not (isinstance(result, dict) and result.get("ok")):
             err = (result or {}).get("error", "send_email refused or failed")
             if _append_tool_blocked_feedback(
-                "SEND_EMAIL", f"to={spec.get('to','')} subject={spec.get('subject','')}"
+                "SEND_EMAIL",
+                f"to={spec.get('to', '')} subject={spec.get('subject', '')}",
             ):
                 return None
             print(_pill("BLOCKED", f"{D}SEND_EMAIL failed or was refused — {err}{X}"))
-            log(f"CHAIN_ABORT: SEND_EMAIL to={spec.get('to','')} err={err}")
+            log(f"CHAIN_ABORT: SEND_EMAIL to={spec.get('to', '')} err={err}")
             _append_exec_failure_feedback(
                 "SEND_EMAIL",
-                f"to={spec.get('to','')}",
-                f"To: {spec.get('to','')}\nSubject: {spec.get('subject','')}\nError: {err}",
+                f"to={spec.get('to', '')}",
+                f"To: {spec.get('to', '')}\nSubject: {spec.get('subject', '')}\nError: {err}",
             )
             return None
         if continue_after_tools:
             tool_result_feedback.append(
-                f"[SEND_EMAIL RESULT]\nTo: {spec.get('to','')}\nSubject: {spec.get('subject','')}\nStatus: sent"
+                f"[SEND_EMAIL RESULT]\nTo: {spec.get('to', '')}\nSubject: {spec.get('subject', '')}\nStatus: sent"
             )
 
     # SEND_TELEGRAM: runs after RUN/RUNTERM/SEND_EMAIL — one-way bot message.
@@ -17191,24 +17192,24 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             err = (result or {}).get("error", "send_telegram refused or failed")
             if _append_tool_blocked_feedback(
                 "SEND_TELEGRAM",
-                f"chat_id={spec.get('chat_id','')} text={spec.get('text','')[:80]}",
+                f"chat_id={spec.get('chat_id', '')} text={spec.get('text', '')[:80]}",
             ):
                 return None
             print(
                 _pill("BLOCKED", f"{D}SEND_TELEGRAM failed or was refused — {err}{X}")
             )
             log(
-                f"CHAIN_ABORT: SEND_TELEGRAM chat_id={spec.get('chat_id','')} err={err}"
+                f"CHAIN_ABORT: SEND_TELEGRAM chat_id={spec.get('chat_id', '')} err={err}"
             )
             _append_exec_failure_feedback(
                 "SEND_TELEGRAM",
-                f"chat_id={spec.get('chat_id','')}",
-                f"Chat ID: {spec.get('chat_id','')}\nText: {spec.get('text','')}\nError: {err}",
+                f"chat_id={spec.get('chat_id', '')}",
+                f"Chat ID: {spec.get('chat_id', '')}\nText: {spec.get('text', '')}\nError: {err}",
             )
             return None
         if continue_after_tools:
             tool_result_feedback.append(
-                f"[SEND_TELEGRAM RESULT]\nChat ID: {spec.get('chat_id','')}\nMessage: {spec.get('text','')}\nStatus: sent"
+                f"[SEND_TELEGRAM RESULT]\nChat ID: {spec.get('chat_id', '')}\nMessage: {spec.get('text', '')}\nStatus: sent"
             )
 
     # BROWSER_* — dispatched through sensei_bridge.py's queue (same one
@@ -17943,7 +17944,7 @@ def handle_loop_task(task, history, context_policy=None):
     print()
     print(f"  {BC}🔁  AGENT MODE — {task}{X}")
     print(
-        f"  {D}max {LOOP_MAX_CYCLES} cycles · max {LOOP_MAX_SECONDS//60} min · abort to stop{X}"
+        f"  {D}max {LOOP_MAX_CYCLES} cycles · max {LOOP_MAX_SECONDS // 60} min · abort to stop{X}"
     )
     print()
 
@@ -17993,13 +17994,13 @@ def handle_loop_task(task, history, context_policy=None):
     while step_idx < len(steps) and cycle < LOOP_MAX_CYCLES:
         if _t.time() - start > LOOP_MAX_SECONDS:
             print(
-                f"  {Y}loop hit wall-clock ceiling ({LOOP_MAX_SECONDS//60} min) — stopping{X}"
+                f"  {Y}loop hit wall-clock ceiling ({LOOP_MAX_SECONDS // 60} min) — stopping{X}"
             )
             break
         cycle += 1
         step = steps[step_idx]
         print(
-            f"  {BC}[step {step_idx+1}/{len(steps)} · cycle {cycle}/{LOOP_MAX_CYCLES}]{X} {step}"
+            f"  {BC}[step {step_idx + 1}/{len(steps)} · cycle {cycle}/{LOOP_MAX_CYCLES}]{X} {step}"
         )
 
         # Execute step through normal handle() — sandbox enforced here
@@ -18509,7 +18510,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
                 "candidates": decision.get("candidates", []),
                 "score": decision.get("score"),
             }
-    log(f"ORCHESTRATE: {decision.get('route')} | {decision.get('reason','')}")
+    log(f"ORCHESTRATE: {decision.get('route')} | {decision.get('reason', '')}")
     _router_metric(
         "route_decision",
         route=decision.get("route"),
@@ -21203,7 +21204,7 @@ def main():
                 order = _load_fallback_order()
                 if name in order:
                     print(
-                        f"  {Y}{name} is already in the chain (position {order.index(name)+1}){X}"
+                        f"  {Y}{name} is already in the chain (position {order.index(name) + 1}){X}"
                     )
                 else:
                     order.append(name)
@@ -21607,7 +21608,7 @@ def main():
             nm = "ON" if "NO_MOUSE" in settings else "OFF"
             pm = "ON" if "PHONE_MODE" in settings else "OFF"
             print(
-                f"  {C}No-mouse: {G if nm=='ON' else Y}{nm}{X}   Phone mode: {G if pm=='ON' else Y}{pm}{X}"
+                f"  {C}No-mouse: {G if nm == 'ON' else Y}{nm}{X}   Phone mode: {G if pm == 'ON' else Y}{pm}{X}"
             )
             continue
 
@@ -22382,7 +22383,7 @@ def main():
                     _tmux_resize_to_client(kill_others=True)
                     _nudge_tmux_auto_resize()
                     print(
-                        f"  {G}✅ killed {n-1} other pane(s) — Sensei is alone now.{X}"
+                        f"  {G}✅ killed {n - 1} other pane(s) — Sensei is alone now.{X}"
                     )
                 else:
                     print(f"  {D}already the only pane.{X}")
@@ -22692,7 +22693,7 @@ def main():
                     print(f"\n  {C}Saved chats ({len(files)} files):{X}")
                     for idx, f in enumerate(files, 1):
                         sz = f.stat().st_size
-                        sz_str = f"{sz//1024}KB" if sz >= 1024 else f"{sz}B"
+                        sz_str = f"{sz // 1024}KB" if sz >= 1024 else f"{sz}B"
                         dt = _fmt_ampm(datetime.fromtimestamp(f.stat().st_mtime))
                         print(f"  {W}{idx:>3}.{X} {dt}  {f.name:<40} {D}({sz_str}){X}")
                     print(
@@ -22721,7 +22722,9 @@ def main():
                         target.unlink(missing_ok=True)
                         print(f"  {G}✅ Deleted: {target.name}{X}")
                     else:
-                        print(f"  {R}No file #{n+1}. Type 'chats' to see the list.{X}")
+                        print(
+                            f"  {R}No file #{n + 1}. Type 'chats' to see the list.{X}"
+                        )
                 except ValueError:
                     print(f"  {R}Usage: clear chats <number>  e.g. 'clear chats 2'{X}")
             continue
@@ -22770,7 +22773,7 @@ def main():
                 kept = [l for l in lines if keyword.lower() not in l.lower()]
                 MEMORY_FILE.write_text("\n".join(kept) + "\n")
                 print(
-                    f"  {G}✅ Removed {len(lines)-len(kept)} line(s) matching: {keyword}{X}"
+                    f"  {G}✅ Removed {len(lines) - len(kept)} line(s) matching: {keyword}{X}"
                 )
             continue
 
