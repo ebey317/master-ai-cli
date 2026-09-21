@@ -16487,8 +16487,24 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                 content += "\n\n[Some READ targets also failed]\n" + "\n".join(
                     f"- {p}: {why}" for p, why in failed_reads[:6]
                 )
+            # P1.6 reconciliation (2026-09-20): a READ in a chain that also
+            # edits the file it read must NOT end the turn here. The READ
+            # contents already satisfied the READ→EDIT contract (the edit gate
+            # below consults read_paths), and returning None would strand the
+            # EDIT for a "re-ask" turn the model already answered — the exact
+            # failure test_edit_markers_are_case_insensitive pinned at HEAD
+            # (verified: red at every commit back to ca3f813, which introduced
+            # the READ→EDIT contract in the same chain as this early return —
+            # the two never agreed). Inject the content into history (so the
+            # model still gets grounding for later turns) and fall through to
+            # dispatch the edits in this same pass. Chains with no edits keep
+            # the original re-ask behavior.
+            if not edit_ops:
+                history.append(
+                    {"role": "user", "content": content + "\n\nNow proceed."}
+                )
+                return None  # caller re-asks AI with injected context
             history.append({"role": "user", "content": content + "\n\nNow proceed."})
-            return None  # caller re-asks AI with injected context
         if failed_reads:
             history.append(
                 {
