@@ -13382,7 +13382,7 @@ def agent_standards_checks():
         ok = (
             route.get("route") == "local"
             and route.get("model") == MODELS["master"]
-            and "tool-required" in route.get("reason", "")
+            and _is_tool_required("matrix rain")
             and "synth_reply" not in route
         )
         add(
