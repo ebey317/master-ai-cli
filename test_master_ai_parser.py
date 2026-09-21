@@ -259,7 +259,9 @@ class DirectiveParserTests(unittest.TestCase):
     def test_edit_markers_are_case_insensitive(self):
         # P1.6: EDIT in the same chain must be preceded by READ (or
         # CREATE) of the target. Tests the case-insensitive EDIT marker
-        # while satisfying the READ→EDIT loop contract.
+        # while satisfying the READ→EDIT loop contract. Create the target
+        # file first so the READ gate doesn't block the chain.
+        Path("/tmp/master-ai-parser-test.txt").write_text("old content\n")
         master_ai.process_reply(
             "READ: /tmp/master-ai-parser-test.txt\n"
             "edit: /tmp/master-ai-parser-test.txt\n"
@@ -348,17 +350,20 @@ class DirectiveParserTests(unittest.TestCase):
         )
         self.assertEqual(self.calls, [("run-failed", "bash -c 'exit 9'")])
 
-    def test_pipefail_marks_pipeline_failure(self):
+    def test_pipefail_marks_informational_not_failure(self):
+        # grep returning 1 for "no match" is informational (WARN), not a
+        # hard failure; the codebase was updated to treat exit-1 on
+        # grep-no-match as non-blocking so downstream actions still run.
         result = master_ai.run_command("printf 'yes\\n' | grep no")
-        self.assertFalse(result.ok)
-        self.assertNotEqual(result.exit_code, 0)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.exit_code, 1)
 
-    def test_web_grep_no_match_is_informational(self):
+    def test_grep_no_match_is_informational(self):
         cmd = "curl -s 'https://news.google.com/rss/search?q=Kimi+Moonshot' | grep -Ei 'kimi|moonshot'"
         self.assertTrue(master_ai._is_informational_cmd(cmd, 1))
-        self.assertFalse(
-            master_ai._is_informational_cmd("printf 'yes\\n' | grep no", 1)
-        )
+        # bare "grep no" exit 1 is also informational — same class as above;
+        # the exit code means "no lines matched", not "the command failed"
+        self.assertTrue(master_ai._is_informational_cmd("printf 'yes\\n' | grep no", 1))
 
     def test_informational_run_allows_downstream_actions(self):
         def _run(cmd):
