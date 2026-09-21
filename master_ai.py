@@ -3935,6 +3935,38 @@ def _looks_like_local_find_target(target):
     )
 
 
+# 2026-09-21: "list files in X" was treating X as a literal local path with
+# zero check for whether it's actually a cloud-storage service name instead —
+# reproduced live: "list files in my google drive" ran `ls -la 'my google
+# drive'` (a literal directory named that, which doesn't exist) rather than
+# routing to the google-workspace skill that actually talks to Drive. The
+# sibling "find X" pattern right below already guards against exactly this
+# class of mismatch via _looks_like_local_find_target(); this pattern never
+# got the same treatment. Deliberately name-based, not exhaustive — the goal
+# is catching the common, unambiguous cloud-service names people actually
+# say, not building a perfect classifier; anything not caught here still
+# falls through to normal model-driven routing same as before this existed.
+_CLOUD_STORAGE_SERVICE_NAMES = {
+    "google drive",
+    "my drive",
+    "gdrive",
+    "drive",
+    "dropbox",
+    "onedrive",
+    "one drive",
+    "icloud",
+    "icloud drive",
+    "box",
+    "box.com",
+}
+
+
+def _names_cloud_storage_service(target):
+    low = re.sub(r"[?!.]+$", "", str(target or "").strip().lower())
+    low = re.sub(r"^(?:my|the|a|an)\s+", "", low)
+    return low in _CLOUD_STORAGE_SERVICE_NAMES
+
+
 def _quote_home_path(path_text):
     raw = str(path_text or "").strip().strip("'\"")
     if not raw:
@@ -3973,7 +4005,7 @@ def _deterministic_intent_to_directive(user_text):
     m = re.match(
         r"^(?:list\s+files\s+in|list\s+directory|ls)\s+(.+)$", text, re.IGNORECASE
     )
-    if m:
+    if m and not _names_cloud_storage_service(m.group(1)):
         path = _quote_home_path(m.group(1))
         if path:
             return f"RUN: ls -la {path}"
