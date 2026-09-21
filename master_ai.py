@@ -4261,14 +4261,24 @@ def orchestrate(history, user_text, image_path=None):
     # 2. Explicit prefixes — user intent overrides mode. Matched against
     # the user section (after [USER PROMPT]) so API-wrapped prompts honor
     # the prefix exactly like raw TUI input does.
-    if user_section_low.startswith("fast:") and have_groq:
+    # 2026-09-20: have_groq/have_fireworks are hardcoded False (disabled
+    # 2026-08-27), but the keys_now dict still carries whatever load_keys()
+    # returns. The `fast:` prefix should route to a live cloud lane, not
+    # dead-end silently. Gate on the actual key presence instead.
+    if (
+        user_section_low.startswith("fast:")
+        and (keys_now.get("openrouter") or "").strip()
+    ):
         return {
-            "route": "cloud_fast",
-            "model": "groq",
+            "route": "cloud",
+            "model": "openrouter",
             "stripped_text": _strip_prefix(5),
-            "reason": "explicit 'fast:' → Groq",
+            "reason": "explicit 'fast:' → OpenRouter (fast lane)",
         }
-    if user_section_low.startswith("fireworks:") and have_fireworks:
+    if (
+        user_section_low.startswith("fireworks:")
+        and (keys_now.get("fireworks") or "").strip()
+    ):
         return {
             "route": "cloud",
             "model": "fireworks",
