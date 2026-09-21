@@ -15427,33 +15427,103 @@ _XML_PARAM_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# 2026-09-21: a second, distinct native tool-call shape, confirmed live on
+# opencode-go::mimo-v2.5-pro (and documented as several open-weight model
+# families' trained-in tool-call format, not something particular to one
+# model). Unlike _XML_INVOKE_RE's Anthropic-style `<invoke name="X">
+# <parameter name="Y">`, this one puts the value directly on the tag with
+# `=`, no quotes, no `name` attribute: `<function=bash><parameter=command>
+# cd ~/scripts && ...</parameter><parameter=description>...</parameter>
+# </function>`. Same failure mode _XML_INVOKE_RE was built to fix, live
+# again on a model whose native tool-call template this system prompt never
+# asked for: rendered as prose + raw XML, nothing ever dispatched, user had
+# to manually say "proceed" over and over to get anything resembling
+# forward motion because the model never received real tool output to
+# continue from — it was reacting to its own unexecuted call, not a result.
+_XML_FUNCTION_RE = re.compile(
+    r"<function\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*>(.*?)</function\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_XML_FUNCTION_PARAM_RE = re.compile(
+    r"<parameter\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*>(.*?)</parameter\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+# None of these common cross-model "run a shell command" tool names are
+# master_ai's own RUN directive keyword, so without this alias map a
+# <function=bash> block would convert to a still-unrecognized "BASH: ..."
+# line instead of the RUN: the dispatcher actually understands — visible
+# is strictly better than invisible (see docstring below), but recognized
+# and dispatched is the real fix.
+_XML_FUNCTION_NAME_ALIASES = {
+    "bash": "RUN",
+    "shell": "RUN",
+    "execute": "RUN",
+    "exec": "RUN",
+    "terminal": "RUN",
+    "run_command": "RUN",
+    "run_shell_command": "RUN",
+}
+
 
 def _xml_tool_calls_to_directives(reply):
-    """Translate `<invoke name="X">...<parameter>...</parameter>...</invoke>`
-    blocks into bare `X: payload` directives (one line, whitespace-collapsed
-    inside the payload so a multi-line command body still satisfies the
-    one-directive-per-line invariant). Unknown action names still convert —
-    a malformed-but-visible directive line beats invisible raw XML, because
-    the directive-repair feedback loop can then teach the model the right
-    shape. Blocks with no parameter take the whole body as the payload."""
-    if not reply or "<invoke" not in reply:
+    """Translate native XML-shaped tool calls into bare `X: payload`
+    directives (one line, whitespace-collapsed inside the payload so a
+    multi-line command body still satisfies the one-directive-per-line
+    invariant). Handles two distinct shapes different model families are
+    natively trained to emit, despite the system prompt never asking for
+    either: Anthropic-style `<invoke name="X"><parameter name="Y">...
+    </parameter></invoke>`, and Llama/Hermes-style `<function=X>
+    <parameter=Y>...</parameter></function>`. Unknown action names still
+    convert — a malformed-but-visible directive line beats invisible raw
+    XML, because the directive-repair feedback loop can then teach the
+    model the right shape. Blocks with no parameter take the whole body as
+    the payload."""
+    if not reply:
         return reply
 
-    def _conv(m):
-        name = m.group(1).strip().upper()
-        body = m.group(2)
-        params = _XML_PARAM_RE.findall(body)
-        payload = params[0][1] if params else body
-        # Collapse line breaks and indentation noise, but preserve intentional
-        # spaces inside quoted strings and heredoc bodies.
-        payload = " ".join(
-            line.strip() for line in payload.splitlines() if line.strip()
-        )
-        if not name or not payload:
-            return ""
-        return f"{name}: {payload}"
+    if "<invoke" in reply:
 
-    return _XML_INVOKE_RE.sub(_conv, reply)
+        def _conv(m):
+            name = m.group(1).strip().upper()
+            body = m.group(2)
+            params = _XML_PARAM_RE.findall(body)
+            payload = params[0][1] if params else body
+            # Collapse line breaks and indentation noise, but preserve intentional
+            # spaces inside quoted strings and heredoc bodies.
+            payload = " ".join(
+                line.strip() for line in payload.splitlines() if line.strip()
+            )
+            if not name or not payload:
+                return ""
+            return f"{name}: {payload}"
+
+        reply = _XML_INVOKE_RE.sub(_conv, reply)
+
+    if "<function" in reply.lower():
+
+        def _conv_fn(m):
+            raw_name = m.group(1).strip().lower()
+            name = _XML_FUNCTION_NAME_ALIASES.get(raw_name, raw_name.upper())
+            body = m.group(2)
+            params = _XML_FUNCTION_PARAM_RE.findall(body)
+            # Prefer a "command" parameter when one exists — bash/shell-style
+            # calls commonly carry an extra "description" parameter alongside
+            # it, which is not the payload to execute.
+            payload = next(
+                (v for k, v in params if k.strip().lower() == "command"), None
+            )
+            if payload is None:
+                payload = params[0][1] if params else body
+            payload = " ".join(
+                line.strip() for line in payload.splitlines() if line.strip()
+            )
+            if not name or not payload:
+                return ""
+            return f"{name}: {payload}"
+
+        reply = _XML_FUNCTION_RE.sub(_conv_fn, reply)
+
+    return reply
 
 
 _BARE_KEYWORD_LINE_RE = re.compile(
