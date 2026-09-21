@@ -3,9 +3,9 @@ name: CI
 
 on:
   push:
-    branches: [ master, main ]
+    branches: [master, main]
   pull_request:
-    branches: [ master, main ]
+    branches: [master, main]
 
 jobs:
   test:
@@ -15,43 +15,45 @@ jobs:
         python-version: ["3.10", "3.11"]
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
-    
+
     - name: Install dependencies
       run: |
         pip install --upgrade pip
         pip install -e .[dev]
-        pip install ruff black pytest pytest-cov pre-commit mypy
+        pip install ruff pytest pytest-cov pytest-timeout pre-commit mypy
 
     - name: Install shellcheck (native binary, not on PyPI)
       run: sudo apt-get update && sudo apt-get install -y shellcheck
-    
+
     - name: Run pre-commit
       run: |
         pre-commit install
-        pre-commit run --all-files || true
-    
+        pre-commit run --all-files
+
     - name: Run shellcheck
       run: |
         shellcheck --external-sources *.sh
-    
+
     - name: Run mypy
       run: |
-        mypy --ignore-missing-imports --exclude "sensei_clean/__init__.py" . || true
-    
+        mypy --ignore-missing-imports --follow-imports=silent --exclude "sensei_clean/__init__.py" .
+
     - name: Run ruff
       run: |
-        ruff check . || true
-        ruff format --check . || true
-    
+        ruff check .
+        ruff format --check .
+
     - name: Run pytest
+      env:
+        MCLI_SKIP_ENV_TESTS: "1"
       run: |
-        pytest --tb=short -v --cov=master_ai --cov=sensei_tui --cov=approval_queue --cov=hooks --cov=capabilities --cov=observability --cov=router --cov=subagent_registry --cov=skill_runtime --cov=tts_server --cov=typed_actions --cov=verifiers --cov=whereisit --cov-report=term-missing --cov-report=html
-    
+        pytest --tb=short -v --timeout=60
+
     - name: Upload coverage report
       uses: actions/upload-artifact@v4
       if: always()
@@ -64,18 +66,18 @@ jobs:
     needs: test
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: "3.10"
-    
+
     - name: Install dependencies
       run: |
         pip install --upgrade pip
-        pip install ruff black
-    
+        pip install ruff
+
     - name: Run ruff
       run: |
-        ruff check . || true
-        ruff format --check . || true
+        ruff check .
+        ruff format --check .

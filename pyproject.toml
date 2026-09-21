@@ -9,8 +9,10 @@ markers = [
     "unit: marks tests as unit tests",
 ]
 
-# Test directory
-testpaths = ["tests"]
+# Test directory — scan the whole repo, not just tests/.
+# 2026-09-20: was ["tests"] (3 files, 14 tests). The other ~60 test files
+# at the repo root (775 tests) never ran in CI. Now scans everything.
+testpaths = ["."]
 
 # Ignore directories
 norecursedirs = [".git", "__pycache__", "build", "dist", "*.egg-info"]
