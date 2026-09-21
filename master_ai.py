@@ -15944,6 +15944,39 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
 
     skill_reply = _run_skill_reply_from_reply("\n".join(lines), history)
     if skill_reply is not None:
+        # 2026-09-21: sibling of the same bug fixed in handle() at the
+        # outer "[SKILL RESULT" check (a model's FIRST reply of a turn
+        # dispatches a skill before ever reaching process_reply at all).
+        # THIS site is process_reply's own internal RUN_SKILL handling —
+        # reached when a skill directive shows up mid-chain, already
+        # inside a reply process_reply is parsing. Recursing straight into
+        # process_reply(skill_reply, ...) just re-parses skill_reply for
+        # MORE directives (correctly finds none) and falls through to its
+        # own `return reply` fallthrough — the raw "[SKILL RESULT — X]\n..."
+        # text becomes this call's return value verbatim, same missing-
+        # synthesis bug, different entry point. Mirror the SUBAGENT RESULT
+        # pattern already used elsewhere in this same function: hand the
+        # real result back to the model as context and return None so the
+        # caller's continuation loop re-asks instead of standing pat on
+        # the raw dump. Scoped to the same "[SKILL RESULT" shape only —
+        # pending-directive/aborted/paused skill replies still recurse
+        # normally, they're not raw data needing interpretation.
+        if skill_reply.startswith("[SKILL RESULT"):
+            history.append(
+                {
+                    "role": "user",
+                    "content": (
+                        skill_reply
+                        + "\n\nThe skill result above is real. Answer the user's "
+                        "original question using it — don't just repeat the raw "
+                        "list back verbatim; say what it means for what they asked."
+                    ),
+                }
+            )
+            log(
+                "CHAIN_SKILL_RESULT_FEEDBACK: forcing continuation to synthesize a real answer (internal path)"
+            )
+            return None
         return process_reply(
             skill_reply,
             history,
