@@ -17156,16 +17156,32 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                 _pill("BLOCKED", f"{D}inline python generator must be CREATEd first{X}")
             )
             log(f"DIRECTIVE_REPAIR_INLINE_PYTHON: {inline_python[:3]}")
+            # 2026-09-21: _inline_python_generator()'s own detection above fires on
+            # ANY sufficiently long python3 -c one-liner containing generic tokens
+            # like "generate", "subprocess.run(", "os.system(" — not actually
+            # restricted to media at all, despite this repair message's original
+            # wording ("generated images or video"). Reported live: the model was
+            # writing a web scraper (a subprocess.run() call in an inline check
+            # tripped this), got told to stop making "images or video" — completely
+            # wrong framing for what it was actually doing — and the mismatched
+            # feedback left it unable to act on the correction properly, so it just
+            # re-announced roughly the same plan instead of emitting a real CREATE
+            # block. The underlying policy (write it as a real file, don't inline
+            # a long generator) is correct and worth keeping regardless of content
+            # type; only the wording was media-specific. Made purpose-agnostic so
+            # it's accurate for scrapers, data processors, or anything else that
+            # happens to trip the same broad detector.
             history.append(
                 {
                     "role": "user",
                     "content": (
                         "[Directive repair]\n"
                         "You tried to run a long inline python generator with python3 -c. "
-                        "Do not use a one-liner for generated images or video. First emit a CREATE block "
-                        "for a real .py or .sh generator file on Desktop, then verify it, then run that file "
-                        "by path. Keep the filename stable through CREATE → chmod/ls → RUN/RUNTERM. "
-                        "Do not explain. Repair the directive chain now."
+                        "Do not use a one-liner for this — it doesn't matter what the script does "
+                        "(image/video generation, scraping, data processing, anything else). First "
+                        "emit a CREATE block for a real .py or .sh file on Desktop, then verify it, "
+                        "then run that file by path. Keep the filename stable through CREATE → "
+                        "chmod/ls → RUN/RUNTERM. Do not explain. Repair the directive chain now."
                     ),
                 }
             )
