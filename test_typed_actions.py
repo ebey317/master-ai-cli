@@ -29,30 +29,81 @@ class KindAndRiskConstants(unittest.TestCase):
         # drifted out of sync with it until this gap-closing pass.
         self.assertEqual(
             ta.DIRECTIVE_KINDS,
-            frozenset({
-                "RUN", "RUNTERM", "READ", "CREATE", "EDIT", "REMEMBER",
-                "PLAN", "DONE", "THINK", "RUN_SKILL", "SEND_EMAIL",
-                "BROWSER_CLICK", "BROWSER_FILL", "BROWSER_FILL_FORM", "BROWSER_UPLOAD_FILE", "BROWSER_SUBMIT",
-                "BROWSER_READ", "BROWSER_NAV", "BROWSER_CLOSE_TAB",
-                "BROWSER_SCREENSHOT", "BROWSER_WAIT", "BROWSER_SCROLL",
-                "BROWSER_DOUBLE_CLICK", "BROWSER_FIND", "BROWSER_EXTRACT_LIST",
-                "BROWSER_DRIVE_INSPECT_FOLDER", "BROWSER_READ_PAGE", "BROWSER_READ_PAGE_FULL",
-                "BROWSER_OBSERVE", "BROWSER_CDP_MOUSE", "BROWSER_CDP_KEY",
-                "BROWSER_TAB_CREATE", "REMOTE_MCP",
-            }),
+            frozenset(
+                {
+                    "RUN",
+                    "RUNTERM",
+                    "READ",
+                    "CREATE",
+                    "EDIT",
+                    "REMEMBER",
+                    "PLAN",
+                    "DONE",
+                    "THINK",
+                    "RUN_SKILL",
+                    "SEND_EMAIL",
+                    "BROWSER_CLICK",
+                    "BROWSER_FILL",
+                    "BROWSER_FILL_FORM",
+                    "BROWSER_UPLOAD_FILE",
+                    "BROWSER_SUBMIT",
+                    "BROWSER_READ",
+                    "BROWSER_NAV",
+                    "BROWSER_CLOSE_TAB",
+                    "BROWSER_SCREENSHOT",
+                    "BROWSER_WAIT",
+                    "BROWSER_SCROLL",
+                    "BROWSER_DOUBLE_CLICK",
+                    "BROWSER_FIND",
+                    "BROWSER_EXTRACT_LIST",
+                    "BROWSER_DRIVE_INSPECT_FOLDER",
+                    "BROWSER_READ_PAGE",
+                    "BROWSER_READ_PAGE_FULL",
+                    "BROWSER_OBSERVE",
+                    "BROWSER_CDP_MOUSE",
+                    "BROWSER_CDP_KEY",
+                    "BROWSER_TAB_CREATE",
+                    "REMOTE_MCP",
+                    "SEND_TELEGRAM",
+                }
+            ),
         )
 
     def test_kind_class_aliases_match(self):
         for name in (
-            "RUN", "RUNTERM", "READ", "CREATE", "EDIT", "REMEMBER",
-            "PLAN", "DONE", "THINK", "RUN_SKILL", "SEND_EMAIL",
-            "BROWSER_CLICK", "BROWSER_FILL", "BROWSER_FILL_FORM", "BROWSER_UPLOAD_FILE", "BROWSER_SUBMIT",
-            "BROWSER_READ", "BROWSER_NAV", "BROWSER_CLOSE_TAB",
-            "BROWSER_SCREENSHOT", "BROWSER_WAIT", "BROWSER_SCROLL",
-            "BROWSER_DOUBLE_CLICK", "BROWSER_FIND", "BROWSER_EXTRACT_LIST",
-            "BROWSER_DRIVE_INSPECT_FOLDER", "BROWSER_READ_PAGE", "BROWSER_READ_PAGE_FULL",
-            "BROWSER_OBSERVE", "BROWSER_CDP_MOUSE", "BROWSER_CDP_KEY",
-            "BROWSER_TAB_CREATE", "REMOTE_MCP",
+            "RUN",
+            "RUNTERM",
+            "READ",
+            "CREATE",
+            "EDIT",
+            "REMEMBER",
+            "PLAN",
+            "DONE",
+            "THINK",
+            "RUN_SKILL",
+            "SEND_EMAIL",
+            "BROWSER_CLICK",
+            "BROWSER_FILL",
+            "BROWSER_FILL_FORM",
+            "BROWSER_UPLOAD_FILE",
+            "BROWSER_SUBMIT",
+            "BROWSER_READ",
+            "BROWSER_NAV",
+            "BROWSER_CLOSE_TAB",
+            "BROWSER_SCREENSHOT",
+            "BROWSER_WAIT",
+            "BROWSER_SCROLL",
+            "BROWSER_DOUBLE_CLICK",
+            "BROWSER_FIND",
+            "BROWSER_EXTRACT_LIST",
+            "BROWSER_DRIVE_INSPECT_FOLDER",
+            "BROWSER_READ_PAGE",
+            "BROWSER_READ_PAGE_FULL",
+            "BROWSER_OBSERVE",
+            "BROWSER_CDP_MOUSE",
+            "BROWSER_CDP_KEY",
+            "BROWSER_TAB_CREATE",
+            "REMOTE_MCP",
         ):
             self.assertEqual(getattr(ta.Kind, name), name)
 
@@ -80,18 +131,21 @@ class TypedActionShape(unittest.TestCase):
     def test_id_is_uuid(self):
         a = ta.TypedAction(kind="RUN", target="ls")
         import uuid
+
         # Should not raise
         uuid.UUID(a.id)
 
     def test_parsed_at_is_iso8601(self):
         a = ta.TypedAction(kind="RUN", target="ls")
         from datetime import datetime
+
         # Round-trip via fromisoformat (post-3.11 accepts the 'Z' / offset form we emit)
         datetime.fromisoformat(a.parsed_at)
 
     def test_to_dict_roundtrip(self):
-        a = ta.TypedAction(kind="EDIT", target="/tmp/foo.py",
-                           edit_old="x = 1", edit_new="x = 2")
+        a = ta.TypedAction(
+            kind="EDIT", target="/tmp/foo.py", edit_old="x = 1", edit_new="x = 2"
+        )
         d = a.to_dict()
         b = ta.TypedAction.from_dict(d)
         self.assertEqual(b.kind, a.kind)
@@ -149,7 +203,9 @@ class RiskClassifier(unittest.TestCase):
         self.assertEqual(self._risk_of("RUN", "rm -rf /tmp/foo"), ta.Risk.HIGH)
 
     def test_dd_is_high(self):
-        self.assertEqual(self._risk_of("RUN", "dd if=/dev/zero of=/dev/sda"), ta.Risk.HIGH)
+        self.assertEqual(
+            self._risk_of("RUN", "dd if=/dev/zero of=/dev/sda"), ta.Risk.HIGH
+        )
 
     def test_mkfs_is_high(self):
         self.assertEqual(self._risk_of("RUN", "mkfs.ext4 /dev/sda1"), ta.Risk.HIGH)
@@ -229,7 +285,9 @@ class DirectiveParser(unittest.TestCase):
         self.assertEqual(a.kind, "BROWSER_SCREENSHOT")
 
     def test_parse_browser_upload_file_line(self):
-        a = ta.parse_directive("BROWSER_UPLOAD_FILE: input[type=file] :: /tmp/resume.pdf")
+        a = ta.parse_directive(
+            "BROWSER_UPLOAD_FILE: input[type=file] :: /tmp/resume.pdf"
+        )
         self.assertIsNotNone(a)
         self.assertEqual(a.kind, "BROWSER_UPLOAD_FILE")
 
@@ -318,7 +376,9 @@ class ReplyParser(unittest.TestCase):
         )
         actions = ta.parse_reply(reply, model="master-ai")
         self.assertEqual(len(actions), 4)
-        self.assertEqual([a.kind for a in actions], ["RUN", "CREATE", "BROWSER_READ", "RUNTERM"])
+        self.assertEqual(
+            [a.kind for a in actions], ["RUN", "CREATE", "BROWSER_READ", "RUNTERM"]
+        )
         self.assertEqual(actions[0].target, "df -h")
 
     def test_parse_reply_skips_inline_mentions(self):
@@ -344,8 +404,13 @@ class AuditOutcomeMapping(unittest.TestCase):
             self.assertEqual(s, ta.Status.COMPLETED)
 
     def test_block_kinds_map_to_blocked_status(self):
-        for k in ("RUN-BLOCK", "RUN-BLOCK-CLEANUP", "RUN-BLOCK-MISSING",
-                  "RUNTERM-BLOCK", "POLICY-CMD-BLOCK"):
+        for k in (
+            "RUN-BLOCK",
+            "RUN-BLOCK-CLEANUP",
+            "RUN-BLOCK-MISSING",
+            "RUNTERM-BLOCK",
+            "POLICY-CMD-BLOCK",
+        ):
             _, s = ta.audit_outcome_from_kind(k)
             self.assertEqual(s, ta.Status.BLOCKED, f"{k} not BLOCKED")
 
@@ -376,8 +441,11 @@ class AuditOutcomeMapping(unittest.TestCase):
 class MakeAuditRecord(unittest.TestCase):
     def test_make_record_for_run(self):
         r = ta.make_audit_record(
-            kind="RUN", detail="ls /tmp",
-            profile="elijah", mode="auto", cwd="/home/user",
+            kind="RUN",
+            detail="ls /tmp",
+            profile="elijah",
+            mode="auto",
+            cwd="/home/user",
             model="master-ai",
         )
         self.assertEqual(r["kind"], "RUN")
@@ -404,8 +472,9 @@ class MakeAuditRecord(unittest.TestCase):
     def test_request_block_returns_none(self):
         # POLICY-REQUEST-BLOCK maps to REQUEST which isn't a directive kind
         # we want in the typed audit log.
-        self.assertIsNone(ta.make_audit_record(kind="POLICY-REQUEST-BLOCK",
-                                                detail="some request"))
+        self.assertIsNone(
+            ta.make_audit_record(kind="POLICY-REQUEST-BLOCK", detail="some request")
+        )
 
 
 class Serialize(unittest.TestCase):
