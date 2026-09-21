@@ -15464,20 +15464,87 @@ _XML_FUNCTION_NAME_ALIASES = {
     "run_shell_command": "RUN",
 }
 
+# 2026-09-21: two more native tool-call shapes, added proactively (not yet
+# reproduced live, unlike the two above) after the <function=> fix, per
+# operator request to cover known formats up front instead of one more
+# live-reproduce-then-patch cycle per model. Both are real, standardized
+# conventions specific model families are trained on, not something this
+# system prompt asks for:
+#
+#   Hermes/NousResearch function-calling (the literal "Hermes style" name —
+#   this convention, not the codebase's own RUN:/CREATE: grammar, is what
+#   most open-weight tool-calling fine-tunes, including several Qwen/GLM/
+#   Kimi variants likely to show up via opencode-go, were actually trained
+#   on): a single JSON object inside one tag pair —
+#       <tool_call>
+#       {"name": "bash", "arguments": {"command": "ls -la"}}
+#       </tool_call>
+#   Distinct from _BARE_KEYWORD_LINE_RE's existing <tool_call> handling:
+#   that one strips <tool_call> as wrapper noise around this codebase's OWN
+#   bare RUN/READ/etc. keyword line; this one has a real JSON payload
+#   inside instead, which never looks like a bare keyword, so the two never
+#   collide — gated on the body starting with "{" specifically.
+#
+#   Mistral function-calling: a bracket-tagged JSON array, no XML at all —
+#       [TOOL_CALLS] [{"name": "bash", "arguments": {"command": "ls -la"}}]
+#   which can carry more than one call per block.
+_JSON_TOOL_CALL_RE = re.compile(
+    r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.IGNORECASE | re.DOTALL
+)
+_MISTRAL_TOOL_CALLS_RE = re.compile(
+    r"\[TOOL_CALLS\]\s*(\[.*?\])", re.IGNORECASE | re.DOTALL
+)
+
+
+def _json_tool_call_to_directive_line(name, arguments):
+    """Shared conversion for both JSON-shaped formats above: a {"name":
+    ..., "arguments": {...}} dict becomes one `X: payload` directive line.
+    Prefers a "command" argument when present (matching the XML function
+    format's same preference, for the same reason — an accompanying
+    "description" argument is not the payload); otherwise falls back to
+    the first argument value. Defensive by construction: any shape that
+    doesn't parse into a usable (name, payload) pair returns None rather
+    than guessing, consistent with this file's existing "safe default: no
+    match" convention for widen-only heuristics — an execution safety
+    concern, not just a style one."""
+    if not isinstance(name, str) or not name.strip():
+        return None
+    directive_name = _XML_FUNCTION_NAME_ALIASES.get(
+        name.strip().lower(), name.strip().upper()
+    )
+    if isinstance(arguments, dict):
+        payload = arguments.get("command")
+        if payload is None and arguments:
+            payload = next(iter(arguments.values()))
+    else:
+        payload = arguments
+    if not isinstance(payload, str) or not payload.strip():
+        return None
+    payload = " ".join(line.strip() for line in payload.splitlines() if line.strip())
+    if not payload:
+        return None
+    return f"{directive_name}: {payload}"
+
 
 def _xml_tool_calls_to_directives(reply):
-    """Translate native XML-shaped tool calls into bare `X: payload`
-    directives (one line, whitespace-collapsed inside the payload so a
-    multi-line command body still satisfies the one-directive-per-line
-    invariant). Handles two distinct shapes different model families are
-    natively trained to emit, despite the system prompt never asking for
-    either: Anthropic-style `<invoke name="X"><parameter name="Y">...
-    </parameter></invoke>`, and Llama/Hermes-style `<function=X>
-    <parameter=Y>...</parameter></function>`. Unknown action names still
+    """Translate native tool-call shapes into bare `X: payload` directives
+    (one line, whitespace-collapsed inside the payload so a multi-line
+    command body still satisfies the one-directive-per-line invariant).
+    Handles four distinct shapes different model families are natively
+    trained to emit, despite the system prompt never asking for any of
+    them: Anthropic-style `<invoke name="X"><parameter name="Y">...
+    </parameter></invoke>`, Llama/Hermes-style `<function=X>
+    <parameter=Y>...</parameter></function>`, Hermes/NousResearch
+    `<tool_call>{"name": X, "arguments": {...}}</tool_call>` (JSON), and
+    Mistral `[TOOL_CALLS] [{"name": X, "arguments": {...}}, ...]` (JSON
+    array, possibly more than one call). Unknown action names still
     convert — a malformed-but-visible directive line beats invisible raw
-    XML, because the directive-repair feedback loop can then teach the
-    model the right shape. Blocks with no parameter take the whole body as
-    the payload."""
+    tool-call syntax, because the directive-repair feedback loop can then
+    teach the model the right shape. Blocks with no parameter/argument
+    take the whole body as the payload where that's well-defined (the two
+    XML shapes); the two JSON shapes require a parseable {"name",
+    "arguments"} object and skip anything that doesn't fit that shape
+    rather than guessing at a payload from malformed JSON."""
     if not reply:
         return reply
 
@@ -15522,6 +15589,44 @@ def _xml_tool_calls_to_directives(reply):
             return f"{name}: {payload}"
 
         reply = _XML_FUNCTION_RE.sub(_conv_fn, reply)
+
+    if "<tool_call>" in reply.lower() and "{" in reply:
+
+        def _conv_json(m):
+            try:
+                obj = json.loads(m.group(1))
+            except (json.JSONDecodeError, ValueError):
+                return m.group(0)  # leave malformed JSON untouched, don't guess
+            if not isinstance(obj, dict):
+                return m.group(0)
+            line = _json_tool_call_to_directive_line(
+                obj.get("name"), obj.get("arguments")
+            )
+            return line if line else m.group(0)
+
+        reply = _JSON_TOOL_CALL_RE.sub(_conv_json, reply)
+
+    if "[TOOL_CALLS]" in reply.upper():
+
+        def _conv_mistral(m):
+            try:
+                calls = json.loads(m.group(1))
+            except (json.JSONDecodeError, ValueError):
+                return m.group(0)
+            if not isinstance(calls, list) or not calls:
+                return m.group(0)
+            lines = []
+            for call in calls:
+                if not isinstance(call, dict):
+                    continue
+                line = _json_tool_call_to_directive_line(
+                    call.get("name"), call.get("arguments")
+                )
+                if line:
+                    lines.append(line)
+            return "\n".join(lines) if lines else m.group(0)
+
+        reply = _MISTRAL_TOOL_CALLS_RE.sub(_conv_mistral, reply)
 
     return reply
 
