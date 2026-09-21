@@ -20166,12 +20166,42 @@ def handle(user_text, history, image_path=None, context_policy=None):
         reply = "No response from AI."
 
     skill_reply = _run_skill_reply_from_reply(reply, history)
+    # 2026-09-21: a completed skill's own result ("[SKILL RESULT — X]\n...")
+    # used to become the final displayed reply directly here, unlike
+    # RUN/READ tool output and the SUBAGENT RESULT feedback below — both of
+    # those get handed back to the model (history.append + result=None,
+    # which is what makes the `while result is None` loop below actually
+    # re-ask and synthesize) instead of standing in as the answer verbatim.
+    # A skill's raw data (e.g. "1 result(s): Untitled document (date)") was
+    # never given that same treatment, so it just got dumped as-is and the
+    # turn ended right there with no narrative wrap-up at all. Reported
+    # live: "it just stopped with untitled document." Scoped to only the
+    # completed-with-a-real-result shape — pending-directive, aborted, and
+    # paused skill replies are already complete, actionable status
+    # messages on their own, not raw data that needs interpreting.
+    skill_result_needs_synthesis = skill_reply is not None and skill_reply.startswith(
+        "[SKILL RESULT"
+    )
     if skill_reply is not None:
         reply = skill_reply
         streamed = False
 
     low_user = user_text.lower()
     low_reply = (reply or "").lower()
+    if skill_result_needs_synthesis:
+        history.append(
+            {
+                "role": "user",
+                "content": (
+                    reply + "\n\nThe skill result above is real. Answer the user's "
+                    "original question using it — don't just repeat the raw "
+                    "list back verbatim; say what it means for what they asked."
+                ),
+            }
+        )
+        log(
+            "CHAIN_SKILL_RESULT_FEEDBACK: forcing continuation to synthesize a real answer"
+        )
     generative_video_request = re.search(
         r"\b(make|create|generate)\b.*\b(video|clip|movie)\b", low_user
     ) and not any(
@@ -20247,6 +20277,18 @@ def handle(user_text, history, image_path=None, context_policy=None):
         result = process_reply(
             reply, history, streamed=streamed, continue_after_tools=True
         )
+
+    if skill_result_needs_synthesis:
+        # Override whatever the block above computed: the skill-result
+        # feedback message was already appended to history further up, and
+        # `reply` here is still just the raw "[SKILL RESULT — X]\n..." text
+        # with no directives in it, so process_reply() above would only
+        # have handed it straight back unchanged (its own no-directives
+        # fallthrough). Forcing None here — the same signal RUN/READ output
+        # and SUBAGENT RESULT feedback use — is what makes the `while
+        # result is None` loop below actually re-ask the model instead of
+        # standing pat on the raw dump as the final answer.
+        result = None
 
     def _continue_model_turn(repair_turn=False):
         if route in ("cloud", "web"):
