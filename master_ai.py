@@ -8282,24 +8282,48 @@ def handle_task_cmd(cmd):
 
 # ── HISTORY COMPACT ───────────────────────────────────────────
 def compact_history(history):
-    """Keep system message + last 20 exchanges (40 msgs). Silent."""
+    """Keep system message + last 100 exchanges (200 msgs). Silent.
+
+    2026-09-20: was 20 exchanges (40 msgs) — a flat, route-agnostic message
+    COUNT cap, completely separate from _ROUTE_HISTORY_BUDGETS' char-based
+    trim below, and it ran unconditionally at the end of every single turn
+    regardless of how much character budget was left. Any real work session
+    naturally runs well past 20 exchanges, so this was silently discarding
+    early context on every sustained session no matter how generous the
+    character budgets were — reported live: "why doesn't it work as long as
+    you guys do before it compresses... I need more space to work before it
+    compresses." 200 messages still bounds unbounded growth (the original
+    cap's actual purpose); the character trim below remains the real
+    per-route sizing mechanism, so this cap should rarely bind in practice
+    now — it's a backstop, not the primary control."""
     system = [m for m in history if m.get("role") == "system"]
     convo = [m for m in history if m.get("role") != "system"]
-    if len(convo) > 40:
-        history[:] = system + convo[-40:]
+    if len(convo) > 200:
+        history[:] = system + convo[-200:]
 
 
 # P1.2 per-route history budgets. Chat banter doesn't need 30 turns of
 # context; debugging does. The trim runs before prompt assembly so cold
 # prefill stays bounded. See _route_history_budget() for the picker; raise
 # values here to extend any single tier's ceiling.
+#
+# 2026-09-20: raised substantially for the cloud-routed tiers. These caps
+# were sized for small local models (the "reasoning" tier's own comment
+# still says qwen3, but that tier is actually cloud_deep/DeepSeek, whose
+# real context window is ~128K tokens - roughly 500K+ chars - so 40000
+# chars (~10K tokens) was using well under 10% of what the model backing it
+# can actually hold). "chat" (Groq/cloud_fast) stays closer to its old
+# value on purpose: Groq has a real request-size limit (HTTP 413), not an
+# artificial one, per the P1.2 comment history above. "tool"/"code"/
+# "vision" route through local models with genuinely smaller windows, so
+# those got a real but more modest increase rather than the same jump.
 _ROUTE_HISTORY_BUDGETS = {
-    "chat": 8000,  # cloud_fast — banter-class, keep small
-    "tool": 6000,  # local with tool-required intent — fewer distractions
-    "code": 20000,  # CODE_WORDS / ALTER_WORDS local
-    "reasoning": 40000,  # REASONING_WORDS / cloud_deep / qwen3
-    "vision": 12000,  # local llava
-    "default": 28000,  # legacy local cap (pre-P1.2)
+    "chat": 14000,  # cloud_fast/Groq — real request-size ceiling, raise carefully
+    "tool": 18000,  # local with tool-required intent
+    "code": 70000,  # CODE_WORDS / ALTER_WORDS local
+    "reasoning": 220000,  # cloud_deep/DeepSeek — ~128K token window, was 10x undersized
+    "vision": 16000,  # local llava
+    "default": 70000,  # legacy local cap (pre-P1.2)
 }
 
 
@@ -20058,7 +20082,13 @@ def handle(user_text, history, image_path=None, context_policy=None):
             elif ("::" in _rt_model) or (_rt_model in CLOUD_MODEL_NAMES):
                 provider = _rt_model
             else:
-                provider = "groq"
+                # 2026-09-20: groq has been disabled since 2026-08-27
+                # (have_groq=False at line 4222). Falling back to "groq"
+                # here meant every continuation on an unrecognized cloud
+                # model silently dead-ended. Use the first live provider
+                # from the fallback order instead — openrouter covers
+                # deepseek-r1 and every other catalog id.
+                provider = "openrouter"
             try:
                 cloud_reply = ask_cloud(history, provider=provider)
             finally:
