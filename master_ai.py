@@ -15851,7 +15851,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         p
         for p in (
             _extract_directive(l, "READ")
-            for lo, l in zip(line_offsets, lines)
+            for lo, l in zip(line_offsets, lines, strict=False)
             if _real_directive(l, "READ", line_start=lo)
         )
         if p
@@ -15860,7 +15860,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         c
         for c in (
             _extract_directive(l, "RUN")
-            for lo, l in zip(line_offsets, lines)
+            for lo, l in zip(line_offsets, lines, strict=False)
             if _real_directive(l, "RUN", line_start=lo)
         )
         if c
@@ -15869,7 +15869,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         c
         for c in (
             _extract_directive(l, "RUNTERM")
-            for lo, l in zip(line_offsets, lines)
+            for lo, l in zip(line_offsets, lines, strict=False)
             if _real_directive(l, "RUNTERM", line_start=lo)
         )
         if c
@@ -15961,7 +15961,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         s
         for s in (
             _parse_send_email_spec(l)
-            for lo, l in zip(line_offsets, lines)
+            for lo, l in zip(line_offsets, lines, strict=False)
             if _real_directive(l, "SEND_EMAIL", line_start=lo)
         )
         if s
@@ -16003,7 +16003,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         s
         for s in (
             _parse_send_telegram_spec(l)
-            for lo, l in zip(line_offsets, lines)
+            for lo, l in zip(line_offsets, lines, strict=False)
             if _real_directive(l, "SEND_TELEGRAM", line_start=lo)
         )
         if s
@@ -16021,7 +16021,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
     # same blindspot (rare in practice + gated by user confirm); REMEMBER
     # writes silently so the gate matters more here.
     _in_body, _eligible, _eligible_offsets = False, [], []
-    for _lo, _ln in zip(line_offsets, lines):
+    for _lo, _ln in zip(line_offsets, lines, strict=False):
         _stripped_up = _ln.strip().upper()
         if _stripped_up in ("<<<CONTENT", "<<<FIND", "<<<REPLACE"):
             _in_body = True
@@ -16036,7 +16036,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         f
         for f in (
             _directive_payload(l, "REMEMBER")
-            for lo, l in zip(_eligible_offsets, _eligible)
+            for lo, l in zip(_eligible_offsets, _eligible, strict=False)
             if _real_directive(l, "REMEMBER", line_start=lo)
         )
         if f
