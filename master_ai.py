@@ -16838,6 +16838,15 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             )
         )
 
+    def _is_bare_cd(cmd):
+        """True for a RUN/RUNTERM command that is ONLY `cd <dir>` with nothing
+        chained after it — `cd X && Y` or `cd X; Y` are fine, only the
+        standalone form is the problem (see the repair message below for why)."""
+        stripped = cmd.strip()
+        if not re.match(r"^cd\s+\S", stripped, re.IGNORECASE):
+            return False
+        return not re.search(r"&&|;|\|\|", stripped)
+
     def _visual_requested():
         text = _latest_user_turn().lower()
         return bool(
@@ -17218,6 +17227,43 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                 }
             )
             return None
+
+    # 2026-09-21: reproduced live on opencode-go::mimo-v2.5-pro, twice in a
+    # row without self-correcting: the model split "cd DIR" and the command
+    # it actually wanted to run there into two separate RUN: directives.
+    # Each RUN/RUNTERM dispatches through its own subprocess.run() call with
+    # no shared shell state between them, so a standalone cd succeeds, does
+    # nothing visible, and the next RUN starts fresh from wherever the
+    # process itself already is — not the directory just "cd'd" into. The
+    # system prompt shows the correct one-line `cd X && command` pattern as
+    # an example elsewhere but never states the actual constraint outright,
+    # and the model wasn't generalizing from the example on its own — it
+    # just retried the identical broken two-step split.
+    bare_cds = [c for c in run_cmds + runterm_cmds if _is_bare_cd(c)]
+    if bare_cds:
+        print(
+            _pill(
+                "BLOCKED",
+                f"{D}bare cd with no chained command — each RUN is its own subprocess{X}",
+            )
+        )
+        log(f"DIRECTIVE_REPAIR_BARE_CD: {bare_cds[:3]}")
+        history.append(
+            {
+                "role": "user",
+                "content": (
+                    "[Directive repair]\n"
+                    "You emitted a RUN/RUNTERM that is only `cd <dir>` with nothing chained "
+                    "after it. Each RUN/RUNTERM executes as its own separate subprocess with "
+                    "no shared shell state — a standalone cd has no effect on any later "
+                    "command, even one in the same reply. Either chain the real command onto "
+                    "the SAME line with && (e.g. `cd ~/project && command`), or skip cd "
+                    "entirely and use an absolute or ~-relative path directly in the command "
+                    "itself. Do not explain. Repair the directive chain now."
+                ),
+            }
+        )
+        return None
 
     # Deterministic execution policy: setup stays captured, visual work runs
     # in a real terminal. Example model drift:
