@@ -8394,6 +8394,23 @@ def _route_history_budget(route_name, user_text):
     tier = _NONLOCAL_ROUTE_TIERS.get(name)
     if tier:
         return _ROUTE_HISTORY_BUDGETS[tier]
+    # 2026-09-21: an explicit provider::model pin (e.g. "opencode-go::
+    # mimo-v2.5-pro") never matches any literal key in
+    # _NONLOCAL_ROUTE_TIERS above — that table only knows the fixed route
+    # NAMES the dispatcher itself uses (cloud_fast, cloud_deep, ...), not
+    # a pinned model string. Without this check, a pinned cloud model fell
+    # all the way through to the local-route keyword matching below, and
+    # unless the user's message happened to contain a reasoning/code/tool
+    # trigger word, landed on the "default" tier — sized as a legacy LOCAL
+    # model fallback, not remotely representative of what a pinned cloud
+    # model can actually hold. Reported live: "it's very short... not like
+    # other frameworks" — persisted even after the reasoning-tier budget
+    # itself was already raised, because this specific pinned-model case
+    # never reached that tier at all. Any provider::model pin gets the
+    # same "reasoning" treatment cloud_deep gets, regardless of what the
+    # user's message happens to say.
+    if "::" in name:
+        return _ROUTE_HISTORY_BUDGETS["reasoning"]
     # Local route — refine by intent in the user text
     ut = (user_text or "").lower()
     word_set = set(ut.split())
