@@ -3897,7 +3897,18 @@ _LOCAL_FIND_HINTS = {
 
 
 def _clean_intent_object(text):
-    cleaned = re.sub(r"[?!.]+$", "", str(text or "").strip())
+    # 2026-09-22: dictated/typed messages routinely carry trailing (sometimes
+    # mid-sentence) emoji — real chat log example: "find the handoff doc,
+    # it's not a local text file, it's probably a github repo in master ai
+    # context. ❌ 💯" turned into a literal `find -iname '*...❌ 💯*'` glob
+    # that could never match anything. Strip emoji before any other
+    # cleanup so it never leaks into a shell argument built from user
+    # phrasing, and so trailing-punctuation stripping below (anchored to
+    # end-of-string) actually reaches real punctuation instead of stopping
+    # at a trailing emoji.
+    cleaned = _STRAY_EMOJI_RE.sub("", str(text or "")).strip()
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    cleaned = re.sub(r"[?!.]+$", "", cleaned)
     cleaned = re.sub(r"^(?:my|the|a|an)\s+", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(
         r"^(?:file|folder|directory|dir)\s+(?:named|called)?\s*",
@@ -3924,6 +3935,33 @@ def _looks_like_local_find_target(target):
     )
 
 
+# 2026-09-22: caught live — "find the handoff doc, it's not a local text
+# file, it's probably a github repo in master ai context." matched the bare
+# "find X" pattern below, and _looks_like_local_find_target waved it through
+# (contains "doc"/"repo" AND a period) even though it's a full multi-clause
+# sentence, not a filename. The whole sentence became a literal `find
+# -iname '*...*'` glob that could never match anything — the real question
+# never reached the model. A genuine filename/keyword target is short and
+# has no sentence structure; reject anything that reads like prose instead
+# so it falls through to the model, which can actually reason about it.
+_PROSE_TARGET_RE = re.compile(
+    r"\b(it'?s|i'?m|i'?ve|that'?s|probably|maybe|which|because|actually)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_prose_not_target(target):
+    if not target:
+        return False
+    if target.count(",") >= 1:
+        return True
+    if len(target.split()) > 6:
+        return True
+    if _PROSE_TARGET_RE.search(target):
+        return True
+    return False
+
+
 def _quote_home_path(path_text):
     raw = str(path_text or "").strip().strip("'\"")
     if not raw:
@@ -3948,14 +3986,18 @@ def _deterministic_intent_to_directive(user_text):
     m = re.match(r"^(?:where\s+is|where's)\s+(.+)$", text, re.IGNORECASE)
     if m:
         target = _clean_intent_object(m.group(1))
-        if target:
+        if target and not _looks_like_prose_not_target(target):
             pattern = shlex.quote(f"*{target}*")
             return f'RUN: find "$HOME" -iname {pattern} 2>/dev/null | head -50'
 
     m = re.match(r"^find\s+(.+)$", text, re.IGNORECASE)
     if m:
         target = _clean_intent_object(m.group(1))
-        if target and _looks_like_local_find_target(target):
+        if (
+            target
+            and not _looks_like_prose_not_target(target)
+            and _looks_like_local_find_target(target)
+        ):
             pattern = shlex.quote(f"*{target}*")
             return f'RUN: find "$HOME" -iname {pattern} 2>/dev/null | head -50'
 
@@ -11586,7 +11628,13 @@ _EMBEDDED_DIRECTIVE_RE = re.compile(
     re.IGNORECASE,
 )
 _STRAY_EMOJI_RE = re.compile(
-    "[" "\U0001f300-\U0001faff" "\U00002600-\U000027bf" "\U0001f1e6-\U0001f1ff" "]"
+    "["
+    "\U0001f300-\U0001faff"
+    "\U00002600-\U000027bf"
+    "\U0001f1e6-\U0001f1ff"
+    "\U0000fe0f"  # variation selector-16 (emoji presentation, e.g. ✌️)
+    "\U0000200d"  # zero-width joiner (compound/skin-tone emoji sequences)
+    "]"
 )
 # 2026-08-31: caught in the audit log — the model wrote its whole rambling
 # continuation on the same line as 'RUN: echo "check"...' with no newline,
