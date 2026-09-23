@@ -22,6 +22,7 @@ chrome extension on Google search routed to `link_lookup | master-ai`
 (local, 9.3s) instead of `cloud_fast | groq`. After the fix, the same
 input routes correctly to cloud_fast.
 """
+
 import os
 import sys
 import unittest
@@ -37,8 +38,12 @@ import master_ai
 # credential state — asserting against it makes these tests flaky/environment-
 # dependent. Patch load_keys() so routing behavior is deterministic regardless
 # of what's actually configured on the machine running the suite.
-_FAKE_KEYS = {"groq": "test-groq-key", "fireworks": "test-fireworks-key",
-              "cerebras": "test-cerebras-key", "openrouter": "test-or-key"}
+_FAKE_KEYS = {
+    "groq": "test-groq-key",
+    "fireworks": "test-fireworks-key",
+    "cerebras": "test-cerebras-key",
+    "openrouter": "test-or-key",
+}
 
 
 def _wrap(user_text: str, page_url: str = "https://www.google.com/") -> str:
@@ -70,11 +75,11 @@ class PrefixInsideEnvelopeTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_fast_in_envelope_routes_to_cloud_fast(self):
+    def test_fast_in_envelope_routes_to_cloud(self):
         wrapped = _wrap("fast: take a screenshot of this page")
         d = master_ai.orchestrate([], wrapped)
-        self.assertEqual(d["route"], "cloud_fast")
-        self.assertEqual(d["model"], "groq")
+        self.assertEqual(d["route"], "cloud")
+        self.assertEqual(d["model"], "openrouter")
         # The envelope head should be preserved; the prefix should be gone
         # from the user section.
         self.assertIn("[BROWSER PAGE CONTEXT]", d["stripped_text"])
@@ -129,10 +134,10 @@ class PrefixInRawTuiInputTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_fast_raw_routes_to_cloud_fast(self):
+    def test_fast_raw_routes_to_cloud(self):
         d = master_ai.orchestrate([], "fast: what's 2+2")
-        self.assertEqual(d["route"], "cloud_fast")
-        self.assertEqual(d["model"], "groq")
+        self.assertEqual(d["route"], "cloud")
+        self.assertEqual(d["model"], "openrouter")
         self.assertEqual(d["stripped_text"], "what's 2+2")
 
     def test_local_raw_routes_to_local(self):

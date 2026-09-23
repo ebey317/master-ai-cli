@@ -1,5 +1,5 @@
 [tool.pytest.ini_options]
-addopts = "--tb=short -v --cov=master_ai --cov=sensei_tui --cov=approval_queue --cov=hooks --cov=capabilities --cov=observability --cov=router --cov=subagent_registry --cov=skill_runtime --cov=tts_server --cov=typed_actions --cov=verifiers --cov=whereisit --cov-report=term-missing --cov-report=html"
+addopts = "--timeout=60 --tb=short -v --cov=master_ai --cov=sensei_tui --cov=approval_queue --cov=hooks --cov=capabilities --cov=observability --cov=router --cov=subagent_registry --cov=skill_runtime --cov=tts_server --cov=typed_actions --cov=verifiers --cov=whereisit --cov-report=term-missing --cov-report=html"
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
@@ -9,8 +9,10 @@ markers = [
     "unit: marks tests as unit tests",
 ]
 
-# Test directory
-testpaths = ["tests"]
+# Test directory — scan the whole repo, not just tests/.
+# 2026-09-20: was ["tests"] (3 files, 14 tests). The other ~60 test files
+# at the repo root (775 tests) never ran in CI. Now scans everything.
+testpaths = ["."]
 
 # Ignore directories
 norecursedirs = [".git", "__pycache__", "build", "dist", "*.egg-info"]

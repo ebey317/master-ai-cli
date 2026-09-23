@@ -20,11 +20,10 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-import typed_actions
 import subagent_registry
-
+import typed_actions
 
 HEADLESS_DEFAULT_MAX_TURNS = 10
 
@@ -79,7 +78,7 @@ def _run_shell(command: str, *, allow_destructive: bool = False) -> str:
         return f"Error running `{command}`: {e}"
 
 
-def _execute_action(action: Dict[str, Any]) -> str:
+def _execute_action(action: dict[str, Any]) -> str:
     kind = action.get("type")
     if kind == "read":
         return _read_file(action.get("target", ""))
@@ -109,17 +108,19 @@ class HeadlessRunner:
 
     def __init__(
         self,
-        task: Optional[str] = None,
-        task_file: Optional[str] = None,
+        task: str | None = None,
+        task_file: str | None = None,
         max_turns: int = HEADLESS_DEFAULT_MAX_TURNS,
         json_output: bool = False,
+        model: str | None = None,
     ):
         self.task = task
         self.task_file = task_file
         self.max_turns = max(max_turns, 1)
         self.json_output = json_output
-        self.history: List[Dict[str, str]] = []
-        self.output: List[str] = []
+        self.model = model
+        self.history: list[dict[str, str]] = []
+        self.output: list[str] = []
 
     def _load_task(self) -> str:
         if self.task:
@@ -128,41 +129,29 @@ class HeadlessRunner:
             return _load_text(self.task_file)
         raise ValueError("No task provided")
 
-    @staticmethod
-    def _model_reply(history: List[Dict[str, str]]) -> str:
-        """Real model call via master_ai.ask_local.
+    def _model_reply(self, history: list[dict[str, str]]) -> str:
+        """Real model call via master_ai.ask_model_router.
 
-        2026-09-01: this used to be a placeholder that never called any
-        model. ask_local() is the same local/cloud-routing layer the rest
-        of master_ai.py (and CLAF escalation) is built on -- the lower
-        level api_handle() in stt_server.py itself ultimately calls into.
-        Deliberately NOT routing through api_handle() directly: that
-        function is heavily specialized for the Chrome-extension browser-
-        action *proposal* contract (every action tagged executed=False by
-        design, classified by page_url/sensitivity tier) and pulls in a
-        lot of incidental machinery (capabilities/verifiers/prompt_versions,
-        module-global patching) just to extract a text reply -- real
-        coupling risk for a general RUN/READ/CREATE/EDIT headless loop.
-        ask_local() is the minimal, correct integration point.
-
-        Local import (not module-level) matches this file's own stated
-        design goal of not pulling in interactive-UI state at import time
-        -- master_ai only gets imported once a task actually needs a
-        model turn.
+        ask_model_router() is the same provider-agnostic router the TUI uses:
+        it picks local Ollama or cloud models (OpenRouter, OpenCode, NVIDIA,
+        etc.) based on the active/pinned model. This makes the headless runner
+        behave like Sensei rather than always using the default local model.
         """
         import master_ai
-        messages = [{"role": h["role"], "content": h["content"]} for h in history]
-        return master_ai.ask_local(messages) or ""
 
-    def _parse_actions(self, reply: str) -> List[Dict[str, Any]]:
+        messages = [{"role": h["role"], "content": h["content"]} for h in history]
+        text, _elapsed = master_ai.ask_model_router(messages, model=self.model)
+        return text or ""
+
+    def _parse_actions(self, reply: str) -> list[dict[str, Any]]:
         try:
             return typed_actions.parse_reply(reply)
         except Exception:
             return self._fallback_parse(reply)
 
     @staticmethod
-    def _fallback_parse(reply: str) -> List[Dict[str, Any]]:
-        actions: List[Dict[str, Any]] = []
+    def _fallback_parse(reply: str) -> list[dict[str, Any]]:
+        actions: list[dict[str, Any]] = []
         for line in reply.splitlines():
             line = line.strip()
             if line.startswith("READ:"):
@@ -206,7 +195,7 @@ class HeadlessRunner:
         return final
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="master-ai", description="Master AI CLI")
     parser.add_argument("--setup", action="store_true", help="Run setup wizard")
     parser.add_argument("--uninstall", action="store_true", help="Run uninstall wizard")
@@ -214,10 +203,21 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--task-file", type=str, help="File containing the task")
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")
     parser.add_argument(
-        "--max-turns", type=int, default=HEADLESS_DEFAULT_MAX_TURNS,
+        "--model",
+        "-m",
+        type=str,
+        default=None,
+        help="Model override for this headless task (passed to ask_model_router)",
+    )
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=HEADLESS_DEFAULT_MAX_TURNS,
         help="Maximum tool turns in headless mode",
     )
-    parser.add_argument("--json", action="store_true", help="Output JSON in headless mode")
+    parser.add_argument(
+        "--json", action="store_true", help="Output JSON in headless mode"
+    )
     args = parser.parse_args(argv)
 
     if not args.headless:
@@ -233,6 +233,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         task_file=args.task_file,
         max_turns=args.max_turns,
         json_output=args.json,
+        model=args.model,
     )
     print(runner.run())
     return 0

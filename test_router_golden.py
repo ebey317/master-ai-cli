@@ -53,6 +53,18 @@ class RouterGoldenBase(unittest.TestCase):
     def decide(self, text, history=None, image_path=None) -> dict:
         return router.route(history or [], text, image_path=image_path)
 
+    def assertNotVisionLane(self, d, label):
+        """The vision lane must not be claimed for a negated vision prompt.
+
+        Assert on the decision's reason, not on the model tag: master, vision
+        and coder all resolve to the same local VLM (qwen3-vl:8b) since the
+        local stack collapsed to a single model, so the model field can no
+        longer distinguish lanes. The reason string is part of the golden
+        contract ('local vision -> ...' is what the vision lane reports).
+        """
+        reason = (d.get("reason") or "").lower()
+        self.assertNotIn("vision", reason, f"{label} took the vision lane: {d}")
+
 
 class ChatRouting(RouterGoldenBase):
     def test_greeting_routes_local_no_cloud_keys(self):
@@ -141,23 +153,19 @@ class VisionRouting(RouterGoldenBase):
 
     def test_negated_dont_describe_image(self):
         d = self.decide("don't describe the image, just summarize it as text")
-        self.assertNotEqual(d.get("model"), master_ai.MODELS["vision"],
-            f"negated 'don't describe' routed to vision: {d}")
+        self.assertNotVisionLane(d, "negated 'don't describe'")
 
     def test_negated_no_picture_attached(self):
         d = self.decide("I don't have a picture, just text")
-        self.assertNotEqual(d.get("model"), master_ai.MODELS["vision"],
-            f"'I don't have a picture' routed to vision: {d}")
+        self.assertNotVisionLane(d, "'I don't have a picture'")
 
     def test_negated_without_showing_image(self):
         d = self.decide("without showing me the image, tell me what it should contain")
-        self.assertNotEqual(d.get("model"), master_ai.MODELS["vision"],
-            f"'without showing image' routed to vision: {d}")
+        self.assertNotVisionLane(d, "'without showing image'")
 
     def test_negated_no_screenshot_involved(self):
         d = self.decide("there is no screenshot involved in this question")
-        self.assertNotEqual(d.get("model"), master_ai.MODELS["vision"],
-            f"'no screenshot involved' routed to vision: {d}")
+        self.assertNotVisionLane(d, "'no screenshot involved'")
 
 
 class TerminalVisualRouting(RouterGoldenBase):
@@ -254,6 +262,7 @@ class HarvestRecordedOnDeterministicShortCircuit(RouterGoldenBase):
 
     def test_handle_records_harvest_for_system_query_route(self):
         import inspect
+
         src = inspect.getsource(master_ai.handle)
         # The "system_query" route name itself was retired in commit
         # aad2762 and its behavior reintroduced as "deterministic_intent"
@@ -261,16 +270,25 @@ class HarvestRecordedOnDeterministicShortCircuit(RouterGoldenBase):
         # in the same source after the route check; cheapest reliable
         # proxy is "deterministic_intent" string + "harvest.record" string
         # both present.
-        self.assertIn('deterministic_intent', src,
-            "handle() lost the deterministic_intent route branch entirely")
-        self.assertIn('harvest.record', src,
+        self.assertIn(
+            "deterministic_intent",
+            src,
+            "handle() lost the deterministic_intent route branch entirely",
+        )
+        self.assertIn(
+            "harvest.record",
+            src,
             "handle() has no harvest.record call — deterministic_intent "
-            "route won't populate the cache. P0.3 regression.")
+            "route won't populate the cache. P0.3 regression.",
+        )
         # Pin the specific deterministic-route harvest call so a refactor
         # can't remove just THIS one without breaking the test.
-        self.assertIn('task_type="deterministic"', src,
+        self.assertIn(
+            'task_type="deterministic"',
+            src,
             "deterministic_intent dispatch missing "
-            "harvest.record(..., task_type='deterministic') — P0.3 fix lost")
+            "harvest.record(..., task_type='deterministic') — P0.3 fix lost",
+        )
 
 
 class RuntermBlockedFeedbackPinned(RouterGoldenBase):
@@ -283,6 +301,7 @@ class RuntermBlockedFeedbackPinned(RouterGoldenBase):
 
     def test_runterm_loop_consults_last_blocked_action(self):
         import inspect
+
         src = inspect.getsource(master_ai.process_reply)
         # Both RUN and RUNTERM branches must consume _LAST_BLOCKED_ACTION
         # through _append_tool_blocked_feedback. The helper itself is the

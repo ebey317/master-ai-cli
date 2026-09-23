@@ -3715,7 +3715,19 @@ def _is_ambiguous(stripped, words, history):
     # mean?", "did you mean the other file?") -- a long, detailed, clearly-
     # instructed message is never actually asking Sensei to guess between
     # options just because one of those phrases appears somewhere in it.
-    if len(words) <= 20 and any(
+    #
+    # 2026-09-15: reproduced live again at the ORIGINAL <=20 threshold, not
+    # just the extreme 900-word case this guard was built for -- "How many
+    # Python files are in ~/ai-controller and which one has the most
+    # lines?" (14 words) got the same false "guess between options" clarify
+    # prompt in 0.3s, with no investigation attempted at all. "which one
+    # has the most lines" is a normal, answerable, INVESTIGABLE sub-clause
+    # (Sensei can find out by counting), not a bare request for Sensei to
+    # pick from unstated options. Genuine "you choose for me" asks are
+    # almost always short standalone phrases; tightened 20 -> 8 so a real
+    # question with substantive content elsewhere in it no longer gets
+    # caught just because "which one" appears in one clause of it.
+    if len(words) <= 8 and any(
         p in low for p in ("did you mean", "which one", "which of", "pick for me")
     ):
         return "explicit which/did-you-mean"
@@ -3832,8 +3844,7 @@ def _maybe_drift_reminder(history_ref) -> None:
     if ACTIVE_TASK:
         proj = ACTIVE_PROJECT or "(no project)"
         print(
-            f"\n  {BC}🥷 [reminder]{X} still on: {BW}{ACTIVE_TASK}{X}  "
-            f"{D}({proj}){X}"
+            f"\n  {BC}🥷 [reminder]{X} still on: {BW}{ACTIVE_TASK}{X}  {D}({proj}){X}"
         )
         print(
             f"  {D}   type 'done' when finished · 'dojo' to see status · "
@@ -3962,6 +3973,38 @@ def _looks_like_prose_not_target(target):
     return False
 
 
+# 2026-09-21: "list files in X" was treating X as a literal local path with
+# zero check for whether it's actually a cloud-storage service name instead —
+# reproduced live: "list files in my google drive" ran `ls -la 'my google
+# drive'` (a literal directory named that, which doesn't exist) rather than
+# routing to the google-workspace skill that actually talks to Drive. The
+# sibling "find X" pattern right below already guards against exactly this
+# class of mismatch via _looks_like_local_find_target(); this pattern never
+# got the same treatment. Deliberately name-based, not exhaustive — the goal
+# is catching the common, unambiguous cloud-service names people actually
+# say, not building a perfect classifier; anything not caught here still
+# falls through to normal model-driven routing same as before this existed.
+_CLOUD_STORAGE_SERVICE_NAMES = {
+    "google drive",
+    "my drive",
+    "gdrive",
+    "drive",
+    "dropbox",
+    "onedrive",
+    "one drive",
+    "icloud",
+    "icloud drive",
+    "box",
+    "box.com",
+}
+
+
+def _names_cloud_storage_service(target):
+    low = re.sub(r"[?!.]+$", "", str(target or "").strip().lower())
+    low = re.sub(r"^(?:my|the|a|an)\s+", "", low)
+    return low in _CLOUD_STORAGE_SERVICE_NAMES
+
+
 def _quote_home_path(path_text):
     raw = str(path_text or "").strip().strip("'\"")
     if not raw:
@@ -4004,7 +4047,7 @@ def _deterministic_intent_to_directive(user_text):
     m = re.match(
         r"^(?:list\s+files\s+in|list\s+directory|ls)\s+(.+)$", text, re.IGNORECASE
     )
-    if m:
+    if m and not _names_cloud_storage_service(m.group(1)):
         path = _quote_home_path(m.group(1))
         if path:
             return f"RUN: ls -la {path}"
@@ -4292,14 +4335,24 @@ def orchestrate(history, user_text, image_path=None):
     # 2. Explicit prefixes — user intent overrides mode. Matched against
     # the user section (after [USER PROMPT]) so API-wrapped prompts honor
     # the prefix exactly like raw TUI input does.
-    if user_section_low.startswith("fast:") and have_groq:
+    # 2026-09-20: have_groq/have_fireworks are hardcoded False (disabled
+    # 2026-08-27), but the keys_now dict still carries whatever load_keys()
+    # returns. The `fast:` prefix should route to a live cloud lane, not
+    # dead-end silently. Gate on the actual key presence instead.
+    if (
+        user_section_low.startswith("fast:")
+        and (keys_now.get("openrouter") or "").strip()
+    ):
         return {
-            "route": "cloud_fast",
-            "model": "groq",
+            "route": "cloud",
+            "model": "openrouter",
             "stripped_text": _strip_prefix(5),
-            "reason": "explicit 'fast:' → Groq",
+            "reason": "explicit 'fast:' → OpenRouter (fast lane)",
         }
-    if user_section_low.startswith("fireworks:") and have_fireworks:
+    if (
+        user_section_low.startswith("fireworks:")
+        and (keys_now.get("fireworks") or "").strip()
+    ):
         return {
             "route": "cloud",
             "model": "fireworks",
@@ -4621,7 +4674,15 @@ def orchestrate(history, user_text, image_path=None):
         )
     # 2026-08-27: OpenRouter /free models only. Route chat to the fastest
     # verified free slug (nvidia/nemotron-3-super-120b-a12b:free, ~0.7s).
-    if is_chat_class:
+    # 2026-09-20: gate on have_or AND run_mode. Before this, this block
+    # fired for EVERY chat-class turn whether or not an OpenRouter key
+    # existed and regardless of mode, so on a keyless/offline box "hi"
+    # and "what is the capital of France" still routed to a cloud lane
+    # that could not answer — the local-first goldens in
+    # test_router_golden.py pin the opposite. In apocalypse/local-first
+    # mode, plain chat stays local; in peacetime the cloud lane is offered
+    # when a key exists, as the "convenience optional" path.
+    if is_chat_class and have_or and run_mode == "peacetime":
         return _choose_route(
             [
                 {
@@ -4641,6 +4702,28 @@ def orchestrate(history, user_text, image_path=None):
             ],
             reason_prefix="chat scored",
         )
+    if is_chat_class:
+        _chat_candidates = [
+            {
+                "route": "local",
+                "model": MODELS["master"],
+                "task_type": "chat",
+                "base_score": 62,
+                "reason": "chat → local master fallback",
+            },
+        ]
+        if have_or and run_mode == "peacetime":
+            _chat_candidates.insert(
+                0,
+                {
+                    "route": "cloud",
+                    "model": "openrouter",
+                    "task_type": "chat",
+                    "base_score": 80,
+                    "reason": "chat → OpenRouter /free (content-routed)",
+                },
+            )
+        return _choose_route(_chat_candidates, reason_prefix="chat scored")
 
     # 6b. SCRAPPY — survival/off-grid specialist takes precedence over generic
     #     local models when the question is clearly on its home turf AND the
@@ -5342,9 +5425,7 @@ def firecrawl_fetch(url, timeout=45):
         log(f"FIRECRAWL_ERROR: {e}")
         return f"Firecrawl unavailable: {e}"
     if not body.get("success"):
-        return (
-            f"Firecrawl returned unsuccessful: {body.get('error','(no error message)')}"
-        )
+        return f"Firecrawl returned unsuccessful: {body.get('error', '(no error message)')}"
     data = body.get("data", {}) or {}
     markdown = (data.get("markdown") or "").strip()
     meta = data.get("metadata", {}) or {}
@@ -8227,7 +8308,7 @@ def show_tasks():
     for i, t in enumerate(tasks, 1):
         done = t.get("done", False)
         icon = f"{G}✅{X}" if done else f"{Y}○ {X}"
-        print(f"  {icon} {i}) {W}{t.get('text','')}{X}")
+        print(f"  {icon} {i}) {W}{t.get('text', '')}{X}")
     print()
 
 
@@ -8263,7 +8344,7 @@ def handle_task_cmd(cmd):
                 save_tasks(tasks)
                 print(f"  {G}✅ Done: {W}{tasks[n]['text']}{X}")
             else:
-                print(f"  {R}❌ No task #{n+1}{X}")
+                print(f"  {R}❌ No task #{n + 1}{X}")
         except (ValueError, IndexError):
             print(f"  {Y}Usage: task done <number>{X}")
         return True
@@ -8285,24 +8366,48 @@ def handle_task_cmd(cmd):
 
 # ── HISTORY COMPACT ───────────────────────────────────────────
 def compact_history(history):
-    """Keep system message + last 20 exchanges (40 msgs). Silent."""
+    """Keep system message + last 100 exchanges (200 msgs). Silent.
+
+    2026-09-20: was 20 exchanges (40 msgs) — a flat, route-agnostic message
+    COUNT cap, completely separate from _ROUTE_HISTORY_BUDGETS' char-based
+    trim below, and it ran unconditionally at the end of every single turn
+    regardless of how much character budget was left. Any real work session
+    naturally runs well past 20 exchanges, so this was silently discarding
+    early context on every sustained session no matter how generous the
+    character budgets were — reported live: "why doesn't it work as long as
+    you guys do before it compresses... I need more space to work before it
+    compresses." 200 messages still bounds unbounded growth (the original
+    cap's actual purpose); the character trim below remains the real
+    per-route sizing mechanism, so this cap should rarely bind in practice
+    now — it's a backstop, not the primary control."""
     system = [m for m in history if m.get("role") == "system"]
     convo = [m for m in history if m.get("role") != "system"]
-    if len(convo) > 40:
-        history[:] = system + convo[-40:]
+    if len(convo) > 200:
+        history[:] = system + convo[-200:]
 
 
 # P1.2 per-route history budgets. Chat banter doesn't need 30 turns of
 # context; debugging does. The trim runs before prompt assembly so cold
 # prefill stays bounded. See _route_history_budget() for the picker; raise
 # values here to extend any single tier's ceiling.
+#
+# 2026-09-20: raised substantially for the cloud-routed tiers. These caps
+# were sized for small local models (the "reasoning" tier's own comment
+# still says qwen3, but that tier is actually cloud_deep/DeepSeek, whose
+# real context window is ~128K tokens - roughly 500K+ chars - so 40000
+# chars (~10K tokens) was using well under 10% of what the model backing it
+# can actually hold). "chat" (Groq/cloud_fast) stays closer to its old
+# value on purpose: Groq has a real request-size limit (HTTP 413), not an
+# artificial one, per the P1.2 comment history above. "tool"/"code"/
+# "vision" route through local models with genuinely smaller windows, so
+# those got a real but more modest increase rather than the same jump.
 _ROUTE_HISTORY_BUDGETS = {
-    "chat": 8000,  # cloud_fast — banter-class, keep small
-    "tool": 6000,  # local with tool-required intent — fewer distractions
-    "code": 20000,  # CODE_WORDS / ALTER_WORDS local
-    "reasoning": 40000,  # REASONING_WORDS / cloud_deep / qwen3
-    "vision": 12000,  # local llava
-    "default": 28000,  # legacy local cap (pre-P1.2)
+    "chat": 14000,  # cloud_fast/Groq — real request-size ceiling, raise carefully
+    "tool": 18000,  # local with tool-required intent
+    "code": 70000,  # CODE_WORDS / ALTER_WORDS local
+    "reasoning": 220000,  # cloud_deep/DeepSeek — ~128K token window, was 10x undersized
+    "vision": 16000,  # local llava
+    "default": 70000,  # legacy local cap (pre-P1.2)
 }
 
 
@@ -8331,6 +8436,23 @@ def _route_history_budget(route_name, user_text):
     tier = _NONLOCAL_ROUTE_TIERS.get(name)
     if tier:
         return _ROUTE_HISTORY_BUDGETS[tier]
+    # 2026-09-21: an explicit provider::model pin (e.g. "opencode-go::
+    # mimo-v2.5-pro") never matches any literal key in
+    # _NONLOCAL_ROUTE_TIERS above — that table only knows the fixed route
+    # NAMES the dispatcher itself uses (cloud_fast, cloud_deep, ...), not
+    # a pinned model string. Without this check, a pinned cloud model fell
+    # all the way through to the local-route keyword matching below, and
+    # unless the user's message happened to contain a reasoning/code/tool
+    # trigger word, landed on the "default" tier — sized as a legacy LOCAL
+    # model fallback, not remotely representative of what a pinned cloud
+    # model can actually hold. Reported live: "it's very short... not like
+    # other frameworks" — persisted even after the reasoning-tier budget
+    # itself was already raised, because this specific pinned-model case
+    # never reached that tier at all. Any provider::model pin gets the
+    # same "reasoning" treatment cloud_deep gets, regardless of what the
+    # user's message happens to say.
+    if "::" in name:
+        return _ROUTE_HISTORY_BUDGETS["reasoning"]
     # Local route — refine by intent in the user text
     ut = (user_text or "").lower()
     word_set = set(ut.split())
@@ -8918,15 +9040,15 @@ def _show_schedules():
     if not rows:
         print(f"  {D}no schedules set{X}")
         return
-    print(f"\n{BC}  ╔{'═'*70}╗{X}")
-    print(f"{BC}  ║{X}  {BW}Schedules{' '*61}{BC}║{X}")
-    print(f"{BC}  ╠{'═'*70}╣{X}")
+    print(f"\n{BC}  ╔{'═' * 70}╗{X}")
+    print(f"{BC}  ║{X}  {BW}Schedules{' ' * 61}{BC}║{X}")
+    print(f"{BC}  ╠{'═' * 70}╣{X}")
     for sid, when, cadence, cmd, enabled in rows:
         flag = f"{G}on{X}" if enabled else f"{R}off{X}"
         print(
             f"{BC}  ║{X}  {Y}{sid:<16}{X} {flag:<8} {C}{when:<6} {cadence:<8}{X} {cmd:<24}{BC}║{X}"
         )
-    print(f"{BC}  ╚{'═'*70}╝{X}\n")
+    print(f"{BC}  ╚{'═' * 70}╝{X}\n")
 
 
 # ── MCP SERVERS — Sensei as MCP CLIENT ─────────────────────────
@@ -9552,11 +9674,11 @@ def show_hint(title, body):
     if not HINTS:
         return
     print(f"\n  {C}◈ {Y}{title}{X}")
-    print(f"  {C}{'─'*55}{X}")
+    print(f"  {C}{'─' * 55}{X}")
     for line in body.strip().splitlines():
         if line.strip():
             print(f"  {W}▸ {line}{X}")
-    print(f"  {C}{'─'*55}{X}")
+    print(f"  {C}{'─' * 55}{X}")
     print(f"  {W}{Y}type hints off to disable tips{X}\n")
 
 
@@ -9604,7 +9726,7 @@ def show_plan_demo():
             f"  {W}mode auto{X}     — run ALL commands without any prompts",
         ),
     ]
-    bar = f"{BC}{'═'*60}{X}"
+    bar = f"{BC}{'═' * 60}{X}"
     print(f"\n{bar}")
     print(f"{BC}  🥷  PLAN MODE — How it works{X}")
     print(f"{bar}\n")
@@ -9683,7 +9805,7 @@ def show_mode_status():
         _last = globals().get("_LAST_MODEL") or ""
         selected_model = f"AUTO→{_last}" if _last else "AUTO"
     print(
-        f"  {C}Mode: {mode_label()}  ·  Model: {W}{selected_model}{C}  —  {contract.get('tagline','')}{X}\n"
+        f"  {C}Mode: {mode_label()}  ·  Model: {W}{selected_model}{C}  —  {contract.get('tagline', '')}{X}\n"
     )
     # Always print the full contract so switching modes never leaves an
     # older mode's hint as the last visible text in scrollback.
@@ -9734,14 +9856,14 @@ def run_tutorial():
     step = 0
     while step < total:
         os.system("clear")
-        print(f"\n{D}  {'━'*60}{X}")
-        print(f"  {C}Tutorial  —  Step {step+1} of {total}{X}")
-        print(f"{D}  {'━'*60}{X}\n")
+        print(f"\n{D}  {'━' * 60}{X}")
+        print(f"  {C}Tutorial  —  Step {step + 1} of {total}{X}")
+        print(f"{D}  {'━' * 60}{X}\n")
         title, body = STEPS[step]
         print(f"  {BOLD}{W}{title}{X}\n")
         for line in body.strip().splitlines():
             print(f"  {W}{line}{X}")
-        print(f"\n{D}  {'━'*60}{X}\n")
+        print(f"\n{D}  {'━' * 60}{X}\n")
         if step == total - 1:
             input(f"  {G}Press Enter to finish...{X}")
             break
@@ -10489,14 +10611,14 @@ def show_model_menu():
     os.system("clear")
     play_anim(_A_SHURIKEN, delay=0.1, color=BC)
     width = 78
-    print(f"\n{BC}  ╔{'═'*width}╗{X}")
+    print(f"\n{BC}  ╔{'═' * width}╗{X}")
     print(
-        f"{BC}  ║{X}  {BW}🥷  Model Selector{X}  {D}select one model/provider, or type auto{X}{' '*19}{BC}║{X}"
+        f"{BC}  ║{X}  {BW}🥷  Model Selector{X}  {D}select one model/provider, or type auto{X}{' ' * 19}{BC}║{X}"
     )
     print(
         f"{BC}  ║{X}  {C}Current:{X} MODE:{W}{MODE.upper()}{X}  MODEL:{W}{PINNED_MODEL or 'AUTO'}{X}"
     )
-    print(f"{BC}  ╠{'═'*width}╣{X}")
+    print(f"{BC}  ╠{'═' * width}╣{X}")
     print(f"{BC}  ║{X}  {D}LOCAL / OLLAMA — private, monitorable, no API key{X}")
     local_entries = [
         (i + 1, m, d)
@@ -10526,7 +10648,7 @@ def show_model_menu():
         )
     else:
         print(f"{BC}  ║{X}  {C}Routing: {G}AUTO{X}  {D}(smart routing by task type){X}")
-    print(f"{BC}  ╚{'═'*width}╝{X}")
+    print(f"{BC}  ╚{'═' * width}╝{X}")
     print(
         f"\n  {D}Direct commands: model local · model groq · model cerebras · model deepseek-r1 · model stats · model auto{X}"
     )
@@ -10856,14 +10978,14 @@ def show_autotips(slide_delay=4.0):
         if not first:
             print(f"\n{D}  {'─' * w}  auto-tip  {'─' * 4}{X}\n")
         first = False
-        head = f"🥷  TIP {idx+1}/{len(slides)} — {title}"
+        head = f"🥷  TIP {idx + 1}/{len(slides)} — {title}"
         pad = max(0, w - len(head))
-        print(f"\n{BC}  ╔{'═'*w}╗{X}")
-        print(f"{BC}  ║{X}  {BW}{head}{' '*pad}{BC}║{X}")
-        print(f"{BC}  ╠{'═'*w}╣{X}")
+        print(f"\n{BC}  ╔{'═' * w}╗{X}")
+        print(f"{BC}  ║{X}  {BW}{head}{' ' * pad}{BC}║{X}")
+        print(f"{BC}  ╠{'═' * w}╣{X}")
         for b in bullets:
             print(f"{BC}  ║{X}  {Y}  • {C}{b}{X}")
-        print(f"{BC}  ╚{'═'*w}╝{X}")
+        print(f"{BC}  ╚{'═' * w}╝{X}")
         dots = "●" * (idx + 1) + "○" * (len(slides) - idx - 1)
         print(
             f"  {D}── auto-advancing in {int(slide_delay)}s  {BC}{dots}{X}  {D}── press any key to skip  {BC}q{X}=quit{X}"
@@ -10941,14 +11063,14 @@ def show_hub():
         if not first:
             print(f"\n{D}  {'─' * w}  page break  {'─' * 4}{X}\n")
         first = False
-        print(f"\n{BC}  ╔{'═'*w}╗{X}")
-        print(f"{BC}  ║{X}  {BW}{title}{' '*pad}{BC}║{X}")
-        print(f"{BC}  ╠{'═'*w}╣{X}")
+        print(f"\n{BC}  ╔{'═' * w}╗{X}")
+        print(f"{BC}  ║{X}  {BW}{title}{' ' * pad}{BC}║{X}")
+        print(f"{BC}  ╠{'═' * w}╣{X}")
         for i in idxs:
             cmd_txt, desc = items[i]
             num = i + 1
             print(f"{BC}  ║{X}   {Y}{num:>2}.{X} {W}{cmd_txt:<18}{X}{C}{desc}{X}")
-        print(f"{BC}  ╚{'═'*w}╝{X}")
+        print(f"{BC}  ╚{'═' * w}╝{X}")
         dots = "●" * (gidx + 1) + "○" * (total - gidx - 1)
         print(
             f"  {D}── hub  {BC}{dots}{X}  {D}── {X}{BC}#{X}=pick  {BC}n{X}=next  {BC}b{X}=back  {BC}q{X}=close"
@@ -11014,16 +11136,16 @@ def show_projects():
         if not first:
             print(f"\n{D}  {'─' * w}  page break  {'─' * 4}{X}\n")
         first = False
-        print(f"\n{BC}  ╔{'═'*w}╗{X}")
-        print(f"{BC}  ║{X}  {BW}{title}{' '*pad}{BC}║{X}")
-        print(f"{BC}  ╠{'═'*w}╣{X}")
+        print(f"\n{BC}  ╔{'═' * w}╗{X}")
+        print(f"{BC}  ║{X}  {BW}{title}{' ' * pad}{BC}║{X}")
+        print(f"{BC}  ╠{'═' * w}╣{X}")
         print(f"{BC}  ║{X}  {Y}  type    {X}{C}{p['kind']}{X}")
         print(f"{BC}  ║{X}  {Y}  local   {X}{C}{p['url']}{X}")
         if p.get("tailscale"):
             print(f"{BC}  ║{X}  {Y}  phone   {X}{G}{p['tailscale']}{X}")
         print(f"{BC}  ║{X}  {Y}  launch  {X}{C}{p['launch']}{X}")
         print(f"{BC}  ║{X}  {Y}  status  {X}{C}{p['status']}{X}")
-        print(f"{BC}  ╚{'═'*w}╝{X}")
+        print(f"{BC}  ╚{'═' * w}╝{X}")
         dots = "●" * (idx + 1) + "○" * (total - idx - 1)
         print(
             f"  {D}── project  {BC}{dots}{X}  {D}── {X}{BC}n{X}=next  {BC}b{X}=back  {BC}q{X}=quit"
@@ -11253,12 +11375,12 @@ def show_help():
         if not first:
             print(f"\n{D}  {'─' * w}  page break  {'─' * 4}{X}\n")
         first = False
-        print(f"\n{BC}  ╔{'═'*w}╗{X}")
-        print(f"{BC}  ║{X}  {BW}{title}{' '*pad}{BC}║{X}")
-        print(f"{BC}  ╠{'═'*w}╣{X}")
+        print(f"\n{BC}  ╔{'═' * w}╗{X}")
+        print(f"{BC}  ║{X}  {BW}{title}{' ' * pad}{BC}║{X}")
+        print(f"{BC}  ╠{'═' * w}╣{X}")
         for cmd_txt, desc in rows:
             print(f"{BC}  ║{X}  {Y}  {cmd_txt:<28}{C}{desc}{X}")
-        print(f"{BC}  ╚{'═'*w}╝{X}")
+        print(f"{BC}  ╚{'═' * w}╝{X}")
         dots = "●" * (idx + 1) + "○" * (total - idx - 1)
         print(
             f"  {D}── help  {BC}{dots}{X}  {D}── {X}{BC}n{X}=next  {BC}b{X}=back  {BC}q{X}=quit  {D}(Enter also = next; type a question to ask){X}"
@@ -11303,7 +11425,7 @@ def show_tips():
         print(f"{BC}  ║{X}")
 
     print(f"\n{BC}  ╔{bar}╗{X}")
-    print(f"{BC}  ║{X}  {BW}🥷  MASTER AI — Tips & Tricks{' '*(w-28)}{BC}║{X}")
+    print(f"{BC}  ║{X}  {BW}🥷  MASTER AI — Tips & Tricks{' ' * (w - 28)}{BC}║{X}")
 
     section("QUICK INPUT")
     blank()
@@ -12778,12 +12900,7 @@ def _format_tool_result(kind, cmd, result):
     if len(output) > max_chars:
         omitted = len(output) - max_chars
         output = output[:max_chars].rstrip() + f"\n... [truncated {omitted} chars]"
-    return (
-        f"[{kind} RESULT]\n"
-        f"Command: {cmd}\n"
-        f"Exit: {exit_code}\n"
-        f"Output:\n{output}"
-    )
+    return f"[{kind} RESULT]\nCommand: {cmd}\nExit: {exit_code}\nOutput:\n{output}"
 
 
 def _extract_path_lines(output):
@@ -13372,7 +13489,7 @@ def agent_standards_checks():
         ok = (
             route.get("route") == "local"
             and route.get("model") == MODELS["master"]
-            and "tool-required" in route.get("reason", "")
+            and _is_tool_required("matrix rain")
             and "synth_reply" not in route
         )
         add(
@@ -14920,8 +15037,8 @@ def confirm_send_email(spec):
             print(_pill("SENT", f"{D}to {to}{X}"))
             _audit("SEND_EMAIL-OK", f"to={to} subject={subject}")
         else:
-            print(_pill("FAILED", f"{R}{result.get('error','')}{X}"))
-            _audit("SEND_EMAIL-FAIL", f"to={to} err={result.get('error','')}")
+            print(_pill("FAILED", f"{R}{result.get('error', '')}{X}"))
+            _audit("SEND_EMAIL-FAIL", f"to={to} err={result.get('error', '')}")
         return result
     if ans in ("3", "e", "edit"):
         print(
@@ -14964,9 +15081,9 @@ def confirm_send_telegram(spec):
             print(_pill("SENT", f"{D}to {chat_id}{X}"))
             _audit("SEND_TELEGRAM-OK", f"chat_id={chat_id}")
         else:
-            print(_pill("FAILED", f"{R}{result.get('error','')}{X}"))
+            print(_pill("FAILED", f"{R}{result.get('error', '')}{X}"))
             _audit(
-                "SEND_TELEGRAM-FAIL", f"chat_id={chat_id} err={result.get('error','')}"
+                "SEND_TELEGRAM-FAIL", f"chat_id={chat_id} err={result.get('error', '')}"
             )
         return result
     print(_pill("CANCELLED"))
@@ -15407,33 +15524,208 @@ _XML_PARAM_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# 2026-09-21: a second, distinct native tool-call shape, confirmed live on
+# opencode-go::mimo-v2.5-pro (and documented as several open-weight model
+# families' trained-in tool-call format, not something particular to one
+# model). Unlike _XML_INVOKE_RE's Anthropic-style `<invoke name="X">
+# <parameter name="Y">`, this one puts the value directly on the tag with
+# `=`, no quotes, no `name` attribute: `<function=bash><parameter=command>
+# cd ~/scripts && ...</parameter><parameter=description>...</parameter>
+# </function>`. Same failure mode _XML_INVOKE_RE was built to fix, live
+# again on a model whose native tool-call template this system prompt never
+# asked for: rendered as prose + raw XML, nothing ever dispatched, user had
+# to manually say "proceed" over and over to get anything resembling
+# forward motion because the model never received real tool output to
+# continue from — it was reacting to its own unexecuted call, not a result.
+_XML_FUNCTION_RE = re.compile(
+    r"<function\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*>(.*?)</function\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_XML_FUNCTION_PARAM_RE = re.compile(
+    r"<parameter\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*>(.*?)</parameter\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+# None of these common cross-model "run a shell command" tool names are
+# master_ai's own RUN directive keyword, so without this alias map a
+# <function=bash> block would convert to a still-unrecognized "BASH: ..."
+# line instead of the RUN: the dispatcher actually understands — visible
+# is strictly better than invisible (see docstring below), but recognized
+# and dispatched is the real fix.
+_XML_FUNCTION_NAME_ALIASES = {
+    "bash": "RUN",
+    "shell": "RUN",
+    "execute": "RUN",
+    "exec": "RUN",
+    "terminal": "RUN",
+    "run_command": "RUN",
+    "run_shell_command": "RUN",
+}
+
+# 2026-09-21: two more native tool-call shapes, added proactively (not yet
+# reproduced live, unlike the two above) after the <function=> fix, per
+# operator request to cover known formats up front instead of one more
+# live-reproduce-then-patch cycle per model. Both are real, standardized
+# conventions specific model families are trained on, not something this
+# system prompt asks for:
+#
+#   Hermes/NousResearch function-calling (the literal "Hermes style" name —
+#   this convention, not the codebase's own RUN:/CREATE: grammar, is what
+#   most open-weight tool-calling fine-tunes, including several Qwen/GLM/
+#   Kimi variants likely to show up via opencode-go, were actually trained
+#   on): a single JSON object inside one tag pair —
+#       <tool_call>
+#       {"name": "bash", "arguments": {"command": "ls -la"}}
+#       </tool_call>
+#   Distinct from _BARE_KEYWORD_LINE_RE's existing <tool_call> handling:
+#   that one strips <tool_call> as wrapper noise around this codebase's OWN
+#   bare RUN/READ/etc. keyword line; this one has a real JSON payload
+#   inside instead, which never looks like a bare keyword, so the two never
+#   collide — gated on the body starting with "{" specifically.
+#
+#   Mistral function-calling: a bracket-tagged JSON array, no XML at all —
+#       [TOOL_CALLS] [{"name": "bash", "arguments": {"command": "ls -la"}}]
+#   which can carry more than one call per block.
+_JSON_TOOL_CALL_RE = re.compile(
+    r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.IGNORECASE | re.DOTALL
+)
+_MISTRAL_TOOL_CALLS_RE = re.compile(
+    r"\[TOOL_CALLS\]\s*(\[.*?\])", re.IGNORECASE | re.DOTALL
+)
+
+
+def _json_tool_call_to_directive_line(name, arguments):
+    """Shared conversion for both JSON-shaped formats above: a {"name":
+    ..., "arguments": {...}} dict becomes one `X: payload` directive line.
+    Prefers a "command" argument when present (matching the XML function
+    format's same preference, for the same reason — an accompanying
+    "description" argument is not the payload); otherwise falls back to
+    the first argument value. Defensive by construction: any shape that
+    doesn't parse into a usable (name, payload) pair returns None rather
+    than guessing, consistent with this file's existing "safe default: no
+    match" convention for widen-only heuristics — an execution safety
+    concern, not just a style one."""
+    if not isinstance(name, str) or not name.strip():
+        return None
+    directive_name = _XML_FUNCTION_NAME_ALIASES.get(
+        name.strip().lower(), name.strip().upper()
+    )
+    if isinstance(arguments, dict):
+        payload = arguments.get("command")
+        if payload is None and arguments:
+            payload = next(iter(arguments.values()))
+    else:
+        payload = arguments
+    if not isinstance(payload, str) or not payload.strip():
+        return None
+    payload = " ".join(line.strip() for line in payload.splitlines() if line.strip())
+    if not payload:
+        return None
+    return f"{directive_name}: {payload}"
+
 
 def _xml_tool_calls_to_directives(reply):
-    """Translate `<invoke name="X">...<parameter>...</parameter>...</invoke>`
-    blocks into bare `X: payload` directives (one line, whitespace-collapsed
-    inside the payload so a multi-line command body still satisfies the
-    one-directive-per-line invariant). Unknown action names still convert —
-    a malformed-but-visible directive line beats invisible raw XML, because
-    the directive-repair feedback loop can then teach the model the right
-    shape. Blocks with no parameter take the whole body as the payload."""
-    if not reply or "<invoke" not in reply:
+    """Translate native tool-call shapes into bare `X: payload` directives
+    (one line, whitespace-collapsed inside the payload so a multi-line
+    command body still satisfies the one-directive-per-line invariant).
+    Handles four distinct shapes different model families are natively
+    trained to emit, despite the system prompt never asking for any of
+    them: Anthropic-style `<invoke name="X"><parameter name="Y">...
+    </parameter></invoke>`, Llama/Hermes-style `<function=X>
+    <parameter=Y>...</parameter></function>`, Hermes/NousResearch
+    `<tool_call>{"name": X, "arguments": {...}}</tool_call>` (JSON), and
+    Mistral `[TOOL_CALLS] [{"name": X, "arguments": {...}}, ...]` (JSON
+    array, possibly more than one call). Unknown action names still
+    convert — a malformed-but-visible directive line beats invisible raw
+    tool-call syntax, because the directive-repair feedback loop can then
+    teach the model the right shape. Blocks with no parameter/argument
+    take the whole body as the payload where that's well-defined (the two
+    XML shapes); the two JSON shapes require a parseable {"name",
+    "arguments"} object and skip anything that doesn't fit that shape
+    rather than guessing at a payload from malformed JSON."""
+    if not reply:
         return reply
 
-    def _conv(m):
-        name = m.group(1).strip().upper()
-        body = m.group(2)
-        params = _XML_PARAM_RE.findall(body)
-        payload = params[0][1] if params else body
-        # Collapse line breaks and indentation noise, but preserve intentional
-        # spaces inside quoted strings and heredoc bodies.
-        payload = " ".join(
-            line.strip() for line in payload.splitlines() if line.strip()
-        )
-        if not name or not payload:
-            return ""
-        return f"{name}: {payload}"
+    if "<invoke" in reply:
 
-    return _XML_INVOKE_RE.sub(_conv, reply)
+        def _conv(m):
+            name = m.group(1).strip().upper()
+            body = m.group(2)
+            params = _XML_PARAM_RE.findall(body)
+            payload = params[0][1] if params else body
+            # Collapse line breaks and indentation noise, but preserve intentional
+            # spaces inside quoted strings and heredoc bodies.
+            payload = " ".join(
+                line.strip() for line in payload.splitlines() if line.strip()
+            )
+            if not name or not payload:
+                return ""
+            return f"{name}: {payload}"
+
+        reply = _XML_INVOKE_RE.sub(_conv, reply)
+
+    if "<function" in reply.lower():
+
+        def _conv_fn(m):
+            raw_name = m.group(1).strip().lower()
+            name = _XML_FUNCTION_NAME_ALIASES.get(raw_name, raw_name.upper())
+            body = m.group(2)
+            params = _XML_FUNCTION_PARAM_RE.findall(body)
+            # Prefer a "command" parameter when one exists — bash/shell-style
+            # calls commonly carry an extra "description" parameter alongside
+            # it, which is not the payload to execute.
+            payload = next(
+                (v for k, v in params if k.strip().lower() == "command"), None
+            )
+            if payload is None:
+                payload = params[0][1] if params else body
+            payload = " ".join(
+                line.strip() for line in payload.splitlines() if line.strip()
+            )
+            if not name or not payload:
+                return ""
+            return f"{name}: {payload}"
+
+        reply = _XML_FUNCTION_RE.sub(_conv_fn, reply)
+
+    if "<tool_call>" in reply.lower() and "{" in reply:
+
+        def _conv_json(m):
+            try:
+                obj = json.loads(m.group(1))
+            except (json.JSONDecodeError, ValueError):
+                return m.group(0)  # leave malformed JSON untouched, don't guess
+            if not isinstance(obj, dict):
+                return m.group(0)
+            line = _json_tool_call_to_directive_line(
+                obj.get("name"), obj.get("arguments")
+            )
+            return line if line else m.group(0)
+
+        reply = _JSON_TOOL_CALL_RE.sub(_conv_json, reply)
+
+    if "[TOOL_CALLS]" in reply.upper():
+
+        def _conv_mistral(m):
+            try:
+                calls = json.loads(m.group(1))
+            except (json.JSONDecodeError, ValueError):
+                return m.group(0)
+            if not isinstance(calls, list) or not calls:
+                return m.group(0)
+            lines = []
+            for call in calls:
+                if not isinstance(call, dict):
+                    continue
+                line = _json_tool_call_to_directive_line(
+                    call.get("name"), call.get("arguments")
+                )
+                if line:
+                    lines.append(line)
+            return "\n".join(lines) if lines else m.group(0)
+
+        reply = _MISTRAL_TOOL_CALLS_RE.sub(_conv_mistral, reply)
+
+    return reply
 
 
 _BARE_KEYWORD_LINE_RE = re.compile(
@@ -15749,6 +16041,39 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
 
     skill_reply = _run_skill_reply_from_reply("\n".join(lines), history)
     if skill_reply is not None:
+        # 2026-09-21: sibling of the same bug fixed in handle() at the
+        # outer "[SKILL RESULT" check (a model's FIRST reply of a turn
+        # dispatches a skill before ever reaching process_reply at all).
+        # THIS site is process_reply's own internal RUN_SKILL handling —
+        # reached when a skill directive shows up mid-chain, already
+        # inside a reply process_reply is parsing. Recursing straight into
+        # process_reply(skill_reply, ...) just re-parses skill_reply for
+        # MORE directives (correctly finds none) and falls through to its
+        # own `return reply` fallthrough — the raw "[SKILL RESULT — X]\n..."
+        # text becomes this call's return value verbatim, same missing-
+        # synthesis bug, different entry point. Mirror the SUBAGENT RESULT
+        # pattern already used elsewhere in this same function: hand the
+        # real result back to the model as context and return None so the
+        # caller's continuation loop re-asks instead of standing pat on
+        # the raw dump. Scoped to the same "[SKILL RESULT" shape only —
+        # pending-directive/aborted/paused skill replies still recurse
+        # normally, they're not raw data needing interpretation.
+        if skill_reply.startswith("[SKILL RESULT"):
+            history.append(
+                {
+                    "role": "user",
+                    "content": (
+                        skill_reply
+                        + "\n\nThe skill result above is real. Answer the user's "
+                        "original question using it — don't just repeat the raw "
+                        "list back verbatim; say what it means for what they asked."
+                    ),
+                }
+            )
+            log(
+                "CHAIN_SKILL_RESULT_FEEDBACK: forcing continuation to synthesize a real answer (internal path)"
+            )
+            return None
         return process_reply(
             skill_reply,
             history,
@@ -16300,13 +16625,23 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         r"\b(on it\b|on it\s+[🔍🚀⚙️✅👍]|i\'?ll\s+\w+\s+(?:that|this|it|up|now)\b|"
         r"i\'?ll (?:set|get|check|investigate|look|create|start|do|run|write|build|make|dig|take)|"
         r"let me (?:\w+\s+)?(?:check|see|look|investigate|create|dig|take|pivot)|"
+        r"one moment|give me a (?:second|moment|sec)|working on it|hold on)\b"
         # 2026-09-15: gerund-lead announcements ("Checking environment
         # first.", "Verifying the setup now.") reproduced live — they
         # don't match any "i'll "/"let me " form above, so a bare backtick-
         # wrapped directive right after one slipped through both repair
         # paths and rendered as a finished answer with nothing executed.
-        r"(?:checking|verifying|confirming|inspecting|scanning|looking at)\s+\w+|"
-        r"one moment|give me a (?:second|moment|sec)|working on it|hold on)\b",
+        # A review pass caught a first version of this that matched the
+        # gerund lead ANYWHERE via .search(), false-firing on legitimate
+        # complete answers that merely open with or contain one of these
+        # words ("Looking at the logs, the issue is the missing key.",
+        # "Checking the config, it's fine."). A real stall IS the entire
+        # narrative -- no comma-joined follow-on clause with actual
+        # information -- so this alternative is anchored to the WHOLE
+        # narrative and requires no comma anywhere after the gerund lead;
+        # kept outside the shared \b(...)\b group above since anchoring
+        # ^...$ inside it wouldn't compose the same way.
+        r"|^\s*(?:checking|verifying|confirming|inspecting|scanning|looking at)\s+[^,\n]*$",
         re.IGNORECASE,
     )
     # Second shape seen tonight: the model attempts directives but wraps
@@ -16491,8 +16826,24 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                 content += "\n\n[Some READ targets also failed]\n" + "\n".join(
                     f"- {p}: {why}" for p, why in failed_reads[:6]
                 )
+            # P1.6 reconciliation (2026-09-20): a READ in a chain that also
+            # edits the file it read must NOT end the turn here. The READ
+            # contents already satisfied the READ→EDIT contract (the edit gate
+            # below consults read_paths), and returning None would strand the
+            # EDIT for a "re-ask" turn the model already answered — the exact
+            # failure test_edit_markers_are_case_insensitive pinned at HEAD
+            # (verified: red at every commit back to ca3f813, which introduced
+            # the READ→EDIT contract in the same chain as this early return —
+            # the two never agreed). Inject the content into history (so the
+            # model still gets grounding for later turns) and fall through to
+            # dispatch the edits in this same pass. Chains with no edits keep
+            # the original re-ask behavior.
+            if not edit_ops:
+                history.append(
+                    {"role": "user", "content": content + "\n\nNow proceed."}
+                )
+                return None  # caller re-asks AI with injected context
             history.append({"role": "user", "content": content + "\n\nNow proceed."})
-            return None  # caller re-asks AI with injected context
         if failed_reads:
             history.append(
                 {
@@ -16551,6 +16902,15 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                 "render",
             )
         )
+
+    def _is_bare_cd(cmd):
+        """True for a RUN/RUNTERM command that is ONLY `cd <dir>` with nothing
+        chained after it — `cd X && Y` or `cd X; Y` are fine, only the
+        standalone form is the problem (see the repair message below for why)."""
+        stripped = cmd.strip()
+        if not re.match(r"^cd\s+\S", stripped, re.IGNORECASE):
+            return False
+        return not re.search(r"&&|;|\|\|", stripped)
 
     def _visual_requested():
         text = _latest_user_turn().lower()
@@ -16902,20 +17262,73 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                 _pill("BLOCKED", f"{D}inline python generator must be CREATEd first{X}")
             )
             log(f"DIRECTIVE_REPAIR_INLINE_PYTHON: {inline_python[:3]}")
+            # 2026-09-21: _inline_python_generator()'s own detection above fires on
+            # ANY sufficiently long python3 -c one-liner containing generic tokens
+            # like "generate", "subprocess.run(", "os.system(" — not actually
+            # restricted to media at all, despite this repair message's original
+            # wording ("generated images or video"). Reported live: the model was
+            # writing a web scraper (a subprocess.run() call in an inline check
+            # tripped this), got told to stop making "images or video" — completely
+            # wrong framing for what it was actually doing — and the mismatched
+            # feedback left it unable to act on the correction properly, so it just
+            # re-announced roughly the same plan instead of emitting a real CREATE
+            # block. The underlying policy (write it as a real file, don't inline
+            # a long generator) is correct and worth keeping regardless of content
+            # type; only the wording was media-specific. Made purpose-agnostic so
+            # it's accurate for scrapers, data processors, or anything else that
+            # happens to trip the same broad detector.
             history.append(
                 {
                     "role": "user",
                     "content": (
                         "[Directive repair]\n"
                         "You tried to run a long inline python generator with python3 -c. "
-                        "Do not use a one-liner for generated images or video. First emit a CREATE block "
-                        "for a real .py or .sh generator file on Desktop, then verify it, then run that file "
-                        "by path. Keep the filename stable through CREATE → chmod/ls → RUN/RUNTERM. "
-                        "Do not explain. Repair the directive chain now."
+                        "Do not use a one-liner for this — it doesn't matter what the script does "
+                        "(image/video generation, scraping, data processing, anything else). First "
+                        "emit a CREATE block for a real .py or .sh file on Desktop, then verify it, "
+                        "then run that file by path. Keep the filename stable through CREATE → "
+                        "chmod/ls → RUN/RUNTERM. Do not explain. Repair the directive chain now."
                     ),
                 }
             )
             return None
+
+    # 2026-09-21: reproduced live on opencode-go::mimo-v2.5-pro, twice in a
+    # row without self-correcting: the model split "cd DIR" and the command
+    # it actually wanted to run there into two separate RUN: directives.
+    # Each RUN/RUNTERM dispatches through its own subprocess.run() call with
+    # no shared shell state between them, so a standalone cd succeeds, does
+    # nothing visible, and the next RUN starts fresh from wherever the
+    # process itself already is — not the directory just "cd'd" into. The
+    # system prompt shows the correct one-line `cd X && command` pattern as
+    # an example elsewhere but never states the actual constraint outright,
+    # and the model wasn't generalizing from the example on its own — it
+    # just retried the identical broken two-step split.
+    bare_cds = [c for c in run_cmds + runterm_cmds if _is_bare_cd(c)]
+    if bare_cds:
+        print(
+            _pill(
+                "BLOCKED",
+                f"{D}bare cd with no chained command — each RUN is its own subprocess{X}",
+            )
+        )
+        log(f"DIRECTIVE_REPAIR_BARE_CD: {bare_cds[:3]}")
+        history.append(
+            {
+                "role": "user",
+                "content": (
+                    "[Directive repair]\n"
+                    "You emitted a RUN/RUNTERM that is only `cd <dir>` with nothing chained "
+                    "after it. Each RUN/RUNTERM executes as its own separate subprocess with "
+                    "no shared shell state — a standalone cd has no effect on any later "
+                    "command, even one in the same reply. Either chain the real command onto "
+                    "the SAME line with && (e.g. `cd ~/project && command`), or skip cd "
+                    "entirely and use an absolute or ~-relative path directly in the command "
+                    "itself. Do not explain. Repair the directive chain now."
+                ),
+            }
+        )
+        return None
 
     # Deterministic execution policy: setup stays captured, visual work runs
     # in a real terminal. Example model drift:
@@ -17194,20 +17607,21 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         if not (isinstance(result, dict) and result.get("ok")):
             err = (result or {}).get("error", "send_email refused or failed")
             if _append_tool_blocked_feedback(
-                "SEND_EMAIL", f"to={spec.get('to','')} subject={spec.get('subject','')}"
+                "SEND_EMAIL",
+                f"to={spec.get('to', '')} subject={spec.get('subject', '')}",
             ):
                 return None
             print(_pill("BLOCKED", f"{D}SEND_EMAIL failed or was refused — {err}{X}"))
-            log(f"CHAIN_ABORT: SEND_EMAIL to={spec.get('to','')} err={err}")
+            log(f"CHAIN_ABORT: SEND_EMAIL to={spec.get('to', '')} err={err}")
             _append_exec_failure_feedback(
                 "SEND_EMAIL",
-                f"to={spec.get('to','')}",
-                f"To: {spec.get('to','')}\nSubject: {spec.get('subject','')}\nError: {err}",
+                f"to={spec.get('to', '')}",
+                f"To: {spec.get('to', '')}\nSubject: {spec.get('subject', '')}\nError: {err}",
             )
             return None
         if continue_after_tools:
             tool_result_feedback.append(
-                f"[SEND_EMAIL RESULT]\nTo: {spec.get('to','')}\nSubject: {spec.get('subject','')}\nStatus: sent"
+                f"[SEND_EMAIL RESULT]\nTo: {spec.get('to', '')}\nSubject: {spec.get('subject', '')}\nStatus: sent"
             )
 
     # SEND_TELEGRAM: runs after RUN/RUNTERM/SEND_EMAIL — one-way bot message.
@@ -17217,24 +17631,24 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             err = (result or {}).get("error", "send_telegram refused or failed")
             if _append_tool_blocked_feedback(
                 "SEND_TELEGRAM",
-                f"chat_id={spec.get('chat_id','')} text={spec.get('text','')[:80]}",
+                f"chat_id={spec.get('chat_id', '')} text={spec.get('text', '')[:80]}",
             ):
                 return None
             print(
                 _pill("BLOCKED", f"{D}SEND_TELEGRAM failed or was refused — {err}{X}")
             )
             log(
-                f"CHAIN_ABORT: SEND_TELEGRAM chat_id={spec.get('chat_id','')} err={err}"
+                f"CHAIN_ABORT: SEND_TELEGRAM chat_id={spec.get('chat_id', '')} err={err}"
             )
             _append_exec_failure_feedback(
                 "SEND_TELEGRAM",
-                f"chat_id={spec.get('chat_id','')}",
-                f"Chat ID: {spec.get('chat_id','')}\nText: {spec.get('text','')}\nError: {err}",
+                f"chat_id={spec.get('chat_id', '')}",
+                f"Chat ID: {spec.get('chat_id', '')}\nText: {spec.get('text', '')}\nError: {err}",
             )
             return None
         if continue_after_tools:
             tool_result_feedback.append(
-                f"[SEND_TELEGRAM RESULT]\nChat ID: {spec.get('chat_id','')}\nMessage: {spec.get('text','')}\nStatus: sent"
+                f"[SEND_TELEGRAM RESULT]\nChat ID: {spec.get('chat_id', '')}\nMessage: {spec.get('text', '')}\nStatus: sent"
             )
 
     # BROWSER_* — dispatched through sensei_bridge.py's queue (same one
@@ -17969,7 +18383,7 @@ def handle_loop_task(task, history, context_policy=None):
     print()
     print(f"  {BC}🔁  AGENT MODE — {task}{X}")
     print(
-        f"  {D}max {LOOP_MAX_CYCLES} cycles · max {LOOP_MAX_SECONDS//60} min · abort to stop{X}"
+        f"  {D}max {LOOP_MAX_CYCLES} cycles · max {LOOP_MAX_SECONDS // 60} min · abort to stop{X}"
     )
     print()
 
@@ -18019,13 +18433,13 @@ def handle_loop_task(task, history, context_policy=None):
     while step_idx < len(steps) and cycle < LOOP_MAX_CYCLES:
         if _t.time() - start > LOOP_MAX_SECONDS:
             print(
-                f"  {Y}loop hit wall-clock ceiling ({LOOP_MAX_SECONDS//60} min) — stopping{X}"
+                f"  {Y}loop hit wall-clock ceiling ({LOOP_MAX_SECONDS // 60} min) — stopping{X}"
             )
             break
         cycle += 1
         step = steps[step_idx]
         print(
-            f"  {BC}[step {step_idx+1}/{len(steps)} · cycle {cycle}/{LOOP_MAX_CYCLES}]{X} {step}"
+            f"  {BC}[step {step_idx + 1}/{len(steps)} · cycle {cycle}/{LOOP_MAX_CYCLES}]{X} {step}"
         )
 
         # Execute step through normal handle() — sandbox enforced here
@@ -18535,7 +18949,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
                 "candidates": decision.get("candidates", []),
                 "score": decision.get("score"),
             }
-    log(f"ORCHESTRATE: {decision.get('route')} | {decision.get('reason','')}")
+    log(f"ORCHESTRATE: {decision.get('route')} | {decision.get('reason', '')}")
     _router_metric(
         "route_decision",
         route=decision.get("route"),
@@ -19944,12 +20358,42 @@ def handle(user_text, history, image_path=None, context_policy=None):
         reply = "No response from AI."
 
     skill_reply = _run_skill_reply_from_reply(reply, history)
+    # 2026-09-21: a completed skill's own result ("[SKILL RESULT — X]\n...")
+    # used to become the final displayed reply directly here, unlike
+    # RUN/READ tool output and the SUBAGENT RESULT feedback below — both of
+    # those get handed back to the model (history.append + result=None,
+    # which is what makes the `while result is None` loop below actually
+    # re-ask and synthesize) instead of standing in as the answer verbatim.
+    # A skill's raw data (e.g. "1 result(s): Untitled document (date)") was
+    # never given that same treatment, so it just got dumped as-is and the
+    # turn ended right there with no narrative wrap-up at all. Reported
+    # live: "it just stopped with untitled document." Scoped to only the
+    # completed-with-a-real-result shape — pending-directive, aborted, and
+    # paused skill replies are already complete, actionable status
+    # messages on their own, not raw data that needs interpreting.
+    skill_result_needs_synthesis = skill_reply is not None and skill_reply.startswith(
+        "[SKILL RESULT"
+    )
     if skill_reply is not None:
         reply = skill_reply
         streamed = False
 
     low_user = user_text.lower()
     low_reply = (reply or "").lower()
+    if skill_result_needs_synthesis:
+        history.append(
+            {
+                "role": "user",
+                "content": (
+                    reply + "\n\nThe skill result above is real. Answer the user's "
+                    "original question using it — don't just repeat the raw "
+                    "list back verbatim; say what it means for what they asked."
+                ),
+            }
+        )
+        log(
+            "CHAIN_SKILL_RESULT_FEEDBACK: forcing continuation to synthesize a real answer"
+        )
     generative_video_request = re.search(
         r"\b(make|create|generate)\b.*\b(video|clip|movie)\b", low_user
     ) and not any(
@@ -20026,6 +20470,18 @@ def handle(user_text, history, image_path=None, context_policy=None):
             reply, history, streamed=streamed, continue_after_tools=True
         )
 
+    if skill_result_needs_synthesis:
+        # Override whatever the block above computed: the skill-result
+        # feedback message was already appended to history further up, and
+        # `reply` here is still just the raw "[SKILL RESULT — X]\n..." text
+        # with no directives in it, so process_reply() above would only
+        # have handed it straight back unchanged (its own no-directives
+        # fallthrough). Forcing None here — the same signal RUN/READ output
+        # and SUBAGENT RESULT feedback use — is what makes the `while
+        # result is None` loop below actually re-ask the model instead of
+        # standing pat on the raw dump as the final answer.
+        result = None
+
     def _continue_model_turn(repair_turn=False):
         if route in ("cloud", "web"):
             # 2026-09-07: removed automatic "private tool output -> local" branch.
@@ -20045,7 +20501,13 @@ def handle(user_text, history, image_path=None, context_policy=None):
             elif ("::" in _rt_model) or (_rt_model in CLOUD_MODEL_NAMES):
                 provider = _rt_model
             else:
-                provider = "groq"
+                # 2026-09-20: groq has been disabled since 2026-08-27
+                # (have_groq=False at line 4222). Falling back to "groq"
+                # here meant every continuation on an unrecognized cloud
+                # model silently dead-ended. Use the first live provider
+                # from the fallback order instead — openrouter covers
+                # deepseek-r1 and every other catalog id.
+                provider = "openrouter"
             try:
                 cloud_reply = ask_cloud(history, provider=provider)
             finally:
@@ -20846,10 +21308,17 @@ def main():
 
     # ── 2026-09-15: auto-resume-with-full-thread retired at the user's ──
     # request — 'load summary' (manual, on-demand) already does this job
-    # correctly, so _reload_if_code_changed()'s hot-reload continuity no
-    # longer needs to dump the prior thread back onto the screen. Startup
-    # always lands on a clear screen now; both carry files are still
-    # cleaned up so they never leak into a later, unrelated session.
+    # correctly, so RESUME_FLAG's full-thread dump-to-screen is gone.
+    # _RELOAD_CARRY_FILE is a DIFFERENT mechanism and is NOT retired: it's
+    # the other half of _reload_if_code_changed()'s hot-reload continuity
+    # (the user's just-typed, not-yet-answered message, carried across the
+    # execvp), and that function's own docstring still promises the reload
+    # is invisible from the user's side. A review pass on this branch
+    # caught a first version of this change that deleted BOTH files
+    # without restoring PENDING_USER_NOTE from the carry file first --
+    # that silently dropped an in-flight message on every hot-reload
+    # instead of preserving it. Startup still always lands on a clear
+    # screen; only the carry (not the full-thread dump) survives here.
     resumed_from_notes = False
     try:
         if RESUME_FLAG.exists():
@@ -20858,7 +21327,10 @@ def main():
         log(f"RESUME_ERROR: {e}")
     try:
         if _RELOAD_CARRY_FILE.exists():
+            carried = _RELOAD_CARRY_FILE.read_text()
             _RELOAD_CARRY_FILE.unlink(missing_ok=True)
+            if carried:
+                globals()["PENDING_USER_NOTE"] = carried
     except Exception as e:
         log(f"AUTO_RELOAD_CARRY_RESTORE_ERROR: {e}")
 
@@ -21219,7 +21691,7 @@ def main():
                 order = _load_fallback_order()
                 if name in order:
                     print(
-                        f"  {Y}{name} is already in the chain (position {order.index(name)+1}){X}"
+                        f"  {Y}{name} is already in the chain (position {order.index(name) + 1}){X}"
                     )
                 else:
                     order.append(name)
@@ -21623,7 +22095,7 @@ def main():
             nm = "ON" if "NO_MOUSE" in settings else "OFF"
             pm = "ON" if "PHONE_MODE" in settings else "OFF"
             print(
-                f"  {C}No-mouse: {G if nm=='ON' else Y}{nm}{X}   Phone mode: {G if pm=='ON' else Y}{pm}{X}"
+                f"  {C}No-mouse: {G if nm == 'ON' else Y}{nm}{X}   Phone mode: {G if pm == 'ON' else Y}{pm}{X}"
             )
             continue
 
@@ -22398,7 +22870,7 @@ def main():
                     _tmux_resize_to_client(kill_others=True)
                     _nudge_tmux_auto_resize()
                     print(
-                        f"  {G}✅ killed {n-1} other pane(s) — Sensei is alone now.{X}"
+                        f"  {G}✅ killed {n - 1} other pane(s) — Sensei is alone now.{X}"
                     )
                 else:
                     print(f"  {D}already the only pane.{X}")
@@ -22708,7 +23180,7 @@ def main():
                     print(f"\n  {C}Saved chats ({len(files)} files):{X}")
                     for idx, f in enumerate(files, 1):
                         sz = f.stat().st_size
-                        sz_str = f"{sz//1024}KB" if sz >= 1024 else f"{sz}B"
+                        sz_str = f"{sz // 1024}KB" if sz >= 1024 else f"{sz}B"
                         dt = _fmt_ampm(datetime.fromtimestamp(f.stat().st_mtime))
                         print(f"  {W}{idx:>3}.{X} {dt}  {f.name:<40} {D}({sz_str}){X}")
                     print(
@@ -22737,7 +23209,9 @@ def main():
                         target.unlink(missing_ok=True)
                         print(f"  {G}✅ Deleted: {target.name}{X}")
                     else:
-                        print(f"  {R}No file #{n+1}. Type 'chats' to see the list.{X}")
+                        print(
+                            f"  {R}No file #{n + 1}. Type 'chats' to see the list.{X}"
+                        )
                 except ValueError:
                     print(f"  {R}Usage: clear chats <number>  e.g. 'clear chats 2'{X}")
             continue
@@ -22786,7 +23260,7 @@ def main():
                 kept = [l for l in lines if keyword.lower() not in l.lower()]
                 MEMORY_FILE.write_text("\n".join(kept) + "\n")
                 print(
-                    f"  {G}✅ Removed {len(lines)-len(kept)} line(s) matching: {keyword}{X}"
+                    f"  {G}✅ Removed {len(lines) - len(kept)} line(s) matching: {keyword}{X}"
                 )
             continue
 
