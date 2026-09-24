@@ -116,7 +116,7 @@ try:
         "model stats",
         "model master-ai",
         "model qwen",
-        "model qwen3-vl:8b",
+        "model qwen2.5vl:3b",
         "model qwen3.5:397b",
         "model kimi-k2.7-code",
         "model nvidia",
@@ -540,7 +540,7 @@ TTS_ENABLED = "TTS_OFF" not in (_SETTINGS.read_text() if _SETTINGS.exists() else
 # Default local model — single source of truth. Change this one constant
 # and all local slots, aliases, completion hints, and doc references follow.
 # Keep this constant up to date with the actual local Ollama model you run.
-DEFAULT_LOCAL_MODEL = os.environ.get("MASTER_AI_LOCAL_MODEL", "qwen3-vl:8b")
+DEFAULT_LOCAL_MODEL = os.environ.get("MASTER_AI_LOCAL_MODEL", "qwen2.5vl:3b")
 
 MODELS = {
     # SINGLE-MODEL STACK (2026-09-06): consolidated to one VLM.
@@ -664,6 +664,24 @@ BEHAVIOR_FILE = Path.home() / ".sensei_behavior.md"
 RESUME_FLAG = Path.home() / ".master_ai_resume"
 RESUME_FLAG_MAX_AGE = 600  # seconds; stale resume flags must not revive old sessions
 MAX_CONTINUATION_TURNS = 60  # operator-requested ceiling for long audit/task chains  # 2026-09-11: was hardcoded 60 — operator hit the cap on long audits
+
+# 2026-09-23: turn-level watchdog. handle()'s own continuation loop
+# (_continue_model_turn, repair turns, the "no matter what an answer"
+# backstop above) already covers stalling WITHIN a single turn's tool
+# chain. It does NOT cover a turn that ends cleanly with a real rendered
+# answer while the on-disk task list still has pending items the model
+# just didn't pick up — that turn returns to the `input()` prompt and the
+# operator has to type "proceed"/"continue" by hand to get it moving
+# again. AUTO_NUDGE_STREAK/MAX cap how many turns in a row can be
+# auto-injected via PENDING_USER_NOTE before this backs off and waits for
+# a real human message — mirrors the 5-cycle leash already imposed on the
+# TaskList pull-execute reflex after the 2026-09-14 unattended-overnight
+# session burned $107 unsupervised. Never raise this without also keeping
+# some hard ceiling — an unleashed auto-continue loop is exactly that
+# incident again, just at the chat-turn layer instead of the task-queue
+# layer.
+AUTO_NUDGE_STREAK = 0
+AUTO_NUDGE_MAX = 3
 
 # ── DOJO GATE STATE (written by dojo_gate.sh before launch) ──
 ACTIVE_PROJECT_FILE = Path.home() / ".master_ai_active_project"
@@ -870,6 +888,21 @@ def _auto_label_bg(history_snapshot):
             f"(lowercase, hyphens, no punctuation). Output ONLY the label.\n\n{transcript}"
         )
         suggested = _ask_cloud_for_label([{"role": "user", "content": prompt}]) or ""
+        if not suggested:
+            # All cloud lanes dead (groq placeholder, openrouter down) —
+            # derive locally from the first real user message so a title
+            # ALWAYS exists. Empty label = aoe smart-rename improvises
+            # names like "Chinese"/"Lithuanians" from stray pane words.
+            first = next(
+                (m for m in history_snapshot if m.get("role") == "user"), None
+            )
+            if first:
+                words = re.sub(r"[^a-z0-9]+", " ", first.get("content", "").lower()).split()
+                stop = {"the", "a", "an", "to", "for", "and", "or", "of", "in",
+                        "on", "me", "my", "i", "is", "it", "this", "that", "please"}
+                words = [w for w in words if w not in stop][:3]
+                if words:
+                    suggested = "-".join(words)
         suggested = re.sub(
             r"[^a-z0-9\-]+", "-", suggested.strip().split("\n")[0].strip().lower()
         ).strip("-")[:40]
@@ -8299,6 +8332,66 @@ def _build_task_list_context():
     )
 
 
+def _reply_needs_operator_input(reply_text: str) -> bool:
+    """True if this turn's reply is genuinely waiting on the operator —
+    a real question, a confirmation, a blocked/failed action — and False
+    if it's just an announcement (a finished sub-step, a status update)
+    with nothing that actually requires a human decision.
+
+    This is the judgment call the watchdog hinges on: get it wrong toward
+    True and pending tasks never auto-continue (back to babysitting);
+    get it wrong toward False and it auto-nudges past a real question,
+    talking to itself. When in doubt, favor True — see AUTO_NUDGE_MAX's
+    comment for why an over-eager auto-continue is the worse failure mode
+    here.
+
+    TODO(human): implement the actual heuristic. reply_text is the
+    rendered assistant reply (directives already stripped from what the
+    operator sees — this is the human-facing text). Some signals worth
+    weighing: does it end in a question mark; does it contain an ASK:
+    directive marker or phrases like "let me know" / "should I" / "which
+    one"; does it report a BLOCKED/failed action that needs a decision.
+    """
+    raise NotImplementedError
+
+
+def _watchdog_maybe_auto_continue(reply_text: str) -> bool:
+    """Called right after a normal turn finishes. Returns True if it
+    queued an auto-continuation (via PENDING_USER_NOTE) instead of
+    letting the main loop block on real operator input.
+    """
+    global AUTO_NUDGE_STREAK
+    if not (reply_text or "").strip():
+        return False
+    pending = sum(1 for t in load_tasks() if not t.get("done"))
+    if pending == 0:
+        AUTO_NUDGE_STREAK = 0
+        return False
+    try:
+        needs_input = _reply_needs_operator_input(reply_text)
+    except NotImplementedError:
+        return False
+    if needs_input:
+        AUTO_NUDGE_STREAK = 0
+        return False
+    if AUTO_NUDGE_STREAK >= AUTO_NUDGE_MAX:
+        print(
+            f"  {Y}⚠ auto-continue cap reached ({AUTO_NUDGE_MAX} in a row) — "
+            f"{pending} task(s) still pending, waiting for you so this can't run away.{X}"
+        )
+        AUTO_NUDGE_STREAK = 0
+        return False
+    AUTO_NUDGE_STREAK += 1
+    print(
+        f"  {D}◉ auto-continuing ({AUTO_NUDGE_STREAK}/{AUTO_NUDGE_MAX}) — "
+        f"{pending} task(s) still pending{X}"
+    )
+    globals()["PENDING_USER_NOTE"] = (
+        "Continue with the next pending task from the list above."
+    )
+    return True
+
+
 def show_tasks():
     tasks = load_tasks()
     if not tasks:
@@ -11357,6 +11450,28 @@ def show_help():
             ],
         ),
     ]
+
+    # 2026-09-23: alphabetize each section's rows (Elijah: "my slash commands
+    # are not in alphabetical order. they should be in alphabetical order.").
+    # Rows with an empty cmd_txt are continuation bullets for the entry right
+    # above them (e.g. "Sensei" / "" / "" under THE CAST) — sort by GROUPING
+    # each real entry with its trailing continuation lines as one block, so
+    # a block moves together and never gets separated from what it explains.
+    def _alphabetize_rows(rows):
+        blocks, current = [], []
+        for row in rows:
+            cmd_txt = row[0]
+            if cmd_txt and current:
+                blocks.append(current)
+                current = [row]
+            else:
+                current.append(row)
+        if current:
+            blocks.append(current)
+        blocks.sort(key=lambda block: block[0][0].lower())
+        return [row for block in blocks for row in block]
+
+    all_sections = [(name, _alphabetize_rows(rows)) for name, rows in all_sections]
 
     # Filter out sections the user has hidden via `help hide <name>`
     sections = [s for s in all_sections if s[0].upper() not in hidden]
@@ -18215,9 +18330,15 @@ def _show_tui_credit_roll(cloud_status, mem_count, update_color="", update_messa
 
 
 # ── STATUS BAR ───────────────────────────────────────────────
-def draw_status_bar():
+def draw_status_bar(history=None):
     """Active status — bold blue, right-aligned at TOP RIGHT. No bg color.
     Shows only what's currently ON/active (modes, TTS, memory, tasks, model).
+
+    2026-09-23: added CTX:% — there was previously no persistent signal of
+    how close history is to CONTEXT_WATERMARK, only a one-time interactive
+    save/refresh prompt that fires (and, running non-interactively, can
+    silently default and reset) once the limit is already hit. This makes
+    the approach visible on every turn instead of the reset feeling random.
     """
 
     def _count(f):
@@ -18228,6 +18349,15 @@ def draw_status_bar():
 
     mem = _count(MEMORY_FILE)
     tasks = active_task_count()
+    ctx_pct = None
+    if history:
+        try:
+            total_chars = sum(
+                len(m.get("content", "") or "") for m in history
+            )
+            ctx_pct = round(100 * total_chars / CONTEXT_WATERMARK)
+        except Exception:
+            ctx_pct = None
     # 2026-08-24: PINNED_MODEL only reflects an explicit `model <name>` pin —
     # in AUTO (the common case) this used to just print the literal word
     # "AUTO" forever, never saying which model actually answered. _LAST_MODEL
@@ -18245,6 +18375,8 @@ def draw_status_bar():
     if tts_on:
         parts.append("TTS:ON")
     parts.append(f"MODEL:{model_label}")
+    if ctx_pct is not None:
+        parts.append(f"CTX:{ctx_pct}%")
     if mem:
         parts.append(f"MEM:{mem}")
     if tasks:
@@ -21378,7 +21510,7 @@ def main():
             globals()["PENDING_USER_NOTE"] = ""
             print(f"{C}  ▶ Redirecting to AI:{X} {cmd}")
         else:
-            draw_status_bar()
+            draw_status_bar(history)
             maybe_auto_label(history)
             if _SENSEI_APP is None:
                 print_thread_box_top()
@@ -24369,6 +24501,7 @@ def main():
                 CHARS_SINCE_SAVE + len(user_text) + len(reply or "")
             )
             _request_auto_save(history)
+            _watchdog_maybe_auto_continue(reply)
             # ── Drift reminder: keyword-based. After ~3000 chars of activity,
             #    only fire if the recent user messages DO NOT touch the
             #    project keywords (thread label tokens + active task words).
