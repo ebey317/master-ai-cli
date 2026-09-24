@@ -537,10 +537,12 @@ ACTIVE_PROJECT = ""
 _SETTINGS = Path.home() / ".master_ai_settings"
 TTS_ENABLED = "TTS_OFF" not in (_SETTINGS.read_text() if _SETTINGS.exists() else "")
 
-# Default local model — single source of truth. Change this one constant
-# and all local slots, aliases, completion hints, and doc references follow.
-# Keep this constant up to date with the actual local Ollama model you run.
-DEFAULT_LOCAL_MODEL = os.environ.get("MASTER_AI_LOCAL_MODEL", "qwen2.5vl:3b")
+# Default local model — HARDWARE-BASED (2026-09-24, Elijah's rule):
+# never hardcode a model name. The right local model is a function of the
+# machine it runs on (RAM tier) and what the user actually pulled. See
+# hardware_model.py and _resolve_default_local_model() (runs after log()
+# is defined). MASTER_AI_LOCAL_MODEL env still wins outright.
+DEFAULT_LOCAL_MODEL = os.environ.get("MASTER_AI_LOCAL_MODEL", "") or None
 
 MODELS = {
     # SINGLE-MODEL STACK (2026-09-06): consolidated to one VLM.
@@ -1301,6 +1303,31 @@ def log(msg):
             f.write(f"[{ts}] {msg}\n")
     except Exception:
         pass
+
+
+def _resolve_default_local_model():
+    """Hardware-based local default (2026-09-24, Elijah's rule): the model
+    follows the machine — RAM tier + what the user actually pulled — never
+    a hardcoded name. Explicit MASTER_AI_LOCAL_MODEL env wins outright
+    (handled at import in DEFAULT_LOCAL_MODEL). Runs once at import right
+    after log() exists so the pick lands in master.log."""
+    global DEFAULT_LOCAL_MODEL
+    if DEFAULT_LOCAL_MODEL:
+        return DEFAULT_LOCAL_MODEL
+    try:
+        import hardware_model
+        try:
+            DEFAULT_LOCAL_MODEL = hardware_model.pick_local_model(log=log)
+        except TypeError:  # standalone copy without log kwarg
+            DEFAULT_LOCAL_MODEL = hardware_model.pick_local_model()
+            log(f"HARDWARE_PICK: {DEFAULT_LOCAL_MODEL}")
+    except Exception as e:
+        DEFAULT_LOCAL_MODEL = "qwen2.5vl:3b"
+        log(f"HARDWARE_PICK_ERROR: {e} — falling back to {DEFAULT_LOCAL_MODEL}")
+    return DEFAULT_LOCAL_MODEL
+
+
+_resolve_default_local_model()
 
 
 def _clear_runtime_cache(reason="startup"):
@@ -24531,6 +24558,9 @@ def main():
                     merger=_mg,
                     fallback=_fb,
                     max_rounds=PLAN_DEBATE_MAX_ROUNDS,
+                    live_pin_merger_round=int(
+                        os.environ.get("PLAN_DEBATE_PIN_ROUND", "5")
+                    ),
                     progress=True,
                 )
                 plan_reply = _debate.get("plan", "") or ""
