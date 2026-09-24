@@ -21247,7 +21247,28 @@ def _reload_if_code_changed(history, pending_cmd):
     )
 
 
+def _sync_aoe_session_title():
+    """Self-identify inside aoe: rename OUR aoe session to the framework
+    name ('master-ai'). Elijah's naming scheme (2026-09-24): aoe sidebar
+    titles are framework IDs, set by the framework itself — never task
+    names, never touched by Hermes. aoe hands us AOE_INSTANCE_ID in the
+    pane env; `aoe session rename <id> -t master-ai` is aoe's own CLI and
+    hot-reloads its sessions.json daemon-side. Runs once at boot, best
+    effort, silent if not aoe-managed or aoe is absent."""
+    try:
+        inst = os.environ.get("AOE_INSTANCE_ID", "").strip()
+        if not inst:
+            return  # human-run in a plain terminal: nothing to retitle
+        subprocess.run(
+            ["aoe", "session", "rename", inst, "-t", "master-ai"],
+            capture_output=True, timeout=10, check=False,
+        )
+    except Exception:
+        pass
+
+
 def main():
+    _sync_aoe_session_title()
     if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
         print(
             "usage: master-ai [-h] [--setup] [--uninstall] [update]\n\n"
@@ -21451,10 +21472,48 @@ def main():
     # that silently dropped an in-flight message on every hot-reload
     # instead of preserving it. Startup still always lands on a clear
     # screen; only the carry (not the full-thread dump) survives here.
+    # 2026-09-24: RESUME_FLAG's path was written by _reload_if_code_changed
+    # but never actually read here -- the 2026-09-15 change that removed
+    # the noisy full-thread dump also silently dropped the ONLY signal that
+    # a hot-reload even happened. Landing on a blank screen mid-task with
+    # zero indication anything occurred (Elijah: "it refreshed the thread
+    # and now I don't even know what it was doing") is a real regression,
+    # not the intended tradeoff -- "load summary" replacing the full dump
+    # was about noise, not about removing all continuity signal. This is
+    # deliberately NOT the old full-thread dump: one short recap line, only
+    # on an actual hot-reload (never on `new`/`clear`, which don't write
+    # this flag at all).
     resumed_from_notes = False
     try:
         if RESUME_FLAG.exists():
+            flag_path = RESUME_FLAG.read_text().strip()
             RESUME_FLAG.unlink()
+            if flag_path:
+                try:
+                    chat_text = Path(flag_path).read_text(errors="replace")
+                    last_you = None
+                    for line in chat_text.splitlines():
+                        if "] You: " in line:
+                            candidate = line.split("] You: ", 1)[1]
+                            # Skip synthetic system-injected "user" turns --
+                            # [RUN RESULT], [TOOL FAILED], [Directive repair],
+                            # etc. -- only a real bracket-free thing Elijah
+                            # actually said belongs in the recap.
+                            if candidate.strip().startswith("["):
+                                continue
+                            last_you = candidate
+                    if last_you:
+                        preview = last_you[:140] + ("…" if len(last_you) > 140 else "")
+                        recap = f"🔄 Picked back up after an update — last thing you said: \"{preview}\""
+                        print(f"\n  {C}{recap}{X}\n")
+                        try:
+                            threading.Thread(
+                                target=speak, args=(recap,), daemon=True
+                            ).start()
+                        except Exception:
+                            pass
+                except Exception as e:
+                    log(f"RESUME_RECAP_ERROR: {e}")
     except Exception as e:
         log(f"RESUME_ERROR: {e}")
     try:
