@@ -548,8 +548,16 @@ def run_plan_debate(query: str, *,
                     merger: str | None = None,
                     fallback: str | None = None,
                     max_rounds: int = 8,
+                    live_pin_merger_round: int = 0,
                     progress: bool = True) -> dict:
     """Run the merge-to-consensus planning loop.
+
+    live_pin_merger_round: at this critique/revise round (1-based), the
+    merge/verdict slot HANDS OFF to the operator's currently-pinned
+    conversation model (the 'live guy' — proven live right now) for the
+    rest of the debate. 0 disables the handoff. Elijah's sneak-attack
+    design (2026-09-24): free merger drives early rounds; the live pin
+    closes the debate.
 
     Returns a dict:
       {
@@ -557,6 +565,7 @@ def run_plan_debate(query: str, *,
         'plan': str,            # the converged ONE plan
         'rounds': int,          # critique/revise rounds spent
         'converged': bool,      # True if both said "build it"
+        'pin_handed_off': bool, # True if the live-pin handoff fired
         'stages': {'seed_a', 'seed_b', 'merge', 'rounds': [...]},
       }
     """
@@ -578,6 +587,19 @@ def run_plan_debate(query: str, *,
     # primary merger rate-limits or fails.
     fb = fallback or "opencode::mimo-v2.5-free"
 
+    # Sneak-attack handoff target: the operator's LIVE pinned conversation
+    # model. It's "the man who was actually in there" — proven reachable at
+    # this moment because the thread is running on it. Resolved lazily on
+    # the handoff round so a mid-debate re-pin is picked up.
+    pin_handed_off = False
+
+    def _live_pin_model() -> str | None:
+        try:
+            import master_ai
+            return getattr(master_ai, "PINNED_MODEL", None) or None
+        except Exception:
+            return None
+
     def _say(msg: str) -> None:
         if progress:
             print(msg, flush=True)
@@ -592,6 +614,7 @@ def run_plan_debate(query: str, *,
 
     result: dict[str, Any] = {
         "query": query, "plan": "", "rounds": 0, "converged": False,
+        "pin_handed_off": False,
         "stages": {},
     }
 
@@ -623,6 +646,25 @@ def run_plan_debate(query: str, *,
     plan = merged
     rounds = []
     for rnd in range(1, max_rounds + 1):
+        # Sneak-attack handoff (Elijah, 2026-09-24): on the configured round,
+        # the verdict/merge slot switches to the operator's live pinned model
+        # — "the man who was actually in there" — for the REST of the debate.
+        # Odd round by design (default 5): with 6 max rounds, the live pin
+        # closes rounds 5 and 6 — two rounds of the guy who's really there.
+        if (live_pin_merger_round and rnd >= live_pin_merger_round
+                and not pin_handed_off):
+            _pin = _live_pin_model()
+            if _pin and _pin != m:
+                _say(f"    round {rnd}: 🥷 sneak-attack — verdict handoff to "
+                     f"live pin '{_pin}'")
+                m = _pin
+                pin_handed_off = True
+                result["pin_handed_off"] = True
+                result["stages"]["pin_model"] = _pin
+            else:
+                # no pin, or pin IS the merger already — nothing to hand to
+                pin_handed_off = True  # don't retry every round
+
         crit = _chat_merge(m, (
             f"Critique this plan for the task. {PLAN_DEBATE_KEEP_RULE} List only "
             f"the concrete flaws, gaps, or disagreements that still need fixing. "
