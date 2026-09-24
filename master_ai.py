@@ -21457,16 +21457,41 @@ def main():
             pass
     _clear_tmux_scrollback("startup")
 
+    # 2026-09-24: _check_update_status() used to run right here, synchronously,
+    # BEFORE _ensure_sensei_app() below ever creates the interactive prompt.
+    # It shells out to git (a cache-hit still costs one `git branch
+    # --show-current` call; a cache miss costs a full `git fetch origin`,
+    # 30s timeout, plus several more git calls) -- all of it blocking, all
+    # of it before any input loop exists to receive a keystroke. Elijah hit
+    # this live: the banner/System-Check text is on screen, looks ready,
+    # but the prompt bar hasn't actually loaded yet, so a slash command
+    # typed in that window is silently lost. Worse with another process
+    # (Ares/Hermes) doing real git operations against this same repo
+    # concurrently -- lock contention stretches the block further. Fix:
+    # run the check in the background and let the prompt come up
+    # immediately regardless of how long git takes; print the result
+    # whenever it lands instead of gating startup on it.
     update_color, update_message = "", ""
-    try:
-        update_color, update_message = _check_update_status(interval_days=14)
-    except Exception:
-        pass
+    _update_check_result = {}
+
+    def _run_update_check_bg():
+        try:
+            c, m = _check_update_status(interval_days=14)
+        except Exception:
+            c, m = "", ""
+        _update_check_result["color"] = c
+        _update_check_result["message"] = m
+        if m:
+            print(f"\n  {c or BC}● update check:{X} {m}\n")
+
+    threading.Thread(target=_run_update_check_bg, daemon=True).start()
 
     # ── Branded opening ─
     # TUI mode rolls the brand/status through the chat frame like opening
     # credits, then leaves the cleaned Sensei input box ready. Classic mode
-    # keeps the full shell banner.
+    # keeps the full shell banner. Neither waits on the update check above --
+    # the prompt must be live and accepting input before that background
+    # thread has any chance to finish.
     _ensure_sensei_app()
     try:
         if _SENSEI_APP is not None:
@@ -21478,15 +21503,11 @@ def main():
                 executable="/bin/bash",
                 check=False,
             )
-            if update_message:
-                print(f"\n  {update_color or BC}● update check:{X} {update_message}")
     except Exception:
         # Fallback if brand.sh is missing
         print(f"{BC}  ╔══════════════════════════════════════════╗{X}")
         print(f"{BC}  ║  🥷  MASTER  AI  — ready                  ║{X}")
         print(f"{BC}  ╚══════════════════════════════════════════╝{X}")
-        if update_message:
-            print(f"  {update_color or BC}● update check:{X} {update_message}")
 
     startup_check()
 

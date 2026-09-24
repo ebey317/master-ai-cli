@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -344,6 +345,35 @@ def _secret_scan(target, action=None) -> FireResult:
     return FireResult()
 
 
+def _syntax_check_run_cmd(cmd, action=None) -> FireResult:
+    """pre_run / pre_runterm hook. Validates a model-authored shell string
+    before it reaches subprocess. Checks shlex tokenization and runs
+    ``bash -n`` on the command. Blocks if either fails so malformed
+    directives (e.g. unbalanced backticks, stray XML tags) never execute.
+    """
+    cmd = str(cmd or "").strip()
+    if not cmd:
+        return FireResult()
+    try:
+        shlex.split(cmd)
+    except ValueError as e:
+        return FireResult(blocked=True,
+                          reason=f"shell tokenization failed: {e}",
+                          hook_id="syntax-check-run")
+    try:
+        r = subprocess.run(["bash", "-n", "-c", cmd],
+                           capture_output=True, text=True, timeout=10)
+    except Exception:
+        return FireResult()
+    if r.returncode == 0:
+        return FireResult()
+    err_src = (r.stderr or r.stdout or f"exit {r.returncode}").strip()
+    first_line = (err_src.splitlines() or [""])[0][:300]
+    return FireResult(blocked=True,
+                      reason=f"shell syntax error: {first_line}",
+                      hook_id="syntax-check-run")
+
+
 # ── Module-level registry ─────────────────────────────────────────────
 
 _REGISTRY = HookRegistry()
@@ -357,6 +387,10 @@ _REGISTRY.register(Hook(id="syntax-check-sh-post-create", kind="post_create",
                         fn=_syntax_check_sh, source="builtin"))
 _REGISTRY.register(Hook(id="secret-scan-pre-create", kind="pre_create",
                         fn=_secret_scan, source="builtin"))
+_REGISTRY.register(Hook(id="syntax-check-run-pre-run", kind="pre_run",
+                        fn=_syntax_check_run_cmd, source="builtin"))
+_REGISTRY.register(Hook(id="syntax-check-run-pre-runterm", kind="pre_runterm",
+                        fn=_syntax_check_run_cmd, source="builtin"))
 # 2026-05-11: auto-extract-lesson hook — closes the REMEMBER:
 # self-teaching loop. When an action lands BLOCKED, an async worker
 # asks the small local model for a one-line lesson and stores it via

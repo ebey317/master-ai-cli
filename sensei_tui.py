@@ -80,7 +80,7 @@ COMMAND_MENU_HINTS = {
     "model auto": "return model routing to automatic",
     "model local": "select Sensei primary",
     "model qwen": "select Master AI alias",
-    "model qwen3-vl:8b": "select the single local VLM (language + vision)",
+    "model qwen2.5vl:3b": "select the single local VLM (language + vision)",
     "model stats": "show individual model usage",
     "mode plan": "draft plans only",
     "mode review": "confirm each action",
@@ -276,12 +276,13 @@ COMMAND_MENU_GROUPS = {
         # MODEL_MENU, not in MODEL_COMMAND_ALIASES, not catalog ids —
         # _resolve_model_choice() returns "" (unknown model) for all six.
         # Use the live two-step `/model` picker (or "model <provider>::"
-        # picks) instead. "model qwen3-vl:8b" stays: it equals
+        # picks) instead. "model qwen2.5vl:3b" stays: it equals
         # DEFAULT_LOCAL_MODEL and is a real locally-pulled Ollama model.
+        # 2026-09-24: was qwen3-vl:8b, deleted at 98% disk full.
         "model",
         "model auto",
         "model local",
-        "model qwen3-vl:8b",
+        "model qwen2.5vl:3b",
         "model stats",
         "tts on",
         "tts off",
