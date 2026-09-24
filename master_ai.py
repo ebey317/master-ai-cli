@@ -20745,6 +20745,35 @@ def handle(user_text, history, image_path=None, context_policy=None):
     max_continuation_turns = MAX_CONTINUATION_TURNS
     _repair_turns_seen = 0  # how many [Directive repair] nudges fired this chain
     while result is None and continuation_turns < max_continuation_turns:
+        # 2026-09-24: root-caused live — CTX hit 283% of CONTEXT_WATERMARK
+        # during a stuck repetition-loop repair chain. The watermark check
+        # only lives in orchestrate(), which runs once at the START of a
+        # top-level turn; this while loop can iterate up to
+        # MAX_CONTINUATION_TURNS times INSIDE that same turn, each one
+        # appending to history, with no re-check until the whole turn
+        # finally ends. MAX_CONTINUATION_TURNS caps iteration COUNT, not
+        # character growth -- a stuck repair chain blows past the
+        # watermark long before hitting that cap. Same treatment as the
+        # interrupt case just below: stop the chain, keep whatever text
+        # exists so far, and let the normal save/refresh path (which the
+        # user gets prompted for on the NEXT top-level turn) catch up.
+        _mid_loop_chars = sum(
+            len(m.get("content", "") or "") for m in history if m.get("role") != "system"
+        )
+        if _mid_loop_chars >= CONTEXT_WATERMARK:
+            print(
+                _pill(
+                    "STOPPED",
+                    f"{D}context watermark hit mid-chain ({_mid_loop_chars:,}/{CONTEXT_WATERMARK:,} chars) — "
+                    f"{continuation_turns} step(s) already ran{X}",
+                )
+            )
+            log(
+                f"CHAIN_CONTEXT_WATERMARK_STOP: turns={continuation_turns} chars={_mid_loop_chars} "
+                f"watermark={CONTEXT_WATERMARK} route={route} model={model}"
+            )
+            result = reply  # whatever text exists so far still gets shown/kept
+            break
         if _INTERRUPT_EVENT.is_set():
             print(
                 _pill(
@@ -24476,13 +24505,31 @@ def main():
                 if str(Path.home() / "scripts") not in _sys.path:
                     _sys.path.insert(0, str(Path.home() / "scripts"))
                 from sensei_reasoning_loop import run_plan_debate
+                try:
+                    from plan_slots import resolve_debate_slots
+                except ImportError:
+                    from scripts.plan_slots import resolve_debate_slots
+
+                # 2026-09-24: defaults are preferences, not pins. Every slot
+                # is validated against the LIVE OpenRouter catalog right
+                # before the debate; delisted models (e.g. minimax-m3:free)
+                # are substituted with the best currently-free pick instead
+                # of silently starving the convergence gate.
+                (
+                    _pa, _pb, _mg, _fb,
+                ) = resolve_debate_slots(
+                    PLAN_DEBATE_PLANNER_A,
+                    PLAN_DEBATE_PLANNER_B,
+                    PLAN_DEBATE_MERGER,
+                    PLAN_DEBATE_FALLBACK,
+                )
 
                 _debate = run_plan_debate(
                     _debate_query,
-                    planner_a=PLAN_DEBATE_PLANNER_A,
-                    planner_b=PLAN_DEBATE_PLANNER_B,
-                    merger=PLAN_DEBATE_MERGER,
-                    fallback=PLAN_DEBATE_FALLBACK,
+                    planner_a=_pa,
+                    planner_b=_pb,
+                    merger=_mg,
+                    fallback=_fb,
                     max_rounds=PLAN_DEBATE_MAX_ROUNDS,
                     progress=True,
                 )
