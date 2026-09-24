@@ -21,6 +21,8 @@ import py_compile
 import re
 import subprocess
 import sys
+import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -77,33 +79,72 @@ def _ollama_key():
     return ""
 
 
-def _ask_cloud(messages, timeout=180):
+def _ask_cloud(messages, timeout=300):
+    """Ollama Cloud plan call with retry + diagnostics.
+
+    Flakiness modes seen in production (2026-09-23):
+      - thinking models return everything in `reasoning_content`, `content` empty
+      - completion hits max_tokens mid-reasoning -> truncated/empty answer
+      - transient 429/5xx or empty generation
+    Strategy: extract from content, fall back to reasoning_content, detect
+    max-token cutoff and widen on retry, 3 attempts with backoff.
+    """
     key = _ollama_key()
     if not key:
+        print("  cloud: no OLLAMA_API_KEY", flush=True)
         return None
-    payload = {
-        "model": PLAN_MODEL,
-        "messages": messages,
-        "max_tokens": 8192,
-        "stream": False,
-    }
-    req = urllib.request.Request(
-        "https://ollama.com/v1/chat/completions",
-        data=json.dumps(payload).encode(),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}",
-            "User-Agent": "master-ai-upstream-integrator/1.0",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            d = json.loads(r.read())
-        return d["choices"][0]["message"]["content"] or ""
-    except Exception as e:
-        print(f"  cloud error: {e}", flush=True)
-        return None
+    max_tokens = 8192
+    last_err = "unknown"
+    for attempt in range(1, 4):
+        payload = {
+            "model": PLAN_MODEL,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "stream": False,
+        }
+        req = urllib.request.Request(
+            "https://ollama.com/v1/chat/completions",
+            data=json.dumps(payload).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {key}",
+                "User-Agent": "master-ai-upstream-integrator/1.0",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                d = json.loads(r.read())
+            msg = (d.get("choices") or [{}])[0].get("message", {})
+            content = (msg.get("content") or "").strip()
+            if not content:
+                content = (msg.get("reasoning_content") or "").strip()
+                if content:
+                    print(f"  cloud: content empty, using reasoning_content "
+                          f"({len(content)} chars)", flush=True)
+            if content:
+                ct = (d.get("usage") or {}).get("completion_tokens") or 0
+                if ct >= int(max_tokens * 0.98):
+                    # generation was cut off; widen and retry once more
+                    print(f"  cloud: hit max_tokens ({ct}); widening to 16384",
+                          flush=True)
+                    max_tokens = 16384
+                    last_err = f"max_tokens cutoff at {ct}"
+                    time.sleep(10)
+                    continue
+                return content
+            last_err = "empty content and reasoning_content"
+            print(f"  cloud: empty response (attempt {attempt}/3)", flush=True)
+        except urllib.error.HTTPError as e:
+            last_err = f"HTTP {e.code}"
+            print(f"  cloud: HTTP {e.code} (attempt {attempt}/3)", flush=True)
+        except Exception as e:
+            last_err = str(e)[:120]
+            print(f"  cloud error: {last_err} (attempt {attempt}/3)", flush=True)
+        if attempt < 3:
+            time.sleep(20 * attempt)
+    print(f"  cloud: giving up after 3 attempts ({last_err})", flush=True)
+    return None
 
 
 def _load_queue():
@@ -227,8 +268,7 @@ def integrate_one(item, dry_run=False):
                    "status": "failed", "detail": "empty plan response"})
         return "", "failed"
 
-    first100 = plan[:100]
-    if "NOT_APPLICABLE" in first100 or "APPLICABLE: NO" in first100:
+    if re.search(r"APPLICABLE:\s*NO\b", plan[:400]) or "NOT_APPLICABLE" in plan[:200]:
         _log_line({"ts": datetime.now().isoformat(), "sha": sha,
                    "status": "skipped", "detail": "NOT_APPLICABLE"})
         return "", "skipped"
@@ -360,16 +400,27 @@ def main():
         b, outcome = integrate_one(it, dry_run=dry)
         if outcome in ("merged", "branch-ready"):
             branches.append(b)
-    # drop fully processed items from the queue (skipped/failed/branch-ready/merged)
+    # drop TERMINAL items from the queue; retryable ones stay:
+    #   merged/skipped/manual-review/blocked -> done (branch or N/A exists)
+    #   failed -> stays until 3 failed attempts, then retired
+    #   deferred -> stays (dirty tree; retries next run)
     processed = set()
+    attempts = {}
     if LOG.exists():
         for ln in LOG.read_text().splitlines():
             try:
                 d = json.loads(ln)
-                if d.get("status") in ("branch-ready", "merged", "skipped", "failed"):
-                    processed.add(d.get("sha"))
             except Exception:
-                pass
+                continue
+            st = d.get("status")
+            if st in ("merged", "skipped", "manual-review", "blocked"):
+                processed.add(d.get("sha"))
+            elif st == "failed":
+                attempts[d.get("sha")] = attempts.get(d.get("sha"), 0) + 1
+        for sha, n in attempts.items():
+            if n >= 3:
+                print(f"  retiring {sha[:8]} after {n} failed attempts", flush=True)
+                processed.add(sha)
     remaining = [it for it in items if it.get("sha") not in processed]
     _save_queue(remaining)
     print(f"\nDone. branches={branches} remaining_queue={len(remaining)}", flush=True)
