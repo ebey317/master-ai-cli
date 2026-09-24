@@ -247,7 +247,7 @@ def integrate_one(item, dry_run=False):
         _log_line({"ts": datetime.now().isoformat(), "sha": sha,
                    "status": "deferred", "detail": f"dirty working tree ({n} files) — commit or stash first"})
         print(f"  deferred: dirty working tree ({n} files) — not branching", flush=True)
-        return None
+        return "", "deferred"
     patch = _fetch_patch(owner, repo, sha)
     if not patch:
         _log_line({"ts": datetime.now().isoformat(), "sha": sha,
@@ -315,7 +315,7 @@ def integrate_one(item, dry_run=False):
                     _log_line({"ts": datetime.now().isoformat(), "sha": sha,
                                "status": "failed", "detail": f"py_compile {path}: {e}"})
                     _git("checkout", "-", cwd=REPO)
-                    return None
+                    return "", "failed"
                 tmp.rename(fpath)
             else:
                 fpath.parent.mkdir(parents=True, exist_ok=True)
