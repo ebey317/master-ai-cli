@@ -679,7 +679,41 @@ _SAVE_LOCK = threading.Lock()
 _AUTOSAVE_LOCK = threading.Lock()
 
 # ── ORCHESTRATOR STATE ────────────────────────────────────────
-CONTEXT_WATERMARK = 120000  # total history chars → save-and-refresh (doubled 2026-04-19 — was auto-restarting every few min with 60k)
+# 2026-09-25 (Elijah): "i want it to be 95% of the model's real window."
+# CONTEXT_WATERMARK was a hardcoded 120000 chars (bumped 60k→120k on
+# 2026-04-19 as a band-aid for a LOCAL ollama freeze). It ignored which
+# model was actually answering: nemotron-3-ultra-550b:free alone serves
+# 1,000,000 context tokens on OpenRouter, so the agent was throwing away
+# ~7/8 of a window it had paid for, while grok-4.20 (2M) and the 128k
+# local qwen2.5vl were all measured against the same 120k.
+#
+# Real fix: derive the watermark from the ACTIVE model's own context
+# window (OpenRouter's /models payload already carries context_length —
+# it was being discarded at catalog build time), at 95% of that window,
+# converted tokens → chars. The floor preserves the original freeze
+# guard for local/slow lanes so the April 2026 regression cannot return.
+CONTEXT_WATERMARK = 120000  # FALLBACK only — see _context_watermark()
+CHARS_PER_TOKEN = 3.6  # conservative English/code average; safety margin
+CONTEXT_FILL_RATIO = 0.95  # Elijah: 95% of the model's real window
+CONTEXT_WATERMARK_FLOOR = 60000  # never below the pre-fix local guard
+FREE_SUFFIX = ":free"  # OpenRouter marks free tiers with this suffix
+# Per-lane context windows (tokens) for providers whose catalogs don't
+# publish context_length. Ollama's /api/show reports the true value at
+# runtime; these are the documented defaults until then.
+PROVIDER_CONTEXT_TOKENS = {
+    "ollama": 128000,
+    "local": 128000,
+    "opencode_go": 262144,
+    "opencode-zen": 262144,
+    "opencode": 262144,
+    "poolside": 262144,
+    "poolside-s": 262144,
+    "poolside-xs": 262144,
+    "gemini": 1000000,
+    "cerebras": 131072,
+    "openrouter": 128000,
+    "deepseek": 65536,
+}
 BEHAVIOR_FILE = Path.home() / ".sensei_behavior.md"
 RESUME_FLAG = Path.home() / ".master_ai_resume"
 RESUME_FLAG_MAX_AGE = 600  # seconds; stale resume flags must not revive old sessions
@@ -4410,7 +4444,11 @@ def orchestrate(history, user_text, image_path=None):
 
     # 1. Context pressure — save & refresh before we blow context
     total_chars = sum(len(m.get("content", "") or "") for m in history)
-    if total_chars >= CONTEXT_WATERMARK:
+    # 2026-09-25: the budget is the ACTIVE model's real window at 95%,
+    # not one hardcoded constant. Cached per-session so a mid-turn model
+    # switch can't change the budget out from under an in-flight check.
+    _wm, _wm_tokens, _wm_src = _context_watermark()
+    if total_chars >= _wm:
         # 2026-09-25: root-caused live — Elijah hit this at a genuine 100%
         # in AUTO mode and still had to press a button: "i shouldn't have
         # to trigger it with a button press. it should automatically do it
@@ -4424,15 +4462,16 @@ def orchestrate(history, user_text, image_path=None):
         # every other mode keeps the interactive choice.
         if globals().get("MODE", "plan") == "auto":
             print(
-                f"\n  {BO}⚠ Context pressure — history is {total_chars:,} chars (limit {CONTEXT_WATERMARK:,}). "
+                f"\n  {BO}⚠ Context pressure — history is {total_chars:,} chars (limit {_wm:,}"
+                f" = 95% of {(_wm_tokens or 0):,} ctx). "
                 f"AUTO mode — saving + refreshing now, no prompt.{X}"
             )
             return {
                 "route": "save_refresh",
-                "reason": f"history {total_chars} chars >= watermark {CONTEXT_WATERMARK} (auto)",
+                "reason": f"history {total_chars} chars >= watermark {_wm} (95% of {_wm_tokens} ctx, {_wm_src}) (auto)",
             }
         print(
-            f"\n  {BO}⚠ Context pressure — history is {total_chars:,} chars (limit {CONTEXT_WATERMARK:,}).{X}"
+            f"\n  {BO}⚠ Context pressure — history is {total_chars:,} chars (limit {_wm:,} = 95% of {(_wm_tokens or 0):,} ctx).{X}"
         )
         print(
             f"  {BO}  Sensei will save the conversation, restart, and reload it compacted.{X}"
@@ -4449,13 +4488,13 @@ def orchestrate(history, user_text, image_path=None):
         except (EOFError, KeyboardInterrupt):
             ans = "1"
         if ans == "2":
-            new_wm = CONTEXT_WATERMARK + 20000
+            new_wm = _wm + 20000
             globals()["CONTEXT_WATERMARK"] = new_wm
             print(f"  {G}✓ ok — watermark raised to {new_wm:,} for this session.{X}\n")
         else:
             return {
                 "route": "save_refresh",
-                "reason": f"history {total_chars} chars >= watermark {CONTEXT_WATERMARK}",
+                "reason": f"history {total_chars} chars >= watermark {_wm} (95% of {_wm_tokens} ctx, {_wm_src})",
             }
 
     # 2. Explicit prefixes — user intent overrides mode. Matched against
@@ -10337,6 +10376,116 @@ _OPENROUTER_MODELS_CACHE = Path.home() / ".master_ai_openrouter_models_cache.jso
 _OPENROUTER_MODELS_TTL = 24 * 3600
 
 
+def _active_model_context_tokens():
+    """The ACTIVE model's real context window, in tokens.
+
+    2026-09-25: Sensei measured every model against one hardcoded
+    120,000-char watermark while models it can actually reach serve
+    anywhere from 128k to 2,000,000 tokens. Resolution order:
+      1. OpenRouter catalog (authoritative context_length, cached a day)
+      2. Ollama's own /api/show (reports the loaded model's true window)
+      3. PROVIDER_CONTEXT_TOKENS table
+      4. None -> caller falls back to the legacy watermark
+    Returns (tokens, source) or (None, reason) when unknowable.
+    """
+    model = str(PINNED_MODEL or "").strip()
+    if not model:
+        try:
+            model = ACTIVE_MODEL_FILE.read_text().strip()
+        except Exception:
+            model = ""
+
+    # OpenRouter ids look like "provider/model" or carry a ":free" suffix;
+    # strip routing decorations before catalog lookup.
+    probe = model.split("::")[-1].strip()
+    probe = probe.lstrip("/")
+    if probe:
+        try:
+            cached = json.loads(_OPENROUTER_MODELS_CACHE.read_text())
+            if time.time() - cached.get("ts", 0) < _OPENROUTER_MODELS_TTL:
+                by_id = {str(m.get("id") or ""): m for m in cached.get("models", [])}
+                # Exact match wins, and MUST keep ":free" distinct: the free
+                # and paid variants of the same model can carry very
+                # different windows (nemotron-550b:free = 1M vs paid =
+                # 262k), so stripping the suffix before matching would
+                # silently bill the free window off the paid record.
+                for cand in (probe, probe + ":free"):
+                    hit = by_id.get(cand)
+                    if hit and hit.get("context_length"):
+                        return int(hit["context_length"]), f"openrouter:{cand}"
+                # Bare names ("grok-4.20", "nemotron-3-ultra-550b-a55b")
+                # match the unique id ending in "/<name>"; a ":free" probe
+                # only ever matches a ":free" id.
+                tail = probe.split("/")[-1]
+                tail = tail[: -len(FREE_SUFFIX)] if tail.endswith(FREE_SUFFIX) else tail
+                suffix = "/" + tail
+                want_free = probe.endswith(":free")
+                hits = [
+                    (mid, mm)
+                    for mid, mm in by_id.items()
+                    if mid.endswith(suffix)
+                    and (mid.endswith(":free") == want_free)
+                    and mm.get("context_length")
+                ]
+                if len(hits) == 1:
+                    return int(hits[0][1]["context_length"]), f"openrouter:{hits[0][0]}"
+                if len(hits) > 1:
+                    # Ambiguous (several providers serve this slug): take the
+                    # largest window, which is the one the user is least
+                    # likely to hit mid-turn.
+                    best = max(hits, key=lambda kv: int(kv[1]["context_length"]))
+                    return int(best[1]["context_length"]), f"openrouter:{best[0]}*"
+                # exact match failed -> fall through to provider table
+        except Exception:
+            pass
+
+    # Ollama: ask the daemon what it actually loaded.
+    low = probe.lower()
+    if "ollama" in low or "/" not in probe:
+        try:
+            import urllib.request as _u
+
+            req = _u.Request(
+                "http://localhost:11434/api/show",
+                data=json.dumps({"name": probe or "qwen2.5vl:3b"}).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            with _u.urlopen(req, timeout=2) as r:
+                info = json.loads(r.read().decode())
+            vals = [
+                int(v)
+                for k, v in (info.get("model_info") or {}).items()
+                if k.endswith("context_length") and str(v).isdigit()
+            ]
+            if vals:
+                return max(vals), f"ollama:{probe}"
+        except Exception:
+            pass
+
+    key = probe.split("/")[0].split(":")[0].lower() if probe else ""
+    for prov, toks in PROVIDER_CONTEXT_TOKENS.items():
+        if prov in key or key in prov:
+            return toks, f"table:{prov}"
+    return None, "unknown"
+
+
+def _context_watermark():
+    """Char budget for the CURRENT model: 95% of its real context window.
+
+    Returns (chars, tokens, source). Falls back to the legacy 120,000
+    constant when the window can't be resolved, and never returns less
+    than CONTEXT_WATERMARK_FLOOR so slow local lanes keep the original
+    2026-04-19 freeze guard.
+    """
+    tokens, source = _active_model_context_tokens()
+    if not tokens:
+        return CONTEXT_WATERMARK, None, "fallback:unknown-model"
+    chars = int(tokens * CONTEXT_FILL_RATIO * CHARS_PER_TOKEN)
+    if chars < CONTEXT_WATERMARK_FLOOR:
+        return CONTEXT_WATERMARK_FLOOR, tokens, f"{source} (raised to floor)"
+    return chars, tokens, source
+
+
 def _openrouter_model_catalog():
     """Returns [(id, name, is_free), ...] for every model OpenRouter
     currently serves. is_free is True when OpenRouter's own pricing.prompt
@@ -10372,6 +10521,13 @@ def _openrouter_model_catalog():
                 "id": m.get("id", ""),
                 "name": m.get("name", ""),
                 "free": str(m.get("pricing", {}).get("prompt", "")) == "0",
+                # 2026-09-25: keep the real window. The API always sends it;
+                # we were dropping it, which is why CONTEXT_WATERMARK had
+                # to be a hardcoded guess. Feeds _context_watermark().
+                "context_length": int(m.get("context_length") or 0) or None,
+                "top_provider_max_completion_tokens": (
+                    (m.get("top_provider") or {}).get("max_completion_tokens")
+                ),
             }
             for m in data.get("data", [])
             if m.get("id")
@@ -19138,7 +19294,11 @@ def draw_status_bar(history=None):
     if history:
         try:
             total_chars = sum(len(m.get("content", "") or "") for m in history)
-            ctx_pct = round(100 * total_chars / CONTEXT_WATERMARK)
+            # 2026-09-25: measure against the ACTIVE model's real window
+            # (95%), not the retired 120k constant — otherwise the bar lied
+            # for every model with a window above ~35k tokens.
+            _wm, _wm_tok, _ = _context_watermark()
+            ctx_pct = round(100 * total_chars / _wm) if _wm else 0
         except Exception:
             ctx_pct = 0
     # 2026-08-24: PINNED_MODEL only reflects an explicit `model <name>` pin —
