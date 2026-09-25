@@ -1,22 +1,25 @@
 """Master AI CLI native delegation runner.
 
-This module provides framework-native subagent dispatch that does NOT require
-an online LLM. It routes `delegate <goal>` and `SUBAGENT:` directives to
-registered subagents from `subagent_registry.py`, runs them inside an isolated
-subprocess with toolset/path sandboxing, and returns structured results back to
-the caller.
+2026-09-25: rewritten. `delegate_task`/`run_subagent` now route `delegate
+<goal>` and `SUBAGENT:` directives to a REAL model-backed sub-conversation
+running in the actual project directory, with real RUN:/READ:/CREATE:/
+EDIT:/SEARCH: tool access -- the same shape as delegating to Claude,
+Hermes, or OpenCode. Model/provider is never hardcoded: it defaults to
+whatever's pinned in the main session (master_ai.PINNED_MODEL), falls
+back to the free local model, and an optional `<provider>: <goal>` or
+`higher: <goal>` prefix overrides that per call. See run_subagent()'s
+block comment for the full routing table and the bug this replaces (the
+old version ran in an empty tempfile.mkdtemp() sandbox with zero access
+to real project files, gated to a fixed registry of 6 non-LLM functions).
 
-Design:
-- No model dependency in the runner itself.
-- Subagents may call `master_ai.ask_local()` internally if they want, but the
-  framework does not force it.
-- Toolset gating, path fences, and dangerous-command blocks are enforced in
-  the child runner before any registered subagent code runs.
-- Each delegation gets a fresh temp workdir and a fresh Python subprocess.
+The old deterministic, no-LLM, registry-sandboxed dispatch is kept as
+run_subagent_sandboxed() for anyone who wants that specific behavior on
+purpose -- it's still what the individual named subagents in
+subagent_registry.py (file_finder, code_reviewer, ...) are built around.
 
 Public API:
     delegate_task(goal: str, context: dict = None, toolsets: list = None,
-                  max_turns: int = 10, timeout_s: int = 300) -> dict
+                  max_turns: int = 6, timeout_s: int = 300) -> dict
 
 Return dict always contains:
     {
@@ -26,9 +29,11 @@ Return dict always contains:
       "stdout": str,
       "stderr": str,
       "returncode": int,
-      "workdir": str,
+      "workdir": str,           # the REAL project directory this ran in
       "toolsets": list,
-      "result": dict,           # the subagent's native return value
+      "route": str,             # which model/provider actually answered
+      "turns": int,
+      "result": dict,           # {"final_text": ...}
     }
 """
 
@@ -43,8 +48,7 @@ import tempfile
 import textwrap
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-
+from typing import Any
 
 DEFAULT_TIMEOUT_S = 300
 
@@ -329,8 +333,8 @@ def _make_child_script(
 
 def _goal_to_directive(
     goal: str,
-    available: List[str],
-    context: Dict[str, Any],
+    available: list[str],
+    context: dict[str, Any],
 ) -> str:
     """Convert a free-form goal into a single SUBAGENT: directive.
 
@@ -349,7 +353,7 @@ def _goal_to_directive(
         available_lower = dict((n.lower(), n) for n in available)
         if words[0] in available_lower:
             name = available_lower[words[0]]
-            rest = goal[len(words[0]):].strip()
+            rest = goal[len(words[0]) :].strip()
             return f"SUBAGENT: {name} {rest}"
 
     # Heuristic: if goal looks like a file search, use file_finder.
@@ -366,13 +370,260 @@ def _goal_to_directive(
     return f"SUBAGENT: general {goal}"
 
 
-# Convenience helper: directly run a registered subagent by name.
+# 2026-09-25: root-caused live -- Elijah: "i can't delegate a sub agent...
+# i want to be able to delegate to an agent to do whatever i wanted to do
+# [the same way] i delegate with you [Claude], the same way with Hermes,
+# the same way with OpenCode." The registry-sandboxed path below
+# (run_subagent_sandboxed) was never that: its own module docstring says
+# it "does NOT require an online LLM" -- it's a fixed set of 6 narrow
+# Python functions (file_finder, code_reviewer, ...) with a regex-based
+# "general" fallback that fakes free-form delegation via sentence
+# templates ("read X", "create X with Y", ...), and every one of them ran
+# inside a brand-new EMPTY tempfile.mkdtemp() workdir. Confirmed live:
+# asking it to "find master_ai.py" while sitting in the project directory
+# containing that exact file returned 0 matches -- the sandbox has no
+# bridge to the real project at all. master_ai.py's own call site (see
+# process_reply()) DOES pass context={"cwd": str(Path.cwd()), ...}, but
+# nothing in this file ever read context["cwd"] -- grepped the whole file,
+# zero matches. Dead data.
+#
+# Fix: `run_subagent`/`delegate_task` now run the goal as a REAL bounded
+# sub-conversation using master_ai's own model-routing and directive-
+# dispatch machinery (ask_local_stream/ask_cloud + process_reply) --
+# operating in the REAL project directory context["cwd"] gives, with real
+# RUN:/READ:/CREATE:/EDIT:/SEARCH: tool access, exactly the shape of a
+# Claude/Hermes/OpenCode subagent delegation. Model selection is never
+# hardcoded (Elijah: "i don't need my framework hard coding anything"):
+#   - bare goal                    -> master_ai.PINNED_MODEL if set
+#                                      ("the key that's pinned"), else the
+#                                      free local model (cheap default)
+#   - "higher: <goal>" / "escalate: <goal>"
+#                                   -> PINNED_MODEL if set, else the
+#                                      system's existing free cloud
+#                                      default (no new hardcoded model)
+#   - "local: <goal>"              -> force the free local model
+#   - "<provider>: <goal>"         -> literal provider string handed
+#                                      straight to ask_cloud(), which
+#                                      already parses any curated name,
+#                                      any "ns::model" pin, or any raw
+#                                      OpenRouter catalog id containing
+#                                      "/" -- e.g. "openrouter/qwen/
+#                                      qwen3.8-27b:free: <goal>" reaches
+#                                      that exact free model with zero new
+#                                      plumbing, matching "i could be
+#                                      using the open code model and say
+#                                      use open router free and delegate
+#                                      the most capable model to do this."
+# The old registry-sandboxed implementation is kept below, renamed
+# run_subagent_sandboxed, for anyone who wants the deterministic
+# no-model dispatch on purpose (it's still what individual named
+# subagents like code_reviewer/test_runner are built around).
+
+_DELEGATE_PREFIX_RE = re.compile(
+    r"^\s*([A-Za-z0-9_.\-]+(?:::[A-Za-z0-9_./\-]+)?(?:/[A-Za-z0-9_.:\-]+)*)\s*:\s*(.+)$",
+    re.DOTALL,
+)
+_DELEGATE_HIGHER_WORDS = {"higher", "escalate", "strong", "best", "stronger"}
+_DELEGATE_LOCAL_WORDS = {"local", "lesser", "cheap", "cheapest"}
+# 2026-09-25: reproduced live -- a goal that happens to start with an
+# ordinary capitalized word + colon ("Run: grep ...", meant as an
+# imperative sentence, not a provider directive) was silently swallowed
+# as an explicit provider override ("Run"), which fell through
+# ask_cloud()'s own unrecognized-provider fallback to the free OpenCode
+# relay and returned garbled token-soup output -- a real bug, not a
+# hypothetical one. A bare word before a colon is NOT enough evidence it
+# names a provider: require it to actually look like one of ask_cloud's
+# real provider shapes (contains "::" or "/", matching a pin or an
+# OpenRouter catalog id) or be one of its small set of curated bare
+# names. Anything else -- including "Run:", "Note:", "Fix:" and similar
+# ordinary sentence openers -- falls through to tier="default" with the
+# goal left completely untouched.
+_DELEGATE_KNOWN_BARE_PROVIDERS = {
+    "opencode",
+    "opencode-go",
+    "glm-5.3-flash",
+    "nvidia",
+    "nvidia-nano",
+    "hermes-405b",
+    "gpt-oss-120b",
+    "nemotron",
+    "qwen3-coder",
+    "deepseek-r1",
+    "openrouter",
+}
+
+
+def _parse_delegate_goal(goal: str):
+    """Split an optional leading `<provider-or-tier>:` prefix off a
+    delegate goal. Returns (tier, explicit_provider, clean_goal):
+      tier in {"default", "higher", "local", "explicit"}
+      explicit_provider is a literal provider string (only set for
+      tier == "explicit"), passed straight to master_ai.ask_cloud().
+    Ordinary sentence goals never match: the prefix pattern requires no
+    spaces before the colon, AND (for anything that isn't a recognized
+    tier keyword) the head must actually look like a provider token --
+    "read the config and summarize it" and "Run: grep ..." are both left
+    untouched as tier="default", the whole original string as the goal."""
+    g = (goal or "").strip()
+    m = _DELEGATE_PREFIX_RE.match(g)
+    if not m:
+        return "default", None, g
+    head, rest = m.group(1), m.group(2).strip()
+    low = head.lower()
+    if low in _DELEGATE_HIGHER_WORDS:
+        return "higher", None, rest
+    if low in _DELEGATE_LOCAL_WORDS:
+        return "local", None, rest
+    looks_like_provider = (
+        "::" in head or "/" in head or low in _DELEGATE_KNOWN_BARE_PROVIDERS
+    )
+    if not looks_like_provider:
+        return "default", None, g
+    return "explicit", head, rest
+
+
 def run_subagent(
     goal: str,
-    context: Optional[Dict[str, Any]] = None,
-    toolsets: Optional[List[str]] = None,
+    context: dict[str, Any] | None = None,
+    toolsets: list[str] | None = None,
+    max_turns: int = 6,
     timeout_s: int = DEFAULT_TIMEOUT_S,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
+    """Delegate `goal` to a real model-backed subagent operating on the
+    real project directory (context["cwd"], falling back to os.getcwd()).
+    See the block comment above for the routing/model-selection rules and
+    the bug this replaces. `toolsets` is accepted for call-site
+    compatibility but unused -- the delegated turn gets the same real
+    RUN:/READ:/CREATE:/EDIT: tool access the main session has, gated the
+    same way (hooks, path fences) since it runs through the same
+    process_reply()."""
+    import master_ai as _ma  # lazy: master_ai imports this module too
+
+    context = context or {}
+    real_cwd = context.get("cwd") or os.getcwd()
+    tier, explicit_provider, clean_goal = _parse_delegate_goal(goal)
+
+    pinned = getattr(_ma, "PINNED_MODEL", None)
+    use_local = False
+    provider = None
+    local_model = None
+    if tier == "local":
+        use_local = True
+        local_model = _ma.DEFAULT_LOCAL_MODEL
+    elif tier == "explicit":
+        use_local = False
+        provider = explicit_provider
+    elif tier == "higher":
+        if pinned:
+            use_local = False
+            provider = pinned
+        else:
+            use_local = False
+            provider = "opencode"  # system's existing free cloud default
+    else:  # "default"
+        if pinned:
+            use_local = False
+            provider = pinned
+        else:
+            use_local = True
+            local_model = _ma.DEFAULT_LOCAL_MODEL
+
+    history = [
+        {
+            "role": "system",
+            "content": (
+                "You are a focused subagent delegated ONE goal by the main "
+                "session. Use RUN:/READ:/CREATE:/EDIT:/SEARCH: directives "
+                "as needed to complete it for real against the actual "
+                "project files in your current directory -- you have the "
+                "same tool access the main session has. When the goal is "
+                "genuinely complete, reply with a final answer that shows "
+                "your work, not just a bare fact: for a code location give "
+                "file:line plus the actual matched line/snippet, for a "
+                "command give the relevant output, for a file give the "
+                "relevant excerpt -- the same way you'd report a finding "
+                "to a developer, not a one-word answer. Only answer that "
+                "tersely if the goal explicitly asks for just a single "
+                "value with nothing else. Do not claim an action is "
+                "happening without emitting the directive for it."
+            ),
+        },
+        {"role": "user", "content": clean_goal},
+    ]
+
+    old_cwd = os.getcwd()
+    turn_log: list[str] = []
+    result_text = None
+    ok = True
+    err = ""
+    turns = 0
+    start = time.monotonic()
+    try:
+        os.chdir(real_cwd)
+        while result_text is None and turns < max_turns:
+            remaining = timeout_s - (time.monotonic() - start)
+            if remaining <= 0:
+                err = f"delegation timed out after {timeout_s}s ({turns} turn(s) ran)"
+                ok = False
+                break
+            if use_local:
+                reply = _ma._call_with_hard_timeout(
+                    _ma.ask_local_stream,
+                    history,
+                    model=local_model,
+                    timeout=min(90, int(remaining)),
+                )
+                streamed = True
+            else:
+                reply = _ma.ask_cloud(history, provider=provider)
+                streamed = False
+            turns += 1
+            if not reply:
+                err = f"model returned no reply (route={'local:' + str(local_model) if use_local else provider})"
+                ok = False
+                break
+            turn_log.append(f"[turn {turns}] {reply[:800]}")
+            result_text = _ma.process_reply(
+                reply, history, streamed=streamed, continue_after_tools=True
+            )
+        if result_text is None and ok:
+            err = f"hit max_turns ({max_turns}) without a final answer"
+            ok = False
+    except Exception as e:
+        ok = False
+        err = f"{type(e).__name__}: {e}"
+    finally:
+        os.chdir(old_cwd)
+
+    summary = (result_text or err or "no result").strip()
+    route_label = f"local:{local_model}" if use_local else str(provider)
+    return {
+        "ok": ok and result_text is not None,
+        "goal": goal,
+        "directive": clean_goal,
+        "summary": summary[:2000],
+        "stdout": "\n".join(turn_log)[:4000],
+        "stderr": err,
+        "returncode": 0 if (ok and result_text is not None) else 1,
+        "workdir": real_cwd,
+        "toolsets": ["run", "read", "create", "edit", "search"],
+        "route": route_label,
+        "turns": turns,
+        "result": {"final_text": result_text},
+        "final_record": {"goal": goal, "route": route_label, "turns": turns},
+    }
+
+
+# Convenience helper: directly run a registered subagent by name.
+# 2026-09-25: kept for anyone who wants the deterministic, no-model,
+# sandboxed registry dispatch on purpose -- no longer the public
+# `run_subagent`/`delegate_task` path (see block comment above).
+def run_subagent_sandboxed(
+    goal: str,
+    context: dict[str, Any] | None = None,
+    toolsets: list[str] | None = None,
+    timeout_s: int = DEFAULT_TIMEOUT_S,
+) -> dict[str, Any]:
     """Dispatch a delegated task to a registered subagent, isolated.
 
     The runner itself does not call any LLM. It maps the goal to a
@@ -386,6 +637,7 @@ def run_subagent(
 
     # Discover available subagents so we can route by name.
     import subagent_registry as _sr
+
     registry_dir = Path(_sr.SUBAGENTS_DIR)
     if not registry_dir.is_dir():
         registry_dir = Path(__file__).parent / "subagents"
@@ -409,12 +661,14 @@ def run_subagent(
 
     env = os.environ.copy()
     env["MASTER_AI_DELEGATE_NETWORK"] = "1" if "network" in toolsets else "0"
-    env["PYTHONPATH"] = os.pathsep.join([
-        str(Path(__file__).parent),
-        str(registry_dir.parent),
-        str(registry_dir),
-        env.get("PYTHONPATH", ""),
-    ])
+    env["PYTHONPATH"] = os.pathsep.join(
+        [
+            str(Path(__file__).parent),
+            str(registry_dir.parent),
+            str(registry_dir),
+            env.get("PYTHONPATH", ""),
+        ]
+    )
 
     proc = subprocess.Popen(
         [sys.executable, str(runner_path)],
@@ -426,9 +680,9 @@ def run_subagent(
         env=env,
     )
 
-    outputs: List[str] = []
-    errors: List[str] = []
-    final_record: Dict[str, Any] = {}
+    outputs: list[str] = []
+    errors: list[str] = []
+    final_record: dict[str, Any] = {}
 
     try:
         if proc.stdin is not None:
@@ -482,8 +736,10 @@ def run_subagent(
 
     # Build a clean summary from the structured result if available.
     if isinstance(subagent_result, dict) and subagent_result:
-        summary = subagent_result.get("summary") or subagent_result.get("result") or (
-            all_stdout.splitlines()[-1] if all_stdout else "subagent returned"
+        summary = (
+            subagent_result.get("summary")
+            or subagent_result.get("result")
+            or (all_stdout.splitlines()[-1] if all_stdout else "subagent returned")
         )
         # Treat the run as OK unless there is an explicit error key at the top
         # level of the subagent result, or stderr/errors were captured.
@@ -514,16 +770,22 @@ def run_subagent(
 # Backward-compatible alias: delegate_task is the public name.
 def delegate_task(
     goal: str,
-    context: Optional[Dict[str, Any]] = None,
-    toolsets: Optional[List[str]] = None,
+    context: dict[str, Any] | None = None,
+    toolsets: list[str] | None = None,
     max_turns: int = 10,
     timeout_s: int = DEFAULT_TIMEOUT_S,
-) -> Dict[str, Any]:
-    """Alias for run_subagent. The max_turns parameter is accepted for API
-    compatibility but is not used — subagents run to completion in a single
-    turn under the timeout.
-    """
-    return run_subagent(goal, context=context, toolsets=toolsets, timeout_s=timeout_s)
+) -> dict[str, Any]:
+    """Alias for run_subagent. max_turns now genuinely bounds the delegated
+    model conversation (see run_subagent's block comment, 2026-09-25) --
+    it used to be accepted-but-ignored back when this ran a single
+    non-LLM registry dispatch."""
+    return run_subagent(
+        goal,
+        context=context,
+        toolsets=toolsets,
+        max_turns=max_turns,
+        timeout_s=timeout_s,
+    )
 
 
 if __name__ == "__main__":
