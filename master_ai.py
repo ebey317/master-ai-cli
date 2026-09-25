@@ -1045,6 +1045,11 @@ _KV_KEY_MAP = {
     # auth and hits /zen/go/v1. Key created in the OpenCode console as
     # "open code key. 😊". Wired per operator request 2026-09-12.
     "OPENCODE_API_KEY": "opencode_go",
+    # 2026-09-25: Firecrawl key lives in ~/.hermes/.env for Hermes but the
+    # keychain row had the redaction placeholder, so firecrawl_fetch() was
+    # permanently on the "key not set" path. Real key restored to keychain;
+    # mapped here so the kv parser picks it up.
+    "FIRECRAWL_API_KEY": "firecrawl",
 }
 
 
