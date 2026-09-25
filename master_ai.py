@@ -7093,6 +7093,8 @@ def ask_cloud_opencode_free(messages):
 # traffic monitoring expects it, and Hermes is on their validated list.
 _OPENCODE_GO_MODELS_CACHE = Path.home() / ".master_ai_opencode_go_models_cache.json"
 _OPENCODE_GO_MODELS_TTL = 24 * 3600
+_OPENCODE_ZEN_MODELS_CACHE = Path.home() / ".master_ai_opencode_zen_models_cache.json"
+_OPENCODE_ZEN_MODELS_TTL = 24 * 3600
 
 
 def _opencode_go_key():
@@ -7172,6 +7174,77 @@ def _opencode_go_model_catalog():
             return [
                 str(_m)
                 for _m in json.loads(_OPENCODE_GO_MODELS_CACHE.read_text()).get(
+                    "models", []
+                )
+            ]
+        except Exception:
+            return []
+
+
+def _opencode_zen_model_catalog():
+    """Live model list from https://opencode.ai/zen/v1/models -- the same
+    public, keyless, no-auth-required endpoint the free chat relay itself
+    uses (see _ask_opencode_zen), cached to disk for a day like the Go
+    catalog above.
+
+    2026-09-25: root-caused live -- the picker's "opencode" (Zen) entry
+    used to return exactly ONE hardcoded model (ling-3.0-flash-fin-free),
+    because ask_cloud_opencode_free()'s docstring says that was "the
+    current working keyless model" as of 2026-09-06. Elijah didn't
+    believe Zen only had one free model, and a live pull of this real
+    endpoint proved him right: 81 total models, 10 of them "-free"
+    suffixed. Live-tested all 10 through the actual working code path
+    (_ask_opencode_zen, correct x-opencode-session/User-Agent/Referer
+    headers -- a raw curl without them 403s even for the "working" one):
+    only space-bunny-free answered; the other 9, INCLUDING the one
+    hardcoded in code as current, came back empty. Matches this exact
+    file's own documented pattern (the 2026-08-27 cohort rotated off and
+    401'd too) -- the free cohort keeps rotating, so this lists the real,
+    live catalog rather than trusting a comment that goes stale. Runtime
+    failures on a rotated-off pick are already handled the same way any
+    other cloud call handles them (log + return None, fallback chain
+    continues), same as never pre-testing OpenRouter's free list either."""
+    import time as _time
+
+    def _read_cache():
+        try:
+            _d = json.loads(_OPENCODE_ZEN_MODELS_CACHE.read_text())
+            if _time.time() - float(_d.get("ts", 0)) < _OPENCODE_ZEN_MODELS_TTL:
+                return [str(_m) for _m in _d.get("models", [])]
+        except Exception:
+            pass
+        return None
+
+    def _write_cache(models):
+        try:
+            _OPENCODE_ZEN_MODELS_CACHE.write_text(
+                json.dumps({"ts": _time.time(), "models": models})
+            )
+        except Exception:
+            pass
+
+    cached = _read_cache()
+    if cached is not None:
+        return cached
+    _headers = {
+        "User-Agent": "master-ai-cli/1.0 (Sensei agent loop)",
+        "Accept": "application/json",
+    }
+    try:
+        _req = urllib.request.Request(
+            "https://opencode.ai/zen/v1/models", headers=_headers
+        )
+        with urllib.request.urlopen(_req, timeout=30) as _resp:
+            _data = json.loads(_resp.read())
+        _models = sorted(str(_m.get("id")) for _m in _data.get("data", []))
+        if _models:
+            _write_cache(_models)
+        return _models
+    except Exception:
+        try:
+            return [
+                str(_m)
+                for _m in json.loads(_OPENCODE_ZEN_MODELS_CACHE.read_text()).get(
                     "models", []
                 )
             ]
@@ -10579,6 +10652,7 @@ def _invalidate_provider_caches():
         _GROQ_MODELS_CACHE,
         _OLLAMA_CLOUD_MODELS_CACHE,
         _OPENCODE_GO_MODELS_CACHE,
+        _OPENCODE_ZEN_MODELS_CACHE,
     ):
         try:
             _cache.unlink(missing_ok=True)
@@ -10619,6 +10693,16 @@ def live_provider_completions(query="", mode=None):
     local = _ollama_local_models()
     if local:
         rows.append(("local", "Local (Ollama)", f"{len(local)} models"))
+    # 2026-09-25: root-caused live — Elijah: "talking about my model
+    # selection. i don't see them to select them." OpenCode Zen (the
+    # keyless free lane — no key check needed at all, see ask_cloud's own
+    # fn_map default) was never added to this list under ANY condition,
+    # unlike every other provider here which is gated on a real key. It's
+    # already a real MODEL_MENU entry ("opencode", "FREE · OpenCode Zen —
+    # keyless") and a real ask_cloud() provider, just invisible in the
+    # actual picker UI. Listed first, ahead of the $10/mo OpenCode Go
+    # lane below, since it costs nothing and needs no setup.
+    rows.append(("opencode", "OpenCode Zen", "free — keyless, no setup"))
     if _ollama_cloud_key():
         rows.append(("ollama-cloud", "Ollama Cloud", "paid"))
     if KEYS.get("openrouter"):
@@ -10670,13 +10754,54 @@ def live_model_completions(provider):
     provider = (provider or "").strip().lower()
     if provider == "local":
         return [(m, m, "") for m in _ollama_local_models()]
+    if provider == "opencode":
+        # 2026-09-25: replaced the single hardcoded model -- Elijah: "open
+        # code xen only has one free model? i don't believe that." He was
+        # right: the real https://opencode.ai/zen/v1/models catalog has 81
+        # entries, 10 of them "-free" suffixed. Elijah's own spec for this
+        # view: "put the models available for open code go, put a star by
+        # them, and for the ones that are for zen and free, just put them
+        # as free." A model in BOTH the Zen and Go catalogs (same bare id,
+        # no "-free" suffix) is reachable either way, so it gets a star; a
+        # "-free" suffixed model only exists on Zen's free lane, so it
+        # just reads "free". Anything in neither bucket (most of the 81 --
+        # premium Zen models like Claude/GPT/Gemini variants not on the
+        # $10/mo Go plan either) reads "paid" for honesty, since picking
+        # it will need a key this app doesn't have wired for Zen itself.
+        # pin_value uses the existing "opencode::<model>" tag ask_cloud()
+        # already dispatches straight to _ask_opencode_zen(messages, model,
+        # model) -- NOT the bare "opencode" pin, which always calls
+        # ask_cloud_opencode_free() and its hardcoded ling-3.0-flash-fin-
+        # free regardless of what's picked. Using the tagged form is what
+        # makes picking a specific model here actually reach that model.
+        zen_models = _opencode_zen_model_catalog()
+        go_models = set(_opencode_go_model_catalog())
+        rows = []
+        for m in zen_models:
+            if m in go_models:
+                hint = "⭐ also on OpenCode Go"
+            elif m.endswith("-free"):
+                hint = "🆓 free"
+            else:
+                hint = "💰 paid (needs a Go key)"
+            rows.append((f"opencode::{m}", m, hint))
+        return sorted(rows, key=lambda row: not row[2].startswith(("⭐", "🆓")))
     if provider == "ollama-cloud":
         return [(f"ollama-cloud::{m}", m, "💰") for m in _ollama_cloud_model_catalog()]
     if provider == "openrouter":
-        return [
-            (mid, mid, ("🆓 " if free else "💰 ") + name)
-            for mid, name, free in _openrouter_model_catalog()
-        ]
+        # 2026-09-25: sort free models first -- Elijah: "i don't see them
+        # to select them." They were technically present but buried
+        # inside "hundreds of models" (this function's own docstring)
+        # with no visual separation, which is functionally invisible for
+        # a voice/controller-only picker with no typed search. free
+        # (True) sorts before paid (False) since False < True in Python.
+        return sorted(
+            (
+                (mid, mid, ("🆓 " if free else "💰 ") + name)
+                for mid, name, free in _openrouter_model_catalog()
+            ),
+            key=lambda row: not row[2].startswith("🆓"),
+        )
     if provider == "nvidia":
         return [(f"nvidia::{m}", m, "💰") for m in _nvidia_model_catalog()]
     if provider == "cerebras":
