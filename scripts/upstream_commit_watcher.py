@@ -21,13 +21,12 @@ Usage:
 """
 
 import json
-import os
 import re
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -41,6 +40,15 @@ REPOS: List[Tuple[str, str]] = [
 ]
 
 # Topics we care about when scoring a commit's applicability to Sensei.
+# 2026-09-25: this list was pure backend/agent-loop vocabulary -- nothing
+# here could ever match a front-end, UX, performance, security, testing,
+# or docs improvement, no matter how good it was. Elijah: "it needs to add
+# those to the keywords to make my framework... better. improvements
+# overall, not just in the code. all around." Added two groups below,
+# each real and scoped -- not generic buzzwords like "fix"/"update" (those
+# are already the action-verb half of _score_commit()'s bonus regex, and
+# adding them as bare topic keywords would match nearly every commit ever
+# written, defeating the whole point of a relevance filter).
 SENSEI_KEYWORDS = {
     "tool",
     "dispatch",
@@ -83,6 +91,38 @@ SENSEI_KEYWORDS = {
     "continue",
     "turn continuation",
     "multi-turn",
+    # ── front-end / UX / design ──
+    "ui",
+    "ux",
+    "frontend",
+    "front-end",
+    "design",
+    "theme",
+    "color scheme",
+    "accessibility",
+    "responsive",
+    "styling",
+    "layout",
+    "usability",
+    "onboarding",
+    "dashboard",
+    # ── back-end / broader engineering quality ──
+    "performance",
+    "latency",
+    "caching",
+    "database",
+    "logging",
+    "monitoring",
+    "security",
+    "vulnerability",
+    "hardening",
+    "encryption",
+    "authentication",
+    "testing",
+    "test coverage",
+    "documentation",
+    "deployment",
+    "optimization",
 }
 
 # Minimum score for a commit to appear in the digest.
@@ -117,8 +157,11 @@ def _github_api(owner: str, repo: str, path: str) -> dict:
     """Call the GitHub REST API for a repo, returning parsed JSON."""
     url = f"https://api.github.com/repos/{owner}/{repo}{path}"
     cmd = [
-        "gh", "api", url,
-        "--method", "GET",
+        "gh",
+        "api",
+        url,
+        "--method",
+        "GET",
         "--paginate",
     ]
     try:
@@ -135,7 +178,9 @@ def _github_api(owner: str, repo: str, path: str) -> dict:
         )
         return {}
     except FileNotFoundError:
-        sys.stderr.write("[ERROR] 'gh' CLI not found. Install GitHub CLI and authenticate.\n")
+        sys.stderr.write(
+            "[ERROR] 'gh' CLI not found. Install GitHub CLI and authenticate.\n"
+        )
         return {}
 
     try:
@@ -324,7 +369,9 @@ def main() -> int:
     print(f"Upstream commit digest written to: {digest_path}")
     for (owner, repo), commits in findings.items():
         relevant = [c for c in commits if _score_commit(c) >= RELEVANCE_THRESHOLD]
-        print(f"  {owner}/{repo}: {len(relevant)} relevant / {len(commits)} new commits")
+        print(
+            f"  {owner}/{repo}: {len(relevant)} relevant / {len(commits)} new commits"
+        )
 
     return 0
 
