@@ -18664,6 +18664,36 @@ def startup_check():
     return errors
 
 
+def _humanize_commit_subject(subject: str) -> str:
+    """One git commit subject -> one plain-English bullet, no engineering
+    jargon. Elijah: "I need to know what's new... described in
+    non-engineering terms." Handles this repo's two message shapes: the
+    nightly upstream-learn auto-merges (upstream-learn: port idea from
+    OWNER/REPO@sha) get a sentence naming where the idea came from;
+    conventional-commit prefixes (fix(scope): ..., feat: ...) get mapped to
+    a plain verb. Anything else is just capitalized as-is — most subjects
+    in this repo already read as plain sentences."""
+    s = subject.strip()
+    m = re.match(r"^upstream-learn:\s*port idea from ([\w.-]+)/([\w.-]+)@[0-9a-f]+", s)
+    if m:
+        return f"Learned an idea from {m.group(1)}/{m.group(2)} and adapted it into your system"
+    m = re.match(r"^(fix|feat|refactor|perf|docs|chore|test)(\([^)]*\))?:\s*(.+)$", s)
+    if m:
+        verb = {
+            "fix": "Fixed",
+            "feat": "Added",
+            "refactor": "Cleaned up",
+            "perf": "Sped up",
+            "docs": "Updated the notes for",
+            "chore": "Housekeeping:",
+            "test": "Improved testing for",
+        }[m.group(1)]
+        rest = m.group(3)
+        rest = rest[0].upper() + rest[1:] if rest else rest
+        return f"{verb}: {rest}"
+    return s[0].upper() + s[1:] if s else s
+
+
 def _run_git_update(repo_dir: str | None = None) -> tuple[bool, str]:
     """Pull the repo master_ai.py (and everything alongside it, incl.
     sensei_tui.py) is symlinked from — the one real update mechanism,
@@ -18710,7 +18740,65 @@ def _run_git_update(repo_dir: str | None = None) -> tuple[bool, str]:
         ).stdout.strip()
         if before == after:
             return True, "Already up to date."
-        return True, f"Updated {before} -> {after}. Restarting to pick it up..."
+        log_r = subprocess.run(
+            [
+                "git",
+                "-C",
+                repo_dir,
+                "log",
+                "--no-merges",
+                "--reverse",
+                "--pretty=format:%s",
+                f"{before}..{after}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        subjects = [ln for ln in log_r.stdout.splitlines() if ln.strip()]
+        whats_new = ""
+        if subjects:
+            shown = subjects[:12]
+            bullets = "\n".join(f"  - {_humanize_commit_subject(s)}" for s in shown)
+            if len(subjects) > len(shown):
+                bullets += (
+                    f"\n  - ...and {len(subjects) - len(shown)} more small change(s)"
+                )
+            # Best-effort plain-language pass over the local heuristic bullets
+            # above. Elijah: "I need to know what's new... described in
+            # non-engineering terms" -- prefix-remapping alone still leaves
+            # technical nouns in place. Free tier, short timeout, and any
+            # failure (offline, rate-limited, key missing) just falls back
+            # to the heuristic bullets already built -- `update` must still
+            # work standalone with no cloud reachable.
+            plain = _ask_openrouter(
+                [
+                    {
+                        "role": "user",
+                        "content": (
+                            "Rewrite this software changelog for someone who is "
+                            "not an engineer and doesn't know coding terms. One "
+                            "short plain-English line per item, no jargon, no "
+                            "code/file names, explain what it means for them "
+                            "day to day. Keep the same number of items.\n\n"
+                            + "\n".join(f"- {s}" for s in shown)
+                        ),
+                    }
+                ],
+                # 550B ultra, not the 120B super -- Elijah asked for the
+                # bigger one here. It's slower (this repo's own
+                # _ask_openrouter() auto-floors 550b/ultra timeouts at
+                # 120s), which is fine: this call only happens once, right
+                # after a manual `update`, not in a hot loop.
+                "nvidia/nemotron-3-ultra-550b-a55b:free",
+                "update-whats-new",
+                timeout=120,
+            )
+            whats_new = f"\nWhat's new:\n{(plain or bullets).strip()}\n"
+        return (
+            True,
+            f"Updated {before} -> {after}.{whats_new}Restarting to pick it up...",
+        )
     except Exception as e:
         return False, f"Update failed: {e}"
 
