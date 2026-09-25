@@ -505,6 +505,41 @@ def integrate_one(item, dry_run=False, base_branch=None):
         _git("checkout", base_branch or "main", cwd=REPO)
 
 
+def _autostash_tracked():
+    """Set aside dirty TRACKED files (never untracked/new files) so a live
+    session's WIP doesn't block the whole nightly batch. Returns True if a
+    stash was created (caller must restore it), False if the tree was
+    already clean. Never touches the operator's history: this is a stash,
+    not a commit, and the exact same diff comes back via _autostash_restore.
+    """
+    rc, dirty, _ = _git("status", "--porcelain", "--untracked-files=no")
+    if not dirty:
+        return False
+    label = f"upstream-integrator-autostash-{datetime.now().isoformat()}"
+    rc, _, err = _git("stash", "push", "-m", label)
+    if rc != 0:
+        print(f"  autostash failed, proceeding without it: {err[:200]}", flush=True)
+        return False
+    print(
+        f"  autostashed {len(dirty.splitlines())} dirty tracked file(s): {label}",
+        flush=True,
+    )
+    return True
+
+
+def _autostash_restore(stashed):
+    if not stashed:
+        return
+    rc, _, err = _git("stash", "pop")
+    if rc != 0:
+        # Conflict or other failure: do NOT drop the stash. Leave it in
+        # `git stash list` for manual recovery rather than risk losing it.
+        print(
+            f"  WARNING: autostash pop failed, WIP left on stash (not lost): {err[:300]}",
+            flush=True,
+        )
+
+
 def touched_core_check(files):
     return bool(set(files) & CORE_ENGINE_FILES)
 
@@ -565,21 +600,25 @@ def main():
         )
         return
     branches = []
-    for it in todo[:batch]:
-        try:
-            b, outcome = integrate_one(it, dry_run=dry, base_branch=base)
-        except Exception as e:
-            _log_line(
-                {
-                    "ts": datetime.now().isoformat(),
-                    "sha": it.get("sha"),
-                    "status": "failed",
-                    "detail": f"integrate_one exception: {e}",
-                }
-            )
-            continue
-        if outcome in ("merged", "branch-ready"):
-            branches.append(b)
+    stashed = _autostash_tracked()
+    try:
+        for it in todo[:batch]:
+            try:
+                b, outcome = integrate_one(it, dry_run=dry, base_branch=base)
+            except Exception as e:
+                _log_line(
+                    {
+                        "ts": datetime.now().isoformat(),
+                        "sha": it.get("sha"),
+                        "status": "failed",
+                        "detail": f"integrate_one exception: {e}",
+                    }
+                )
+                continue
+            if outcome in ("merged", "branch-ready"):
+                branches.append(b)
+    finally:
+        _autostash_restore(stashed)
     # drop TERMINAL items from the queue; retryable ones stay:
     #   merged/skipped/manual-review/blocked -> done (branch or N/A exists)
     #   failed -> stays until 3 failed attempts, then retired
