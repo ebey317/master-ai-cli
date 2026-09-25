@@ -9,15 +9,18 @@ and cloud lanes / the Chrome extension can retry instead of hanging.
 Run: python3 ~/scripts/test_api_handle_wedge.py
 """
 
+import os
 import sys
 import threading
 import time
 import unittest
 from unittest import mock
 
-sys.path.insert(0, "/home/user/scripts")
+import pytest
 
-import stt_server  # noqa: E402
+sys.path.insert(0, os.path.expanduser("~/scripts"))
+
+stt_server = pytest.importorskip("stt_server")
 
 
 class WedgeRegressionTests(unittest.TestCase):

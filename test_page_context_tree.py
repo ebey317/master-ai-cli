@@ -10,8 +10,12 @@ import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pytest
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.expanduser("~/scripts"))
+
+pytest.importorskip("stt_server")
 from stt_server import (  # noqa: E402
     PAGE_TREE_BYTE_CAP,
     _format_page_context,

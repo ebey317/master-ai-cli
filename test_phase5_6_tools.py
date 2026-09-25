@@ -29,10 +29,12 @@ import sys
 import unittest
 from pathlib import Path
 
+import pytest
+
 os.environ["SENSEI_TUI"] = "0"
 sys.path.insert(0, os.path.expanduser("~/scripts"))
 
-import stt_server  # noqa: E402
+stt_server = pytest.importorskip("stt_server")
 
 import hooks  # noqa: E402
 
@@ -134,7 +136,12 @@ class Phase56HookTests(unittest.TestCase):
         self.assertFalse(getattr(result, "blocked", False))
 
     def test_stt_server_emits_turn_answer_start(self):
-        with (REPO / "stt_server.py").open(encoding="utf-8") as f:
+        # stt_server.py isn't tracked in this repo (lives wherever
+        # ~/scripts resolves it to) -- REPO / "stt_server.py" never
+        # existed, even on a dev machine where the module import above
+        # succeeds. Read the actual resolved file instead of assuming
+        # it's a repo-local path.
+        with Path(stt_server.__file__).open(encoding="utf-8") as f:
             src = f.read()
         # Match the actual fire call regardless of the module alias.
         self.assertRegex(src, r'\.fire\(\s*["\']turn_answer_start["\']')

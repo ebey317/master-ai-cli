@@ -40,7 +40,10 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from bs4 import BeautifulSoup  # stdlib-adjacent — already shipped on this box.
+import pytest
+
+bs4 = pytest.importorskip("bs4")
+BeautifulSoup = bs4.BeautifulSoup
 
 BASE = "http://127.0.0.1:8080"
 TIMEOUT_S = 20

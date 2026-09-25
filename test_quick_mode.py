@@ -14,10 +14,12 @@ import sys
 import unittest
 from pathlib import Path
 
+import pytest
+
 os.environ["SENSEI_TUI"] = "0"
 sys.path.insert(0, os.path.expanduser("~/scripts"))
 
-import stt_server as srv  # noqa: E402
+srv = pytest.importorskip("stt_server")
 
 JS_TEST = (
     Path(__file__).resolve().parent / "sensei_extension" / "test" / "test_quick_mode.js"

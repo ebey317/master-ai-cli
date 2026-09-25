@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
 os.environ["SENSEI_TUI"] = "0"
 sys.path.insert(0, os.path.expanduser("~/scripts"))
 
@@ -28,7 +30,7 @@ sys.path.insert(0, str(REPO_ROOT))
 if "subagent_registry" in sys.modules:
     del sys.modules["subagent_registry"]
 
-import stt_server  # noqa: E402
+stt_server = pytest.importorskip("stt_server")
 
 import sensei_native_host as nh  # noqa: E402
 import subagent_registry as sr  # noqa: E402

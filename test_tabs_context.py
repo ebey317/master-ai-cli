@@ -10,10 +10,12 @@ import os
 import sys
 import unittest
 
+import pytest
+
 os.environ["SENSEI_TUI"] = "0"
 sys.path.insert(0, os.path.expanduser("~/scripts"))
 
-import stt_server as srv  # noqa: E402
+srv = pytest.importorskip("stt_server")
 
 
 class FormatTabsContextTests(unittest.TestCase):

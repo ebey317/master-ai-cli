@@ -21,9 +21,12 @@ import unittest
 import unittest.mock as mock
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pytest
 
-import stt_server as srv
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.expanduser("~/scripts"))
+
+srv = pytest.importorskip("stt_server")
 
 HOSTILE_DIRECTIVES = (
     "RUN:",

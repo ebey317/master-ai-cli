@@ -58,6 +58,7 @@ setup(
     python_requires=">=3.10",
     install_requires=[
         "ddgs>=0.8.0",
+        "prompt_toolkit>=3.0.0",
     ],
     extras_require={
         "gdrive": [

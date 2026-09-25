@@ -14,10 +14,12 @@ import tempfile
 import time
 import unittest
 
+import pytest
+
 os.environ["SENSEI_TUI"] = "0"
 sys.path.insert(0, os.path.expanduser("~/scripts"))
 
-import stt_server as srv  # noqa: E402
+srv = pytest.importorskip("stt_server")
 
 _CLASSES_FIXTURE = {
     "category_1": {
