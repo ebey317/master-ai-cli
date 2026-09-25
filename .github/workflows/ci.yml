@@ -25,28 +25,32 @@ jobs:
       run: |
         pip install --upgrade pip
         pip install -e .[dev]
-        pip install ruff pytest pytest-cov pytest-timeout pre-commit mypy
+        pip install pytest pytest-cov pytest-timeout pre-commit
 
     - name: Install shellcheck (native binary, not on PyPI)
       run: sudo apt-get update && sudo apt-get install -y shellcheck
 
+    # 2026-09-25: this used to ALSO run standalone "Run shellcheck" / "Run
+    # mypy" / "Run ruff" steps, each doing `pip install <tool>` fresh --
+    # always latest, completely independent of the versions
+    # .pre-commit-config.yaml actually pins (ruff v0.4.1, mypy v1.10.0).
+    # Pre-commit runs its OWN isolated, pinned tool versions regardless of
+    # what's globally pip-installed, so those steps were re-running the
+    # same checks through a second, silently drifting toolchain -- not
+    # broader coverage, just two sources of truth that could (and did)
+    # disagree. Concretely: mypy 1.10.0 (pre-commit's pin) found nothing
+    # wrong in master_ai.py; whatever `pip install mypy` resolved to found
+    # a real gap pre-commit's run never surfaced locally. ruff v0.4.1
+    # (the pin) and latest ruff disagreed on assert-statement line-wrap
+    # style. One is right; which one is a coin flip that changes every
+    # time PyPI ships a new release. Pre-commit's pinned run is now the
+    # only lint/type gate -- it already covers ruff, ruff-format, mypy,
+    # and shellcheck (the native binary installed above lets its
+    # shellcheck hook skip Docker).
     - name: Run pre-commit
       run: |
         pre-commit install
         pre-commit run --all-files
-
-    - name: Run shellcheck
-      run: |
-        shellcheck --external-sources *.sh
-
-    - name: Run mypy
-      run: |
-        mypy --ignore-missing-imports --follow-imports=silent --exclude '^appforge/templates/' .
-
-    - name: Run ruff
-      run: |
-        ruff check .
-        ruff format --check .
 
     - name: Run pytest
       env:
@@ -61,23 +65,9 @@ jobs:
         name: coverage-report
         path: htmlcov/
 
-  lint:
-    runs-on: ubuntu-latest
-    needs: test
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.10"
-
-    - name: Install dependencies
-      run: |
-        pip install --upgrade pip
-        pip install ruff
-
-    - name: Run ruff
-      run: |
-        ruff check .
-        ruff format --check .
+  # 2026-09-25: removed. This job duplicated the test job's own
+  # "Run pre-commit" step -- same ruff check + ruff format --check, but
+  # via `pip install ruff` (unpinned, drifts from .pre-commit-config.yaml's
+  # v0.4.1) instead of pre-commit's own pinned toolchain. Same class of
+  # false-failure risk as the removed standalone mypy/ruff steps above,
+  # for zero additional coverage.
