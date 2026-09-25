@@ -7606,6 +7606,19 @@ def _ask_openrouter(messages, model, label, timeout=60):
         log(f"OPENROUTER_ERROR [{label}]: {diag}")
         if code == 429:
             _cloud_trip(provider_key, "rate limit", 30)
+            # 2026-09-25: OpenRouter's free-tier limit is account-wide (20
+            # req/min, 50/day per their own docs), not per-model -- every
+            # ":free" slug draws from the same pool. Confirmed live: 8+
+            # distinct free slugs 429'd back to back over ~2.5 minutes
+            # while ask_cloud_openrouter_generic() cycled through them one
+            # at a time, each attempt a real wasted HTTP round-trip against
+            # an already-known-exhausted quota, before finally falling
+            # through to NVIDIA. Trip a SHARED pool circuit too (we already
+            # know model ends in ":free" -- checked at the top of this
+            # function) so the generic loop can recognize "the whole free
+            # pool is out" after the first 429 instead of learning it 6
+            # separate times.
+            _cloud_trip("openrouter-free-pool", "rate limit", 30)
         elif code == 404:
             _cloud_trip(provider_key, "model unavailable", 300)
         return None
@@ -7730,6 +7743,23 @@ def ask_cloud_openrouter_r1(messages):
 def ask_cloud_openrouter_generic(messages):
     # 2026-09-07: free-only live catalog. Try known-good free slugs in priority
     # order, then any other free slug OpenRouter currently advertises.
+    #
+    # 2026-09-25: OpenRouter's free-tier limit is account-wide (their own
+    # docs: 20 req/min, 50/day), not per-model -- cycling through 6
+    # different ":free" slugs after one 429s doesn't get 6x the quota, it
+    # just spends 6 real HTTP round-trips confirming the same exhausted
+    # pool 6 times. Confirmed live: an ~2.5-minute cascade of 429s across
+    # 8+ distinct free slugs before ever falling through to the next
+    # provider (NVIDIA) in the outer chain. Check the shared pool circuit
+    # _ask_openrouter() now trips on any :free 429 -- skip the whole
+    # attempt up front if it's already known exhausted, and stop cycling
+    # the moment this loop's own first attempt trips it, instead of
+    # learning the same fact 5 more times.
+    if not _cloud_allowed("openrouter-free-pool"):
+        log(
+            "OPENROUTER_GENERIC: free-tier pool circuit open, skipping to next provider"
+        )
+        return None
     free_slugs = _openrouter_free_models()
     if not free_slugs:
         log("OPENROUTER_GENERIC: no free models available in live catalog")
@@ -7739,6 +7769,9 @@ def ask_cloud_openrouter_generic(messages):
         r = _ask_openrouter(messages, slug, label, timeout=60)
         if r:
             return r
+        if not _cloud_allowed("openrouter-free-pool"):
+            log("OPENROUTER_GENERIC: pool circuit tripped mid-loop, stopping early")
+            break
     return None
 
 
