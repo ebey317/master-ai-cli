@@ -10533,6 +10533,42 @@ _PROVIDER_PICKER_ORDER = (
 )
 
 
+def _invalidate_provider_caches():
+    """Delete every on-disk provider model cache so the next catalog read
+    does a live fetch. Called at the top of live_provider_completions() —
+    i.e. once per /model picker open — so a picker open is always a fresh
+    run, never a cached one.
+
+    Why all of them and not just OpenRouter: _provider_model_catalog()
+    falls back to the stale cache on a FAILED fetch, so a provider whose
+    fetch path has been broken (dead key, moved endpoint) freezes its
+    model list forever rather than going empty. Nothing ever refreshed it
+    back, so the picker kept offering delisted models. Clearing here means
+    a failed fetch surfaces as an empty list (honest) instead of a
+    months-old one.
+
+    Step 2 (live_model_completions) only fetches the ONE provider the
+    operator actually picks, so this costs one unlink per file, not one
+    network call per provider.
+    """
+    for _cache in (
+        _OPENROUTER_MODELS_CACHE,
+        _NVIDIA_MODELS_CACHE,
+        _CEREBRAS_MODELS_CACHE,
+        _QWEN_MODELS_CACHE,
+        _GROQ_MODELS_CACHE,
+        _OLLAMA_CLOUD_MODELS_CACHE,
+        _OPENCODE_GO_MODELS_CACHE,
+    ):
+        try:
+            _cache.unlink(missing_ok=True)
+        except Exception:
+            pass
+    # Local Ollama's list is a 30s in-memory cache, not a file — reset it
+    # too so the picker never shows a model deleted with `ollama rm`.
+    _OLLAMA_LOCAL_CACHE["ts"] = 0.0
+
+
 def live_provider_completions(query="", mode=None):
     _refresh_ollama_key()
     """Providers with a key configured (or local Ollama actually running)
@@ -10548,12 +10584,17 @@ def live_provider_completions(query="", mode=None):
     startup, so opening the picker mid-session (without restarting) could
     show up-to-a-day-stale data. This is step 1 of every picker open, so
     clearing the cache here — before step 2 (live_model_completions)
-    reads it — guarantees each picker open does one live OpenRouter fetch,
-    not a stale one. Cheap: deleting a small on-disk JSON file."""
-    try:
-        _OPENROUTER_MODELS_CACHE.unlink(missing_ok=True)
-    except Exception:
-        pass
+    reads it — guarantees each picker open does one live fetch, not a
+    stale one. Cheap: deleting small on-disk JSON files.
+
+    2026-09-25: the fix above only ever cleared OpenRouter. The other six
+    providers kept serving their TTL'd disk file, and because a *failing*
+    fetch path falls back to the stale cache indefinitely, those lists
+    froze for weeks (Groq's key 401'd; its 14-model list sat 18 days
+    stale, and the picker offered models the provider no longer serves).
+    Invalidate EVERY provider cache here — step 2 only fetches the one
+    provider actually chosen, so this stays one cheap unlink per file."""
+    _invalidate_provider_caches()
     rows = []
     local = _ollama_local_models()
     if local:
