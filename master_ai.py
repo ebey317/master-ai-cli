@@ -4402,6 +4402,26 @@ def orchestrate(history, user_text, image_path=None):
     # 1. Context pressure — save & refresh before we blow context
     total_chars = sum(len(m.get("content", "") or "") for m in history)
     if total_chars >= CONTEXT_WATERMARK:
+        # 2026-09-25: root-caused live — Elijah hit this at a genuine 100%
+        # in AUTO mode and still had to press a button: "i shouldn't have
+        # to trigger it with a button press. it should automatically do it
+        # like you do." The EOFError/KeyboardInterrupt fallback below only
+        # covers a non-TTY caller; a real interactive session (exactly
+        # what he was in) genuinely blocks on input() waiting for 1/2 +
+        # Enter. AUTO mode already means "don't ask, just do it" everywhere
+        # else in this codebase (auto-mark-done, the resume auto-continue
+        # nudge, ...) -- this prompt was the one place that still asked.
+        # Skip straight to save_refresh with no prompt when in auto mode;
+        # every other mode keeps the interactive choice.
+        if globals().get("MODE", "plan") == "auto":
+            print(
+                f"\n  {BO}⚠ Context pressure — history is {total_chars:,} chars (limit {CONTEXT_WATERMARK:,}). "
+                f"AUTO mode — saving + refreshing now, no prompt.{X}"
+            )
+            return {
+                "route": "save_refresh",
+                "reason": f"history {total_chars} chars >= watermark {CONTEXT_WATERMARK} (auto)",
+            }
         print(
             f"\n  {BO}⚠ Context pressure — history is {total_chars:,} chars (limit {CONTEXT_WATERMARK:,}).{X}"
         )
@@ -15930,6 +15950,33 @@ def _xml_tool_calls_to_directives(reply):
     if not reply:
         return reply
 
+    # 2026-09-25: root-caused live via a delegated subagent call routed to
+    # deepseek-v4-pro (opencode-go::deepseek-v4-pro): this model wraps the
+    # exact same Anthropic-style <invoke name="X"><parameter name="Y">
+    # shape _XML_INVOKE_RE already handles, but prefixes every tag name
+    # with a literal "｜｜DSML｜｜" marker (fullwidth vertical bars, U+FF5C) --
+    # <｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="run">
+    # <｜｜DSML｜｜parameter name="cmd" string="true">...
+    # </｜｜DSML｜｜parameter></｜｜DSML｜｜invoke></｜｜DSML｜｜tool_calls>.
+    # Neither "<invoke" nor "<function" substring-matched against this, so
+    # it sailed straight through every check below as opaque text: no
+    # directive found, no stall language for _reply_claims_unexecuted_
+    # action to catch either, so it fell through process_reply()'s
+    # final-fallthrough and got accepted as a "successful" answer that was
+    # actually just unexecuted raw tool-call markup. Strip the marker from
+    # tag names up front so the existing _XML_INVOKE_RE/_XML_PARAM_RE
+    # handling below sees the exact same shape it already knows.
+    if "｜｜DSML｜｜" in reply:
+        reply = re.sub(r"[｜]{2}DSML[｜]{2}", "", reply)
+        # The outer <tool_calls>...</tool_calls> wrapper (plural -- distinct
+        # from the singular <tool_call>{json} shape handled below) carries no
+        # payload of its own. Left in place, it can land on the SAME line as
+        # the invoke block's converted RUN:/etc. payload (</tool_calls> right
+        # after the command text), silently corrupting what actually gets
+        # executed rather than just being harmless clutter. Strip it outright
+        # instead of just forcing a newline around it.
+        reply = re.sub(r"</?tool_calls\s*>", "", reply, flags=re.IGNORECASE)
+
     if "<invoke" in reply:
 
         def _conv(m):
@@ -16279,16 +16326,68 @@ def _reply_claims_unexecuted_action(reply_text: str) -> bool:
     exact bug above slips through again — the user sees a promise with no
     result and no error, silently.
 
-    TODO(human): implement the actual heuristic. reply_text is the
-    rendered reply BEFORE the caller's directive-fallthrough return —
-    already known to contain zero parsed directives. Some signals worth
-    weighing: present/future-tense action verbs aimed at an unfinished
-    step ("executing", "running", "let me", "I'll", "now checking") vs.
-    past-tense/result language ("ran", "found", "done", "here's the
-    result"); whether it ends mid-thought vs. with an actual answer/value;
-    length (a one-line stall vs. a real synthesized answer).
+    Implementation: look for present/future-tense "about to act" language
+    ("executing", "let me", "i'll", "going to"...). If none, this isn't a
+    stall claim at all — bail out False immediately (covers real questions
+    like "should I proceed?" too, since those don't use action verbs).
+    If a stall verb IS present, check for past-tense/result language
+    ("ran", "found", "here's", "completed"...) anywhere in the same
+    reply — a model that says "I ran the checks, here's what I found"
+    used an action verb in service of a real answer, not a stalled one,
+    so that overrides. Otherwise, a short reply (<=2 sentences, <200
+    chars) that's nothing but the stall claim is exactly tonight's bug
+    shape and returns True. Biased toward catching stalls over missing
+    them: a false True costs one harmless extra repair turn where the
+    model just restates itself; a false False reproduces the silent
+    bug this function exists to catch.
     """
-    raise NotImplementedError
+    text = (reply_text or "").strip()
+    if not text:
+        return False
+    low = text.lower()
+
+    stall_verbs = (
+        "executing",
+        "running",
+        "checking",
+        "verifying",
+        "scanning",
+        "let me",
+        "i'll",
+        "i will",
+        "going to",
+        "about to",
+        "starting",
+        "kicking off",
+        "now check",
+        "now runn",
+    )
+    if not any(v in low for v in stall_verbs):
+        return False
+
+    result_markers = (
+        "here's",
+        "here is",
+        "found:",
+        "result:",
+        "results:",
+        "done.",
+        "completed",
+        "finished",
+        "passed",
+        "failed:",
+        "returned",
+        " ran ",
+        " checked ",
+        " scanned ",
+        "shows that",
+        "confirms",
+    )
+    if any(m in low for m in result_markers):
+        return False
+
+    sentence_count = len([s for s in re.split(r"[.!?]+", text) if s.strip()])
+    return sentence_count <= 2 and len(text) < 200
 
 
 def process_reply(reply, history, streamed=False, continue_after_tools=False):
@@ -18159,6 +18258,58 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             )
             return None
 
+        # 2026-09-25: root-caused live via a delegated subagent — a reply
+        # can also fail silently a THIRD way: not a stall claim in prose,
+        # but a hallucinated pseudo-directive that LOOKS like real
+        # directive syntax and isn't ("GREP: def process_reply" — this
+        # system has no GREP: directive, the real one is SEARCH: or
+        # RUN: grep ...). _any_directive_found is already False here (no
+        # REAL directive matched), so this text fell straight through as
+        # an accepted "answer" that was actually just a guessed, never-
+        # dispatched command name. Mirrors _xml_tool_calls_to_directives'
+        # own stated philosophy for malformed tool-call XML ("a malformed
+        # -but-visible directive line beats invisible raw syntax, because
+        # the directive-repair feedback loop can then teach the model the
+        # right shape") — same idea, applied to a hallucinated ALLCAPS:
+        # keyword instead of malformed XML.
+        _fake_directive = re.match(r"^\s*([A-Z][A-Z_]{1,24}):\s*\S", reply.strip())
+        if _fake_directive and _fake_directive.group(1) not in {
+            "RUN",
+            "RUNTERM",
+            "READ",
+            "CREATE",
+            "EDIT",
+            "SEARCH",
+            "SUBAGENT",
+            "TASK_ADD",
+            "TASK_DONE",
+            "SEND_EMAIL",
+            "SEND_TELEGRAM",
+            "REMEMBER",
+        }:
+            _bad_name = _fake_directive.group(1)
+            print(
+                _pill(
+                    "REPAIR",
+                    f"{D}reply used '{_bad_name}:' — not a real directive, teaching the real ones{X}",
+                )
+            )
+            log(f"CHAIN_UNKNOWN_DIRECTIVE_REPAIR: {_bad_name!r}")
+            history.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "[Directive repair]\n"
+                        f"'{_bad_name}:' is not a real directive here — nothing ran. "
+                        "The real directives are RUN:, RUNTERM:, READ:, CREATE:, EDIT:, "
+                        "SEARCH:, SUBAGENT:, TASK_ADD:, TASK_DONE:, SEND_EMAIL:, "
+                        "SEND_TELEGRAM:, REMEMBER:. For a code/file search use SEARCH: "
+                        "<query> or RUN: grep ... Emit the real directive now."
+                    ),
+                }
+            )
+            return None
+
     return reply
 
 
@@ -18617,13 +18768,23 @@ def draw_status_bar(history=None):
 
     mem = _count(MEMORY_FILE)
     tasks = active_task_count()
-    ctx_pct = None
+    # 2026-09-25: root-caused live — right after a restart (or any turn that
+    # never touches `history`, e.g. a `delegate <goal>` command, which is
+    # deliberately separate from the main conversation), history is empty
+    # and ctx_pct stayed None, which made the entire CTX field vanish from
+    # the row below instead of reading 0%. Elijah, pointing at exactly that
+    # gap live: "the model, the mode, and the context line... ❌" — a field
+    # that disappears reads as broken in a way a genuine 0% doesn't. Default
+    # to 0 so the row always shows all four fields, stable, never flickering
+    # a field in and out based on whether this particular turn happened to
+    # touch history.
+    ctx_pct = 0
     if history:
         try:
             total_chars = sum(len(m.get("content", "") or "") for m in history)
             ctx_pct = round(100 * total_chars / CONTEXT_WATERMARK)
         except Exception:
-            ctx_pct = None
+            ctx_pct = 0
     # 2026-08-24: PINNED_MODEL only reflects an explicit `model <name>` pin —
     # in AUTO (the common case) this used to just print the literal word
     # "AUTO" forever, never saying which model actually answered. _LAST_MODEL
@@ -21396,9 +21557,25 @@ def _query_worker(history_ref):
 
 
 def handle_save_refresh(history):
-    """Snapshot session, summarize it, then restart fresh. Does NOT auto-load
-    the old chat back into the window — the user can resume later with
-    'sessions resume <number>' (Hermes-style session browser)."""
+    """Snapshot session, summarize it, then restart fresh — and reload the
+    summary as a recap on the other side, per the interactive prompt's own
+    promise ("Sensei will save the conversation, restart, and reload it
+    compacted") at the CONTEXT_WATERMARK decision point above.
+
+    2026-09-24: root-caused live — the code had NOT been doing what that
+    prompt promises. A 2026-09-08 change (see the removed comment this
+    replaces) deliberately unlinked RESUME_FLAG here instead of writing it,
+    so the restarted process landed on a totally blank window with zero
+    signal anything had happened, while a real 4-bullet summary sat unused
+    on disk the whole time (save_session() already writes one via
+    summarize_session() — see the read side below for how it's now
+    surfaced). Reported live: "it loses what we were working on... i don't
+    think it compresses." It wasn't reloading anything, compacted or
+    otherwise — just wiping the slate and hoping 'sessions resume <N>'
+    would be memorable enough to reach for later. Now mirrors
+    _reload_if_code_changed()'s already-working pattern: write RESUME_FLAG
+    pointing at the just-saved chat, so the existing resume-recap logic on
+    the read side (below) picks it up automatically."""
     _RESTART_STARTED.set()
     print(f"\n  {BO}════════════════════════════════════════════════════{X}")
     print(f"  {BO}🥷  SAVE + REFRESH{X}")
@@ -21414,14 +21591,10 @@ def handle_save_refresh(history):
         save_session(list(history), silent=True)
     except Exception as e:
         log(f"SAVE_REFRESH_SAVE_ERROR: {e}")
-    # 2026-09-08: user wants save+consolidate without repopulating the window.
-    # Previous behavior wrote RESUME_FLAG, which auto-loaded the chat on restart.
-    # Now we intentionally skip that so restart is fresh; saved sessions are
-    # reachable via /sessions resume <N>.
     try:
-        RESUME_FLAG.unlink(missing_ok=True)
+        RESUME_FLAG.write_text(str(CHATS_DIR / f"{SESSION_TS}.chat"))
     except Exception as e:
-        log(f"SAVE_REFRESH_FLAG_CLEAR_ERROR: {e}")
+        log(f"SAVE_REFRESH_FLAG_WRITE_ERROR: {e}")
     try:
         subprocess.run(["stty", "sane"], check=False)
     except Exception:
@@ -21853,32 +22026,152 @@ def main():
             RESUME_FLAG.unlink()
             if flag_path:
                 try:
-                    chat_text = Path(flag_path).read_text(errors="replace")
-                    last_you = None
-                    for line in chat_text.splitlines():
-                        if "] You: " in line:
-                            candidate = line.split("] You: ", 1)[1]
-                            # Skip synthetic system-injected "user" turns --
-                            # [RUN RESULT], [TOOL FAILED], [Directive repair],
-                            # etc. -- only a real bracket-free thing Elijah
-                            # actually said belongs in the recap.
-                            if candidate.strip().startswith("["):
-                                continue
-                            last_you = candidate
-                    if last_you:
-                        preview = last_you[:140] + ("…" if len(last_you) > 140 else "")
-                        recap = f'🔄 Picked back up after an update — last thing you said: "{preview}"'
-                        print(f"\n  {C}{recap}{X}\n")
+                    # 2026-09-24: prefer the real 4-bullet summary
+                    # save_session() already writes alongside the chat
+                    # (what was worked on / decided / unfinished / next)
+                    # over just echoing the last thing typed -- this is
+                    # the actual "reload it compacted" recap a
+                    # handle_save_refresh() restart promises. Falls back to
+                    # the last-message one-liner below when there's no
+                    # summary (short session, or summarize_session()
+                    # couldn't reach cloud / rejected a malformed result --
+                    # see its own comments for why that's silent-failed by
+                    # design rather than blocking shutdown on a retry).
+                    summary_path = Path(flag_path).with_suffix(".summary")
+                    summary_text = ""
+                    if summary_path.exists():
+                        raw = summary_path.read_text(errors="replace").strip()
+                        # Drop the leading "[Session ...]" header line --
+                        # the recap already has its own framing below.
+                        summary_text = "\n".join(raw.splitlines()[1:]).strip()
+                    if summary_text:
+                        print(
+                            f"\n  {C}🔄 Picked back up after a save + refresh — here's where we left off:{X}"
+                        )
+                        print(f"  {D}{summary_text}{X}\n")
+                        # 2026-09-25: root-caused live — everything above
+                        # only ever printed/spoke the recap; nothing here
+                        # ever touched `history`, so the model's actual
+                        # context started genuinely empty every single
+                        # time, no matter how good the on-screen recap
+                        # looked. Elijah caught it by asking directly:
+                        # "will the new thread know what we were talking
+                        # about or will it have no idea like it's saying?"
+                        # -- and it really did have no idea, the recap was
+                        # cosmetic. Inject the summary as real context so
+                        # the model's first actual reply already knows
+                        # what was being worked on, not just the human
+                        # reading the screen.
+                        history.append(
+                            {
+                                "role": "system",
+                                "content": (
+                                    "[Resumed after a save + refresh compact. "
+                                    "The prior conversation was summarized "
+                                    "before restart; treat this as real prior "
+                                    "context, not something to re-derive or "
+                                    "ask about unless it's genuinely unclear.]\n"
+                                    + summary_text
+                                ),
+                            }
+                        )
+                        resumed_from_notes = True
                         try:
-                            threading.Thread(
-                                target=speak, args=(recap,), daemon=True
-                            ).start()
+                            first_bullet = next(
+                                (
+                                    l.lstrip("• ").strip()
+                                    for l in summary_text.splitlines()
+                                    if l.strip()
+                                ),
+                                "",
+                            )
+                            if first_bullet:
+                                threading.Thread(
+                                    target=speak,
+                                    args=(f"Picked back up. {first_bullet}",),
+                                    daemon=True,
+                                ).start()
                         except Exception:
                             pass
+                    else:
+                        chat_text = Path(flag_path).read_text(errors="replace")
+                        last_you = None
+                        for line in chat_text.splitlines():
+                            if "] You: " in line:
+                                candidate = line.split("] You: ", 1)[1]
+                                # Skip synthetic system-injected "user" turns --
+                                # [RUN RESULT], [TOOL FAILED], [Directive repair],
+                                # etc. -- only a real bracket-free thing Elijah
+                                # actually said belongs in the recap.
+                                if candidate.strip().startswith("["):
+                                    continue
+                                last_you = candidate
+                        if last_you:
+                            preview = last_you[:140] + (
+                                "…" if len(last_you) > 140 else ""
+                            )
+                            recap = f'🔄 Picked back up after an update — last thing you said: "{preview}"'
+                            print(f"\n  {C}{recap}{X}\n")
+                            history.append(
+                                {
+                                    "role": "system",
+                                    "content": (
+                                        "[Resumed after a restart, no full summary "
+                                        "available. The last thing the operator said "
+                                        "in the prior session was:]\n" + last_you
+                                    ),
+                                }
+                            )
+                            try:
+                                threading.Thread(
+                                    target=speak, args=(recap,), daemon=True
+                                ).start()
+                            except Exception:
+                                pass
                 except Exception as e:
                     log(f"RESUME_RECAP_ERROR: {e}")
     except Exception as e:
         log(f"RESUME_ERROR: {e}")
+    # 2026-09-25: `resumed_from_notes` existed as dead state (set False,
+    # never read) -- looks like this auto-continue was always the intent
+    # and never got wired up. Elijah caught the gap live: he'd just watched
+    # a real interrupted answer (a cloud outage cut off "explain sql" mid-
+    # turn) come back after a restart as a passive recap instead of the
+    # model actually finishing it. "It needs to be in the code to
+    # automatically continue on... i shouldn't have to prompt it to go. it
+    # should go." Queue the same PENDING_USER_NOTE mechanism the top of
+    # this loop already redirects to the AI as if it were typed input --
+    # this fires the continuation turn on the very first loop pass with no
+    # operator action, using whatever real context was just injected above.
+    # _RELOAD_CARRY_FILE below can still override this: an in-flight
+    # message the operator was actually mid-typing during a hot-reload
+    # takes priority over an auto-continue nudge from a save+refresh, and
+    # the two triggers shouldn't coincide in practice anyway.
+    if resumed_from_notes:
+        # 2026-09-25: first live run of this exact mechanism surfaced a
+        # real relevance bug, not a wiring bug -- Elijah: "it's still
+        # looking at the task list, which is okay, but it's starting
+        # fresh and not what we talked about. we were talking about aws
+        # and sql... it's in the structure, but the answer isn't
+        # relative." Every turn (this one included) also gets a separate,
+        # unrelated "[Current task list — N/N done]" block injected (see
+        # the dojo-gate task feed elsewhere in this file) -- with a vague
+        # "continue" instruction, the model latched onto that structured,
+        # unambiguous block instead of the prose summary, and answered
+        # about tasks instead of resuming the actual conversation topic.
+        # Spell out explicitly that a finished task list does not mean a
+        # finished conversation, so it can't be mistaken for the real
+        # continuation signal.
+        globals()["PENDING_USER_NOTE"] = (
+            "Continue automatically from the conversation summary above — "
+            "resume the SAME topic/discussion that was in progress "
+            "(including finishing an answer a cloud outage or restart may "
+            "have cut off), not a new one. A separate task list showing "
+            "all tasks done is unrelated and does NOT mean the "
+            "conversation itself is finished — ignore it for this "
+            "purpose. Don't ask what to do next unless the summary above "
+            "is genuinely ambiguous about what was being discussed."
+        )
     try:
         if _RELOAD_CARRY_FILE.exists():
             carried = _RELOAD_CARRY_FILE.read_text()
