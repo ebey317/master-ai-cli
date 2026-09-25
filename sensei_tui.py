@@ -871,11 +871,26 @@ class SenseiApp:
         # thinking animation (🥷 [thinking] ...) depending on state.
         # Restored 2026-04-20 per Elijah: "make sure the thoughts for
         # idle and thinking are on" — 1 row cost, real feedback benefit.
+        #
+        # 2026-09-25: status row (MODE/MODEL/CTX/MEM) moved here from the
+        # very top of the screen (see `root` below) — Elijah, mid-session:
+        # "once we start growing a thread it disappears and i don't see
+        # it. i don't know when i'm getting close to compressing." The row
+        # was never actually being pushed off-screen (the output window's
+        # weight=1 height already guarantees every fixed-height sibling
+        # stays visible, see its own comment) — the real issue was
+        # attention, not rendering: a voice/controller-driven session with
+        # no mouse naturally keeps eyes on the input area at the bottom,
+        # not a thin line at the very top of a long-running window. Moving
+        # it to sit directly above the input box puts CTX% (the thing he
+        # specifically needs to see coming) right where he's already
+        # looking every time he's about to type.
         input_stack = HSplit(
             [
                 ConditionalContainer(
                     self._tip_window, filter=Condition(self._show_tip_row)
                 ),
+                self._status_window,
                 self._input,
                 self._legend_window,
             ]
@@ -912,7 +927,6 @@ class SenseiApp:
         root = HSplit(
             [
                 self._header_window,
-                self._status_window,
                 self._output_frame,
                 self._frame,
             ]
