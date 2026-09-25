@@ -18694,6 +18694,105 @@ def _humanize_commit_subject(subject: str) -> str:
     return s[0].upper() + s[1:] if s else s
 
 
+_WHATSNEW_STATE = Path.home() / ".master_ai_whatsnew_state.json"
+
+
+def _load_whatsnew_last_shown() -> str:
+    try:
+        return json.loads(_WHATSNEW_STATE.read_text()).get("last_shown_sha", "")
+    except Exception:
+        return ""
+
+
+def _save_whatsnew_last_shown(sha: str) -> None:
+    try:
+        _WHATSNEW_STATE.write_text(json.dumps({"last_shown_sha": sha}))
+    except Exception:
+        pass
+
+
+def _valid_ref(repo_dir: str, ref: str) -> bool:
+    if not ref:
+        return False
+    r = subprocess.run(
+        ["git", "-C", repo_dir, "rev-parse", "--verify", "-q", f"{ref}^{{commit}}"],
+        capture_output=True,
+        timeout=5,
+    )
+    return r.returncode == 0
+
+
+def _whats_new_report(repo_dir: str, after: str, from_ref: str | None) -> str:
+    """Plain-English 'what changed' block for everything reaching `after`
+    that the operator hasn't been told about yet. Covers BOTH commits
+    pulled from origin AND local-only growth -- this session's own edits,
+    the nightly upstream-learn cron -- since neither of those touches
+    origin. Elijah: "even though it is done automatically, i'm not seeing
+    it" / "it needs to check that as well and tell me what's been updated
+    within the last time frame." `from_ref` bounds the range when it's
+    still a valid commit in this repo; otherwise falls back to the last 24
+    hours so a first-ever run doesn't dump the whole history. Returns ""
+    if there's nothing new."""
+    base_args = [
+        "git",
+        "-C",
+        repo_dir,
+        "log",
+        "--no-merges",
+        "--reverse",
+        "--pretty=format:%s",
+    ]
+    if _valid_ref(repo_dir, from_ref or ""):
+        log_r = subprocess.run(
+            base_args + [f"{from_ref}..{after}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    else:
+        log_r = subprocess.run(
+            base_args + ["--since=24 hours ago", after],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    subjects = [ln for ln in log_r.stdout.splitlines() if ln.strip()]
+    if not subjects:
+        return ""
+    shown = subjects[:12]
+    bullets = "\n".join(f"  - {_humanize_commit_subject(s)}" for s in shown)
+    if len(subjects) > len(shown):
+        bullets += f"\n  - ...and {len(subjects) - len(shown)} more small change(s)"
+    # Best-effort plain-language pass over the heuristic bullets above.
+    # Elijah: "I need to know what's new... described in non-engineering
+    # terms" -- prefix-remapping alone still leaves technical nouns in
+    # place. Free tier, and any failure (offline, rate-limited, key
+    # missing) just falls back to the heuristic bullets already built --
+    # this report must still work standalone with no cloud reachable.
+    plain = _ask_openrouter(
+        [
+            {
+                "role": "user",
+                "content": (
+                    "Rewrite this software changelog for someone who is not "
+                    "an engineer and doesn't know coding terms. One short "
+                    "plain-English line per item, no jargon, no code/file "
+                    "names, explain what it means for them day to day. Keep "
+                    "the same number of items.\n\n" + "\n".join(f"- {s}" for s in shown)
+                ),
+            }
+        ],
+        # 550B ultra, not the 120B super -- Elijah asked for the bigger
+        # one. It's slower (this repo's own _ask_openrouter() auto-floors
+        # 550b/ultra timeouts at 120s), which is fine: this only runs once
+        # per `update` / whats-new check, not in a hot loop.
+        "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "update-whats-new",
+        timeout=120,
+    )
+    return f"\nWhat's new:\n{(plain or bullets).strip()}\n"
+
+
 def _run_git_update(repo_dir: str | None = None) -> tuple[bool, str]:
     """Pull the repo master_ai.py (and everything alongside it, incl.
     sensei_tui.py) is symlinked from — the one real update mechanism,
@@ -18738,63 +18837,23 @@ def _run_git_update(repo_dir: str | None = None) -> tuple[bool, str]:
             text=True,
             timeout=10,
         ).stdout.strip()
+        # Report range starts from the last point the operator was actually
+        # shown a "what's new" -- not just from `before` -- so this also
+        # surfaces local-only growth (this session's own edits, the nightly
+        # upstream-learn cron) that never touched origin and would
+        # otherwise sit invisible between checks. Elijah: "it needs to
+        # check that as well and tell me what's been updated within the
+        # last time frame... even though it is done automatically, i'm not
+        # seeing it." Falls back to `before` (or, on a first-ever run, the
+        # last 24h) when there's no prior checkpoint.
+        last_shown = _load_whatsnew_last_shown()
+        report_from = last_shown if _valid_ref(repo_dir, last_shown) else before
+        whats_new = _whats_new_report(repo_dir, after, report_from)
+        _save_whatsnew_last_shown(after)
         if before == after:
+            if whats_new:
+                return True, f"Already up to date with the online copy.{whats_new}"
             return True, "Already up to date."
-        log_r = subprocess.run(
-            [
-                "git",
-                "-C",
-                repo_dir,
-                "log",
-                "--no-merges",
-                "--reverse",
-                "--pretty=format:%s",
-                f"{before}..{after}",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        subjects = [ln for ln in log_r.stdout.splitlines() if ln.strip()]
-        whats_new = ""
-        if subjects:
-            shown = subjects[:12]
-            bullets = "\n".join(f"  - {_humanize_commit_subject(s)}" for s in shown)
-            if len(subjects) > len(shown):
-                bullets += (
-                    f"\n  - ...and {len(subjects) - len(shown)} more small change(s)"
-                )
-            # Best-effort plain-language pass over the local heuristic bullets
-            # above. Elijah: "I need to know what's new... described in
-            # non-engineering terms" -- prefix-remapping alone still leaves
-            # technical nouns in place. Free tier, short timeout, and any
-            # failure (offline, rate-limited, key missing) just falls back
-            # to the heuristic bullets already built -- `update` must still
-            # work standalone with no cloud reachable.
-            plain = _ask_openrouter(
-                [
-                    {
-                        "role": "user",
-                        "content": (
-                            "Rewrite this software changelog for someone who is "
-                            "not an engineer and doesn't know coding terms. One "
-                            "short plain-English line per item, no jargon, no "
-                            "code/file names, explain what it means for them "
-                            "day to day. Keep the same number of items.\n\n"
-                            + "\n".join(f"- {s}" for s in shown)
-                        ),
-                    }
-                ],
-                # 550B ultra, not the 120B super -- Elijah asked for the
-                # bigger one here. It's slower (this repo's own
-                # _ask_openrouter() auto-floors 550b/ultra timeouts at
-                # 120s), which is fine: this call only happens once, right
-                # after a manual `update`, not in a hot loop.
-                "nvidia/nemotron-3-ultra-550b-a55b:free",
-                "update-whats-new",
-                timeout=120,
-            )
-            whats_new = f"\nWhat's new:\n{(plain or bullets).strip()}\n"
         return (
             True,
             f"Updated {before} -> {after}.{whats_new}Restarting to pick it up...",
@@ -23969,7 +24028,12 @@ def main():
         if lo in ("update", "master update"):
             print(f"\n  {C}Checking for updates...{X}", flush=True)
             ok, msg = _run_git_update()
-            if not ok or msg == "Already up to date.":
+            # startswith, not ==: "Already up to date with the online
+            # copy." (local-only growth report, nothing pulled) must skip
+            # the restart below same as the plain "Already up to date." --
+            # only an actual `before != after` pull changed anything on
+            # disk that needs picking up.
+            if not ok or msg.startswith("Already up to date"):
                 print(f"  {msg}\n")
                 continue
             print(f"  {G}{msg}{X}")
