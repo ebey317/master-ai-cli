@@ -92,10 +92,10 @@ check(
     f"{chars:,}",
 )
 
-# ── 6. Unknown model degrades to the legacy constant, never crashes ─
+# ── 6. Unknown model degrades to the floor, never crashes ───────────
 with_model("definitely-not-a-real-model-xyz")
 chars, toks, src = m._context_watermark()
-check("unknown model falls back safely", chars == m.CONTEXT_WATERMARK, src)
+check("unknown model falls back to floor", chars == m.CONTEXT_WATERMARK_FLOOR, src)
 check("unknown model reports no tokens", toks is None, toks)
 
 # ── 7. Empty/unset model doesn't explode ───────────────────────────

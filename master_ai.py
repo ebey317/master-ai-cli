@@ -692,10 +692,11 @@ _AUTOSAVE_LOCK = threading.Lock()
 # it was being discarded at catalog build time), at 95% of that window,
 # converted tokens → chars. The floor preserves the original freeze
 # guard for local/slow lanes so the April 2026 regression cannot return.
-CONTEXT_WATERMARK = 120000  # FALLBACK only — see _context_watermark()
+# REMOVED: CONTEXT_WATERMARK = 120000  # fallback only — see _context_watermark()
 CHARS_PER_TOKEN = 3.6  # conservative English/code average; safety margin
 CONTEXT_FILL_RATIO = 0.95  # Elijah: 95% of the model's real window
 CONTEXT_WATERMARK_FLOOR = 60000  # never below the pre-fix local guard
+_WATERMARK_HEADROOM = 0  # mutable headroom added when operator picks "keep going"
 FREE_SUFFIX = ":free"  # OpenRouter marks free tiers with this suffix
 # Per-lane context windows (tokens) for providers whose catalogs don't
 # publish context_length. Ollama's /api/show reports the true value at
@@ -709,6 +710,12 @@ PROVIDER_CONTEXT_TOKENS = {
     "poolside": 262144,
     "poolside-s": 262144,
     "poolside-xs": 262144,
+    "laguna": 262144,
+    "laguna-s": 262144,
+    "laguna-xs": 262144,
+    "laguna-s-2.1": 262144,
+    "laguna-xs-2.1": 262144,
+    "laguna-xs-2.1-free": 262144,
     "gemini": 1000000,
     "cerebras": 131072,
     "openrouter": 128000,
@@ -4488,9 +4495,11 @@ def orchestrate(history, user_text, image_path=None):
         except (EOFError, KeyboardInterrupt):
             ans = "1"
         if ans == "2":
-            new_wm = _wm + 20000
-            globals()["CONTEXT_WATERMARK"] = new_wm
-            print(f"  {G}✓ ok — watermark raised to {new_wm:,} for this session.{X}\n")
+            global _WATERMARK_HEADROOM
+            _WATERMARK_HEADROOM = 20000
+            print(
+                f"  {G}✓ ok — watermark raised by 20,000 chars for this session.{X}\n"
+            )
         else:
             return {
                 "route": "save_refresh",
@@ -10472,15 +10481,19 @@ def _active_model_context_tokens():
 def _context_watermark():
     """Char budget for the CURRENT model: 95% of its real context window.
 
-    Returns (chars, tokens, source). Falls back to the legacy 120,000
-    constant when the window can't be resolved, and never returns less
-    than CONTEXT_WATERMARK_FLOOR so slow local lanes keep the original
-    2026-04-19 freeze guard.
+    Returns (chars, tokens, source). Uses the model's documented
+    context_length when known; if the model cannot be identified it
+    degrades to CONTEXT_WATERMARK_FLOOR (the April-2026 local-ollama
+    freeze guard). The old hardcoded 120,000-char fallback has been
+    removed.
     """
     tokens, source = _active_model_context_tokens()
     if not tokens:
-        return CONTEXT_WATERMARK, None, "fallback:unknown-model"
-    chars = int(tokens * CONTEXT_FILL_RATIO * CHARS_PER_TOKEN)
+        # Unknown model — safety floor, no 120k fallback. The 2026-04-19
+        # freeze guard lives in CONTEXT_WATERMARK_FLOOR; we removed the
+        # arbitrary 120k constant because the model always has a real window.
+        return CONTEXT_WATERMARK_FLOOR, None, "floor:unknown-model"
+    chars = int(tokens * CONTEXT_FILL_RATIO * CHARS_PER_TOKEN) + _WATERMARK_HEADROOM
     if chars < CONTEXT_WATERMARK_FLOOR:
         return CONTEXT_WATERMARK_FLOOR, tokens, f"{source} (raised to floor)"
     return chars, tokens, source
@@ -21748,7 +21761,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
             for m in history
             if m.get("role") != "system"
         )
-        if _mid_loop_chars >= CONTEXT_WATERMARK:
+        if _mid_loop_chars >= _context_watermark()[0]:
             print(
                 _pill(
                     "STOPPED",
