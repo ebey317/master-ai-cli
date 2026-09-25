@@ -34,14 +34,14 @@ Use it as:
 | Capability | What it does |
 |---|---|
 | **Multi-provider routing** | Auto-selects local Ollama or cloud providers by task, speed, and cost. Falls back across tiers. |
-| **MCP integration** | Talks to external tools through the Model Context Protocol, not ad-hoc API glue. |
+| **MCP integration** | Real MCP client (stdio + SSE, JSON-RPC, schema-validated) — `mcp add <server>` registers one. Built, not yet run against a live third-party server. |
 | **Browser automation** | Chrome extension with content scripts, CDP wiring, form filling, file uploads, screenshot parsing. |
 | **Memory system** | Persistent cross-session memory for projects, preferences, and user context. |
 | **Subagent system** | Spawns specialized workers: code review, file discovery, test execution, context inspection, spend tracking. |
 | **Safety layer** | Approval queue for destructive actions, irreversible-action heuristics, privacy-cloud guard, permission modes. |
 | **Voice I/O** | TTS server and STT server for talking to and hearing back from the agent. |
 | **Vision** | Image understanding via LLaVA and image generation through the image engine. |
-| **Skill runtime** | State-machine execution so agents can learn and run reusable skills. |
+| **Skill runtime** | State-machine execution for reusable skills adapted from existing libraries (4 shipped: Google Workspace, web search, codebase inspection, debugging). Self-authoring a new skill from experience isn't built yet. |
 | **Multi-user profiles** | Up to 4 users per machine with isolated memory and config. |
 | **Systemd services** | TTS, UI, prewarm, deep-clean timers — runs as first-class system services. |
 | **Headless / delegation mode** | Non-interactive task execution with bounded tool turns and JSON output. |
