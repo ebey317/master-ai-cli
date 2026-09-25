@@ -885,9 +885,13 @@ def _ask_cloud_for_label(messages):
     This function backs session summarization (summarize_session, itself
     now cloud-only with no local fallback), so an unbounded hang here is
     a real quit-never-finishes risk, not a theoretical one."""
-    for asker in (ask_cloud_openrouter, ask_cloud_groq, ask_cloud_gemini):
+    for asker, _label in (
+        (ask_cloud_openrouter, "openrouter"),
+        (ask_cloud_groq, "groq"),
+        (ask_cloud_gemini, "gemini"),
+    ):
         try:
-            result = _call_with_hard_timeout(asker, messages)
+            result = _call_with_hard_timeout(asker, messages, cloud_provider=_label)
             if result:
                 return result
         except Exception:
@@ -7884,7 +7888,9 @@ _LOCAL_HARD_TIMEOUT = 600
 _MAX_AUTO_CONTINUATIONS = 3
 
 
-def _call_with_hard_timeout(fn, *args, timeout=_CLOUD_HARD_TIMEOUT, **kwargs):
+def _call_with_hard_timeout(
+    fn, *args, timeout=_CLOUD_HARD_TIMEOUT, cloud_provider=None, **kwargs
+):
     future = _CLOUD_CALL_EXECUTOR.submit(fn, *args, **kwargs)
     try:
         # 2026-08-30: poll in ~1s slices instead of one blocking
@@ -7914,34 +7920,35 @@ def _call_with_hard_timeout(fn, *args, timeout=_CLOUD_HARD_TIMEOUT, **kwargs):
             f"CLOUD_HARD_TIMEOUT: {getattr(fn, '__name__', fn)} exceeded {timeout}s "
             f"outer bound (its own internal timeout didn't fire) — giving up, moving on"
         )
-        # 2026-08-30: a single call being bounded to 90s isn't enough on its
-        # own — ask_cloud()'s fallback loop tries up to 7 providers in
-        # sequence, and if the hang is a broad network issue rather than
-        # one provider's problem, EACH fallback can individually eat its
-        # own 90s before giving up: 7 × 90s = 10.5 minutes worst case,
-        # which is exactly the multi-minute freeze reproduced live tonight
-        # even after the per-call cap landed. Trip the existing network
-        # circuit breaker here so _cloud_allowed() — which every _ask_*
-        # function already checks internally — makes the REST of this
-        # turn's fallback attempts skip near-instantly instead of each
-        # queueing up its own full timeout.
+        # 2026-08-30: originally tripped the GLOBAL network circuit here so
+        # ask_cloud()'s fallback loop (up to 7 providers) would skip its
+        # remaining candidates instantly instead of each eating its own
+        # 90s (7 x 90s = 10.5 min worst case, reproduced live).
         #
-        # 2026-09-07: reproduced live — a single provider taking too long
-        # on ONE unusually large request (the timeout itself just got
-        # raised from 90s->150s to fix truncated replies) tripped this
-        # GLOBAL 60s block, and a very slow fallback chain within that same
-        # turn could re-trip it again before it expired, extending the
-        # window further. The user's very NEXT, completely unrelated
-        # prompt then hit "cloud providers unavailable" for something that
-        # had nothing to do with it. A single slow-but-not-actually-down
-        # provider was getting treated as "the whole internet is down."
-        # The original 2026-08-30 intent — skip the REST of the CURRENT
-        # turn's remaining fallback candidates instantly — only needs a few
-        # seconds; it never needed to reach into the next, unrelated turn.
-        # Shortened 60s -> 10s so this still does its one real job (stop a
-        # bad turn from cascading through every remaining provider at full
-        # timeout each) without poisoning whatever the user asks next.
-        _cloud_trip_network(f"hard timeout in {getattr(fn, '__name__', fn)}", 10)
+        # 2026-09-07: reproduced live again — a single slow provider
+        # tripped the GLOBAL 60s block, and the user's very NEXT,
+        # unrelated prompt then hit "cloud providers unavailable." Fix
+        # attempt #1: shortened 60s -> 10s.
+        #
+        # 2026-09-25: reproduced AGAIN, live, on real cloud keys that were
+        # genuinely configured and reachable (Elijah, in the live Sensei
+        # thread: "providers are available" — checked, they were). Root
+        # cause was never the duration, it was the SCOPE: this wrapper is
+        # shared by every _call_with_hard_timeout() caller, and 6 of its
+        # 10 call sites in this file wrap ask_local/ask_local_stream, not
+        # a cloud call at all. A slow LOCAL Ollama response (routine on
+        # this machine's CPU inference) was tripping the CLOUD network
+        # circuit every time, for any duration, no matter how short. Fix
+        # #2, the actual one: only cloud callers opt in, by passing
+        # cloud_provider=<name>, and only THAT provider's own circuit
+        # trips (_cloud_trip, not _cloud_trip_network) -- a slow provider
+        # stops itself from being retried this turn without ever
+        # asserting anything about the other providers, let alone the
+        # whole network. Local callers pass nothing and trip nothing.
+        if cloud_provider:
+            _cloud_trip(
+                cloud_provider, f"hard timeout in {getattr(fn, '__name__', fn)}", 10
+            )
         return None
     except Exception as e:
         log(f"CLOUD_CALL_ERROR: {getattr(fn, '__name__', fn)}: {e}")
@@ -8136,7 +8143,7 @@ def ask_cloud(messages, provider="opencode"):
     r = (
         None
         if not _cloud_allowed(provider)
-        else _call_with_hard_timeout(_asker, messages)
+        else _call_with_hard_timeout(_asker, messages, cloud_provider=provider)
     )
     _router_metric(
         "model_call",
@@ -8186,7 +8193,9 @@ def ask_cloud(messages, provider="opencode"):
                 },
             ]
             log(f"CLOUD_AUTO_CONTINUE: provider={provider} round={_rounds}")
-            _more = _call_with_hard_timeout(_asker, _cont_messages)
+            _more = _call_with_hard_timeout(
+                _asker, _cont_messages, cloud_provider=provider
+            )
             if not _more:
                 break
             _so_far = _so_far + "\n\n" + _more
@@ -8230,7 +8239,7 @@ def ask_cloud(messages, provider="opencode"):
             continue
         seen_fallbacks.add(used_model)
         _t0 = time.time()
-        r = _call_with_hard_timeout(fn, messages)
+        r = _call_with_hard_timeout(fn, messages, cloud_provider=used_model)
         _router_metric(
             "model_call",
             model=used_model,
