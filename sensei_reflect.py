@@ -82,13 +82,13 @@ def extract_error_signature(ev: dict) -> str | None:
 
 
 def build_digest(events: list[dict]) -> dict:
-    sources = Counter()
-    kinds = Counter()
-    verdicts = Counter()
-    results = Counter()
-    source_kind = Counter()
-    hour_hist = Counter()
-    error_sigs = Counter()
+    sources: Counter[str] = Counter()
+    kinds: Counter[str] = Counter()
+    verdicts: Counter[str] = Counter()
+    results: Counter[str] = Counter()
+    source_kind: Counter[str] = Counter()
+    hour_hist: Counter[int] = Counter()
+    error_sigs: Counter[str] = Counter()
 
     first_ts: datetime | None = None
     last_ts: datetime | None = None

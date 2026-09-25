@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from . import status as _status_module
 from . import waste as _waste_module
@@ -18,10 +19,11 @@ from .reports import write_jsonl, write_review_html, write_summary
 from .schemas import ActionRecord, CapabilityReport, FindingRecord, ItemRecord
 
 # Optional: source-of-truth privacy policy is harvest.py when present.
+_harvest: Any = None
 try:
     import harvest as _harvest  # type: ignore
 except Exception:  # pragma: no cover
-    _harvest = None
+    pass
 
 
 def _private_reason(path: str) -> str:

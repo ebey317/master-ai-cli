@@ -47,7 +47,7 @@ def save_schedules(schedules):
     SCHEDULES_FILE.write_text(json.dumps(schedules, indent=2))
 
 
-def _next_time(when: str, cadence: str, now: datetime = None):
+def _next_time(when: str, cadence: str, now: datetime | None = None):
     """Next occurrence strictly after `now`.
 
     2026-09-01: the fire decision used to call this with `now` as the
@@ -198,7 +198,7 @@ def daemon_status():
 
 
 def add_schedule(
-    command: str, when: str = "00:00", cadence: str = "daily", sid: str = None
+    command: str, when: str = "00:00", cadence: str = "daily", sid: str | None = None
 ):
     schedules = load_schedules()
     sid = sid or f"sched_{int(time.time())}"

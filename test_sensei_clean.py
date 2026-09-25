@@ -123,7 +123,7 @@ class SenseiCleanTests(unittest.TestCase):
             self.assertFalse(sample.exists())
 
             undo = result.undo_record
-            self.assertIsNotNone(undo)
+            assert undo is not None
             undo_result = adapter.undo(undo)
             self.assertTrue(undo_result.success)
             self.assertTrue(sample.exists())

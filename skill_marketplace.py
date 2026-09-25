@@ -267,7 +267,8 @@ class AuditResult:
 def _scan_file_for_findings(path: Path, text: str, is_recipe: bool) -> tuple:
     """Returns (bypass_findings, other_findings) as lists of
     'path:line: pattern' strings."""
-    bypass, other = [], []
+    bypass: list[str] = []
+    other: list[str] = []
     lines = text.splitlines()
     has_sandbox_import = bool(_SANDBOX_IMPORT_RE.search(text))
 

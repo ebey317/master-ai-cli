@@ -1854,6 +1854,8 @@ class CdpClient:
         return self.evaluate(expr)
 
     def screenshot(self) -> str:
+        if not self._ws_url:
+            raise RuntimeError("not connected")
         res = _cdp_json_rpc(self._ws_url, "Page.captureScreenshot")
         return res.get("data", "")
 

@@ -48,6 +48,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 MCP_DIR = Path.home() / ".master_ai_mcp"
 CATALOG_PATH = MCP_DIR / "servers.json"
@@ -184,8 +185,8 @@ class StdioMcpClient:
         self.args = list(args or [])
         self.env = env or {}
         self.proc: subprocess.Popen | None = None
-        self._q = queue.Queue()
-        self._reader = None
+        self._q: queue.Queue[dict[str, Any] | None] = queue.Queue()
+        self._reader: threading.Thread | None = None
         self._id = 0
         self._lock = threading.Lock()
 
@@ -207,6 +208,9 @@ class StdioMcpClient:
     def _read_loop(self) -> None:
         """Parse both newline-delimited JSON and framed
         `Content-Length: N\\r\\n\\r\\n{...}` responses."""
+        assert (
+            self.proc is not None and self.proc.stdout is not None
+        ), "_read_loop runs on a thread start() spawns after self.proc is set"
         f = self.proc.stdout
         try:
             while True:
@@ -242,18 +246,21 @@ class StdioMcpClient:
     def _rpc(
         self,
         method: str,
-        params: dict = None,
+        params: dict | None = None,
         timeout: float = RPC_TIMEOUT_S,
         notify: bool = False,
     ):
         with self._lock:
             self._id += 1
             msg_id = self._id
-        msg = {"jsonrpc": "2.0", "method": method}
+        msg: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
         if params is not None:
             msg["params"] = params
         if not notify:
             msg["id"] = msg_id
+        assert (
+            self.proc is not None and self.proc.stdin is not None
+        ), "_rpc requires start() to have been called first"
         try:
             self.proc.stdin.write(json.dumps(msg) + "\n")
             self.proc.stdin.flush()
@@ -351,11 +358,11 @@ class SseMcpClient:
     def __init__(self, url: str, headers: dict | None = None):
         self.url = url
         self.headers = dict(headers or {})
-        self._q = queue.Queue()
-        self._post_url = None
-        self._err = None
+        self._q: queue.Queue[dict[str, Any] | None] = queue.Queue()
+        self._post_url: str | None = None
+        self._err: str | None = None
         self._started = threading.Event()
-        self._thread = None
+        self._thread: threading.Thread | None = None
         self._id = 0
         self._lock = threading.Lock()
 
@@ -371,7 +378,8 @@ class SseMcpClient:
                 self.url, headers={"Accept": "text/event-stream", **self.headers}
             )
             resp = urllib.request.urlopen(req, timeout=CONNECT_TIMEOUT_S)
-            event, data_lines = "", []
+            event: str = ""
+            data_lines: list[str] = []
             while True:
                 raw = resp.readline()
                 if not raw:
@@ -418,14 +426,14 @@ class SseMcpClient:
     def _rpc(
         self,
         method: str,
-        params: dict = None,
+        params: dict | None = None,
         timeout: float = RPC_TIMEOUT_S,
         notify: bool = False,
     ):
         with self._lock:
             self._id += 1
             msg_id = self._id
-        msg = {"jsonrpc": "2.0", "method": method}
+        msg: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
         if params is not None:
             msg["params"] = params
         if not notify:
@@ -622,18 +630,17 @@ def add_server(name: str, target: str, transport: str = "") -> dict:
 
     _log(f"PROBE add {name} {t} {target}")
     probe = probe_and_validate(entry)
-    entry.update(
-        {
-            "name": name,
-            "enabled": bool(probe["valid"]),
-            "added": datetime.now().isoformat(),
-            "last_validated": probe["probed_at"],
-            "valid": probe["valid"],
-            "problems": probe["problems"],
-            "tool_names": probe["tool_names"],
-            "server_info": probe["server_info"],
-        }
-    )
+    update_fields: dict[str, Any] = {
+        "name": name,
+        "enabled": bool(probe["valid"]),
+        "added": datetime.now().isoformat(),
+        "last_validated": probe["probed_at"],
+        "valid": probe["valid"],
+        "problems": probe["problems"],
+        "tool_names": probe["tool_names"],
+        "server_info": probe["server_info"],
+    }
+    entry.update(update_fields)
     cat["servers"][name] = entry
     _save_catalog(cat)
 

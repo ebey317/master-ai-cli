@@ -4,6 +4,7 @@ from collections import defaultdict
 from collections.abc import Iterable
 from pathlib import Path
 
+from .adapters.base import BaseAdapter
 from .adapters.local_fs import LocalFSAdapter
 from .apply import apply_actions, undo_actions
 from .schemas import ActionRecord, ApplyResult, CapabilityReport, UndoRecord
@@ -17,7 +18,7 @@ DEFAULT_LOCAL_ROOTS = [
 ]
 
 
-def build_adapter(adapter_name: str, run_id: str):
+def build_adapter(adapter_name: str, run_id: str) -> BaseAdapter:
     if adapter_name.startswith("rclone:"):
         from .adapters.rclone_remote import RcloneRemoteAdapter
 
@@ -69,7 +70,7 @@ def apply_per_adapter(
 
 
 def undo_per_adapter(records: Iterable[UndoRecord]) -> list[ApplyResult]:
-    adapters: dict[str, object] = {}
+    adapters: dict[str, BaseAdapter] = {}
     results: list[ApplyResult] = []
     for record in records:
         if record.adapter not in adapters:

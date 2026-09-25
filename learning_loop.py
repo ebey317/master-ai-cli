@@ -125,10 +125,10 @@ def analyze_skill(name: str, last_n: int = 50) -> AnalysisReport:
         )
 
     success = aborted = incomplete = 0
-    abort_by_step = Counter()
-    error_by_step = Counter()
-    error_messages = Counter()
-    retried_steps = Counter()
+    abort_by_step: Counter[str] = Counter()
+    error_by_step: Counter[str] = Counter()
+    error_messages: Counter[str] = Counter()
+    retried_steps: Counter[str] = Counter()
 
     for sess in sessions:
         if sess.get("done") and not sess.get("aborted"):
@@ -187,7 +187,7 @@ def analyze_skill(name: str, last_n: int = 50) -> AnalysisReport:
 
 def analyze_all() -> dict:
     """Convenience: analyze every adapted skill under SKILLS_ROOT."""
-    out = {}
+    out: dict[str, AnalysisReport] = {}
     if not SKILLS_ROOT.is_dir():
         return out
     for d in sorted(SKILLS_ROOT.iterdir()):

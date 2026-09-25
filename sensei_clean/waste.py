@@ -20,6 +20,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterable
 from datetime import datetime, timezone
+from typing import cast
 
 from .schemas import FindingRecord, ItemRecord
 
@@ -67,7 +68,10 @@ def oldest_files(items: Iterable[ItemRecord], n: int = 20) -> list[ItemRecord]:
     forgot, not to penalize records with missing metadata."""
     with_ts = [(it, _modified_ts(it)) for it in items]
     with_ts = [(it, ts) for it, ts in with_ts if ts is not None]
-    with_ts.sort(key=lambda pair: pair[1])
+    # Already filtered ts is not None just above; mypy can't carry that
+    # narrowing through the list comprehension into the sort key's tuple
+    # element type, so tell it explicitly rather than fight the inference.
+    with_ts.sort(key=lambda pair: cast(float, pair[1]))
     return [it for it, _ in with_ts[:n]]
 
 

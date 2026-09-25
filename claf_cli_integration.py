@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from session_router import ask_extension, get_router
 
 
-def parse_extension_directive(user_input: str) -> tuple[str, dict]:
+def parse_extension_directive(user_input: str) -> tuple[str | None, dict | None]:
     """
     Parse directives like:
       "extension click button.submit"

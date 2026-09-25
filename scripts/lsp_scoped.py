@@ -12,7 +12,6 @@ import threading
 from . import profile_scope
 
 _LOCK = threading.Lock()
-_SERVICES: dict[str, object] = {}
 
 
 class LSPServiceStub:
@@ -24,6 +23,9 @@ class LSPServiceStub:
 
     def is_active(self) -> bool:
         return bool(self.enabled)
+
+
+_SERVICES: dict[str, LSPServiceStub] = {}
 
 
 def get_service() -> LSPServiceStub | None:

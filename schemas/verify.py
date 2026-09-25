@@ -54,7 +54,7 @@ def main() -> int:
         ]
 
     # 3. Fixture suite
-    fixtures = [
+    fixtures: list[tuple[str, dict, bool, str]] = [
         # (envelope_name, payload, expected_valid, description)
         (
             "PlannerStep",

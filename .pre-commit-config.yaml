@@ -42,6 +42,17 @@ repos:
         # renamed to sensei_clean_cli.py, so there's no longer a real
         # collision for any exclude flag to work around.
         args: [--ignore-missing-imports, --follow-imports=silent]
+        # appforge/templates/**/*.py are code-generation templates: they
+        # contain literal `{{PLACEHOLDER}}` tokens (AppForge's own
+        # substitution syntax, not real Python names) that only become
+        # valid, checkable Python after generation replaces them. mypy
+        # correctly flags the placeholder as an undefined name in the raw
+        # template -- that's not a bug to fix, the template was never
+        # meant to type-check as-is. This is pre-commit's own `exclude`
+        # (filters files before the hook ever runs), which actually works,
+        # unlike mypy's own `--exclude` flag against explicit file args
+        # (see the 2026-09-25 note above).
+        exclude: ^appforge/templates/
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0
     hooks:

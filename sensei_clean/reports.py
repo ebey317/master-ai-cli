@@ -4,12 +4,21 @@ import html
 import json
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any, Protocol
 
 from .schemas import ActionRecord, CapabilityReport, FindingRecord, ItemRecord
 from .waste import summary as waste_summary
 
 
-def write_jsonl(path: str, records: Iterable[object]) -> None:
+class _HasToDict(Protocol):
+    """Every sensei_clean schema record (ItemRecord, FindingRecord,
+    ActionRecord, ...) implements this; write_jsonl only needs the method,
+    not any one specific record type."""
+
+    def to_dict(self) -> dict[str, Any]: ...
+
+
+def write_jsonl(path: str, records: Iterable[_HasToDict]) -> None:
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", encoding="utf-8") as handle:

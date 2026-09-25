@@ -24,7 +24,7 @@ import learning_loop as ll
 import skill_marketplace as sm
 
 
-def browse(source: str = None) -> str:
+def browse(source: str | None = None) -> str:
     """`skill browse [source]` — list skills available in a source,
     flagging which are already adapted under ~/.master_ai_skills/."""
     try:
@@ -94,7 +94,7 @@ def _session_abort_messages(name: str) -> list:
     from skill_runtime import SKILLS_ROOT
 
     d = SKILLS_ROOT / name / "sessions"
-    msgs = []
+    msgs: list[str] = []
     if not d.is_dir():
         return msgs
     for f in sorted(d.glob("*.json")):

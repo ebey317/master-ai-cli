@@ -29,6 +29,7 @@ import sys
 from collections import defaultdict
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 from sensei_clean import status as _status
 from sensei_clean import waste as _waste
@@ -47,10 +48,11 @@ from sensei_clean.schemas import (
 # Source of truth for privacy: the harvest module if available, else a
 # minimal fallback that flags the same path roots. Import is optional
 # so sensei-clean stays installable even without master_ai/harvest.py.
+_harvest: Any = None
 try:
     import harvest as _harvest  # type: ignore
 except Exception:  # pragma: no cover
-    _harvest = None
+    pass
 
 
 BANNER = "Sensei Clean — review-first local cleanup"
@@ -340,11 +342,13 @@ def cmd_scan_all(args: argparse.Namespace) -> int:
         list_cloud=list_cloud,
     )
 
-    s = _waste.summary(items, findings, biggest_n=10, oldest_n=10)
+    summary = _waste.summary(items, findings, biggest_n=10, oldest_n=10)
     print(f"Run dir          : {run_path}")
-    print(f"Files seen       : {s['total_items']:,} / {s['total_bytes_human']}")
-    print(f"Duplicate cluster: {s['duplicate_clusters']}")
-    print(f"Reclaim ready    : {s['reclaim_bytes_human']}")
+    print(
+        f"Files seen       : {summary['total_items']:,} / {summary['total_bytes_human']}"
+    )
+    print(f"Duplicate cluster: {summary['duplicate_clusters']}")
+    print(f"Reclaim ready    : {summary['reclaim_bytes_human']}")
     print(f"Report           : {run_path / 'reports' / 'summary.md'}")
     print(f"Review HTML      : {run_path / 'reports' / 'review.html'}")
     print()
@@ -423,9 +427,12 @@ def cmd_open(args: argparse.Namespace) -> int:
         )
         return 2
 
+    # Every branch above either assigns `chosen` or returns early.
+    assert chosen is not None
+
     # Pick the right adapter for this item so cloud URLs resolve.
     adapter_name = chosen.source.get("adapter", "")
-    adapter = None
+    adapter: RcloneRemoteAdapter | LocalFSAdapter
     if adapter_name.startswith("rclone:"):
         remote = adapter_name.split(":", 1)[1]
         adapter = RcloneRemoteAdapter(run_id=chosen.run_id, remote=remote)

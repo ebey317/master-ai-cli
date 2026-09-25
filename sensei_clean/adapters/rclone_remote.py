@@ -315,7 +315,9 @@ class RcloneRemoteAdapter(CloudDriveAdapter):
                 success=False,
                 message=f"non-rclone source: {action.source_path}",
             )
-        if not (action.destination_path or "").startswith("rclone:"):
+        if action.destination_path is None or not action.destination_path.startswith(
+            "rclone:"
+        ):
             return ApplyResult(
                 action_id=action.action_id,
                 success=False,

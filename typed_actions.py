@@ -542,8 +542,12 @@ def parse_reply_with_bodies(
             out.append(action)
 
     # CREATE/EDIT body-block state machine (master_ai.py:9260-9298).
-    in_block, cur_path, cur_content = False, None, []
-    cur_find, cur_replace, in_find, in_replace = None, None, False, False
+    in_block = False
+    cur_path: str | None = None
+    cur_content: list[str] = []
+    cur_find: list[str] | None = None
+    cur_replace: list[str] | None = None
+    in_find, in_replace = False, False
     created_targets: list = []
     edited_targets: list = []
     for line in lines:
@@ -885,7 +889,8 @@ def make_envelope_from_side_panel_payload(raw: dict) -> ActionResult:
     kind = str(raw_action.get("kind") or raw.get("kind") or "").upper()
     target = str(raw_action.get("target") or raw.get("target") or "")
     action_id = str(raw.get("action_id") or raw_action.get("id") or "")
-    final = raw.get("final_state") if isinstance(raw.get("final_state"), dict) else {}
+    _final_raw = raw.get("final_state")
+    final: dict = _final_raw if isinstance(_final_raw, dict) else {}
     result = str(raw.get("result") or "").lower()
     verdict = str(raw.get("verdict") or "").lower()
 

@@ -196,9 +196,9 @@ def cmd_build() -> int:
         row_count = conn.execute("SELECT COUNT(*) FROM docs").fetchone()[0]
     elapsed = time.time() - started
     print(f"sensei_memory_index: built in {elapsed:.2f}s  total_rows={row_count}")
-    for path, n in totals:
+    for path_str, n in totals:
         marker = "+" if n else "."
-        print(f"  {marker} {n:>6}  {path}")
+        print(f"  {marker} {n:>6}  {path_str}")
     return 0
 
 
