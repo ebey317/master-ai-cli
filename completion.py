@@ -1,22 +1,21 @@
-from enum import Enum
 from dataclasses import dataclass
+from enum import Enum
+
+import discord
 import openai
 from openai import AsyncOpenAI
-
-from src.moderation import moderate_message
-from typing import Optional, List
+from src.base import Conversation, Message, Prompt, ThreadConfig
 from src.constants import (
     BOT_INSTRUCTIONS,
     BOT_NAME,
     EXAMPLE_CONVOS,
 )
-import discord
-from src.base import Message, Prompt, Conversation, ThreadConfig
-from src.utils import split_into_shorter_messages, close_thread, logger
 from src.moderation import (
-    send_moderation_flagged_message,
+    moderate_message,
     send_moderation_blocked_message,
+    send_moderation_flagged_message,
 )
+from src.utils import close_thread, logger, split_into_shorter_messages
 
 MY_BOT_NAME = BOT_NAME
 MY_BOT_EXAMPLE_CONVOS = EXAMPLE_CONVOS
@@ -34,15 +33,15 @@ class CompletionResult(Enum):
 @dataclass
 class CompletionData:
     status: CompletionResult
-    reply_text: Optional[str]
-    status_text: Optional[str]
+    reply_text: str | None
+    status_text: str | None
 
 
 client = AsyncOpenAI()
 
 
 async def generate_completion_response(
-    messages: List[Message], user: str, thread_config: ThreadConfig
+    messages: list[Message], user: str, thread_config: ThreadConfig
 ) -> CompletionData:
     try:
         prompt = Prompt(
@@ -88,13 +87,12 @@ async def generate_completion_response(
             return CompletionData(
                 status=CompletionResult.TOO_LONG, reply_text=None, status_text=str(e)
             )
-        else:
-            logger.exception(e)
-            return CompletionData(
-                status=CompletionResult.INVALID_REQUEST,
-                reply_text=None,
-                status_text=str(e),
-            )
+        logger.exception(e)
+        return CompletionData(
+            status=CompletionResult.INVALID_REQUEST,
+            reply_text=None,
+            status_text=str(e),
+        )
     except Exception as e:
         logger.exception(e)
         return CompletionData(
@@ -113,7 +111,7 @@ async def process_response(
         if not reply_text:
             sent_message = await thread.send(
                 embed=discord.Embed(
-                    description=f"**Invalid response** - empty response",
+                    description="**Invalid response** - empty response",
                     color=discord.Color.yellow(),
                 )
             )
@@ -132,7 +130,7 @@ async def process_response(
 
             await thread.send(
                 embed=discord.Embed(
-                    description=f"⚠️ **This conversation has been flagged by moderation.**",
+                    description="⚠️ **This conversation has been flagged by moderation.**",
                     color=discord.Color.yellow(),
                 )
             )
@@ -146,7 +144,7 @@ async def process_response(
 
         await thread.send(
             embed=discord.Embed(
-                description=f"❌ **The response has been blocked by moderation.**",
+                description="❌ **The response has been blocked by moderation.**",
                 color=discord.Color.red(),
             )
         )

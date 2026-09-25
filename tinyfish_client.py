@@ -15,6 +15,7 @@ Exposes the free/search tools Sensei actually needs:
 2026-09-07: added so Sensei CLI can route web_search() through TinyFish
 when a key is present, matching Hermes' `search_backend: tinyfish` setup.
 """
+
 from __future__ import annotations
 
 import json
@@ -22,7 +23,7 @@ import os
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 SEARCH_URL = "https://api.search.tinyfish.ai"
 FETCH_URL = "https://api.fetch.tinyfish.ai"
@@ -30,9 +31,12 @@ BROWSER_URL = "https://api.browser.tinyfish.ai"
 WALLET_URL = "https://agent.tinyfish.ai/v1/wallet"
 
 
-def _load_key() -> Optional[str]:
+def _load_key() -> str | None:
     """Resolve the TinyFish API key from env or Hermes .env."""
-    for key in (os.environ.get("TINYFISH_API_KEY"), os.environ.get("MCP_TINYFISH_API_KEY")):
+    for key in (
+        os.environ.get("TINYFISH_API_KEY"),
+        os.environ.get("MCP_TINYFISH_API_KEY"),
+    ):
         if key and key.strip():
             return key.strip()
     env_path = Path.home() / ".hermes" / ".env"
@@ -49,7 +53,7 @@ def _load_key() -> Optional[str]:
     return None
 
 
-_API_KEY: Optional[str] = _load_key()
+_API_KEY: str | None = _load_key()
 
 
 def has_key() -> bool:
@@ -58,7 +62,7 @@ def has_key() -> bool:
     return _API_KEY is not None
 
 
-def api_key() -> Optional[str]:
+def api_key() -> str | None:
     global _API_KEY
     _API_KEY = _load_key()
     return _API_KEY
@@ -83,7 +87,9 @@ def _get_json(url: str, headers: dict[str, str], timeout: float = 30.0) -> Any:
         return json.loads(resp.read().decode("utf-8", errors="replace"))
 
 
-def _post_json(url: str, body: dict, headers: dict[str, str], timeout: float = 30.0) -> Any:
+def _post_json(
+    url: str, body: dict, headers: dict[str, str], timeout: float = 30.0
+) -> Any:
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -104,14 +110,14 @@ def _delete(url: str, headers: dict[str, str], timeout: float = 15.0) -> Any:
 def search(
     query: str,
     *,
-    location: Optional[str] = None,
-    language: Optional[str] = None,
-    recency_minutes: Optional[int] = None,
-    after_date: Optional[str] = None,
-    before_date: Optional[str] = None,
-    domain_type: Optional[str] = None,
-    page: Optional[int] = None,
-    purpose: Optional[str] = None,
+    location: str | None = None,
+    language: str | None = None,
+    recency_minutes: int | None = None,
+    after_date: str | None = None,
+    before_date: str | None = None,
+    domain_type: str | None = None,
+    page: int | None = None,
+    purpose: str | None = None,
     timeout: float = 30.0,
 ) -> dict[str, Any]:
     """Run a TinyFish Search API query. Returns the raw JSON dict."""
@@ -138,10 +144,10 @@ def fetch_content(
     urls: list[str],
     *,
     output_format: str = "markdown",
-    links: Optional[bool] = None,
-    image_links: Optional[bool] = None,
-    ttl: Optional[int] = None,
-    per_url_timeout_ms: Optional[int] = None,
+    links: bool | None = None,
+    image_links: bool | None = None,
+    ttl: int | None = None,
+    per_url_timeout_ms: int | None = None,
     timeout: float = 150.0,
 ) -> dict[str, Any]:
     """Run TinyFish Fetch for one or more URLs. Returns raw JSON dict."""
@@ -163,8 +169,8 @@ def wallet(timeout: float = 30.0) -> dict[str, Any]:
 
 
 def create_browser_session(
-    url: Optional[str] = None,
-    timeout_seconds: Optional[int] = None,
+    url: str | None = None,
+    timeout_seconds: int | None = None,
     timeout: float = 90.0,
 ) -> dict[str, Any]:
     """Create a TinyFish remote browser session."""

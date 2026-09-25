@@ -113,7 +113,7 @@ python3 ~/scripts/test_sandbox_escape.py
        key = (path, cwd)
        if key in _APPROVALS_WITH_TTL:
            entry = _APPROVALS_WITH_TTL[key]
-           if time.time() - entry['approved_at'] > entry['ttl_seconds']:
+           if time.time() - entry["approved_at"] > entry["ttl_seconds"]:
                del _APPROVALS_WITH_TTL[key]  # Expired; re-gate
                return False, "approval expired"
        return _cwd_fence_ok(path)
@@ -143,10 +143,11 @@ python3 ~/scripts/test_secret_fence.py
    ```python
    OUTPUT_CAP_BYTES = 50 * 1024 * 1024
    _output_bytes_this_turn = 0
-   
+
+
    def _safe_emit(text):
        global _output_bytes_this_turn
-       _output_bytes_this_turn += len(text.encode('utf-8'))
+       _output_bytes_this_turn += len(text.encode("utf-8"))
        if _output_bytes_this_turn > OUTPUT_CAP_BYTES:
            _SENSEI_APP.emit_error(f"[OUTPUT CAP HIT] Max {OUTPUT_CAP_BYTES} bytes")
            return False

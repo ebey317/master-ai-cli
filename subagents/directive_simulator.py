@@ -39,16 +39,18 @@ def run(task, context=None):
     actions = _ta.parse_reply(text)
     out = []
     for a in actions:
-        out.append({
-            "kind":             a.kind,
-            "target":           a.target,
-            "risk":             a.risk,
-            "requires_confirm": a.requires_confirm,
-        })
+        out.append(
+            {
+                "kind": a.kind,
+                "target": a.target,
+                "risk": a.risk,
+                "requires_confirm": a.requires_confirm,
+            }
+        )
     high = [a for a in out if a["risk"] == "high"]
     return {
-        "actions":   out,
-        "count":     len(out),
+        "actions": out,
+        "count": len(out),
         "high_risk": high,
-        "summary":   f"{len(out)} directive(s); {len(high)} high-risk",
+        "summary": f"{len(out)} directive(s); {len(high)} high-risk",
     }

@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Iterable, Sequence
 
 # Same admission rule the upstream used: a query term must appear in at least
 # one token of the search text for an entry to be considered. We keep the

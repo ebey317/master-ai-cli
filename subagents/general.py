@@ -26,23 +26,22 @@ from __future__ import annotations
 
 import os
 import re
-import sys
-import json
 import subprocess
+import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 name = "general"
 description = "Execute free-form tasks using file/terminal/network tools"
 
 
-def _parse_task(task: str) -> List[Dict[str, Any]]:
+def _parse_task(task: str) -> list[dict[str, Any]]:
     """Turn a free-form task string into a list of directive specs."""
     t = (task or "").strip()
     if not t:
         return []
     low = t.lower()
-    actions: List[Dict[str, Any]] = []
+    actions: list[dict[str, Any]] = []
 
     # READ
     m = re.match(r"^read\s+(.+)$", t, re.IGNORECASE)
@@ -55,9 +54,18 @@ def _parse_task(task: str) -> List[Dict[str, Any]]:
         return [{"kind": "create", "path": m.group(1).strip(), "content": m.group(2)}]
 
     # EDIT path replace OLD with NEW
-    m = re.match(r"^edit\s+(.+?)\s+replace\s+(.+?)\s+with\s+(.+)$", t, re.IGNORECASE | re.DOTALL)
+    m = re.match(
+        r"^edit\s+(.+?)\s+replace\s+(.+?)\s+with\s+(.+)$", t, re.IGNORECASE | re.DOTALL
+    )
     if m:
-        return [{"kind": "edit", "path": m.group(1).strip(), "old": m.group(2), "new": m.group(3)}]
+        return [
+            {
+                "kind": "edit",
+                "path": m.group(1).strip(),
+                "old": m.group(2),
+                "new": m.group(3),
+            }
+        ]
 
     # RUN command
     m = re.match(r"^run\s+(.+)$", t, re.IGNORECASE)
@@ -72,26 +80,54 @@ def _parse_task(task: str) -> List[Dict[str, Any]]:
     # SEARCH / GREP routing to file_finder
     m = re.match(r"^search\s+(.+)$", t, re.IGNORECASE)
     if m:
-        return [{"kind": "subagent", "name": "file_finder", "task": f"name:{m.group(1).strip()}"}]
+        return [
+            {
+                "kind": "subagent",
+                "name": "file_finder",
+                "task": f"name:{m.group(1).strip()}",
+            }
+        ]
     m = re.match(r"^grep\s+(.+?)\s+in\s+(.+)$", t, re.IGNORECASE)
     if m:
-        return [{"kind": "subagent", "name": "file_finder", "task": f"grep:{m.group(1).strip()} in:{m.group(2).strip()}"}]
+        return [
+            {
+                "kind": "subagent",
+                "name": "file_finder",
+                "task": f"grep:{m.group(1).strip()} in:{m.group(2).strip()}",
+            }
+        ]
     m = re.match(r"^grep\s+(.+)$", t, re.IGNORECASE)
     if m:
-        return [{"kind": "subagent", "name": "file_finder", "task": f"grep:{m.group(1).strip()}"}]
+        return [
+            {
+                "kind": "subagent",
+                "name": "file_finder",
+                "task": f"grep:{m.group(1).strip()}",
+            }
+        ]
 
     # Heuristic: contains words that imply file creation
     if any(w in low for w in ("write", "create file", "make file", "save")):
-        parts = re.split(r"\s+(?:with|containing|saying|that says)\s+", t, flags=re.IGNORECASE, maxsplit=1)
+        parts = re.split(
+            r"\s+(?:with|containing|saying|that says)\s+",
+            t,
+            flags=re.IGNORECASE,
+            maxsplit=1,
+        )
         path = parts[0].split()[-1] if parts else ""
         content = parts[1] if len(parts) > 1 else ""
         if path:
             return [{"kind": "create", "path": path, "content": content}]
 
     # Heuristic: contains words that imply a shell command
-    if any(w in low for w in ("list", "show", "print", "get", "check", "status", "run", "execute")):
+    if any(
+        w in low
+        for w in ("list", "show", "print", "get", "check", "status", "run", "execute")
+    ):
         # If the user says "list files in X" produce RUN: ls X
-        m = re.match(r"^(?:list|show)\s+(?:the\s+)?files\s+(?:in|of)\s+(.+)$", t, re.IGNORECASE)
+        m = re.match(
+            r"^(?:list|show)\s+(?:the\s+)?files\s+(?:in|of)\s+(.+)$", t, re.IGNORECASE
+        )
         if m:
             return [{"kind": "run", "command": f"ls -la {m.group(1).strip()}"}]
         return [{"kind": "run", "command": t}]
@@ -100,7 +136,7 @@ def _parse_task(task: str) -> List[Dict[str, Any]]:
     return [{"kind": "subagent", "name": "file_finder", "task": f"name:{t}"}]
 
 
-def _run_directive(spec: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+def _run_directive(spec: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     """Execute one directive using the same sandbox helpers the child runner
     would use. This keeps the general subagent self-contained."""
     kind = spec.get("kind")
@@ -168,13 +204,29 @@ def _run_directive(spec: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, A
 
     if kind == "run":
         cmd = spec["command"]
-        dangerous = {"rm", "sudo", "mkfs", "dd", "format", "fdisk", "parted",
-                     "shutdown", "reboot", "poweroff", "passwd", "su", "ssh", "scp"}
+        dangerous = {
+            "rm",
+            "sudo",
+            "mkfs",
+            "dd",
+            "format",
+            "fdisk",
+            "parted",
+            "shutdown",
+            "reboot",
+            "poweroff",
+            "passwd",
+            "su",
+            "ssh",
+            "scp",
+        }
         lowered = cmd.lower()
         if any(d in lowered for d in dangerous):
             return {"error": f"blocked dangerous command: {cmd}"}
         try:
-            r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
+            r = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True, timeout=60
+            )
             out = (r.stdout or "") + (r.stderr or "")
             return {"output": out[:4000], "returncode": r.returncode}
         except Exception as e:
@@ -185,8 +237,12 @@ def _run_directive(spec: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, A
         if not re.match(r"^https?://", url):
             return {"error": "only http/https allowed"}
         try:
-            r = subprocess.run(["curl", "-sL", "--max-time", "30", url],
-                               capture_output=True, text=True, timeout=35)
+            r = subprocess.run(
+                ["curl", "-sL", "--max-time", "30", url],
+                capture_output=True,
+                text=True,
+                timeout=35,
+            )
             out = (r.stdout or "") + (r.stderr or "")
             return {"output": out[:4000]}
         except Exception as e:
@@ -197,6 +253,7 @@ def _run_directive(spec: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, A
         sys.path.insert(0, str(Path(__file__).parent.parent))
         try:
             import subagent_registry as _sr
+
             _sr.discover()
             return _sr.run(spec["name"], spec["task"], context=context)
         except Exception as e:
@@ -205,7 +262,7 @@ def _run_directive(spec: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, A
     return {"error": f"unknown directive kind: {kind}"}
 
 
-def run(task: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def run(task: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
     context = context or {}
     specs = _parse_task(task)
     if not specs:
@@ -230,11 +287,15 @@ def run(task: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         elif kind == "edit":
             summary_parts.append(f"edited {res.get('edited', 'file')}")
         elif kind == "run":
-            summary_parts.append(f"run rc={res.get('returncode')} output={res.get('output', '')[:40]}")
+            summary_parts.append(
+                f"run rc={res.get('returncode')} output={res.get('output', '')[:40]}"
+            )
         elif kind == "fetch":
             summary_parts.append(f"fetched {len(res.get('output', ''))} chars")
         elif kind == "subagent":
-            summary_parts.append(f"subagent {r['spec'].get('name')} returned {len(str(res))} chars")
+            summary_parts.append(
+                f"subagent {r['spec'].get('name')} returned {len(str(res))} chars"
+            )
 
     return {
         "task": task,

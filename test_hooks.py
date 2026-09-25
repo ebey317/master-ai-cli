@@ -28,10 +28,16 @@ class RegistryShape(unittest.TestCase):
         # turn_answer_start added 2026-05-15 (Phase 5.6) — observer-only,
         # fires once per /chat response before the reply is returned.
         expected = {
-            "pre_run", "post_run", "pre_runterm", "post_runterm",
-            "pre_read", "post_read",
-            "pre_create", "post_create",
-            "pre_edit", "post_edit",
+            "pre_run",
+            "post_run",
+            "pre_runterm",
+            "post_runterm",
+            "pre_read",
+            "post_read",
+            "pre_create",
+            "post_create",
+            "pre_edit",
+            "post_edit",
             "on_blocked",
             "turn_answer_start",
         }
@@ -53,8 +59,11 @@ class RegistryShape(unittest.TestCase):
     def test_register_rejects_unknown_kind(self):
         reg = hooks.HookRegistry()
         with self.assertRaises(ValueError):
-            reg.register(hooks.Hook(id="bad", kind="pre_dance",
-                                    fn=lambda *a, **kw: hooks.FireResult()))
+            reg.register(
+                hooks.Hook(
+                    id="bad", kind="pre_dance", fn=lambda *a, **kw: hooks.FireResult()
+                )
+            )
 
     def test_enable_disable(self):
         # Pull a built-in out and back in.
@@ -75,6 +84,7 @@ class SyntaxCheckHook(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_valid_python_passes(self):
@@ -88,8 +98,7 @@ class SyntaxCheckHook(unittest.TestCase):
         # Deliberate SyntaxError
         p.write_text("def foo(:\n    return 1\n")
         r = hooks.fire("post_edit", str(p))
-        self.assertTrue(r.blocked,
-            "deliberate SyntaxError should block on post_edit")
+        self.assertTrue(r.blocked, "deliberate SyntaxError should block on post_edit")
         self.assertIn("syntax", r.reason.lower())
         self.assertIn("syntax-check-py", r.hook_id)
 
@@ -117,6 +126,7 @@ class ShellSyntaxCheckHook(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_valid_shell_passes(self):
@@ -185,8 +195,7 @@ class FireUnknownKindReturnsResult(unittest.TestCase):
 
 class JsonLoader(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json",
-                                                delete=False)
+        self.tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
         self.tmp.close()
         self.path = Path(self.tmp.name)
 
@@ -197,10 +206,12 @@ class JsonLoader(unittest.TestCase):
             pass
 
     def test_loads_user_hook_default_disabled(self):
-        data = {"version": 1, "hooks": [
-            {"id": "lint-after-edit", "kind": "post_edit",
-             "shell": "echo {target}"}
-        ]}
+        data = {
+            "version": 1,
+            "hooks": [
+                {"id": "lint-after-edit", "kind": "post_edit", "shell": "echo {target}"}
+            ],
+        }
         self.path.write_text(json.dumps(data))
         n = hooks.reload_user_hooks(self.path)
         self.assertEqual(n, 1)
@@ -209,21 +220,24 @@ class JsonLoader(unittest.TestCase):
         self.assertEqual(h.kind, "post_edit")
         self.assertFalse(h.enabled, "user hooks must default to enabled=False")
         # Built-ins still here
-        self.assertTrue(any(h.id == "syntax-check-py-post-edit"
-                            for h in hooks.list_hooks()))
+        self.assertTrue(
+            any(h.id == "syntax-check-py-post-edit" for h in hooks.list_hooks())
+        )
         # Reload clears prior user hooks
         self.path.write_text(json.dumps({"version": 1, "hooks": []}))
         hooks.reload_user_hooks(self.path)
-        self.assertFalse(any(h.id == "lint-after-edit"
-                             for h in hooks.list_hooks()))
+        self.assertFalse(any(h.id == "lint-after-edit" for h in hooks.list_hooks()))
 
     def test_malformed_entry_skipped(self):
-        data = {"version": 1, "hooks": [
-            {"id": "missing-kind", "shell": "echo x"},        # no kind
-            {"id": "bad-kind", "kind": "pre_dance", "shell": "echo x"},
-            {"id": "ok-one", "kind": "post_edit", "shell": "echo ok"},
-            "not a dict",
-        ]}
+        data = {
+            "version": 1,
+            "hooks": [
+                {"id": "missing-kind", "shell": "echo x"},  # no kind
+                {"id": "bad-kind", "kind": "pre_dance", "shell": "echo x"},
+                {"id": "ok-one", "kind": "post_edit", "shell": "echo ok"},
+                "not a dict",
+            ],
+        }
         self.path.write_text(json.dumps(data))
         n = hooks.reload_user_hooks(self.path)
         self.assertEqual(n, 1)
@@ -244,8 +258,7 @@ class DisabledBuiltinDoesNotBlock(unittest.TestCase):
         try:
             hooks.disable("syntax-check-py-post-edit")
             r = hooks.fire("post_edit", tmp.name)
-            self.assertFalse(r.blocked,
-                "disabled hook should not block")
+            self.assertFalse(r.blocked, "disabled hook should not block")
         finally:
             hooks.enable("syntax-check-py-post-edit")
             os.unlink(tmp.name)

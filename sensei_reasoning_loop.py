@@ -442,7 +442,7 @@ def run_reasoning_loop(
             if recent:
                 tail = recent[-3:]
                 ctx = "\n".join(
-                    f"- prior Q: {r.get('query','')}\n  prior A: {r.get('answer','')[:200]}"
+                    f"- prior Q: {r.get('query', '')}\n  prior A: {r.get('answer', '')[:200]}"
                     for r in tail
                 )
                 full_query = f"Context from prior reasoning loops:\n{ctx}\n\nCURRENT QUESTION:\n{query}"

@@ -12,11 +12,10 @@ Covers:
   * engine.scan_run writes waste.json AND updates the status state
     after a full scan (using monkeypatched STATE_FILE).
 """
+
 from __future__ import annotations
 
 import json
-import os
-import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -28,24 +27,49 @@ from sensei_clean.engine import scan_run
 from sensei_clean.schemas import FindingRecord, ItemRecord
 
 
-def _item(name="x.txt", size=10, sha=None, modified="2026-01-01T00:00:00Z",
-          category="Reading", sensitivity="documents"):
+def _item(
+    name="x.txt",
+    size=10,
+    sha=None,
+    modified="2026-01-01T00:00:00Z",
+    category="Reading",
+    sensitivity="documents",
+):
     return ItemRecord(
         schema_version="sensei.item.v1",
         run_id="r1",
         item_id=f"id:{name}",
-        source={"adapter": "local_fs", "provider": "local", "capability": "local",
-                "account_label": "u", "root": "/tmp"},
-        identity={"path": f"/tmp/{name}", "provider_id": f"/tmp/{name}",
-                  "parent_id": "/tmp"},
+        source={
+            "adapter": "local_fs",
+            "provider": "local",
+            "capability": "local",
+            "account_label": "u",
+            "root": "/tmp",
+        },
+        identity={
+            "path": f"/tmp/{name}",
+            "provider_id": f"/tmp/{name}",
+            "parent_id": "/tmp",
+        },
         kind="file",
         display_name=name,
         mime="text/plain",
         size_bytes=size,
         timestamps={"created": None, "modified": modified, "taken": None},
-        hashes={"sha256": sha, "md5": None, "provider_hash": None, "perceptual_hash": None},
-        features={"extension": ".txt", "dimensions": None, "duration_seconds": None,
-                  "text_snippet": None, "face_count": None, "screenshot_likely": False},
+        hashes={
+            "sha256": sha,
+            "md5": None,
+            "provider_hash": None,
+            "perceptual_hash": None,
+        },
+        features={
+            "extension": ".txt",
+            "dimensions": None,
+            "duration_seconds": None,
+            "text_snippet": None,
+            "face_count": None,
+            "screenshot_likely": False,
+        },
         sensitivity=sensitivity,
         category_guess=category,
         confidence=1.0,
@@ -81,19 +105,25 @@ class WasteAnalyticsTests(unittest.TestCase):
         self.assertIn("GB", _waste.human_bytes(2 * 1024 * 1024 * 1024))
 
     def test_reclaimable_bytes_keeps_largest_per_cluster(self):
-        items = [_item("a.txt", size=100, sha="X"),
-                 _item("b.txt", size=80, sha="X"),
-                 _item("c.txt", size=50, sha="X"),
-                 _item("d.txt", size=10, sha="Y")]
-        findings = [_finding([items[0].item_id, items[1].item_id, items[2].item_id], "X")]
+        items = [
+            _item("a.txt", size=100, sha="X"),
+            _item("b.txt", size=80, sha="X"),
+            _item("c.txt", size=50, sha="X"),
+            _item("d.txt", size=10, sha="Y"),
+        ]
+        findings = [
+            _finding([items[0].item_id, items[1].item_id, items[2].item_id], "X")
+        ]
         # cluster has 100, 80, 50 — keep 100, reclaim 80+50 = 130
         self.assertEqual(_waste.reclaimable_bytes(items, findings), 130)
 
     def test_biggest_files_sorts_and_excludes_empty(self):
-        items = [_item("small.txt", size=1),
-                 _item("empty.txt", size=0),
-                 _item("huge.bin", size=1_000_000),
-                 _item("medium.txt", size=500)]
+        items = [
+            _item("small.txt", size=1),
+            _item("empty.txt", size=0),
+            _item("huge.bin", size=1_000_000),
+            _item("medium.txt", size=500),
+        ]
         big = _waste.biggest_files(items, n=2)
         self.assertEqual([i.display_name for i in big], ["huge.bin", "medium.txt"])
 
@@ -108,9 +138,11 @@ class WasteAnalyticsTests(unittest.TestCase):
         self.assertEqual(names[0], "kept.txt")
 
     def test_by_category_sorts_by_bytes_descending(self):
-        items = [_item("a", size=10, category="Photos"),
-                 _item("b", size=200, category="Videos"),
-                 _item("c", size=5,  category="Photos")]
+        items = [
+            _item("a", size=10, category="Photos"),
+            _item("b", size=200, category="Videos"),
+            _item("c", size=5, category="Photos"),
+        ]
         cats = _waste.by_category(items)
         keys = list(cats.keys())
         self.assertEqual(keys[0], "Videos")
@@ -118,9 +150,11 @@ class WasteAnalyticsTests(unittest.TestCase):
         self.assertEqual(cats["Photos"], (2, 15))
 
     def test_summary_shape_for_report(self):
-        items = [_item("a", size=100, sha="X"),
-                 _item("b", size=100, sha="X"),
-                 _item("c", size=50)]
+        items = [
+            _item("a", size=100, sha="X"),
+            _item("b", size=100, sha="X"),
+            _item("c", size=50),
+        ]
         findings = [_finding([items[0].item_id, items[1].item_id], "X")]
         s = _waste.summary(items, findings)
         self.assertEqual(s["total_items"], 3)
@@ -161,15 +195,21 @@ class StatusTrackerTests(unittest.TestCase):
         self.assertEqual(loaded["last_total_items"], 1234)
         self.assertEqual(loaded["last_reclaim_bytes"], 12345)
         self.assertEqual(loaded["last_duplicate_clusters"], 7)
-        self.assertEqual(loaded["last_sources"], ["/home/me/Downloads", "rclone:gdrive:"])
+        self.assertEqual(
+            loaded["last_sources"], ["/home/me/Downloads", "rclone:gdrive:"]
+        )
         msg = _status.format_status()
         self.assertIn("1,234", msg)
         self.assertIn("rclone:gdrive:", msg)
 
     def test_record_apply_layered_onto_existing_state(self):
         _status.record_full_scan(
-            run_dir="/tmp/run1", total_items=10, total_bytes=10,
-            reclaim_bytes=0, duplicate_clusters=0, sources=[],
+            run_dir="/tmp/run1",
+            total_items=10,
+            total_bytes=10,
+            reclaim_bytes=0,
+            duplicate_clusters=0,
+            sources=[],
         )
         _status.record_apply(run_dir="/tmp/run1", applied=3, failed=0)
         loaded = _status.load_state()
@@ -191,8 +231,10 @@ class EngineWritesWasteAndStatusTests(unittest.TestCase):
             (src / "c.txt").write_text("unique", encoding="utf-8")
 
             state_dir = root / "state"
-            with mock.patch.object(_status, "STATE_DIR", state_dir), \
-                 mock.patch.object(_status, "STATE_FILE", state_dir / "state.json"):
+            with (
+                mock.patch.object(_status, "STATE_DIR", state_dir),
+                mock.patch.object(_status, "STATE_FILE", state_dir / "state.json"),
+            ):
                 run_path, caps, items, findings, actions = scan_run(
                     roots=[str(src)],
                     sha256=True,

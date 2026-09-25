@@ -29,7 +29,9 @@ if _SCRIPTS not in sys.path:
 import observability as _obs
 
 name = "spend_reporter"
-description = "Efficiency rollup: harvest hits, route distribution, execution success rate"
+description = (
+    "Efficiency rollup: harvest hits, route distribution, execution success rate"
+)
 
 
 def run(task, context=None):
@@ -52,11 +54,11 @@ def run(task, context=None):
     total_ex = ok + fail
     succ = (ok * 100 // total_ex) if total_ex else 0
     return {
-        "harvest":    {"hits": hits, "records": records, "ratio_pct": ratio},
-        "by_route":   summary.get("by_route", {}),
-        "by_model":   summary.get("by_model", {}),
+        "harvest": {"hits": hits, "records": records, "ratio_pct": ratio},
+        "by_route": summary.get("by_route", {}),
+        "by_model": summary.get("by_model", {}),
         "executions": {"ok": ok, "fail": fail, "success_pct": succ},
-        "blocked":    summary.get("blocked", {}),
+        "blocked": summary.get("blocked", {}),
         "summary": (
             f"harvest ratio: {ratio}%  ·  "
             f"execution success: {succ}%  ·  "

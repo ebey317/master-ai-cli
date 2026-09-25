@@ -101,8 +101,10 @@ def pick_local_model(log=None) -> str:
     if log:
         best_b = params_b(best)
         if best_b is not None and best_b > max_b:
-            log(f"HARDWARE_PICK: nothing pulled fits RAM {ram}GB "
-                f"(max {max_b}B) — degraded to '{best}'")
+            log(
+                f"HARDWARE_PICK: nothing pulled fits RAM {ram}GB "
+                f"(max {max_b}B) — degraded to '{best}'"
+            )
         else:
             log(f"HARDWARE_PICK: RAM {ram}GB (max {max_b}B) -> {best}")
     return best

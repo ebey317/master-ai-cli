@@ -35,8 +35,12 @@ _SMELL_PATTERNS = [
 def _check_py(path: str) -> list:
     issues = []
     try:
-        r = subprocess.run(["python3", "-m", "py_compile", path],
-                           capture_output=True, text=True, timeout=10)
+        r = subprocess.run(
+            ["python3", "-m", "py_compile", path],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
     except Exception:
         return [{"path": path, "kind": "tool", "msg": "py_compile unavailable"}]
     if r.returncode != 0:
@@ -58,8 +62,9 @@ def _check_py(path: str) -> list:
 def _check_sh(path: str) -> list:
     issues = []
     try:
-        r = subprocess.run(["bash", "-n", path],
-                           capture_output=True, text=True, timeout=10)
+        r = subprocess.run(
+            ["bash", "-n", path], capture_output=True, text=True, timeout=10
+        )
     except Exception:
         return [{"path": path, "kind": "tool", "msg": "bash -n unavailable"}]
     if r.returncode != 0:
@@ -87,8 +92,13 @@ def run(task, context=None):
             issues.extend(_check_sh(p))
             reviewed += 1
         else:
-            issues.append({"path": p, "kind": "skip",
-                           "msg": "unsupported extension (.py/.sh only)"})
+            issues.append(
+                {
+                    "path": p,
+                    "kind": "skip",
+                    "msg": "unsupported extension (.py/.sh only)",
+                }
+            )
     summary = (
         f"{reviewed} file(s) reviewed; "
         f"{len([i for i in issues if i['kind'] == 'syntax'])} syntax, "

@@ -3,21 +3,27 @@
 the JS-side PermissionManager unit tests join the same `python3 -m unittest`
 suite as everything else. Skips cleanly if Node isn't on PATH.
 """
-import os
+
 import shutil
 import subprocess
-import sys
 import unittest
 from pathlib import Path
 
-JS_TEST = Path(__file__).resolve().parent / "sensei_extension" / "test" / "test_permission_manager.js"
+JS_TEST = (
+    Path(__file__).resolve().parent
+    / "sensei_extension"
+    / "test"
+    / "test_permission_manager.js"
+)
 
 
 class PermissionManagerSmoke(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if not shutil.which("node"):
-            raise unittest.SkipTest("node not on PATH — PermissionManager JS tests skipped")
+            raise unittest.SkipTest(
+                "node not on PATH — PermissionManager JS tests skipped"
+            )
         if not JS_TEST.is_file():
             raise unittest.SkipTest(f"missing test runner at {JS_TEST}")
 

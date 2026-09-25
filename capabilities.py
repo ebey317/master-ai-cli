@@ -18,11 +18,12 @@ object, not on a raw boolean. For Hypnotix the decision is
 the next capability that needs confirmation (e.g.,
 terminal.run_destructive_command).
 """
+
 from __future__ import annotations
 
 import importlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Optional
 
 REGISTRY_VERSION = "0.1.0"
 SAFETY_POLICY_VERSION = "0.1.0"
@@ -94,8 +95,8 @@ class Decision:
     allow: bool
     requires_confirmation: bool
     reason: str
-    capability: Optional[Capability] = None
-    verify_target: Optional[str] = None
+    capability: Capability | None = None
+    verify_target: str | None = None
 
 
 # --- Allowlists -----------------------------------------------------------
@@ -107,7 +108,7 @@ class Decision:
 DESKTOP_APP_ALLOWLIST = {"hypnotix", "thunderbird"}
 
 
-def _matches_desktop_launch(cmd: str) -> Optional[str]:
+def _matches_desktop_launch(cmd: str) -> str | None:
     """Return the matched app name if cmd is a simple launch of an allowed app.
 
     Accepts `<app>` or `<app> &`. Rejects anything with extra arguments to
@@ -135,6 +136,7 @@ def _parse_notify_args(cmd: str) -> tuple[str, str, str]:
     sensei-notify.sh title body crit → title, body, 'critical'
     """
     import shlex
+
     title = "Sensei"
     body = ""
     urgency = "normal"
@@ -272,7 +274,9 @@ class Registry:
             # Intercept bare `notify-send ...` directives emitted by older
             # prompts and route them through the verified wrapper instead.
             stripped = (args or "").strip()
-            if stripped.startswith("notify-send") or stripped.startswith("sensei-notify"):
+            if stripped.startswith("notify-send") or stripped.startswith(
+                "sensei-notify"
+            ):
                 cap = self._capabilities.get("desktop.notify")
                 title, body, urgency = _parse_notify_args(stripped)
                 return Decision(
@@ -289,7 +293,7 @@ class Registry:
             capability=None,
         )
 
-    def get(self, name: str) -> Optional[Capability]:
+    def get(self, name: str) -> Capability | None:
         return self._capabilities.get(name)
 
     def names(self) -> list[str]:
@@ -297,7 +301,7 @@ class Registry:
 
 
 # Module-level singleton — avoids constructing the registry on every import
-_REGISTRY: Optional[Registry] = None
+_REGISTRY: Registry | None = None
 
 
 def get_registry() -> Registry:

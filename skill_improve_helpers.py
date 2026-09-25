@@ -20,8 +20,8 @@ import difflib
 import json
 from pathlib import Path
 
-import skill_marketplace as sm
 import learning_loop as ll
+import skill_marketplace as sm
 
 
 def browse(source: str = None) -> str:
@@ -46,8 +46,10 @@ def audit(name: str) -> str:
     if not name:
         return "usage: skill audit <name>"
     res = sm.audit_adapted_skill(name)
-    lines = [f"audit {name}: {'PASS' if res.passed else 'FAIL'} "
-             f"({res.scanned_files} file(s) scanned)"]
+    lines = [
+        f"audit {name}: {'PASS' if res.passed else 'FAIL'} "
+        f"({res.scanned_files} file(s) scanned)"
+    ]
     for r in res.reasons:
         lines.append(f"  ✗ {r}")
     for w in res.warnings[:8]:
@@ -62,8 +64,10 @@ def install(source: str, skill_id: str) -> str:
     outright (same UX as mcp enable refusing a broken server). On pass,
     stage raw files + say plainly that STEPS adaptation is still needed."""
     if not source or not skill_id:
-        return ("usage: skill install <source> <skill-id>\n"
-                "  (skill ids come from `skill browse` — e.g. research/web-search-ddgr)")
+        return (
+            "usage: skill install <source> <skill-id>\n"
+            "  (skill ids come from `skill browse` — e.g. research/web-search-ddgr)"
+        )
     result = sm.install_skill(source, skill_id)
     a = result["audit"]
     if not result["staged"]:
@@ -71,8 +75,10 @@ def install(source: str, skill_id: str) -> str:
         for r in a["reasons"]:
             lines.append(f"  ✗ {r}")
         return "\n".join(lines)
-    lines = [f"staged {skill_id} → {result['path']}",
-             f"  audit: PASS ({a['scanned_files']} file(s) scanned)"]
+    lines = [
+        f"staged {skill_id} → {result['path']}",
+        f"  audit: PASS ({a['scanned_files']} file(s) scanned)",
+    ]
     for w in a["warnings"][:5]:
         lines.append(f"  ⚠ {w}")
     lines.append(result["note"])
@@ -81,10 +87,12 @@ def install(source: str, skill_id: str) -> str:
 
 # ─── skill improve — the learning loop entry point ──────────────────
 
+
 def _session_abort_messages(name: str) -> list:
     """Pull the final abort `message` from each aborted session's
     state.data (the runtime stores the gate message there)."""
     from skill_runtime import SKILLS_ROOT
+
     d = SKILLS_ROOT / name / "sessions"
     msgs = []
     if not d.is_dir():
@@ -195,11 +203,17 @@ def improve(name: str):
     filepath, find_text, replace_text, rationale = fix
     out.append("")
     out.append(f"MECHANICAL FIX IDENTIFIED — {rationale}")
-    out.append("proposed diff (goes through the typed EDIT confirm gate — "
-               "nothing is written without your approval):")
+    out.append(
+        "proposed diff (goes through the typed EDIT confirm gate — "
+        "nothing is written without your approval):"
+    )
     for line in difflib.unified_diff(
-            find_text.splitlines(), replace_text.splitlines(),
-            fromfile=f"{filepath} (current)", tofile="proposed", lineterm=""):
+        find_text.splitlines(),
+        replace_text.splitlines(),
+        fromfile=f"{filepath} (current)",
+        tofile="proposed",
+        lineterm="",
+    ):
         out.append(f"  {line}")
     return "\n".join(out), {
         "filepath": filepath,

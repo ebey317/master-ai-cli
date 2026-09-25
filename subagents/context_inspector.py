@@ -47,17 +47,21 @@ def run(task, context=None):
     for entry in meta.get("sliced", []):
         if isinstance(entry, tuple) and len(entry) == 4:
             path, sym, start, end = entry
-            sliced_out.append({
-                "path":   str(path),
-                "symbol": str(sym),
-                "start":  int(start),
-                "end":    int(end),
-            })
+            sliced_out.append(
+                {
+                    "path": str(path),
+                    "symbol": str(sym),
+                    "start": int(start),
+                    "end": int(end),
+                }
+            )
     return {
-        "inject_chars":            len(injected or ""),
-        "whole_file_requested":    bool(meta.get("whole_file_requested")),
-        "big_file_no_symbol_match": [str(p) for p in meta.get("big_file_no_symbol_match", [])],
-        "sliced":                  sliced_out,
+        "inject_chars": len(injected or ""),
+        "whole_file_requested": bool(meta.get("whole_file_requested")),
+        "big_file_no_symbol_match": [
+            str(p) for p in meta.get("big_file_no_symbol_match", [])
+        ],
+        "sliced": sliced_out,
         "summary": (
             f"{len(sliced_out)} slice(s); "
             f"{len(meta.get('big_file_no_symbol_match', []))} big-file-no-symbol; "

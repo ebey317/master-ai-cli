@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Dict, Iterable, List
+from collections.abc import Iterable
 
 from .policy import requires_monitored_review
 from .ranker import score_action, score_item
@@ -28,12 +28,14 @@ def build_queue(
     items: Iterable[ItemRecord],
     actions: Iterable[ActionRecord],
     capabilities: Iterable[CapabilityReport],
-) -> Dict[str, List[dict]]:
+) -> dict[str, list[dict]]:
     capability_map = {cap.adapter: cap for cap in capabilities}
-    lanes: Dict[str, List[dict]] = defaultdict(list)
+    lanes: dict[str, list[dict]] = defaultdict(list)
     for item in items:
         capability = capability_map.get(item.source["adapter"])
-        lane = lane_for_item(item, capability.capability if capability else "unavailable")
+        lane = lane_for_item(
+            item, capability.capability if capability else "unavailable"
+        )
         lanes[lane].append(
             {
                 "type": "item",

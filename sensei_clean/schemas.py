@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 def _require(value: Any, name: str) -> None:
@@ -13,9 +13,9 @@ def _require(value: Any, name: str) -> None:
 class AccessGrant:
     mode: str
     granted: bool
-    details: Dict[str, Any] = field(default_factory=dict)
+    details: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -27,9 +27,9 @@ class CapabilityReport:
     account_label: str
     root: str
     available: bool
-    supported_actions: List[str] = field(default_factory=list)
-    blockers: List[str] = field(default_factory=list)
-    notes: List[str] = field(default_factory=list)
+    supported_actions: list[str] = field(default_factory=list)
+    blockers: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
 
     def validate(self) -> None:
         _require(self.adapter, "adapter")
@@ -37,7 +37,7 @@ class CapabilityReport:
         _require(self.capability, "capability")
         _require(self.root, "root")
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         self.validate()
         return asdict(self)
 
@@ -47,23 +47,23 @@ class ItemRecord:
     schema_version: str
     run_id: str
     item_id: str
-    source: Dict[str, Any]
-    identity: Dict[str, Any]
+    source: dict[str, Any]
+    identity: dict[str, Any]
     kind: str
     display_name: str
     mime: str
     size_bytes: int
-    timestamps: Dict[str, Any]
-    hashes: Dict[str, Any]
-    features: Dict[str, Any]
+    timestamps: dict[str, Any]
+    hashes: dict[str, Any]
+    features: dict[str, Any]
     sensitivity: str
     category_guess: str
     confidence: float
     risk: int
-    reversible_actions: List[str]
-    required_access: List[str]
-    dependencies: List[str]
-    notes: List[str] = field(default_factory=list)
+    reversible_actions: list[str]
+    required_access: list[str]
+    dependencies: list[str]
+    notes: list[str] = field(default_factory=list)
 
     def validate(self) -> None:
         _require(self.schema_version, "schema_version")
@@ -78,7 +78,7 @@ class ItemRecord:
         if not 0 <= self.risk <= 100:
             raise ValueError("risk must be between 0 and 100")
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         self.validate()
         return asdict(self)
 
@@ -89,12 +89,12 @@ class FindingRecord:
     run_id: str
     finding_id: str
     finding_type: str
-    item_ids: List[str]
+    item_ids: list[str]
     confidence: float
     risk: int
     summary: str
-    evidence: Dict[str, Any] = field(default_factory=dict)
-    notes: List[str] = field(default_factory=list)
+    evidence: dict[str, Any] = field(default_factory=dict)
+    notes: list[str] = field(default_factory=list)
 
     def validate(self) -> None:
         _require(self.schema_version, "schema_version")
@@ -108,7 +108,7 @@ class FindingRecord:
         if not 0 <= self.risk <= 100:
             raise ValueError("risk must be between 0 and 100")
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         self.validate()
         return asdict(self)
 
@@ -122,14 +122,14 @@ class ActionRecord:
     adapter: str
     item_id: str
     source_path: str
-    destination_path: Optional[str]
+    destination_path: str | None
     confidence: float
     risk: int
     reversible: bool
     lane: str
     reason: str
     approval_required: bool
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
         _require(self.schema_version, "schema_version")
@@ -144,7 +144,7 @@ class ActionRecord:
         if not 0 <= self.risk <= 100:
             raise ValueError("risk must be between 0 and 100")
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         self.validate()
         return asdict(self)
 
@@ -158,7 +158,7 @@ class UndoRecord:
     action_id: str
     source_path: str
     destination_path: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
         _require(self.schema_version, "schema_version")
@@ -169,7 +169,7 @@ class UndoRecord:
         _require(self.source_path, "source_path")
         _require(self.destination_path, "destination_path")
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         self.validate()
         return asdict(self)
 
@@ -179,11 +179,11 @@ class ApplyResult:
     action_id: str
     success: bool
     message: str
-    undo_record: Optional[UndoRecord] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    undo_record: UndoRecord | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         if self.undo_record is not None:
-          data["undo_record"] = self.undo_record.to_dict()
+            data["undo_record"] = self.undo_record.to_dict()
         return data

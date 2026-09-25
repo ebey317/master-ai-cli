@@ -23,7 +23,6 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
 
 
 class LoopState(str, Enum):
@@ -70,19 +69,14 @@ class RefusedTransition(Exception):
 _TRANSITIONS: dict[tuple[LoopState, Event], LoopState] = {
     (LoopState.IDLE, Event.USER_INPUT): LoopState.PLANNING,
     (LoopState.IDLE, Event.NEW_SESSION): LoopState.IDLE,
-
     (LoopState.PLANNING, Event.MODEL_EMITTED_DIRECTIVE): LoopState.EXECUTING,
     (LoopState.PLANNING, Event.MODEL_EMITTED_DONE): LoopState.DONE,
     (LoopState.PLANNING, Event.MODEL_EMITTED_QUESTION): LoopState.AWAITING_USER,
-
     (LoopState.EXECUTING, Event.TOOL_DISPATCHED): LoopState.AWAITING_TOOL_RESULT,
-
     (LoopState.AWAITING_TOOL_RESULT, Event.TOOL_RESULT): LoopState.PLANNING,
     (LoopState.AWAITING_TOOL_RESULT, Event.TERMINAL_RESULT): LoopState.DONE,
     (LoopState.AWAITING_TOOL_RESULT, Event.CONTINUE): LoopState.PLANNING,
-
     (LoopState.AWAITING_USER, Event.USER_INPUT): LoopState.PLANNING,
-
     (LoopState.DONE, Event.USER_INPUT): LoopState.PLANNING,
     (LoopState.DONE, Event.NEW_SESSION): LoopState.IDLE,
 }
@@ -108,11 +102,11 @@ _ACTIVE_STATES = {
 @dataclass
 class FSM:
     state: LoopState = LoopState.IDLE
-    turn_id: Optional[str] = None
-    parent_turn_id: Optional[str] = None
+    turn_id: str | None = None
+    parent_turn_id: str | None = None
     turn_count: int = 0
     turn_budget: int = 12
-    terminal_reason: Optional[TerminalReason] = None
+    terminal_reason: TerminalReason | None = None
     history: list = field(default_factory=list)
     refused: list = field(default_factory=list)
     last_event_ts: float = field(default_factory=time.time)
@@ -121,9 +115,9 @@ class FSM:
         self,
         event: Event,
         *,
-        reason: Optional[TerminalReason] = None,
-        turn_id: Optional[str] = None,
-        parent_turn_id: Optional[str] = None,
+        reason: TerminalReason | None = None,
+        turn_id: str | None = None,
+        parent_turn_id: str | None = None,
     ) -> LoopState:
         key = (self.state, event)
         if key not in _TRANSITIONS:
@@ -162,9 +156,7 @@ class FSM:
 
         self.state = new_state
         self.last_event_ts = time.time()
-        self.history.append(
-            (prev.value, event.value, new_state.value, self.turn_count)
-        )
+        self.history.append((prev.value, event.value, new_state.value, self.turn_count))
         return new_state
 
     @staticmethod
@@ -235,9 +227,7 @@ def replay_17_turn_auto_fire() -> dict:
         "fired": fired,
         "refused": refused,
         "final_state": fsm.state.value,
-        "terminal_reason": (
-            fsm.terminal_reason.value if fsm.terminal_reason else None
-        ),
+        "terminal_reason": (fsm.terminal_reason.value if fsm.terminal_reason else None),
         "turn_count": fsm.turn_count,
         "history_len": len(fsm.history),
     }

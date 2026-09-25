@@ -10,23 +10,23 @@ to whatever URL the adapter's open_view returned (e.g. Drive's
 Tests can use `resolve_open_target` directly (pure function) and
 monkey-patch `_xdg_open` so they never actually spawn a browser.
 """
+
 from __future__ import annotations
 
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from .schemas import ItemRecord
 
 
 @dataclass(frozen=True)
 class OpenTarget:
-    kind: str          # "local_file", "local_dir", "cloud_url", "unknown"
-    target: str        # local path or URL
-    display: str       # short label for confirmation prompts
-    note: str = ""     # extra context shown to the customer
+    kind: str  # "local_file", "local_dir", "cloud_url", "unknown"
+    target: str  # local path or URL
+    display: str  # short label for confirmation prompts
+    note: str = ""  # extra context shown to the customer
 
 
 def _looks_local(path: str) -> bool:
@@ -43,10 +43,12 @@ def resolve_open_target(item: ItemRecord, adapter=None) -> OpenTarget:
     if _looks_local(path):
         p = Path(path).expanduser()
         if p.exists() and p.is_dir():
-            return OpenTarget(kind="local_dir", target=str(p),
-                              display=f"open folder: {name}")
-        return OpenTarget(kind="local_file", target=str(p),
-                          display=f"open file: {name}")
+            return OpenTarget(
+                kind="local_dir", target=str(p), display=f"open folder: {name}"
+            )
+        return OpenTarget(
+            kind="local_file", target=str(p), display=f"open file: {name}"
+        )
     # Cloud / non-local: ask the adapter for its viewable URL.
     url = ""
     if adapter is not None and hasattr(adapter, "open_view"):
@@ -55,12 +57,18 @@ def resolve_open_target(item: ItemRecord, adapter=None) -> OpenTarget:
         except Exception:
             url = ""
     if url:
-        return OpenTarget(kind="cloud_url", target=url,
-                          display=f"open in browser: {name}",
-                          note=f"provider URL ({adapter.name if adapter else 'cloud'})")
-    return OpenTarget(kind="unknown", target=path,
-                      display=f"no opener for: {name}",
-                      note="adapter did not return a view URL")
+        return OpenTarget(
+            kind="cloud_url",
+            target=url,
+            display=f"open in browser: {name}",
+            note=f"provider URL ({adapter.name if adapter else 'cloud'})",
+        )
+    return OpenTarget(
+        kind="unknown",
+        target=path,
+        display=f"no opener for: {name}",
+        note="adapter did not return a view URL",
+    )
 
 
 def _xdg_open(arg: str) -> tuple[bool, str]:
@@ -68,7 +76,10 @@ def _xdg_open(arg: str) -> tuple[bool, str]:
     raises — the caller has already approved this action."""
     bin_ = shutil.which("xdg-open") or "xdg-open"
     if not shutil.which(bin_):
-        return False, "xdg-open not installed; install xdg-utils or open the path manually"
+        return (
+            False,
+            "xdg-open not installed; install xdg-utils or open the path manually",
+        )
     try:
         # Detach so closing the CLI doesn't kill the spawned app.
         subprocess.Popen(

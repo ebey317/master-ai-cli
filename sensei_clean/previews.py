@@ -9,7 +9,6 @@ from xml.etree import ElementTree
 
 from .schemas import ItemRecord
 
-
 TEXT_SUFFIXES = {".txt", ".md", ".csv", ".log", ".json", ".yaml", ".yml"}
 ZIP_XML_SUFFIXES = {".docx", ".odt", ".ods", ".odp", ".pptx", ".xlsx"}
 
@@ -36,7 +35,11 @@ def _xml_text_from_zip(path: Path) -> str:
     elif suffix == ".pptx":
         names = []
         with zipfile.ZipFile(path) as zf:
-            names = sorted(n for n in zf.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml"))
+            names = sorted(
+                n
+                for n in zf.namelist()
+                if n.startswith("ppt/slides/slide") and n.endswith(".xml")
+            )
     elif suffix == ".xlsx":
         names = ["xl/sharedStrings.xml"]
     else:
@@ -76,7 +79,16 @@ def preview_for_path(path: Path) -> dict:
         elif suffix in ZIP_XML_SUFFIXES:
             record["preview_type"] = "document_text_excerpt"
             record["text"] = _xml_text_from_zip(path)
-        elif suffix in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".bmp", ".tiff"}:
+        elif suffix in {
+            ".jpg",
+            ".jpeg",
+            ".png",
+            ".gif",
+            ".webp",
+            ".heic",
+            ".bmp",
+            ".tiff",
+        }:
             record["preview_type"] = "image_file"
         elif suffix in {".mp4", ".mov", ".mkv", ".avi", ".webm"}:
             record["preview_type"] = "video_file"
@@ -87,7 +99,9 @@ def preview_for_path(path: Path) -> dict:
     return record
 
 
-def build_previews(items: list[ItemRecord], *, include_content: bool, limit: int = 100) -> list[dict]:
+def build_previews(
+    items: list[ItemRecord], *, include_content: bool, limit: int = 100
+) -> list[dict]:
     previews: list[dict] = []
     for item in items[:limit]:
         path = Path(item.identity.get("path", ""))
@@ -107,11 +121,15 @@ def build_previews(items: list[ItemRecord], *, include_content: bool, limit: int
     return previews
 
 
-def write_preview_files(run_dir: Path, items: list[ItemRecord], *, include_content: bool) -> None:
+def write_preview_files(
+    run_dir: Path, items: list[ItemRecord], *, include_content: bool
+) -> None:
     previews = build_previews(items, include_content=include_content)
     preview_json = run_dir / "previews.json"
     preview_md = run_dir / "reports" / "previews.md"
-    preview_json.write_text(json.dumps(previews, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+    preview_json.write_text(
+        json.dumps(previews, ensure_ascii=True, indent=2) + "\n", encoding="utf-8"
+    )
 
     lines = [
         "# Sensei File Preview Index",
@@ -123,7 +141,9 @@ def write_preview_files(run_dir: Path, items: list[ItemRecord], *, include_conte
     for idx, record in enumerate(previews, start=1):
         lines.append(f"## {idx}. {record['display_name']}")
         lines.append(f"- Path: `{record['path']}`")
-        lines.append(f"- Type: {record['mime']} | Category: {record['category_guess']} | Sensitivity: {record['sensitivity']}")
+        lines.append(
+            f"- Type: {record['mime']} | Category: {record['category_guess']} | Sensitivity: {record['sensitivity']}"
+        )
         preview = record.get("preview") or {}
         if preview.get("preview_type"):
             lines.append(f"- Preview: {preview.get('preview_type')}")
@@ -136,4 +156,3 @@ def write_preview_files(run_dir: Path, items: list[ItemRecord], *, include_conte
             lines.append(f"- Preview error: {preview['error']}")
         lines.append("")
     preview_md.write_text("\n".join(lines), encoding="utf-8")
-

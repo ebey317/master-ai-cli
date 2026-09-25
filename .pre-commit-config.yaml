@@ -30,7 +30,18 @@ repos:
         # master_ai.py. --follow-imports=silent restricts checking to the
         # files actually being committed; it does not fix or hide those
         # modules' own errors when THEY are the ones being committed.
-        args: [--ignore-missing-imports, --follow-imports=silent, --exclude, "sensei_clean/__init__.py"]
+        #
+        # 2026-09-25: dropped `--exclude sensei_clean/__init__.py`, added
+        # here to work around the sensei_clean.py / sensei_clean/ package
+        # name collision. It never actually worked -- mypy's --exclude
+        # only applies to files it discovers itself; pre-commit passes
+        # every matched file as an explicit argument via `--all-files`,
+        # which bypasses --exclude entirely, so the "Duplicate module
+        # named sensei_clean" error kept firing regardless. Root cause
+        # fixed properly instead: the colliding top-level script is
+        # renamed to sensei_clean_cli.py, so there's no longer a real
+        # collision for any exclude flag to work around.
+        args: [--ignore-missing-imports, --follow-imports=silent]
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0
     hooks:

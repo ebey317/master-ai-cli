@@ -5,6 +5,7 @@ _reload_if_code_changed() ends in os.execvp(), which would replace this
 test process entirely if actually called -- every test here monkeypatches
 it to a recorder instead, so it's fully exercised without ever exec'ing.
 """
+
 import os
 import sys
 import tempfile

@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Python wrapper for sensei_extension/test/test_cdp_key.js so the CDP
 keyboard parser tests run under `python3 -m unittest`."""
+
 import shutil
 import subprocess
 import unittest
 from pathlib import Path
 
-JS_TEST = Path(__file__).resolve().parent / "sensei_extension" / "test" / "test_cdp_key.js"
+JS_TEST = (
+    Path(__file__).resolve().parent / "sensei_extension" / "test" / "test_cdp_key.js"
+)
 
 
 class CdpKeyParserSmoke(unittest.TestCase):
@@ -20,7 +23,9 @@ class CdpKeyParserSmoke(unittest.TestCase):
     def test_all_parser_assertions_pass(self):
         result = subprocess.run(
             ["node", str(JS_TEST)],
-            capture_output=True, text=True, timeout=20,
+            capture_output=True,
+            text=True,
+            timeout=20,
         )
         if result.returncode != 0:
             self.fail(

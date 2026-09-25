@@ -22,7 +22,7 @@ from pathlib import Path
 # reasoning monologuers), on OpenRouter. Any entry live in the catalog
 # wins; the list is a preference, not a pin.
 _MERGER_PREFS = (
-    "minimax/minimax-m3:free",       # historical default, usually delisted
+    "minimax/minimax-m3:free",  # historical default, usually delisted
     "qwen/qwen3.8-27b:free",
     "nex-agi/nex-n2.5-pro:free",
     "inclusionai/ling-3.0-flash-sante:free",
@@ -86,13 +86,19 @@ def _resolve_slot(slug, prefs, role):
     if not pick:
         pick = next((c for c in prefs if c in ids), None)
     if not pick:
-        print(f"  [plan-debate] {role} '{slug}' delisted and no preferred "
-              f"candidate is live — keeping it (call will fail loudly)", flush=True)
+        print(
+            f"  [plan-debate] {role} '{slug}' delisted and no preferred "
+            f"candidate is live — keeping it (call will fail loudly)",
+            flush=True,
+        )
         return slug
     if pick != slug:
         tag = "free" if pick in free else "PAID"
-        print(f"  [plan-debate] {role} '{slug or '(empty)'} not in catalog "
-              f"-> {pick} ({tag})", flush=True)
+        print(
+            f"  [plan-debate] {role} '{slug or '(empty)'} not in catalog "
+            f"-> {pick} ({tag})",
+            flush=True,
+        )
     return pick
 
 

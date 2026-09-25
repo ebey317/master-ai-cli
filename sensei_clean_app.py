@@ -24,7 +24,6 @@ from sensei_clean.connectors import detect_sources
 from sensei_clean.engine import scan_run
 from sensei_clean.runner import apply_per_adapter, undo_per_adapter
 
-
 BANNER = "Sensei Clean"
 
 
@@ -59,7 +58,10 @@ def _pick_roots_ui() -> list[str] | None:
     if roots:
         return roots
     # Allow advanced entry if none selected.
-    raw = input_dialog(title=BANNER, text="No folders selected. Enter roots to scan (space-separated paths):").run()
+    raw = input_dialog(
+        title=BANNER,
+        text="No folders selected. Enter roots to scan (space-separated paths):",
+    ).run()
     if not raw:
         return None
     roots = _expand_roots(raw)
@@ -77,7 +79,7 @@ def _require_typed_approval(reason: str) -> bool:
 def _short_path(path: str, limit: int = 78) -> str:
     if len(path) <= limit:
         return path
-    return "..." + path[-(limit - 3):]
+    return "..." + path[-(limit - 3) :]
 
 
 def _action_words(action) -> str:
@@ -108,6 +110,7 @@ def _open_picker_choices(items, n: int = 40) -> list[tuple[str, str]]:
     overflow the picker. Values are item_ids so the caller can look the
     chosen item back up in the inventory list."""
     from sensei_clean.waste import human_bytes
+
     ranked = sorted(items, key=lambda it: it.size_bytes or 0, reverse=True)
     out: list[tuple[str, str]] = []
     for it in ranked[:n]:
@@ -130,6 +133,7 @@ def _adapter_for_item(item, *, run_id: str, quarantine_root: str):
     adapter_name = item.source.get("adapter", "")
     if adapter_name.startswith("rclone:"):
         from sensei_clean.adapters.rclone_remote import RcloneRemoteAdapter
+
         remote = adapter_name.split(":", 1)[1]
         return RcloneRemoteAdapter(run_id=run_id, remote=remote)
     return LocalFSAdapter(
@@ -146,16 +150,19 @@ def _pick_and_open_loop(items, *, run_id: str, quarantine_root: str) -> None:
     if not items:
         return
     from sensei_clean.opener import open_item, resolve_open_target
+
     item_by_id = {it.item_id: it for it in items}
     while True:
-        if not bool(yes_no_dialog(
-            title=BANNER,
-            text=(
-                "Open one of the scanned files in its app?\n\n"
-                "Nothing is moved or deleted. Local files open in your default app, "
-                "cloud files open in your browser."
-            ),
-        ).run()):
+        if not bool(
+            yes_no_dialog(
+                title=BANNER,
+                text=(
+                    "Open one of the scanned files in its app?\n\n"
+                    "Nothing is moved or deleted. Local files open in your default app, "
+                    "cloud files open in your browser."
+                ),
+            ).run()
+        ):
             return
         choices = _open_picker_choices(items, n=40)
         if not choices:
@@ -170,9 +177,13 @@ def _pick_and_open_loop(items, *, run_id: str, quarantine_root: str) -> None:
             return
         item = item_by_id.get(picked_id)
         if item is None:
-            message_dialog(title=BANNER, text="That item is no longer in the inventory.").run()
+            message_dialog(
+                title=BANNER, text="That item is no longer in the inventory."
+            ).run()
             continue
-        adapter = _adapter_for_item(item, run_id=run_id, quarantine_root=quarantine_root)
+        adapter = _adapter_for_item(
+            item, run_id=run_id, quarantine_root=quarantine_root
+        )
         target = resolve_open_target(item, adapter=adapter)
         if target.kind == "unknown":
             message_dialog(
@@ -180,15 +191,17 @@ def _pick_and_open_loop(items, *, run_id: str, quarantine_root: str) -> None:
                 text=f"Sensei can't open this one yet.\n\n{target.note or 'no resolvable target'}",
             ).run()
             continue
-        if not bool(yes_no_dialog(
-            title=BANNER,
-            text=(
-                f"Open this in your default app?\n\n"
-                f"What : {item.display_name}\n"
-                f"Type : {target.kind}\n"
-                f"Where: {target.target}"
-            ),
-        ).run()):
+        if not bool(
+            yes_no_dialog(
+                title=BANNER,
+                text=(
+                    f"Open this in your default app?\n\n"
+                    f"What : {item.display_name}\n"
+                    f"Type : {target.kind}\n"
+                    f"Where: {target.target}"
+                ),
+            ).run()
+        ):
             continue
         _t, ok, msg = open_item(item, adapter=adapter, spawn=True)
         if not ok:
@@ -249,40 +262,48 @@ def run_interactive() -> int:
             return 0
         roots = picked
 
-        sha256 = task in {"dups", "both", "office"} and bool(yes_no_dialog(
-            title=BANNER,
-            text="Check for true duplicate files?\n\n"
-                 "Sensei reads each file locally to prove two files are exactly the same.",
-        ).run())
+        sha256 = task in {"dups", "both", "office"} and bool(
+            yes_no_dialog(
+                title=BANNER,
+                text="Check for true duplicate files?\n\n"
+                "Sensei reads each file locally to prove two files are exactly the same.",
+            ).run()
+        )
 
         if sha256:
-            include_text = bool(yes_no_dialog(
-                title=BANNER,
-                text="Show tiny text previews in the review page?\n\n"
-                     "Use this only when you want to see what readable text files contain.",
-            ).run())
+            include_text = bool(
+                yes_no_dialog(
+                    title=BANNER,
+                    text="Show tiny text previews in the review page?\n\n"
+                    "Use this only when you want to see what readable text files contain.",
+                ).run()
+            )
         else:
             include_text = False
 
-        include_previews = bool(yes_no_dialog(
-            title=BANNER,
-            text="Make a visual review page?\n\n"
-                 "It shows file names, where files are now, and where Sensei wants to move them.",
-        ).run())
+        include_previews = bool(
+            yes_no_dialog(
+                title=BANNER,
+                text="Make a visual review page?\n\n"
+                "It shows file names, where files are now, and where Sensei wants to move them.",
+            ).run()
+        )
 
         # Cloud listing toggle — only ask when an rclone source was picked.
         has_cloud_root = any(r.startswith("rclone:") for r in roots)
         list_cloud = False
         if has_cloud_root:
-            list_cloud = bool(yes_no_dialog(
-                title=BANNER,
-                text=(
-                    "Look inside the cloud folder you picked?\n\n"
-                    "No = only check that the cloud account connects.\n"
-                    "Yes = read the file list in that cloud folder so Sensei can find duplicates.\n\n"
-                    "Cloud files will never be deleted. Any cloud move asks for extra approval."
-                ),
-            ).run())
+            list_cloud = bool(
+                yes_no_dialog(
+                    title=BANNER,
+                    text=(
+                        "Look inside the cloud folder you picked?\n\n"
+                        "No = only check that the cloud account connects.\n"
+                        "Yes = read the file list in that cloud folder so Sensei can find duplicates.\n\n"
+                        "Cloud files will never be deleted. Any cloud move asks for extra approval."
+                    ),
+                ).run()
+            )
 
         # Keep run artifacts local and contained by default.
         run_dir = mkdtemp(prefix="sensei_clean_run_", dir="/tmp")
@@ -300,10 +321,20 @@ def run_interactive() -> int:
 
     if task == "office":
         suffix_allowlist = {
-            ".doc", ".docx", ".odt", ".rtf",
-            ".xls", ".xlsx", ".ods", ".csv",
-            ".ppt", ".pptx", ".odp",
-            ".pdf", ".txt", ".md",
+            ".doc",
+            ".docx",
+            ".odt",
+            ".rtf",
+            ".xls",
+            ".xlsx",
+            ".ods",
+            ".csv",
+            ".ppt",
+            ".pptx",
+            ".odp",
+            ".pdf",
+            ".txt",
+            ".md",
         }
 
     # ---- scan with progress ----
@@ -326,8 +357,12 @@ def run_interactive() -> int:
                     scan_counter.item_completed()
             elif p == "hash":
                 if hash_counter is None:
-                    hash_counter = pb(None, label="Hashing files (sha256)", total=max(1, t or d or 1))
-                hash_counter.label = f"Hashing files (sha256) ({d}/{hash_counter.total or t or '?'} )"
+                    hash_counter = pb(
+                        None, label="Hashing files (sha256)", total=max(1, t or d or 1)
+                    )
+                hash_counter.label = (
+                    f"Hashing files (sha256) ({d}/{hash_counter.total or t or '?'} )"
+                )
                 delta = max(0, d - prev_hash)
                 prev_hash = d
                 for _ in range(delta):
@@ -373,7 +408,9 @@ def run_interactive() -> int:
     ).run()
 
     if review_path.exists():
-        if bool(yes_no_dialog(title=BANNER, text="Open the visual review page now?").run()):
+        if bool(
+            yes_no_dialog(title=BANNER, text="Open the visual review page now?").run()
+        ):
             _open_review_page(review_path)
 
     # ---- inspect (optional, before any move) ----
@@ -381,44 +418,59 @@ def run_interactive() -> int:
     # apps before deciding what to move. xdg-open for local, browser
     # for cloud. Loops until the user says no.
     if items:
-        _pick_and_open_loop(items,
-                            run_id=str(run_path.name),
-                            quarantine_root=quarantine_root)
+        _pick_and_open_loop(
+            items, run_id=str(run_path.name), quarantine_root=quarantine_root
+        )
 
     # ---- move (optional) ----
     if not actions:
-        message_dialog(title=BANNER, text="Nothing to move. Your selected places are clean for this scan.").run()
+        message_dialog(
+            title=BANNER,
+            text="Nothing to move. Your selected places are clean for this scan.",
+        ).run()
         return 0
 
     preview_lines = "\n\n".join(_action_words(a) for a in actions[:6])
     if len(actions) > 6:
         preview_lines += f"\n\n...and {len(actions) - 6} more move(s). Open the review page to see all of them."
 
-    do_move = bool(yes_no_dialog(
-        title=BANNER,
-        text=(
-            "Move the safe files now?\n\n"
-            "Nothing gets deleted. Extra copies go to Safe Quarantine.\n\n"
-            f"{preview_lines}"
-        ),
-    ).run())
+    do_move = bool(
+        yes_no_dialog(
+            title=BANNER,
+            text=(
+                "Move the safe files now?\n\n"
+                "Nothing gets deleted. Extra copies go to Safe Quarantine.\n\n"
+                f"{preview_lines}"
+            ),
+        ).run()
+    )
     if do_move:
         approve_monitored = False
         if monitored:
-            approve_monitored = bool(yes_no_dialog(
-                title=BANNER,
-                text="Also move the files that need extra approval?\n\n"
-                     "Choose No unless you clearly understand those moves.",
-            ).run())
+            approve_monitored = bool(
+                yes_no_dialog(
+                    title=BANNER,
+                    text="Also move the files that need extra approval?\n\n"
+                    "Choose No unless you clearly understand those moves.",
+                ).run()
+            )
 
-        selected = actions if approve_monitored else [a for a in actions if a.lane != "monitored"]
+        selected = (
+            actions
+            if approve_monitored
+            else [a for a in actions if a.lane != "monitored"]
+        )
 
         if not selected:
-            message_dialog(title=BANNER, text="No safe moves selected. Nothing changed.").run()
+            message_dialog(
+                title=BANNER, text="No safe moves selected. Nothing changed."
+            ).run()
         else:
             with ProgressBar(title=f"{BANNER} - moving files") as pb:
                 it = pb(selected, label="Moving")
-                results = apply_per_adapter(it, capabilities, str(run_path / "undo.jsonl"))
+                results = apply_per_adapter(
+                    it, capabilities, str(run_path / "undo.jsonl")
+                )
             applied = sum(1 for r in results if r.success)
             failed = sum(1 for r in results if not r.success)
             message_dialog(
@@ -428,9 +480,13 @@ def run_interactive() -> int:
 
     # ---- undo (optional) ----
     if (run_path / "undo.jsonl").exists():
-        do_undo = bool(yes_no_dialog(title=BANNER, text="Put the moved files back now?").run())
+        do_undo = bool(
+            yes_no_dialog(title=BANNER, text="Put the moved files back now?").run()
+        )
         if do_undo:
-            if not _require_typed_approval("Undo will move files back to their original paths."):
+            if not _require_typed_approval(
+                "Undo will move files back to their original paths."
+            ):
                 return 0
             undo_records = load_undo_records(str(run_path / "undo.jsonl"))
             with ProgressBar(title=f"{BANNER} - putting files back") as pb:
@@ -438,7 +494,10 @@ def run_interactive() -> int:
                 results = undo_per_adapter(it)
             undone = sum(1 for r in results if r.success)
             failed = sum(1 for r in results if not r.success)
-            message_dialog(title=BANNER, text=f"Undo finished.\n\nMoved back: {undone}\nProblems: {failed}").run()
+            message_dialog(
+                title=BANNER,
+                text=f"Undo finished.\n\nMoved back: {undone}\nProblems: {failed}",
+            ).run()
 
     return 0
 
@@ -473,7 +532,9 @@ def run_selftest() -> int:
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--selftest", action="store_true", help="non-interactive demo scan/apply/undo")
+    ap.add_argument(
+        "--selftest", action="store_true", help="non-interactive demo scan/apply/undo"
+    )
     args = ap.parse_args(argv)
     if args.selftest:
         return run_selftest()

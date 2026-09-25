@@ -22,7 +22,6 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
-import threading
 import unittest
 from pathlib import Path
 
@@ -86,46 +85,74 @@ class SkipsConditions(unittest.TestCase):
         self.assertEqual(self.spawned, [])
 
     def test_empty_reason_skips(self):
-        hooks.fire("on_blocked", "ls", action={"kind": "RUN", "target": "ls", "reason": ""})
+        hooks.fire(
+            "on_blocked", "ls", action={"kind": "RUN", "target": "ls", "reason": ""}
+        )
         self.assertEqual(self.spawned, [])
 
     def test_policy_block_skips(self):
-        hooks.fire("on_blocked", "tar ~/.ssh", action={
-            "kind": "RUN", "target": "tar ~/.ssh",
-            "reason": "credential exfil",
-            "audit_kind": "POLICY-CMD-BLOCK",
-        })
+        hooks.fire(
+            "on_blocked",
+            "tar ~/.ssh",
+            action={
+                "kind": "RUN",
+                "target": "tar ~/.ssh",
+                "reason": "credential exfil",
+                "audit_kind": "POLICY-CMD-BLOCK",
+            },
+        )
         self.assertEqual(self.spawned, [])
 
     def test_fence_block_skips(self):
-        hooks.fire("on_blocked", "/etc/shadow", action={
-            "kind": "READ", "target": "/etc/shadow",
-            "reason": "outside allowed roots",
-            "audit_kind": "READ-FENCE-BLOCK",
-        })
+        hooks.fire(
+            "on_blocked",
+            "/etc/shadow",
+            action={
+                "kind": "READ",
+                "target": "/etc/shadow",
+                "reason": "outside allowed roots",
+                "audit_kind": "READ-FENCE-BLOCK",
+            },
+        )
         self.assertEqual(self.spawned, [])
 
     def test_empty_audit_skips(self):
-        hooks.fire("on_blocked", "  ", action={
-            "kind": "RUN", "target": "  ", "reason": "empty",
-            "audit_kind": "RUN-EMPTY",
-        })
+        hooks.fire(
+            "on_blocked",
+            "  ",
+            action={
+                "kind": "RUN",
+                "target": "  ",
+                "reason": "empty",
+                "audit_kind": "RUN-EMPTY",
+            },
+        )
         self.assertEqual(self.spawned, [])
 
     def test_missing_target_audit_skips(self):
-        hooks.fire("on_blocked", "/tmp/x.sh", action={
-            "kind": "RUNTERM", "target": "/tmp/x.sh",
-            "reason": "target not found",
-            "audit_kind": "RUNTERM-BLOCK-MISSING",
-        })
+        hooks.fire(
+            "on_blocked",
+            "/tmp/x.sh",
+            action={
+                "kind": "RUNTERM",
+                "target": "/tmp/x.sh",
+                "reason": "target not found",
+                "audit_kind": "RUNTERM-BLOCK-MISSING",
+            },
+        )
         self.assertEqual(self.spawned, [])
 
     def test_real_extractable_block_spawns_worker(self):
-        hooks.fire("on_blocked", "fetchmail -c", action={
-            "kind": "RUN", "target": "fetchmail -c ~/scripts/fetchmailrc",
-            "reason": "exit 127: fetchmail: command not found",
-            "audit_kind": "RUN-BLOCK",
-        })
+        hooks.fire(
+            "on_blocked",
+            "fetchmail -c",
+            action={
+                "kind": "RUN",
+                "target": "fetchmail -c ~/scripts/fetchmailrc",
+                "reason": "exit 127: fetchmail: command not found",
+                "audit_kind": "RUN-BLOCK",
+            },
+        )
         self.assertEqual(len(self.spawned), 1)
 
 
@@ -143,10 +170,16 @@ class RateLimit(unittest.TestCase):
     def test_caps_at_session_max(self):
         cap = hooks._EXTRACT_MAX_PER_SESSION
         for i in range(cap + 5):
-            hooks.fire("on_blocked", f"cmd{i}", action={
-                "kind": "RUN", "target": f"cmd{i}",
-                "reason": f"reason {i}", "audit_kind": "RUN-BLOCK",
-            })
+            hooks.fire(
+                "on_blocked",
+                f"cmd{i}",
+                action={
+                    "kind": "RUN",
+                    "target": f"cmd{i}",
+                    "reason": f"reason {i}",
+                    "audit_kind": "RUN-BLOCK",
+                },
+            )
         # Spawned worker exactly `cap` times, NOT cap + 5
         self.assertEqual(len(self.spawned), cap)
 
@@ -184,24 +217,37 @@ class WorkerStorageBehavior(unittest.TestCase):
         return [l for l in self.path.read_text().splitlines() if l.strip()]
 
     def _fake_urlopen(self, response_text: str):
-        import io, json as _json
+        import json as _json
+
         class _Resp:
-            def __init__(self, body): self._body = body
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
-            def read(self): return self._body
+            def __init__(self, body):
+                self._body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return self._body
+
         body = _json.dumps({"response": response_text}).encode()
+
         def _opener(req, timeout=None):
             return _Resp(body)
+
         return _opener
 
     def _patch_urlopen(self, response_text):
         import urllib.request
+
         self._orig_urlopen = urllib.request.urlopen
         urllib.request.urlopen = self._fake_urlopen(response_text)
 
     def _unpatch_urlopen(self):
         import urllib.request
+
         urllib.request.urlopen = self._orig_urlopen
 
     def test_skip_response_does_not_store(self):
@@ -213,7 +259,9 @@ class WorkerStorageBehavior(unittest.TestCase):
         self.assertEqual(self._mem(), [])
 
     def test_valid_lesson_stores(self):
-        self._patch_urlopen("fetchmail is not installed on this box; open Thunderbird instead")
+        self._patch_urlopen(
+            "fetchmail is not installed on this box; open Thunderbird instead"
+        )
         try:
             hooks._extract_lesson_worker("RUN", "fetchmail", "command not found")
         finally:
@@ -239,8 +287,10 @@ class WorkerStorageBehavior(unittest.TestCase):
             self._unpatch_urlopen()
         mem = self._mem()
         self.assertEqual(len(mem), 1)
-        self.assertTrue(mem[0].lower().startswith("ollama"),
-            f"prefix should be stripped, got: {mem[0]!r}")
+        self.assertTrue(
+            mem[0].lower().startswith("ollama"),
+            f"prefix should be stripped, got: {mem[0]!r}",
+        )
 
 
 class CodexFindingsRegressionGuard(unittest.TestCase):
@@ -253,7 +303,9 @@ class CodexFindingsRegressionGuard(unittest.TestCase):
         passed to _audit() then thrown away."""
         master_ai._LAST_BLOCKED_ACTION = {}
         entry = master_ai._record_blocked_action(
-            "run", "evil-cmd", "credential exfil",
+            "run",
+            "evil-cmd",
+            "credential exfil",
             audit_kind="POLICY-CMD-BLOCK",
         )
         self.assertEqual(entry.get("audit_kind"), "POLICY-CMD-BLOCK")
@@ -268,28 +320,37 @@ class CodexFindingsRegressionGuard(unittest.TestCase):
         safeguard refusal) must fire on_blocked so the auto-extract hook
         can learn from it. Source-pin the wiring."""
         import inspect
+
         src = inspect.getsource(master_ai.process_reply)
-        self.assertIn('"audit_kind": "RUN-EXEC-FAIL"', src,
+        self.assertIn(
+            '"audit_kind": "RUN-EXEC-FAIL"',
+            src,
             "RUN chain-fail path must fire on_blocked with "
             "audit_kind=RUN-EXEC-FAIL so auto-extract sees command-not-"
-            "found / exit-127 hallucinations")
-        self.assertIn('"audit_kind": "RUNTERM-EXEC-FAIL"', src,
-            "RUNTERM chain-fail path must fire on_blocked too")
+            "found / exit-127 hallucinations",
+        )
+        self.assertIn(
+            '"audit_kind": "RUNTERM-EXEC-FAIL"',
+            src,
+            "RUNTERM chain-fail path must fire on_blocked too",
+        )
 
     def test_hooks_repl_command_exists(self):
         """Finding 3: there must be a REPL command surface for hooks
         list/enable/disable so the user can disable auto-extract-lesson
         without editing Python."""
-        import inspect
         # Look for `if lo == "hooks"` in master_ai source.
         # main() is the REPL loop, so the trigger lives somewhere in
         # that function (or nearby).
         with open(master_ai.__file__) as f:
             src = f.read()
-        self.assertIn('if lo == "hooks" or lo.startswith("hooks ")', src,
+        self.assertIn(
+            'if lo == "hooks" or lo.startswith("hooks ")',
+            src,
             "hooks REPL command not wired — Codex caught this on "
             "2026-05-11; user can't disable auto-extract-lesson "
-            "without it")
+            "without it",
+        )
 
 
 class MasterAiFiresHook(unittest.TestCase):
@@ -300,18 +361,25 @@ class MasterAiFiresHook(unittest.TestCase):
 
     def test_tool_blocked_path_fires_on_blocked(self):
         import inspect
+
         src = inspect.getsource(master_ai.process_reply)
-        self.assertIn('hooks.fire("on_blocked"', src,
+        self.assertIn(
+            'hooks.fire("on_blocked"',
+            src,
             "TOOL BLOCKED path must fire on_blocked hook so the "
-            "auto-extract-lesson worker can run")
+            "auto-extract-lesson worker can run",
+        )
 
     def test_hook_blocked_path_fires_on_blocked(self):
         import inspect
+
         src = inspect.getsource(master_ai.process_reply)
         # Two fire sites (TOOL + HOOK) — count them
-        self.assertGreaterEqual(src.count('"on_blocked"'), 2,
-            "Both [TOOL BLOCKED] and [HOOK BLOCKED] paths should fire "
-            "on_blocked")
+        self.assertGreaterEqual(
+            src.count('"on_blocked"'),
+            2,
+            "Both [TOOL BLOCKED] and [HOOK BLOCKED] paths should fire on_blocked",
+        )
 
 
 if __name__ == "__main__":

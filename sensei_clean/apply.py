@@ -17,12 +17,13 @@ Safety contract (was the three highest-severity gaps from the briefing):
 The journal file (undo_path) is JSONL — one UndoRecord per line, append-
 only. `undo_actions()` reads the same JSONL back.
 """
+
 from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, List
 
 from . import policy
 from .adapters.base import BaseAdapter
@@ -34,7 +35,7 @@ def apply_actions(
     actions: Iterable[ActionRecord],
     capability: CapabilityReport,
     undo_path: str,
-) -> List[ApplyResult]:
+) -> list[ApplyResult]:
     """Apply each action only if policy.can_apply allows it. After every
     successful mutation, append the adapter's UndoRecord to undo_path and
     fsync so a crash leaves a complete reverse trail.
@@ -43,7 +44,7 @@ def apply_actions(
     Policy- or adapter-refused actions get a success=False ApplyResult
     with a clear message; the journal is unaffected for those entries.
     """
-    results: List[ApplyResult] = []
+    results: list[ApplyResult] = []
     undo_dir = Path(undo_path).parent
     if undo_dir:
         undo_dir.mkdir(parents=True, exist_ok=True)
@@ -52,20 +53,24 @@ def apply_actions(
     with open(undo_path, "a", buffering=1) as journal:
         for action in actions:
             if not policy.can_apply(capability, action):
-                results.append(ApplyResult(
-                    action_id=action.action_id,
-                    success=False,
-                    message=f"policy refused: capability={capability.capability} "
-                            f"action_type={action.action_type} "
-                            f"sensitivity={action.metadata.get('sensitivity', 'unknown')}",
-                ))
+                results.append(
+                    ApplyResult(
+                        action_id=action.action_id,
+                        success=False,
+                        message=f"policy refused: capability={capability.capability} "
+                        f"action_type={action.action_type} "
+                        f"sensitivity={action.metadata.get('sensitivity', 'unknown')}",
+                    )
+                )
                 continue
             if not adapter.can_apply(action):
-                results.append(ApplyResult(
-                    action_id=action.action_id,
-                    success=False,
-                    message=f"adapter refused: {adapter.name} cannot run {action.action_type}",
-                ))
+                results.append(
+                    ApplyResult(
+                        action_id=action.action_id,
+                        success=False,
+                        message=f"adapter refused: {adapter.name} cannot run {action.action_type}",
+                    )
+                )
                 continue
             result = adapter.apply(action)
             results.append(result)
@@ -79,11 +84,11 @@ def apply_actions(
     return results
 
 
-def load_undo_records(undo_path: str) -> List[UndoRecord]:
+def load_undo_records(undo_path: str) -> list[UndoRecord]:
     """Read the JSONL undo journal back into UndoRecord objects.
     Malformed/partial lines are skipped (forward-compatibility + crash
     tolerance)."""
-    records: List[UndoRecord] = []
+    records: list[UndoRecord] = []
     p = Path(undo_path)
     if not p.exists():
         return records
@@ -102,7 +107,9 @@ def load_undo_records(undo_path: str) -> List[UndoRecord]:
     return records
 
 
-def undo_actions(adapter: BaseAdapter, undo_records: Iterable[UndoRecord]) -> List[ApplyResult]:
+def undo_actions(
+    adapter: BaseAdapter, undo_records: Iterable[UndoRecord]
+) -> list[ApplyResult]:
     """Reverse each move in the journal. Caller decides order (newest-first
     is the usual call for partial undos)."""
     return [adapter.undo(record) for record in undo_records]

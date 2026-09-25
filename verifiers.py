@@ -12,6 +12,7 @@ Phase 1 ships one verifier: verify_process_running, used by
 desktop.launch_app to confirm a launched app actually appeared in the
 process table.
 """
+
 from __future__ import annotations
 
 import re
@@ -19,13 +20,12 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 
 @dataclass
 class VerifyResult:
     ok: bool
-    observed: Optional[str]
+    observed: str | None
     elapsed_ms: int
     reason: str
 
@@ -97,7 +97,9 @@ def verify_process_running(
                 pass
             else:
                 stderr_tail = (cp.stderr or "").strip().splitlines()
-                last_error = stderr_tail[-1] if stderr_tail else f"pgrep exit {cp.returncode}"
+                last_error = (
+                    stderr_tail[-1] if stderr_tail else f"pgrep exit {cp.returncode}"
+                )
         except subprocess.TimeoutExpired:
             last_error = f"pgrep call exceeded {per_call_timeout}s"
         except FileNotFoundError:
@@ -114,7 +116,7 @@ def verify_process_running(
 
 
 def verify_notification_sent(
-    _: Optional[str] = None,
+    _: str | None = None,
     max_wait_s: float = 1.0,
     poll_ms: int = 100,
 ) -> VerifyResult:
@@ -131,6 +133,7 @@ def verify_notification_sent(
     """
     import os
     import shutil
+
     start = time.monotonic()
     wrapper = Path.home() / "scripts" / "sensei-notify.sh"
     bus_addr = os.environ.get("DBUS_SESSION_BUS_ADDRESS")
@@ -139,7 +142,9 @@ def verify_notification_sent(
         bus_addr = f"unix:path={run_dir}/bus"
 
     # D-Bus socket must exist and be writable.
-    socket_path = bus_addr.replace("unix:path=", "") if bus_addr.startswith("unix:path=") else ""
+    socket_path = (
+        bus_addr.replace("unix:path=", "") if bus_addr.startswith("unix:path=") else ""
+    )
     if not socket_path or not os.path.exists(socket_path):
         elapsed = time.monotonic() - start
         return VerifyResult(

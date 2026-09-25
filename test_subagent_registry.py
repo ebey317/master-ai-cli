@@ -39,13 +39,20 @@ class DiscoveryAndListing(unittest.TestCase):
     def test_six_or_more_builtins_registered(self):
         sr.discover(Path(__file__).parent / "subagents")  # idempotent
         names = {a.name for a in sr.list_subagents()}
-        for required in ("code_reviewer", "test_runner", "file_finder",
-                         "directive_simulator", "context_inspector",
-                         "spend_reporter"):
-            self.assertIn(required, names,
-                f"built-in subagent {required!r} not registered")
-        self.assertGreaterEqual(len(names), 6,
-            f"expected ≥6 subagents, got {len(names)}: {names}")
+        for required in (
+            "code_reviewer",
+            "test_runner",
+            "file_finder",
+            "directive_simulator",
+            "context_inspector",
+            "spend_reporter",
+        ):
+            self.assertIn(
+                required, names, f"built-in subagent {required!r} not registered"
+            )
+        self.assertGreaterEqual(
+            len(names), 6, f"expected ≥6 subagents, got {len(names)}: {names}"
+        )
 
     def test_get_returns_known_and_none(self):
         sr.discover(Path(__file__).parent / "subagents")
@@ -70,9 +77,13 @@ class RunWrapper(unittest.TestCase):
         # Register a broken subagent that always raises.
         def boom(task, context=None):
             raise RuntimeError("intentional test failure")
+
         sr._REGISTRY["boom"] = sr.Subagent(
-            name="boom", description="raises", run=boom,
-            source="<test>", module_name="<test>",
+            name="boom",
+            description="raises",
+            run=boom,
+            source="<test>",
+            module_name="<test>",
         )
         try:
             result = sr.run("boom", "anything")
@@ -89,6 +100,7 @@ class CodeReviewerBuiltin(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_returns_structured_issues_no_directives(self):
@@ -108,8 +120,11 @@ class CodeReviewerBuiltin(unittest.TestCase):
         # serialized JSON form.
         as_json = json.dumps(result)
         for verb in ("RUN:", "RUNTERM:", "READ:", "CREATE:", "EDIT:"):
-            self.assertNotIn(f"\n{verb}", as_json,
-                f"code_reviewer output contains {verb} — must stay inert")
+            self.assertNotIn(
+                f"\n{verb}",
+                as_json,
+                f"code_reviewer output contains {verb} — must stay inert",
+            )
 
     def test_handles_missing_file(self):
         result = sr.run("code_reviewer", "/tmp/definitely-not-here-xxxxx.py")
@@ -151,7 +166,7 @@ class BrokenSubagentDoesNotCrashRegistry(unittest.TestCase):
             (tmp / "valid_subagent.py").write_text(
                 'name = "valid_x"\n'
                 'description = "ok"\n'
-                'def run(task, context=None):\n'
+                "def run(task, context=None):\n"
                 '    return {"ok": True}\n'
             )
             # Snapshot real registry, point discover at the temp dir.
@@ -165,6 +180,7 @@ class BrokenSubagentDoesNotCrashRegistry(unittest.TestCase):
             sr.discover(Path(__file__).parent / "subagents")
         finally:
             import shutil
+
             shutil.rmtree(tmp, ignore_errors=True)
 
 

@@ -28,7 +28,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import time
 import unittest
 import urllib.error
 import urllib.request
@@ -86,8 +85,8 @@ SAMPLE_PAGE_CONTEXT = {
     "url": "https://example.com/",
     "visible_text": (
         "Welcome to the test page. "
-        "Interactive elements visible: button[aria-label=\"Search\"] (Search button), "
-        "input[type=\"email\"] (email field), and the page <main> region."
+        'Interactive elements visible: button[aria-label="Search"] (Search button), '
+        'input[type="email"] (email field), and the page <main> region.'
     ),
 }
 
@@ -97,7 +96,11 @@ class DoneParserUnitTests(unittest.TestCase):
 
     def setUp(self):
         sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from stt_server import _api_terminal_state, _reply_has_done_directive  # noqa: WPS433
+        from stt_server import (  # noqa: WPS433
+            _api_terminal_state,
+            _reply_has_done_directive,
+        )
+
         self.detect = _reply_has_done_directive
         self.terminal_state = _api_terminal_state
 
@@ -108,9 +111,9 @@ class DoneParserUnitTests(unittest.TestCase):
         self.assertTrue(self.detect("  DONE: cleaned up"))
 
     def test_done_after_browser_directive(self):
-        self.assertTrue(self.detect(
-            "BROWSER_NAV: https://example.com\nDONE: navigated"
-        ))
+        self.assertTrue(
+            self.detect("BROWSER_NAV: https://example.com\nDONE: navigated")
+        )
 
     def test_bare_done_no_summary_rejected(self):
         self.assertFalse(self.detect("DONE:"))
@@ -149,8 +152,10 @@ class DoneParserUnitTests(unittest.TestCase):
         self.assertEqual(reason, "budget")
 
 
-@unittest.skipIf(LIVE_LOCAL is False and os.environ.get("SKIP_LIVE") == "1",
-                 "Live HTTP tests disabled by SKIP_LIVE=1")
+@unittest.skipIf(
+    LIVE_LOCAL is False and os.environ.get("SKIP_LIVE") == "1",
+    "Live HTTP tests disabled by SKIP_LIVE=1",
+)
 class BrowserDirectiveLiveTests(unittest.TestCase):
     """Cases 1-5 + 6b/6c — live HTTP against /chat."""
 
@@ -169,14 +174,20 @@ class BrowserDirectiveLiveTests(unittest.TestCase):
             page_context=SAMPLE_PAGE_CONTEXT,
         )
         kinds = _action_kinds(resp)
-        self.assertIn("BROWSER_CLICK", kinds,
-                      f"[{LANE_LABEL}] expected BROWSER_CLICK in actions; got {kinds}; reply={resp.get('reply','')[:200]!r}")
+        self.assertIn(
+            "BROWSER_CLICK",
+            kinds,
+            f"[{LANE_LABEL}] expected BROWSER_CLICK in actions; got {kinds}; reply={resp.get('reply', '')[:200]!r}",
+        )
 
     def test_2_browser_nav(self):
         resp = _post_chat("open example.com")
         kinds = _action_kinds(resp)
-        self.assertIn("BROWSER_NAV", kinds,
-                      f"[{LANE_LABEL}] expected BROWSER_NAV in actions; got {kinds}; reply={resp.get('reply','')[:200]!r}")
+        self.assertIn(
+            "BROWSER_NAV",
+            kinds,
+            f"[{LANE_LABEL}] expected BROWSER_NAV in actions; got {kinds}; reply={resp.get('reply', '')[:200]!r}",
+        )
 
     def test_3_browser_fill(self):
         resp = _post_chat(
@@ -184,8 +195,11 @@ class BrowserDirectiveLiveTests(unittest.TestCase):
             page_context=SAMPLE_PAGE_CONTEXT,
         )
         kinds = _action_kinds(resp)
-        self.assertIn("BROWSER_FILL", kinds,
-                      f"[{LANE_LABEL}] expected BROWSER_FILL in actions; got {kinds}; reply={resp.get('reply','')[:200]!r}")
+        self.assertIn(
+            "BROWSER_FILL",
+            kinds,
+            f"[{LANE_LABEL}] expected BROWSER_FILL in actions; got {kinds}; reply={resp.get('reply', '')[:200]!r}",
+        )
 
     def test_4_browser_read(self):
         # Imperative phrasing — matches Step 8 of the plan. "what's on this page"
@@ -197,8 +211,11 @@ class BrowserDirectiveLiveTests(unittest.TestCase):
             page_context=SAMPLE_PAGE_CONTEXT,
         )
         kinds = _action_kinds(resp)
-        self.assertIn("BROWSER_READ", kinds,
-                      f"[{LANE_LABEL}] expected BROWSER_READ in actions; got {kinds}; reply={resp.get('reply','')[:200]!r}")
+        self.assertIn(
+            "BROWSER_READ",
+            kinds,
+            f"[{LANE_LABEL}] expected BROWSER_READ in actions; got {kinds}; reply={resp.get('reply', '')[:200]!r}",
+        )
 
     def test_5_browser_screenshot(self):
         resp = _post_chat(
@@ -206,8 +223,11 @@ class BrowserDirectiveLiveTests(unittest.TestCase):
             page_context=SAMPLE_PAGE_CONTEXT,
         )
         kinds = _action_kinds(resp)
-        self.assertIn("BROWSER_SCREENSHOT", kinds,
-                      f"[{LANE_LABEL}] expected BROWSER_SCREENSHOT in actions; got {kinds}; reply={resp.get('reply','')[:200]!r}")
+        self.assertIn(
+            "BROWSER_SCREENSHOT",
+            kinds,
+            f"[{LANE_LABEL}] expected BROWSER_SCREENSHOT in actions; got {kinds}; reply={resp.get('reply', '')[:200]!r}",
+        )
 
     def test_6_done_directive_smoke(self):
         """6b (cloud) / 6c (local) — model emits DONE: explicitly; backend
@@ -219,18 +239,28 @@ class BrowserDirectiveLiveTests(unittest.TestCase):
             "DONE: navigated to example.com"
         )
         reply = resp.get("reply", "")
-        self.assertRegex(reply, r"(?m)^\s*DONE:\s*\S",
-                         f"[{LANE_LABEL}] expected DONE: line in reply; got reply={reply[:300]!r}")
+        self.assertRegex(
+            reply,
+            r"(?m)^\s*DONE:\s*\S",
+            f"[{LANE_LABEL}] expected DONE: line in reply; got reply={reply[:300]!r}",
+        )
         if resp.get("actions"):
-            self.assertFalse(resp.get("done"),
-                             f"[{LANE_LABEL}] pending actions must not be terminal; "
-                             f"terminal_reason={resp.get('terminal_reason')!r}; reply={reply[:300]!r}")
+            self.assertFalse(
+                resp.get("done"),
+                f"[{LANE_LABEL}] pending actions must not be terminal; "
+                f"terminal_reason={resp.get('terminal_reason')!r}; reply={reply[:300]!r}",
+            )
         else:
-            self.assertEqual(resp.get("terminal_reason"), "done_directive",
-                             f"[{LANE_LABEL}] expected terminal_reason=done_directive; "
-                             f"got {resp.get('terminal_reason')!r}; reply={reply[:300]!r}")
+            self.assertEqual(
+                resp.get("terminal_reason"),
+                "done_directive",
+                f"[{LANE_LABEL}] expected terminal_reason=done_directive; "
+                f"got {resp.get('terminal_reason')!r}; reply={reply[:300]!r}",
+            )
 
 
 if __name__ == "__main__":
-    print(f"[test_browser_directives] lane={LANE_LABEL}, base={BASE_URL}, token={'set' if _read_token() else 'empty'}")
+    print(
+        f"[test_browser_directives] lane={LANE_LABEL}, base={BASE_URL}, token={'set' if _read_token() else 'empty'}"
+    )
     unittest.main(verbosity=2)

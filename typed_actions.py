@@ -39,7 +39,6 @@ import re
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
 
 
 class Kind:
@@ -85,10 +84,10 @@ class Kind:
 
 
 class Risk:
-    SAFE = "safe"       # READ, harmless RUN (ls, cat, file existence checks)
-    NORMAL = "normal"   # RUN/RUNTERM/CREATE/EDIT with side effects
-    HIGH = "high"       # destructive RUN (rm -rf, dd, mkfs, chmod -R 777, etc.)
-    BLOCKED = "blocked" # safeguard refused; never executes
+    SAFE = "safe"  # READ, harmless RUN (ls, cat, file existence checks)
+    NORMAL = "normal"  # RUN/RUNTERM/CREATE/EDIT with side effects
+    HIGH = "high"  # destructive RUN (rm -rf, dd, mkfs, chmod -R 777, etc.)
+    BLOCKED = "blocked"  # safeguard refused; never executes
 
 
 class Status:
@@ -102,15 +101,44 @@ class Status:
     SKIPPED = "skipped"
 
 
-DIRECTIVE_KINDS = frozenset({Kind.RUN, Kind.RUNTERM, Kind.READ, Kind.CREATE, Kind.EDIT, Kind.REMEMBER,
-                             Kind.PLAN, Kind.DONE, Kind.THINK, Kind.RUN_SKILL, Kind.SEND_EMAIL, Kind.SEND_TELEGRAM,
-                             Kind.BROWSER_CLICK, Kind.BROWSER_FILL, Kind.BROWSER_FILL_FORM, Kind.BROWSER_UPLOAD_FILE,
-                             Kind.BROWSER_SUBMIT, Kind.BROWSER_READ,
-                             Kind.BROWSER_READ_PAGE, Kind.BROWSER_READ_PAGE_FULL, Kind.BROWSER_OBSERVE, Kind.BROWSER_NAV,
-                             Kind.BROWSER_CLOSE_TAB, Kind.BROWSER_SCREENSHOT, Kind.BROWSER_WAIT, Kind.BROWSER_SCROLL,
-                             Kind.BROWSER_DOUBLE_CLICK, Kind.BROWSER_FIND, Kind.BROWSER_EXTRACT_LIST,
-                             Kind.BROWSER_DRIVE_INSPECT_FOLDER, Kind.BROWSER_CDP_MOUSE,
-                             Kind.BROWSER_CDP_KEY, Kind.BROWSER_TAB_CREATE, Kind.REMOTE_MCP})
+DIRECTIVE_KINDS = frozenset(
+    {
+        Kind.RUN,
+        Kind.RUNTERM,
+        Kind.READ,
+        Kind.CREATE,
+        Kind.EDIT,
+        Kind.REMEMBER,
+        Kind.PLAN,
+        Kind.DONE,
+        Kind.THINK,
+        Kind.RUN_SKILL,
+        Kind.SEND_EMAIL,
+        Kind.SEND_TELEGRAM,
+        Kind.BROWSER_CLICK,
+        Kind.BROWSER_FILL,
+        Kind.BROWSER_FILL_FORM,
+        Kind.BROWSER_UPLOAD_FILE,
+        Kind.BROWSER_SUBMIT,
+        Kind.BROWSER_READ,
+        Kind.BROWSER_READ_PAGE,
+        Kind.BROWSER_READ_PAGE_FULL,
+        Kind.BROWSER_OBSERVE,
+        Kind.BROWSER_NAV,
+        Kind.BROWSER_CLOSE_TAB,
+        Kind.BROWSER_SCREENSHOT,
+        Kind.BROWSER_WAIT,
+        Kind.BROWSER_SCROLL,
+        Kind.BROWSER_DOUBLE_CLICK,
+        Kind.BROWSER_FIND,
+        Kind.BROWSER_EXTRACT_LIST,
+        Kind.BROWSER_DRIVE_INSPECT_FOLDER,
+        Kind.BROWSER_CDP_MOUSE,
+        Kind.BROWSER_CDP_KEY,
+        Kind.BROWSER_TAB_CREATE,
+        Kind.REMOTE_MCP,
+    }
+)
 
 
 # Heuristic patterns for risk classification. Conservative — false-positives
@@ -118,8 +146,10 @@ DIRECTIVE_KINDS = frozenset({Kind.RUN, Kind.RUNTERM, Kind.READ, Kind.CREATE, Kin
 # hooks input here, not authoritative enforcement. The real enforcement
 # lives in master_ai.is_blocked / _cleanup_safety_issue / _SELF_MOD_DENYLIST.
 _HIGH_RISK_RUN_PATTERNS = (
-    re.compile(r"\brm\s+-[rRfF]+[a-zA-Z]*\s+/", re.I),       # rm -rf /path
-    re.compile(r"\brm\s+-[rRfF]+\b(?!.*\.cache)", re.I),     # rm -rf without cache exception
+    re.compile(r"\brm\s+-[rRfF]+[a-zA-Z]*\s+/", re.I),  # rm -rf /path
+    re.compile(
+        r"\brm\s+-[rRfF]+\b(?!.*\.cache)", re.I
+    ),  # rm -rf without cache exception
     re.compile(r"\bdd\s+if=", re.I),
     re.compile(r"\bmkfs\b", re.I),
     re.compile(r"\bchmod\s+-R\s+777\b", re.I),
@@ -131,9 +161,30 @@ _HIGH_RISK_RUN_PATTERNS = (
 )
 
 _SAFE_RUN_PREFIXES = (
-    "ls", "cat", "file", "head", "tail", "wc", "stat", "which", "type",
-    "pwd", "echo", "date", "uptime", "uname", "id", "hostname", "df",
-    "du", "free", "ps", "top", "true", "test ", "[ ",
+    "ls",
+    "cat",
+    "file",
+    "head",
+    "tail",
+    "wc",
+    "stat",
+    "which",
+    "type",
+    "pwd",
+    "echo",
+    "date",
+    "uptime",
+    "uname",
+    "id",
+    "hostname",
+    "df",
+    "du",
+    "free",
+    "ps",
+    "top",
+    "true",
+    "test ",
+    "[ ",
 )
 
 _DIRECTIVE_LINE_RE = re.compile(
@@ -141,19 +192,21 @@ _DIRECTIVE_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 
-BROWSER_READONLY_KINDS = frozenset({
-    Kind.BROWSER_READ,
-    Kind.BROWSER_READ_PAGE,
-    Kind.BROWSER_READ_PAGE_FULL,
-    Kind.BROWSER_OBSERVE,
-    Kind.BROWSER_SCREENSHOT,
-    Kind.BROWSER_WAIT,
-    Kind.BROWSER_SCROLL,
-    Kind.BROWSER_FIND,
-    Kind.BROWSER_EXTRACT_LIST,
-    Kind.BROWSER_DRIVE_INSPECT_FOLDER,
-    Kind.REMOTE_MCP,
-})
+BROWSER_READONLY_KINDS = frozenset(
+    {
+        Kind.BROWSER_READ,
+        Kind.BROWSER_READ_PAGE,
+        Kind.BROWSER_READ_PAGE_FULL,
+        Kind.BROWSER_OBSERVE,
+        Kind.BROWSER_SCREENSHOT,
+        Kind.BROWSER_WAIT,
+        Kind.BROWSER_SCROLL,
+        Kind.BROWSER_FIND,
+        Kind.BROWSER_EXTRACT_LIST,
+        Kind.BROWSER_DRIVE_INSPECT_FOLDER,
+        Kind.REMOTE_MCP,
+    }
+)
 
 
 def _now_iso() -> str:
@@ -174,7 +227,7 @@ class TypedAction:
     kind: str
     target: str
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    cwd: Optional[str] = None
+    cwd: str | None = None
     risk: str = Risk.NORMAL
     requires_confirm: bool = True
     timeout_s: int = 60
@@ -182,10 +235,10 @@ class TypedAction:
     source_text: str = ""
     parsed_at: str = field(default_factory=_now_iso)
     status: str = Status.PARSED
-    create_content: Optional[str] = None
-    edit_old: Optional[str] = None
-    edit_new: Optional[str] = None
-    read_range: Optional[tuple] = None  # (start_line, end_line) inclusive
+    create_content: str | None = None
+    edit_old: str | None = None
+    edit_new: str | None = None
+    read_range: tuple | None = None  # (start_line, end_line) inclusive
     extras: dict = field(default_factory=dict)
 
     def __post_init__(self):
@@ -193,7 +246,9 @@ class TypedAction:
         if isinstance(self.kind, str):
             self.kind = self.kind.upper()
         if self.kind not in DIRECTIVE_KINDS:
-            raise ValueError(f"unknown kind {self.kind!r}; expected one of {sorted(DIRECTIVE_KINDS)}")
+            raise ValueError(
+                f"unknown kind {self.kind!r}; expected one of {sorted(DIRECTIVE_KINDS)}"
+            )
         if not self.risk:
             self.risk = Risk.NORMAL
 
@@ -204,7 +259,7 @@ class TypedAction:
         return d
 
     @classmethod
-    def from_dict(cls, d: dict) -> "TypedAction":
+    def from_dict(cls, d: dict) -> TypedAction:
         if not isinstance(d, dict):
             raise TypeError(f"from_dict expects dict, got {type(d).__name__}")
         if "kind" not in d or "target" not in d:
@@ -252,9 +307,9 @@ def classify_risk(action: TypedAction) -> str:
             action.risk = Risk.HIGH
             return action.risk
         first_token = low.split(None, 1)[0] if low else ""
-        if first_token in {p.strip().rstrip() for p in _SAFE_RUN_PREFIXES if not p.endswith(" ")} or any(
-            low.startswith(p) for p in _SAFE_RUN_PREFIXES
-        ):
+        if first_token in {
+            p.strip().rstrip() for p in _SAFE_RUN_PREFIXES if not p.endswith(" ")
+        } or any(low.startswith(p) for p in _SAFE_RUN_PREFIXES):
             if "&&" not in t and ";" not in t and "|" not in t:
                 action.risk = Risk.SAFE
                 return action.risk
@@ -270,8 +325,9 @@ def classify_risk(action: TypedAction) -> str:
     return action.risk
 
 
-def parse_directive(line: str, *, model: str = "", source_text: str = "",
-                    cwd: Optional[str] = None) -> Optional[TypedAction]:
+def parse_directive(
+    line: str, *, model: str = "", source_text: str = "", cwd: str | None = None
+) -> TypedAction | None:
     """Single-line parser. Returns a TypedAction if `line` matches one of the
     directive keywords on its own line, else None.
 
@@ -298,24 +354,46 @@ def parse_directive(line: str, *, model: str = "", source_text: str = "",
         cwd=cwd,
         created_by_model=model or "",
         source_text=source_text or line,
-        requires_confirm=(kind in (
-            Kind.RUN, Kind.RUNTERM, Kind.CREATE, Kind.EDIT, Kind.RUN_SKILL, Kind.SEND_EMAIL, Kind.SEND_TELEGRAM,
-            Kind.BROWSER_CLICK, Kind.BROWSER_FILL, Kind.BROWSER_FILL_FORM, Kind.BROWSER_UPLOAD_FILE,
-            Kind.BROWSER_SUBMIT, Kind.BROWSER_READ,
-            Kind.BROWSER_READ_PAGE, Kind.BROWSER_OBSERVE, Kind.BROWSER_NAV,
-            Kind.BROWSER_READ_PAGE_FULL, Kind.BROWSER_CLOSE_TAB, Kind.BROWSER_SCREENSHOT,
-            Kind.BROWSER_WAIT, Kind.BROWSER_SCROLL,
-            Kind.BROWSER_DOUBLE_CLICK, Kind.BROWSER_FIND, Kind.BROWSER_EXTRACT_LIST,
-            Kind.BROWSER_DRIVE_INSPECT_FOLDER, Kind.BROWSER_CDP_MOUSE,
-            Kind.BROWSER_CDP_KEY, Kind.BROWSER_TAB_CREATE, Kind.REMOTE_MCP,
-        )),
+        requires_confirm=(
+            kind
+            in (
+                Kind.RUN,
+                Kind.RUNTERM,
+                Kind.CREATE,
+                Kind.EDIT,
+                Kind.RUN_SKILL,
+                Kind.SEND_EMAIL,
+                Kind.SEND_TELEGRAM,
+                Kind.BROWSER_CLICK,
+                Kind.BROWSER_FILL,
+                Kind.BROWSER_FILL_FORM,
+                Kind.BROWSER_UPLOAD_FILE,
+                Kind.BROWSER_SUBMIT,
+                Kind.BROWSER_READ,
+                Kind.BROWSER_READ_PAGE,
+                Kind.BROWSER_OBSERVE,
+                Kind.BROWSER_NAV,
+                Kind.BROWSER_READ_PAGE_FULL,
+                Kind.BROWSER_CLOSE_TAB,
+                Kind.BROWSER_SCREENSHOT,
+                Kind.BROWSER_WAIT,
+                Kind.BROWSER_SCROLL,
+                Kind.BROWSER_DOUBLE_CLICK,
+                Kind.BROWSER_FIND,
+                Kind.BROWSER_EXTRACT_LIST,
+                Kind.BROWSER_DRIVE_INSPECT_FOLDER,
+                Kind.BROWSER_CDP_MOUSE,
+                Kind.BROWSER_CDP_KEY,
+                Kind.BROWSER_TAB_CREATE,
+                Kind.REMOTE_MCP,
+            )
+        ),
     )
     classify_risk(action)
     return action
 
 
-def parse_reply(text: str, *, model: str = "",
-                cwd: Optional[str] = None) -> list:
+def parse_reply(text: str, *, model: str = "", cwd: str | None = None) -> list:
     """Parse a multi-line reply for directive lines. Multi-line CREATE/EDIT
     bodies are NOT reassembled here — use master_ai.process_reply for that.
     This helper is for single-line scans (audit, observability previews).
@@ -362,8 +440,16 @@ def _strip_wrap(s: str) -> str:
 # below — the legacy body-block builder matches those by line-start anchor
 # instead, with no backtick-parity check (master_ai.py:9260-9298).
 _SINGLE_LINE_KINDS = (
-    Kind.RUN, Kind.RUNTERM, Kind.READ, Kind.REMEMBER,
-    Kind.PLAN, Kind.DONE, Kind.THINK, Kind.RUN_SKILL, Kind.SEND_EMAIL, Kind.SEND_TELEGRAM,
+    Kind.RUN,
+    Kind.RUNTERM,
+    Kind.READ,
+    Kind.REMEMBER,
+    Kind.PLAN,
+    Kind.DONE,
+    Kind.THINK,
+    Kind.RUN_SKILL,
+    Kind.SEND_EMAIL,
+    Kind.SEND_TELEGRAM,
 )
 
 
@@ -375,7 +461,9 @@ def _extract_single_line_payload(line: str, name: str) -> str:
     return "" if _is_noop_payload(payload) else payload
 
 
-def parse_reply_with_bodies(text: str, *, model: str = "", cwd: Optional[str] = None) -> list:
+def parse_reply_with_bodies(
+    text: str, *, model: str = "", cwd: str | None = None
+) -> list:
     """Full reply parser with CREATE/EDIT body-block content capture.
 
     parse_reply() only does single-line scanning with no backtick-parity or
@@ -425,7 +513,7 @@ def parse_reply_with_bodies(text: str, *, model: str = "", cwd: Optional[str] = 
         for ln in candidate_lines:
             fired = False
             for m in re.finditer(rf"\b{kind}:", ln, re.IGNORECASE):
-                if ln[:m.start()].count("`") % 2 == 0:
+                if ln[: m.start()].count("`") % 2 == 0:
                     fired = True
                     break
             if not fired:
@@ -434,9 +522,21 @@ def parse_reply_with_bodies(text: str, *, model: str = "", cwd: Optional[str] = 
             if not payload:
                 continue
             action = TypedAction(
-                kind=kind, target=payload, cwd=cwd,
-                created_by_model=model or "", source_text=ln,
-                requires_confirm=(kind in (Kind.RUN, Kind.RUNTERM, Kind.RUN_SKILL, Kind.SEND_EMAIL, Kind.SEND_TELEGRAM)),
+                kind=kind,
+                target=payload,
+                cwd=cwd,
+                created_by_model=model or "",
+                source_text=ln,
+                requires_confirm=(
+                    kind
+                    in (
+                        Kind.RUN,
+                        Kind.RUNTERM,
+                        Kind.RUN_SKILL,
+                        Kind.SEND_EMAIL,
+                        Kind.SEND_TELEGRAM,
+                    )
+                ),
             )
             classify_risk(action)
             out.append(action)
@@ -449,7 +549,8 @@ def parse_reply_with_bodies(text: str, *, model: str = "", cwd: Optional[str] = 
     for line in lines:
         if re.match(r"^\s*CREATE:", line, re.IGNORECASE):
             cur_path = os.path.expanduser(
-                re.split(r"CREATE:", line, maxsplit=1, flags=re.IGNORECASE)[1].strip())
+                re.split(r"CREATE:", line, maxsplit=1, flags=re.IGNORECASE)[1].strip()
+            )
             cur_content = []
             in_block = False
         elif line.strip().upper() == "<<<CONTENT" and cur_path:
@@ -462,8 +563,12 @@ def parse_reply_with_bodies(text: str, *, model: str = "", cwd: Optional[str] = 
             cur_content.append(line)
         elif re.match(r"^\s*EDIT:", line, re.IGNORECASE):
             cur_path = os.path.expanduser(
-                re.split(r"EDIT:", line, maxsplit=1, flags=re.IGNORECASE)[1].strip())
-            cur_find = []; cur_replace = []; in_find = False; in_replace = False
+                re.split(r"EDIT:", line, maxsplit=1, flags=re.IGNORECASE)[1].strip()
+            )
+            cur_find = []
+            cur_replace = []
+            in_find = False
+            in_replace = False
         elif line.strip().upper() == "<<<FIND" and cur_path:
             in_find = True
         elif line.strip().upper() == ">>>FIND" and in_find:
@@ -473,8 +578,12 @@ def parse_reply_with_bodies(text: str, *, model: str = "", cwd: Optional[str] = 
         elif line.strip().upper() == ">>>REPLACE" and in_replace:
             in_replace = False
             if cur_find is not None and cur_replace is not None:
-                edited_targets.append((cur_path, "\n".join(cur_find), "\n".join(cur_replace)))
-            cur_path = None; cur_find = None; cur_replace = None
+                edited_targets.append(
+                    (cur_path, "\n".join(cur_find), "\n".join(cur_replace))
+                )
+            cur_path = None
+            cur_find = None
+            cur_replace = None
         elif in_find and cur_find is not None:
             cur_find.append(line)
         elif in_replace and cur_replace is not None:
@@ -491,17 +600,23 @@ def parse_reply_with_bodies(text: str, *, model: str = "", cwd: Optional[str] = 
         real_path = os.path.realpath(exp_path)
         if real_path in created_paths_seen:
             continue
-        tail = text[m.end():]
-        next_directive = re.search(r"(?im)^\s*(RUN|RUNTERM|READ|CREATE|EDIT|ASK|DONE):", tail)
-        create_tail = tail[:next_directive.start()] if next_directive else tail
-        reversed_block = re.search(r"(?is)^\s*>>>CONTENT\s*\n(.*?)\n\s*<<<CONTENT\s*", create_tail)
+        tail = text[m.end() :]
+        next_directive = re.search(
+            r"(?im)^\s*(RUN|RUNTERM|READ|CREATE|EDIT|ASK|DONE):", tail
+        )
+        create_tail = tail[: next_directive.start()] if next_directive else tail
+        reversed_block = re.search(
+            r"(?is)^\s*>>>CONTENT\s*\n(.*?)\n\s*<<<CONTENT\s*", create_tail
+        )
         if reversed_block:
             content = reversed_block.group(1).strip("\n")
             if content:
                 created_targets.append((exp_path, content))
                 created_paths_seen.add(real_path)
             continue
-        fences = list(re.finditer(r"```([A-Za-z0-9_-]+)?\s*\n(.*?)\n```", create_tail, re.DOTALL))
+        fences = list(
+            re.finditer(r"```([A-Za-z0-9_-]+)?\s*\n(.*?)\n```", create_tail, re.DOTALL)
+        )
         if fences:
             content = fences[0].group(2).strip("\n")
             if exp_path.lower().endswith((".html", ".htm")):
@@ -523,7 +638,9 @@ def parse_reply_with_bodies(text: str, *, model: str = "", cwd: Optional[str] = 
                         flags=re.IGNORECASE,
                     )
                     if style_block not in content:
-                        content = content.replace("</head>", f"    {style_block}\n</head>", 1)
+                        content = content.replace(
+                            "</head>", f"    {style_block}\n</head>", 1
+                        )
                 if js_chunks:
                     script_block = "<script>\n" + "\n\n".join(js_chunks) + "\n</script>"
                     content = re.sub(
@@ -533,25 +650,36 @@ def parse_reply_with_bodies(text: str, *, model: str = "", cwd: Optional[str] = 
                         flags=re.IGNORECASE,
                     )
                     if script_block not in content:
-                        content = content.replace("</body>", f"    {script_block}\n</body>", 1)
+                        content = content.replace(
+                            "</body>", f"    {script_block}\n</body>", 1
+                        )
             if content:
                 created_targets.append((exp_path, content))
                 created_paths_seen.add(real_path)
 
     for path, content in created_targets:
         action = TypedAction(
-            kind=Kind.CREATE, target=path, cwd=cwd,
-            created_by_model=model or "", source_text=f"CREATE: {path}",
-            create_content=content, requires_confirm=True,
+            kind=Kind.CREATE,
+            target=path,
+            cwd=cwd,
+            created_by_model=model or "",
+            source_text=f"CREATE: {path}",
+            create_content=content,
+            requires_confirm=True,
         )
         classify_risk(action)
         out.append(action)
 
     for path, find_text, replace_text in edited_targets:
         action = TypedAction(
-            kind=Kind.EDIT, target=path, cwd=cwd,
-            created_by_model=model or "", source_text=f"EDIT: {path}",
-            edit_old=find_text, edit_new=replace_text, requires_confirm=True,
+            kind=Kind.EDIT,
+            target=path,
+            cwd=cwd,
+            created_by_model=model or "",
+            source_text=f"EDIT: {path}",
+            edit_old=find_text,
+            edit_new=replace_text,
+            requires_confirm=True,
         )
         classify_risk(action)
         out.append(action)
@@ -563,42 +691,42 @@ def parse_reply_with_bodies(text: str, *, model: str = "", cwd: Optional[str] = 
 # outcome field. Keys are matched by exact match OR longest-prefix match,
 # whichever is more specific.
 _AUDIT_OUTCOME_MAP = {
-    "RUN":                    ("RUN", Status.COMPLETED),
-    "RUN-AUTO":               ("RUN", Status.COMPLETED),
-    "RUN-ALWAYS":             ("RUN", Status.COMPLETED),
-    "RUN-EMPTY":              ("RUN", Status.BLOCKED),
-    "RUN-BLOCK":              ("RUN", Status.BLOCKED),
-    "RUN-BLOCK-CLEANUP":      ("RUN", Status.BLOCKED),
-    "RUN-BLOCK-MISSING":      ("RUN", Status.BLOCKED),
+    "RUN": ("RUN", Status.COMPLETED),
+    "RUN-AUTO": ("RUN", Status.COMPLETED),
+    "RUN-ALWAYS": ("RUN", Status.COMPLETED),
+    "RUN-EMPTY": ("RUN", Status.BLOCKED),
+    "RUN-BLOCK": ("RUN", Status.BLOCKED),
+    "RUN-BLOCK-CLEANUP": ("RUN", Status.BLOCKED),
+    "RUN-BLOCK-MISSING": ("RUN", Status.BLOCKED),
     "RUN-BLOCK-CONTINUATION": ("RUN", Status.BLOCKED),
-    "RUN-SUDO-HANDOFF":       ("RUN", Status.PENDING_APPROVAL),
-    "RUN-SUDO-RESUME":        ("RUN", Status.COMPLETED),
-    "RUN-SUDO-SKIP":          ("RUN", Status.SKIPPED),
-    "RUNTERM":                ("RUNTERM", Status.COMPLETED),
-    "RUNTERM-EMPTY":          ("RUNTERM", Status.BLOCKED),
-    "RUNTERM-BLOCK":          ("RUNTERM", Status.BLOCKED),
-    "RUNTERM-REDIRECT":       ("RUNTERM", Status.COMPLETED),
+    "RUN-SUDO-HANDOFF": ("RUN", Status.PENDING_APPROVAL),
+    "RUN-SUDO-RESUME": ("RUN", Status.COMPLETED),
+    "RUN-SUDO-SKIP": ("RUN", Status.SKIPPED),
+    "RUNTERM": ("RUNTERM", Status.COMPLETED),
+    "RUNTERM-EMPTY": ("RUNTERM", Status.BLOCKED),
+    "RUNTERM-BLOCK": ("RUNTERM", Status.BLOCKED),
+    "RUNTERM-REDIRECT": ("RUNTERM", Status.COMPLETED),
     "RUNTERM-REDIRECT-DESKTOP": ("RUNTERM", Status.COMPLETED),
     "RUNTERM-BLOCK-CONTINUATION": ("RUNTERM", Status.BLOCKED),
-    "RUNTERM-BLOCK-MISSING":  ("RUNTERM", Status.BLOCKED),
-    "RUNTERM-EMPTY-PAYLOAD":  ("RUNTERM", Status.BLOCKED),
-    "READ":                   ("READ", Status.COMPLETED),
-    "READ-BLOCK":             ("READ", Status.BLOCKED),
-    "CREATE":                 ("CREATE", Status.COMPLETED),
-    "CREATE-BLOCK":           ("CREATE", Status.BLOCKED),
-    "EDIT":                   ("EDIT", Status.COMPLETED),
-    "EDIT-BLOCK":             ("EDIT", Status.BLOCKED),
+    "RUNTERM-BLOCK-MISSING": ("RUNTERM", Status.BLOCKED),
+    "RUNTERM-EMPTY-PAYLOAD": ("RUNTERM", Status.BLOCKED),
+    "READ": ("READ", Status.COMPLETED),
+    "READ-BLOCK": ("READ", Status.BLOCKED),
+    "CREATE": ("CREATE", Status.COMPLETED),
+    "CREATE-BLOCK": ("CREATE", Status.BLOCKED),
+    "EDIT": ("EDIT", Status.COMPLETED),
+    "EDIT-BLOCK": ("EDIT", Status.BLOCKED),
     # REMEMBER (self-write to memory) — added 2026-05-11.
-    "REMEMBER":               ("REMEMBER", Status.COMPLETED),
-    "REMEMBER-EMPTY":         ("REMEMBER", Status.SKIPPED),
-    "REMEMBER-DUP":           ("REMEMBER", Status.SKIPPED),
-    "DESKTOP-OPEN":           ("RUN", Status.COMPLETED),
-    "DESKTOP-REDIRECT":       ("RUN", Status.COMPLETED),
-    "POLICY-CMD-BLOCK":       ("RUN", Status.BLOCKED),
-    "POLICY-RUNTERM-BLOCK":   ("RUNTERM", Status.BLOCKED),
-    "POLICY-REQUEST-BLOCK":   ("REQUEST", Status.BLOCKED),
-    "DENY-NO-TTY":            ("RUN", Status.BLOCKED),
-    "DENY-EOF":               ("RUN", Status.BLOCKED),
+    "REMEMBER": ("REMEMBER", Status.COMPLETED),
+    "REMEMBER-EMPTY": ("REMEMBER", Status.SKIPPED),
+    "REMEMBER-DUP": ("REMEMBER", Status.SKIPPED),
+    "DESKTOP-OPEN": ("RUN", Status.COMPLETED),
+    "DESKTOP-REDIRECT": ("RUN", Status.COMPLETED),
+    "POLICY-CMD-BLOCK": ("RUN", Status.BLOCKED),
+    "POLICY-RUNTERM-BLOCK": ("RUNTERM", Status.BLOCKED),
+    "POLICY-REQUEST-BLOCK": ("REQUEST", Status.BLOCKED),
+    "DENY-NO-TTY": ("RUN", Status.BLOCKED),
+    "DENY-EOF": ("RUN", Status.BLOCKED),
 }
 
 
@@ -617,21 +745,28 @@ def audit_outcome_from_kind(audit_kind: str) -> tuple:
     for prefix in ("RUNTERM", "RUN", "READ", "CREATE", "EDIT"):
         if audit_kind.upper().startswith(prefix):
             inferred_status = (
-                Status.BLOCKED if "BLOCK" in audit_kind.upper()
-                else Status.SKIPPED if "SKIP" in audit_kind.upper()
-                else Status.PENDING_APPROVAL if "HANDOFF" in audit_kind.upper()
+                Status.BLOCKED
+                if "BLOCK" in audit_kind.upper()
+                else Status.SKIPPED
+                if "SKIP" in audit_kind.upper()
+                else Status.PENDING_APPROVAL
+                if "HANDOFF" in audit_kind.upper()
                 else Status.COMPLETED
             )
             return (prefix, inferred_status)
     return (None, None)
 
 
-def make_audit_record(*, kind: str, detail: str,
-                      profile: str = "default",
-                      mode: str = "",
-                      cwd: str = "",
-                      model: str = "",
-                      action_id: Optional[str] = None) -> Optional[dict]:
+def make_audit_record(
+    *,
+    kind: str,
+    detail: str,
+    profile: str = "default",
+    mode: str = "",
+    cwd: str = "",
+    model: str = "",
+    action_id: str | None = None,
+) -> dict | None:
     """Build a typed jsonl audit record from a legacy _audit() call.
 
     Returns None if the audit kind is NOT a directive kind (so callers can
@@ -686,18 +821,24 @@ def serialize(action: TypedAction) -> str:
 
 
 class ResultStatus:
-    PLANNED = "planned"                          # Plan mode preview; not executed
+    PLANNED = "planned"  # Plan mode preview; not executed
     WAITING_FOR_APPROVAL = "waiting_for_approval"  # Review (or Auto+sensitive)
-    RUNNING = "running"                          # Auto, safe, in flight
-    SUCCESS = "success"                          # Dispatcher executed; succeeded
-    FAILURE = "failure"                          # Dispatcher executed; failed
-    BLOCKED = "blocked"                          # Dispatcher refused outright
+    RUNNING = "running"  # Auto, safe, in flight
+    SUCCESS = "success"  # Dispatcher executed; succeeded
+    FAILURE = "failure"  # Dispatcher executed; failed
+    BLOCKED = "blocked"  # Dispatcher refused outright
 
 
-RESULT_STATUSES = frozenset({
-    ResultStatus.PLANNED, ResultStatus.WAITING_FOR_APPROVAL, ResultStatus.RUNNING,
-    ResultStatus.SUCCESS, ResultStatus.FAILURE, ResultStatus.BLOCKED,
-})
+RESULT_STATUSES = frozenset(
+    {
+        ResultStatus.PLANNED,
+        ResultStatus.WAITING_FOR_APPROVAL,
+        ResultStatus.RUNNING,
+        ResultStatus.SUCCESS,
+        ResultStatus.FAILURE,
+        ResultStatus.BLOCKED,
+    }
+)
 
 
 @dataclass
@@ -709,17 +850,22 @@ class ActionResult:
     RESULTS] block — generalizes the [TOOL BLOCKED] retry pattern from
     commit 45f6072 (blocked-only feedback) to every-action feedback.
     """
+
     action_id: str
     kind: str
     target: str
-    status: str                                  # one of RESULT_STATUSES
-    executed: bool                               # did dispatcher actually run it
-    mode_at_emission: str = "plan"               # plan | review | auto
-    error_code: Optional[str] = None             # permission_required | target_not_found | nav_blocked | timeout | conflict | …
-    error_message: Optional[str] = None
-    observed_tab_url: Optional[str] = None       # ground truth post-action; required for every BROWSER_* result
-    observed_text: Optional[str] = None          # short snippet for READ
-    gated_by: Optional[str] = None               # if downgraded or refused
+    status: str  # one of RESULT_STATUSES
+    executed: bool  # did dispatcher actually run it
+    mode_at_emission: str = "plan"  # plan | review | auto
+    error_code: str | None = (
+        None  # permission_required | target_not_found | nav_blocked | timeout | conflict | …
+    )
+    error_message: str | None = None
+    observed_tab_url: str | None = (
+        None  # ground truth post-action; required for every BROWSER_* result
+    )
+    observed_text: str | None = None  # short snippet for READ
+    gated_by: str | None = None  # if downgraded or refused
     ts: str = field(default_factory=_now_iso)
     extras: dict = field(default_factory=dict)
 
@@ -770,7 +916,11 @@ def make_envelope_from_side_panel_payload(raw: dict) -> ActionResult:
     if isinstance(final, dict):
         observed_tab_url = (
             final.get("navigated")
-            or ((final.get("page_context") or {}).get("url") if isinstance(final.get("page_context"), dict) else None)
+            or (
+                (final.get("page_context") or {}).get("url")
+                if isinstance(final.get("page_context"), dict)
+                else None
+            )
             or final.get("observed_tab_url")
         )
 
@@ -781,7 +931,9 @@ def make_envelope_from_side_panel_payload(raw: dict) -> ActionResult:
             observed_text = text[:240]
 
     gated_by = raw.get("gated_by") if isinstance(raw.get("gated_by"), str) else None
-    mode_at_emission = str(raw.get("mode_at_emission") or raw_action.get("mode_at_emission") or "auto").lower()
+    mode_at_emission = str(
+        raw.get("mode_at_emission") or raw_action.get("mode_at_emission") or "auto"
+    ).lower()
 
     return ActionResult(
         action_id=action_id,
@@ -792,17 +944,23 @@ def make_envelope_from_side_panel_payload(raw: dict) -> ActionResult:
         mode_at_emission=mode_at_emission,
         error_code=error_code,
         error_message=(error_message[:300] if isinstance(error_message, str) else None),
-        observed_tab_url=(observed_tab_url[:500] if isinstance(observed_tab_url, str) else None),
+        observed_tab_url=(
+            observed_tab_url[:500] if isinstance(observed_tab_url, str) else None
+        ),
         observed_text=observed_text,
         gated_by=gated_by,
         extras={"source_payload_keys": sorted(list(raw.keys()))},
     )
 
 
-def _infer_error_code(final_state: dict) -> Optional[str]:
+def _infer_error_code(final_state: dict) -> str | None:
     if not isinstance(final_state, dict):
         return None
-    err = (final_state.get("error") or "").lower() if isinstance(final_state.get("error"), str) else ""
+    err = (
+        (final_state.get("error") or "").lower()
+        if isinstance(final_state.get("error"), str)
+        else ""
+    )
     if not err:
         return None
     if "target not found" in err or "selector not found" in err:
@@ -831,8 +989,10 @@ def format_envelope_row(env: ActionResult) -> str:
     if not isinstance(env, ActionResult):
         raise TypeError("format_envelope_row expects ActionResult")
     header = f"  · {env.kind} {env.target}"
-    lines = [header,
-             f"    status: {env.status}  executed: {'true' if env.executed else 'false'}"]
+    lines = [
+        header,
+        f"    status: {env.status}  executed: {'true' if env.executed else 'false'}",
+    ]
     if env.error_code:
         lines.append(f"    error_code: {env.error_code}")
     if env.error_message:

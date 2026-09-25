@@ -7,6 +7,7 @@ real ~/.master_ai_domain_classes.json is never touched. Tests cover the
 merge semantics — seed-only, user override, atomic write — but never
 exercise the URLhaus remote pull (DOMAIN_CLASSES_FETCH stays unset).
 """
+
 import json
 import os
 import subprocess
@@ -44,25 +45,33 @@ class RefreshDomainClassesTests(unittest.TestCase):
         self.out_path = os.path.join(self.tmp, "out.json")
         self.user_path = os.path.join(self.tmp, "user.json")
         # Use the in-repo seed so the test is deterministic.
-        self.seed_path = str(Path(__file__).resolve().parent / "master_ai_domain_classes.seed.json")
+        self.seed_path = str(
+            Path(__file__).resolve().parent / "master_ai_domain_classes.seed.json"
+        )
 
     def tearDown(self):
         for p in (self.out_path, self.user_path):
-            try: os.unlink(p)
-            except OSError: pass
-        try: os.rmdir(self.tmp)
-        except OSError: pass
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+        try:
+            os.rmdir(self.tmp)
+        except OSError:
+            pass
 
     def _read_output(self):
-        with open(self.out_path, 'r', encoding='utf-8') as f:
+        with open(self.out_path, encoding="utf-8") as f:
             return json.load(f)
 
     def test_seed_only(self):
-        _run({
-            "DOMAIN_CLASSES_OUT": self.out_path,
-            "DOMAIN_CLASSES_USER": self.user_path,  # doesn't exist
-            "DOMAIN_CLASSES_SEED": self.seed_path,
-        })
+        _run(
+            {
+                "DOMAIN_CLASSES_OUT": self.out_path,
+                "DOMAIN_CLASSES_USER": self.user_path,  # doesn't exist
+                "DOMAIN_CLASSES_SEED": self.seed_path,
+            }
+        )
         data = self._read_output()
         self.assertIn("category_1", data)
         self.assertIn("category_2", data)
@@ -77,41 +86,55 @@ class RefreshDomainClassesTests(unittest.TestCase):
             "category_2": {"user-bank.example": "user-added category 2"},
             "category_3": {"user-friction.example": "user-added category 3"},
         }
-        with open(self.user_path, 'w', encoding='utf-8') as f:
+        with open(self.user_path, "w", encoding="utf-8") as f:
             json.dump(user, f)
-        _run({
-            "DOMAIN_CLASSES_OUT": self.out_path,
-            "DOMAIN_CLASSES_USER": self.user_path,
-            "DOMAIN_CLASSES_SEED": self.seed_path,
-        })
+        _run(
+            {
+                "DOMAIN_CLASSES_OUT": self.out_path,
+                "DOMAIN_CLASSES_USER": self.user_path,
+                "DOMAIN_CLASSES_SEED": self.seed_path,
+            }
+        )
         data = self._read_output()
         # Seed entry preserved.
         self.assertIn("phishing-example.test", data["category_1"])
         # User additions present in all three buckets.
-        self.assertEqual(data["category_1"]["user-bad.example"], "user-added category 1")
-        self.assertEqual(data["category_2"]["user-bank.example"], "user-added category 2")
-        self.assertEqual(data["category_3"]["user-friction.example"], "user-added category 3")
+        self.assertEqual(
+            data["category_1"]["user-bad.example"], "user-added category 1"
+        )
+        self.assertEqual(
+            data["category_2"]["user-bank.example"], "user-added category 2"
+        )
+        self.assertEqual(
+            data["category_3"]["user-friction.example"], "user-added category 3"
+        )
 
     def test_user_overrides_seed(self):
         user = {
             "category_1": {"phishing-example.test": "rewritten by user"},
         }
-        with open(self.user_path, 'w', encoding='utf-8') as f:
+        with open(self.user_path, "w", encoding="utf-8") as f:
             json.dump(user, f)
-        _run({
-            "DOMAIN_CLASSES_OUT": self.out_path,
-            "DOMAIN_CLASSES_USER": self.user_path,
-            "DOMAIN_CLASSES_SEED": self.seed_path,
-        })
+        _run(
+            {
+                "DOMAIN_CLASSES_OUT": self.out_path,
+                "DOMAIN_CLASSES_USER": self.user_path,
+                "DOMAIN_CLASSES_SEED": self.seed_path,
+            }
+        )
         data = self._read_output()
-        self.assertEqual(data["category_1"]["phishing-example.test"], "rewritten by user")
+        self.assertEqual(
+            data["category_1"]["phishing-example.test"], "rewritten by user"
+        )
 
     def test_meta_block_populated(self):
-        _run({
-            "DOMAIN_CLASSES_OUT": self.out_path,
-            "DOMAIN_CLASSES_USER": self.user_path,
-            "DOMAIN_CLASSES_SEED": self.seed_path,
-        })
+        _run(
+            {
+                "DOMAIN_CLASSES_OUT": self.out_path,
+                "DOMAIN_CLASSES_USER": self.user_path,
+                "DOMAIN_CLASSES_SEED": self.seed_path,
+            }
+        )
         data = self._read_output()
         meta = data["_meta"]
         self.assertEqual(meta["source"], "refresh_domain_classes.sh")
@@ -123,14 +146,17 @@ class RefreshDomainClassesTests(unittest.TestCase):
 
     def test_output_is_valid_classifier_input(self):
         """The output must round-trip through stt_server._load_domain_classes."""
-        _run({
-            "DOMAIN_CLASSES_OUT": self.out_path,
-            "DOMAIN_CLASSES_USER": self.user_path,
-            "DOMAIN_CLASSES_SEED": self.seed_path,
-        })
+        _run(
+            {
+                "DOMAIN_CLASSES_OUT": self.out_path,
+                "DOMAIN_CLASSES_USER": self.user_path,
+                "DOMAIN_CLASSES_SEED": self.seed_path,
+            }
+        )
         os.environ["SENSEI_TUI"] = "0"
         sys.path.insert(0, os.path.expanduser("~/scripts"))
         import stt_server as srv
+
         original_path = srv._DOMAIN_CLASSES_PATH
         original_cache = dict(srv._DOMAIN_CLASSES_CACHE)
         try:

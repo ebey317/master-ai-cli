@@ -28,10 +28,11 @@ sys.path.insert(0, str(REPO_ROOT))
 if "subagent_registry" in sys.modules:
     del sys.modules["subagent_registry"]
 
+import stt_server  # noqa: E402
+
+import sensei_native_host as nh  # noqa: E402
 import subagent_registry as sr  # noqa: E402
 import typed_actions as ta  # noqa: E402
-import sensei_native_host as nh  # noqa: E402
-import stt_server  # noqa: E402
 
 # sr.discover()'s default SUBAGENTS_DIR is ~/scripts/subagents, which on a
 # dev machine with an unrelated live deployment there (different subagents:
@@ -44,13 +45,28 @@ sr.discover(REPO_ROOT / "subagents")
 
 AX_TREE = {
     "buttons": [
-        {"ref": "r-1", "role": "button", "name": "Submit application", "selector": "#submit"},
-        {"ref": "r-2", "role": "button", "name": "Send my resume in", "selector": "#send"},
+        {
+            "ref": "r-1",
+            "role": "button",
+            "name": "Submit application",
+            "selector": "#submit",
+        },
+        {
+            "ref": "r-2",
+            "role": "button",
+            "name": "Send my resume in",
+            "selector": "#send",
+        },
         {"ref": "r-3", "role": "button", "name": "Apply now", "selector": "#apply"},
         {"ref": "r-4", "role": "button", "name": "Cancel", "selector": "#cancel"},
     ],
     "inputs": [
-        {"ref": "r-5", "role": "textbox", "name": "Email address", "selector": "#email"},
+        {
+            "ref": "r-5",
+            "role": "textbox",
+            "name": "Email address",
+            "selector": "#email",
+        },
     ],
 }
 
@@ -79,7 +95,9 @@ class SemanticFindTests(unittest.TestCase):
         result = sr.run("find", "apply button", context={"ax_tree": AX_TREE})
         names = [m["name"] for m in result["matches"][:3]]
         self.assertIn("Apply now", names)
-        self.assertTrue(any(name in names for name in ("Submit application", "Send my resume in")))
+        self.assertTrue(
+            any(name in names for name in ("Submit application", "Send my resume in"))
+        )
 
     def test_tool_find_endpoint_helper_normalizes_shape(self):
         result = stt_server._tool_find({"query": "send resume", "ax_tree": AX_TREE})
@@ -93,16 +111,24 @@ class WorkflowDescribeTests(unittest.TestCase):
         _ensure_repo_subagents_registered()
 
     def test_workflow_describer(self):
-        result = stt_server._tool_describe_step({
-            "step": {"kind": "BROWSER_FILL", "target": "#email", "value": "elijah@example.com"}
-        })
+        result = stt_server._tool_describe_step(
+            {
+                "step": {
+                    "kind": "BROWSER_FILL",
+                    "target": "#email",
+                    "value": "elijah@example.com",
+                }
+            }
+        )
         self.assertTrue(result["ok"])
         self.assertIn("Fill", result["description"])
 
 
 class RemoteMcpTypedActionTests(unittest.TestCase):
     def test_remote_mcp_parses_as_typed_action(self):
-        action = ta.parse_directive('REMOTE_MCP: {"server":"demo","method":"tools/list","params":{}}')
+        action = ta.parse_directive(
+            'REMOTE_MCP: {"server":"demo","method":"tools/list","params":{}}'
+        )
         self.assertIsNotNone(action)
         self.assertEqual(action.kind, "REMOTE_MCP")
         self.assertTrue(action.requires_confirm)
@@ -111,9 +137,10 @@ class RemoteMcpTypedActionTests(unittest.TestCase):
 
 class NativeHostTests(unittest.TestCase):
     def test_ping_pong(self):
-        self.assertEqual(nh.handle_message({"type": "ping", "id": "1"}), {
-            "type": "pong", "id": "1", "ok": True
-        })
+        self.assertEqual(
+            nh.handle_message({"type": "ping", "id": "1"}),
+            {"type": "pong", "id": "1", "ok": True},
+        )
 
     def test_tool_request_refuses_missing_token(self):
         with tempfile.TemporaryDirectory() as td:
@@ -121,11 +148,13 @@ class NativeHostTests(unittest.TestCase):
             try:
                 nh.TOKEN_PATH = str(Path(td) / "token")
                 Path(nh.TOKEN_PATH).write_text("secret", encoding="utf-8")
-                result = nh.handle_message({
-                    "type": "tool_request",
-                    "id": "2",
-                    "payload": {"endpoint": "/health"},
-                })
+                result = nh.handle_message(
+                    {
+                        "type": "tool_request",
+                        "id": "2",
+                        "payload": {"endpoint": "/health"},
+                    }
+                )
                 self.assertFalse(result["ok"])
                 self.assertEqual(result["error_code"], "auth_failed")
             finally:
@@ -137,12 +166,14 @@ class NativeHostTests(unittest.TestCase):
             try:
                 nh.TOKEN_PATH = str(Path(td) / "token")
                 Path(nh.TOKEN_PATH).write_text("secret", encoding="utf-8")
-                result = nh.handle_message({
-                    "type": "tool_request",
-                    "id": "3",
-                    "token": "secret",
-                    "payload": {"endpoint": "/tool/find", "eval": "1+1"},
-                })
+                result = nh.handle_message(
+                    {
+                        "type": "tool_request",
+                        "id": "3",
+                        "token": "secret",
+                        "payload": {"endpoint": "/tool/find", "eval": "1+1"},
+                    }
+                )
                 self.assertFalse(result["ok"])
                 self.assertEqual(result["error_code"], "eval_refused")
             finally:

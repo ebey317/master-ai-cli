@@ -9,6 +9,7 @@ Covers:
   * engine.scan_run accepts a mix of local + rclone roots and records
     the cloud capability without crashing.
 """
+
 from __future__ import annotations
 
 import unittest
@@ -19,12 +20,11 @@ from unittest import mock
 
 from sensei_clean import connectors as _connectors
 from sensei_clean import status as _status
-from sensei_clean.adapters.cloud_drive import CloudDriveAdapter
 from sensei_clean.adapters.fake_drive import FakeDriveAdapter, FakeFile
 from sensei_clean.adapters.gdrive import GoogleDriveAdapter
 from sensei_clean.adapters.rclone_remote import RcloneRemoteAdapter
 from sensei_clean.engine import scan_run
-from sensei_clean.schemas import ActionRecord, UndoRecord
+from sensei_clean.schemas import ActionRecord
 
 
 def _move_action(file_id: str) -> ActionRecord:
@@ -52,10 +52,20 @@ class FakeDriveContractTests(unittest.TestCase):
 
     def test_scan_emits_item_per_file(self):
         files = [
-            FakeFile(id="a", name="invoice.pdf", mime_type="application/pdf",
-                     size_bytes=10, sha256="aaaa"),
-            FakeFile(id="b", name="resume.docx", mime_type="application/octet-stream",
-                     size_bytes=20, sha256="bbbb"),
+            FakeFile(
+                id="a",
+                name="invoice.pdf",
+                mime_type="application/pdf",
+                size_bytes=10,
+                sha256="aaaa",
+            ),
+            FakeFile(
+                id="b",
+                name="resume.docx",
+                mime_type="application/octet-stream",
+                size_bytes=20,
+                sha256="bbbb",
+            ),
         ]
         adapter = FakeDriveAdapter(run_id="r1", files=files)
         items = list(adapter.scan())
@@ -97,6 +107,7 @@ class FakeDriveContractTests(unittest.TestCase):
         weird = _move_action("z")
         # Mutate to an unsupported action type — must be refused.
         from dataclasses import replace
+
         weird = replace(weird, action_type="cloud_delete")
         self.assertFalse(adapter.can_apply(weird))
         result = adapter.apply(weird)
@@ -113,14 +124,17 @@ class RcloneRemoteProbeOnlyTests(unittest.TestCase):
         # rclone_about — stub that too so these tests exercise the mocked
         # about/listremotes behavior instead of failing with
         # "rclone-not-installed" on machines that don't have rclone on PATH.
-        with mock.patch.multiple(
-            "sensei_clean.adapters.rclone_remote",
-            rclone_listremotes=mock.Mock(return_value=listremotes_return),
-            rclone_about=mock.Mock(return_value=about_return),
-            _rclone_bin=mock.Mock(return_value="/usr/bin/rclone"),
-        ), mock.patch(
-            "sensei_clean.adapters.rclone_remote.shutil.which",
-            return_value="/usr/bin/rclone",
+        with (
+            mock.patch.multiple(
+                "sensei_clean.adapters.rclone_remote",
+                rclone_listremotes=mock.Mock(return_value=listremotes_return),
+                rclone_about=mock.Mock(return_value=about_return),
+                _rclone_bin=mock.Mock(return_value="/usr/bin/rclone"),
+            ),
+            mock.patch(
+                "sensei_clean.adapters.rclone_remote.shutil.which",
+                return_value="/usr/bin/rclone",
+            ),
         ):
             yield
 
@@ -149,7 +163,10 @@ class RcloneRemoteProbeOnlyTests(unittest.TestCase):
             adapter = RcloneRemoteAdapter(run_id="r1", remote="gdrive")
             action = _move_action("anything")
             from dataclasses import replace
-            action = replace(action, adapter=adapter.name)  # source_path stays "fake_drive:..."
+
+            action = replace(
+                action, adapter=adapter.name
+            )  # source_path stays "fake_drive:..."
             result = adapter.apply(action)
             self.assertFalse(result.success)
             self.assertIn("non-rclone source", result.message)
@@ -158,6 +175,7 @@ class RcloneRemoteProbeOnlyTests(unittest.TestCase):
         with self._stub_rclone(["gdrive", "dropbox"], {"used": 0, "total": 1}):
             adapter = RcloneRemoteAdapter(run_id="r1", remote="gdrive")
             from dataclasses import replace
+
             action = replace(
                 _move_action("xyz"),
                 adapter=adapter.name,
@@ -170,15 +188,19 @@ class RcloneRemoteProbeOnlyTests(unittest.TestCase):
             self.assertIn("cross-remote", result.message)
 
     def test_apply_propagates_rclone_failure(self):
-        with mock.patch(
-            "sensei_clean.adapters.rclone_remote.rclone_moveto",
-            return_value=(False, "rclone moveto rc=2: permission denied"),
-        ), mock.patch(
-            "sensei_clean.adapters.rclone_remote.rclone_listremotes",
-            return_value=["gdrive"],
+        with (
+            mock.patch(
+                "sensei_clean.adapters.rclone_remote.rclone_moveto",
+                return_value=(False, "rclone moveto rc=2: permission denied"),
+            ),
+            mock.patch(
+                "sensei_clean.adapters.rclone_remote.rclone_listremotes",
+                return_value=["gdrive"],
+            ),
         ):
             adapter = RcloneRemoteAdapter(run_id="r1", remote="gdrive")
             from dataclasses import replace
+
             action = replace(
                 _move_action("xyz"),
                 adapter=adapter.name,
@@ -195,10 +217,14 @@ class RcloneRemoteProbeOnlyTests(unittest.TestCase):
         Undo record points the path back at the original."""
         with mock.patch(
             "sensei_clean.adapters.rclone_remote.rclone_moveto",
-            return_value=(True, "moved gdrive:foo.txt -> gdrive:Sensei-Cloud-Quarantine/duplicates/foo.txt"),
+            return_value=(
+                True,
+                "moved gdrive:foo.txt -> gdrive:Sensei-Cloud-Quarantine/duplicates/foo.txt",
+            ),
         ):
             adapter = RcloneRemoteAdapter(run_id="r1", remote="gdrive")
             from dataclasses import replace
+
             action = replace(
                 _move_action("xyz"),
                 adapter=adapter.name,
@@ -230,10 +256,14 @@ class GoogleDriveStubTests(unittest.TestCase):
         joined = " ".join(cap.blockers)
         # one of these specific signals must be in the blockers
         self.assertTrue(
-            any(tag in joined for tag in (
-                "gdrive-missing-deps", "gdrive-missing-client-secret",
-                "gdrive-not-authorized",
-            )),
+            any(
+                tag in joined
+                for tag in (
+                    "gdrive-missing-deps",
+                    "gdrive-missing-client-secret",
+                    "gdrive-not-authorized",
+                )
+            ),
             f"expected a gdrive-specific blocker, got: {cap.blockers}",
         )
 
@@ -241,6 +271,7 @@ class GoogleDriveStubTests(unittest.TestCase):
         adapter = GoogleDriveAdapter(run_id="r1")
         action = _move_action("g")
         from dataclasses import replace
+
         action = replace(action, adapter="gdrive")
         result = adapter.apply(action)
         self.assertFalse(result.success)
@@ -269,7 +300,9 @@ class ConnectorsDiscoveryTests(unittest.TestCase):
                 ],
             ):
                 sources = _connectors.detect_sources(
-                    home=home, gvfs_root=home / "gvfs", media_root=home / "media",
+                    home=home,
+                    gvfs_root=home / "gvfs",
+                    media_root=home / "media",
                 )
         kinds = {s.kind for s in sources}
         self.assertIn("cloud_api", kinds)
@@ -283,14 +316,20 @@ class RcloneRemoteListingTests(unittest.TestCase):
     def test_scan_yields_items_from_lsjson(self):
         fake_records = [
             {
-                "Path": "Documents/foo.txt", "Name": "foo.txt", "Size": 42,
-                "MimeType": "text/plain", "ModTime": "2026-01-01T00:00:00Z",
+                "Path": "Documents/foo.txt",
+                "Name": "foo.txt",
+                "Size": 42,
+                "MimeType": "text/plain",
+                "ModTime": "2026-01-01T00:00:00Z",
                 "ID": "fid_001",
                 "Hashes": {"md5": "abcdef0123456789", "sha1": "x" * 40},
             },
             {
-                "Path": "Documents/foo_copy.txt", "Name": "foo_copy.txt", "Size": 42,
-                "MimeType": "text/plain", "ModTime": "2026-01-02T00:00:00Z",
+                "Path": "Documents/foo_copy.txt",
+                "Name": "foo_copy.txt",
+                "Size": 42,
+                "MimeType": "text/plain",
+                "ModTime": "2026-01-02T00:00:00Z",
                 "ID": "fid_002",
                 "Hashes": {"md5": "abcdef0123456789", "sha1": "y" * 40},
             },
@@ -299,7 +338,9 @@ class RcloneRemoteListingTests(unittest.TestCase):
             "sensei_clean.adapters.rclone_remote.rclone_lsjson",
             return_value=fake_records,
         ):
-            adapter = RcloneRemoteAdapter(run_id="r1", remote="gdrive", list_enabled=True)
+            adapter = RcloneRemoteAdapter(
+                run_id="r1", remote="gdrive", list_enabled=True
+            )
             items = list(adapter.scan())
         self.assertEqual(len(items), 2)
         names = sorted(i.display_name for i in items)
@@ -311,16 +352,22 @@ class RcloneRemoteListingTests(unittest.TestCase):
         ids = sorted(i.identity.get("provider_id") for i in items)
         self.assertEqual(ids, ["fid_001", "fid_002"])
         # path uses rclone:remote:relpath convention so engine routes it back
-        self.assertTrue(all(i.identity["path"].startswith("rclone:gdrive:") for i in items))
+        self.assertTrue(
+            all(i.identity["path"].startswith("rclone:gdrive:") for i in items)
+        )
 
     def test_scan_skips_bad_records_without_failing(self):
-        records = [{"Path": "ok.txt", "Name": "ok.txt", "Size": 1, "ID": "i1", "Hashes": {}},
-                   {"Path": None}]  # bad row — should be skipped
+        records = [
+            {"Path": "ok.txt", "Name": "ok.txt", "Size": 1, "ID": "i1", "Hashes": {}},
+            {"Path": None},
+        ]  # bad row — should be skipped
         with mock.patch(
             "sensei_clean.adapters.rclone_remote.rclone_lsjson",
             return_value=records,
         ):
-            adapter = RcloneRemoteAdapter(run_id="r1", remote="gdrive", list_enabled=True)
+            adapter = RcloneRemoteAdapter(
+                run_id="r1", remote="gdrive", list_enabled=True
+            )
             items = list(adapter.scan())
         # Both may yield; the bad one yields with empty path. Worst case
         # is one good item.
@@ -332,73 +379,123 @@ class CloudDedupAndActionTests(unittest.TestCase):
     in-remote destination) -> apply via mocked rclone -> undo."""
 
     def test_md5_dedup_and_cloud_move_destination(self):
-        from sensei_clean.engine import build_findings, build_actions
+        from sensei_clean.engine import build_actions, build_findings
+
         fake_records = [
-            {"Path": "A/x.txt", "Name": "x.txt", "Size": 10, "MimeType": "text/plain",
-             "ID": "fid_a", "Hashes": {"md5": "AAAA"}},
-            {"Path": "B/x.txt", "Name": "x.txt", "Size": 10, "MimeType": "text/plain",
-             "ID": "fid_b", "Hashes": {"md5": "AAAA"}},
-            {"Path": "C/y.txt", "Name": "y.txt", "Size": 5, "MimeType": "text/plain",
-             "ID": "fid_c", "Hashes": {"md5": "BBBB"}},
+            {
+                "Path": "A/x.txt",
+                "Name": "x.txt",
+                "Size": 10,
+                "MimeType": "text/plain",
+                "ID": "fid_a",
+                "Hashes": {"md5": "AAAA"},
+            },
+            {
+                "Path": "B/x.txt",
+                "Name": "x.txt",
+                "Size": 10,
+                "MimeType": "text/plain",
+                "ID": "fid_b",
+                "Hashes": {"md5": "AAAA"},
+            },
+            {
+                "Path": "C/y.txt",
+                "Name": "y.txt",
+                "Size": 5,
+                "MimeType": "text/plain",
+                "ID": "fid_c",
+                "Hashes": {"md5": "BBBB"},
+            },
         ]
         with mock.patch(
             "sensei_clean.adapters.rclone_remote.rclone_lsjson",
             return_value=fake_records,
         ):
-            adapter = RcloneRemoteAdapter(run_id="r1", remote="gdrive", list_enabled=True)
+            adapter = RcloneRemoteAdapter(
+                run_id="r1", remote="gdrive", list_enabled=True
+            )
             items = list(adapter.scan())
         findings = build_findings(items, run_id="r1")
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0].finding_type, "exact_duplicate")
-        actions = build_actions(items, findings, run_id="r1",
-                                quarantine_root=Path("/unused"))
+        actions = build_actions(
+            items, findings, run_id="r1", quarantine_root=Path("/unused")
+        )
         self.assertEqual(len(actions), 1)  # one extra duplicate -> one cloud_move
         action = actions[0]
         self.assertEqual(action.action_type, "cloud_move")
         self.assertEqual(action.lane, "monitored")  # cloud always monitored this round
-        self.assertTrue(action.destination_path.startswith(
-            "rclone:gdrive:Sensei-Cloud-Quarantine/duplicates/"))
+        self.assertTrue(
+            action.destination_path.startswith(
+                "rclone:gdrive:Sensei-Cloud-Quarantine/duplicates/"
+            )
+        )
         self.assertTrue(action.source_path.startswith("rclone:gdrive:"))
 
     def test_full_cloud_apply_undo_round_trip(self):
         """Mock rclone_lsjson for scan and rclone_moveto for apply/undo."""
-        from sensei_clean.engine import build_findings, build_actions
-        from sensei_clean.apply import apply_actions, load_undo_records, undo_actions
-        from sensei_clean.adapters.rclone_remote import RcloneRemoteAdapter
         from tempfile import TemporaryDirectory
+
+        from sensei_clean.adapters.rclone_remote import RcloneRemoteAdapter
+        from sensei_clean.apply import apply_actions, load_undo_records, undo_actions
+        from sensei_clean.engine import build_actions, build_findings
+
         fake_records = [
-            {"Path": "A/x.txt", "Name": "x.txt", "Size": 10, "MimeType": "text/plain",
-             "ID": "fid_a", "Hashes": {"md5": "AAAA"}},
-            {"Path": "B/x.txt", "Name": "x.txt", "Size": 10, "MimeType": "text/plain",
-             "ID": "fid_b", "Hashes": {"md5": "AAAA"}},
+            {
+                "Path": "A/x.txt",
+                "Name": "x.txt",
+                "Size": 10,
+                "MimeType": "text/plain",
+                "ID": "fid_a",
+                "Hashes": {"md5": "AAAA"},
+            },
+            {
+                "Path": "B/x.txt",
+                "Name": "x.txt",
+                "Size": 10,
+                "MimeType": "text/plain",
+                "ID": "fid_b",
+                "Hashes": {"md5": "AAAA"},
+            },
         ]
         with mock.patch(
             "sensei_clean.adapters.rclone_remote.rclone_lsjson",
             return_value=fake_records,
         ):
-            adapter = RcloneRemoteAdapter(run_id="r1", remote="gdrive", list_enabled=True)
+            adapter = RcloneRemoteAdapter(
+                run_id="r1", remote="gdrive", list_enabled=True
+            )
             items = list(adapter.scan())
         findings = build_findings(items, run_id="r1")
-        actions = build_actions(items, findings, run_id="r1",
-                                quarantine_root=Path("/unused"))
+        actions = build_actions(
+            items, findings, run_id="r1", quarantine_root=Path("/unused")
+        )
         cap = adapter.probe()  # supports cloud_move; required by policy.can_apply
         # Force capability available even though our mocked subprocess
         # path doesn't actually call out:
         from dataclasses import replace
+
         cap = replace(cap, available=True, blockers=[])
-        with TemporaryDirectory() as tmp, mock.patch(
-            "sensei_clean.adapters.rclone_remote.rclone_moveto",
-            return_value=(True, "mock moveto ok"),
+        with (
+            TemporaryDirectory() as tmp,
+            mock.patch(
+                "sensei_clean.adapters.rclone_remote.rclone_moveto",
+                return_value=(True, "mock moveto ok"),
+            ),
         ):
             undo_path = Path(tmp) / "undo.jsonl"
             results = apply_actions(adapter, actions, cap, str(undo_path))
-            self.assertEqual(sum(1 for r in results if r.success), len(actions),
-                             [r.message for r in results])
+            self.assertEqual(
+                sum(1 for r in results if r.success),
+                len(actions),
+                [r.message for r in results],
+            )
             records = load_undo_records(str(undo_path))
             self.assertEqual(len(records), len(actions))
             undo_results = undo_actions(adapter, records)
-            self.assertTrue(all(r.success for r in undo_results),
-                            [r.message for r in undo_results])
+            self.assertTrue(
+                all(r.success for r in undo_results), [r.message for r in undo_results]
+            )
 
 
 class ListCloudFlagTests(unittest.TestCase):
@@ -407,17 +504,30 @@ class ListCloudFlagTests(unittest.TestCase):
     RcloneRemoteAdapter as list_enabled. Pin that contract."""
 
     def test_list_cloud_false_default_yields_no_cloud_items(self):
-        with mock.patch(
-            "sensei_clean.adapters.rclone_remote.rclone_lsjson",
-            return_value=[{"Path": "x.txt", "Name": "x.txt", "Size": 1, "ID": "i", "Hashes": {}}],
-        ), mock.patch(
-            "sensei_clean.adapters.rclone_remote.rclone_about",
-            return_value={"used": 1, "total": 100},
+        with (
+            mock.patch(
+                "sensei_clean.adapters.rclone_remote.rclone_lsjson",
+                return_value=[
+                    {
+                        "Path": "x.txt",
+                        "Name": "x.txt",
+                        "Size": 1,
+                        "ID": "i",
+                        "Hashes": {},
+                    }
+                ],
+            ),
+            mock.patch(
+                "sensei_clean.adapters.rclone_remote.rclone_about",
+                return_value={"used": 1, "total": 100},
+            ),
         ):
             with TemporaryDirectory() as tmpdir:
                 state_dir = Path(tmpdir) / "state"
-                with mock.patch.object(_status, "STATE_DIR", state_dir), \
-                     mock.patch.object(_status, "STATE_FILE", state_dir / "state.json"):
+                with (
+                    mock.patch.object(_status, "STATE_DIR", state_dir),
+                    mock.patch.object(_status, "STATE_FILE", state_dir / "state.json"),
+                ):
                     run_path, caps, items, findings, actions = scan_run(
                         roots=["rclone:gdrive:"],
                         sha256=False,
@@ -431,22 +541,39 @@ class ListCloudFlagTests(unittest.TestCase):
 
     def test_list_cloud_true_yields_items_from_lsjson(self):
         records = [
-            {"Path": "x.txt", "Name": "x.txt", "Size": 5, "MimeType": "text/plain",
-             "ID": "id1", "Hashes": {"md5": "abc"}},
-            {"Path": "y.txt", "Name": "y.txt", "Size": 5, "MimeType": "text/plain",
-             "ID": "id2", "Hashes": {"md5": "abc"}},  # duplicate of x.txt by md5
+            {
+                "Path": "x.txt",
+                "Name": "x.txt",
+                "Size": 5,
+                "MimeType": "text/plain",
+                "ID": "id1",
+                "Hashes": {"md5": "abc"},
+            },
+            {
+                "Path": "y.txt",
+                "Name": "y.txt",
+                "Size": 5,
+                "MimeType": "text/plain",
+                "ID": "id2",
+                "Hashes": {"md5": "abc"},
+            },  # duplicate of x.txt by md5
         ]
-        with mock.patch(
-            "sensei_clean.adapters.rclone_remote.rclone_lsjson",
-            return_value=records,
-        ), mock.patch(
-            "sensei_clean.adapters.rclone_remote.rclone_about",
-            return_value={"used": 1, "total": 100},
+        with (
+            mock.patch(
+                "sensei_clean.adapters.rclone_remote.rclone_lsjson",
+                return_value=records,
+            ),
+            mock.patch(
+                "sensei_clean.adapters.rclone_remote.rclone_about",
+                return_value={"used": 1, "total": 100},
+            ),
         ):
             with TemporaryDirectory() as tmpdir:
                 state_dir = Path(tmpdir) / "state"
-                with mock.patch.object(_status, "STATE_DIR", state_dir), \
-                     mock.patch.object(_status, "STATE_FILE", state_dir / "state.json"):
+                with (
+                    mock.patch.object(_status, "STATE_DIR", state_dir),
+                    mock.patch.object(_status, "STATE_FILE", state_dir / "state.json"),
+                ):
                     run_path, caps, items, findings, actions = scan_run(
                         roots=["rclone:gdrive:"],
                         sha256=False,
@@ -472,19 +599,25 @@ class EngineMultiAdapterTests(unittest.TestCase):
             (root / "Local").mkdir()
             (root / "Local" / "a.txt").write_text("hi", encoding="utf-8")
             run_dir = root / "run"
-            with mock.patch(
-                "sensei_clean.adapters.rclone_remote.rclone_listremotes",
-                return_value=["gdrive"],
-            ), mock.patch(
-                "sensei_clean.adapters.rclone_remote.rclone_about",
-                return_value={"used": 100, "total": 1000},
-            ), mock.patch(
-                "sensei_clean.adapters.rclone_remote.shutil.which",
-                return_value="/usr/bin/rclone",
+            with (
+                mock.patch(
+                    "sensei_clean.adapters.rclone_remote.rclone_listremotes",
+                    return_value=["gdrive"],
+                ),
+                mock.patch(
+                    "sensei_clean.adapters.rclone_remote.rclone_about",
+                    return_value={"used": 100, "total": 1000},
+                ),
+                mock.patch(
+                    "sensei_clean.adapters.rclone_remote.shutil.which",
+                    return_value="/usr/bin/rclone",
+                ),
             ):
                 state_dir = root / "state"
-                with mock.patch.object(_status, "STATE_DIR", state_dir), \
-                     mock.patch.object(_status, "STATE_FILE", state_dir / "state.json"):
+                with (
+                    mock.patch.object(_status, "STATE_DIR", state_dir),
+                    mock.patch.object(_status, "STATE_FILE", state_dir / "state.json"),
+                ):
                     run_path, caps, items, findings, actions = scan_run(
                         roots=[str(root / "Local"), "rclone:gdrive:"],
                         sha256=False,

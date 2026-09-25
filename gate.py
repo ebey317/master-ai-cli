@@ -66,6 +66,7 @@ def _parse_kv_keys(text: str) -> dict:
             out[short] = val
     return out
 
+
 def _find_setup_script() -> Path | None:
     """Locate setup_keys.sh: beside this module, in ~/scripts (install.sh
     copies everything there), or in the current directory."""
@@ -115,7 +116,13 @@ def check_ready() -> dict:
             "No API key configured and no local Ollama server detected. "
             "Master AI needs at least one lane to run."
         )
-    return {"ready": ready, "lanes": lanes, "extras": extras, "problems": problems, "keys_file": str(KEYS_FILE)}
+    return {
+        "ready": ready,
+        "lanes": lanes,
+        "extras": extras,
+        "problems": problems,
+        "keys_file": str(KEYS_FILE),
+    }
 
 
 def _print_banner(state: dict) -> None:
@@ -165,13 +172,19 @@ def ensure_ready() -> None:
 
     state = check_ready()
     if state["ready"]:
-        print("\n  \033[32m✓ Ready.\033[0m Lanes detected: "
-              + ", ".join(k for k, v in state["lanes"].items() if v))
+        print(
+            "\n  \033[32m✓ Ready.\033[0m Lanes detected: "
+            + ", ".join(k for k, v in state["lanes"].items() if v)
+        )
         return
 
-    print("\n  \033[31m✗ Master AI cannot start without an API key or local Ollama.\033[0m")
+    print(
+        "\n  \033[31m✗ Master AI cannot start without an API key or local Ollama.\033[0m"
+    )
     print("    Fix it with one of:")
     print("      bash setup_keys.sh          # paste any provider key — auto-detected")
-    print("      curl -fsSL https://ollama.com/install.sh | sh   # local models, no key")
+    print(
+        "      curl -fsSL https://ollama.com/install.sh | sh   # local models, no key"
+    )
     print("      master-ai --setup           # full interactive setup wizard")
     sys.exit(1)

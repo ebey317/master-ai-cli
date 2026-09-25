@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import unittest
 import urllib.request
 from pathlib import Path
@@ -106,9 +105,10 @@ def _assert_no_disclaim(test, reply, prompt_label):
     low = (reply or "").lower()
     hits = [p for p in LLM_DISCLAIM_PHRASES if p in low]
     test.assertEqual(
-        hits, [],
+        hits,
+        [],
         f"[{LANE_LABEL}/{prompt_label}] reply contains LLM-disclaim phrases {hits!r}\n"
-        f"--- reply (first 600ch) ---\n{(reply or '')[:600]}"
+        f"--- reply (first 600ch) ---\n{(reply or '')[:600]}",
     )
 
 
@@ -116,10 +116,11 @@ def _assert_master_ai_voice(test, reply, prompt_label):
     low = (reply or "").lower()
     hits = [s for s in MASTER_AI_SELF_IDENTIFIERS if s in low]
     test.assertNotEqual(
-        hits, [],
+        hits,
+        [],
         f"[{LANE_LABEL}/{prompt_label}] reply has no Master AI self-identifier "
         f"(expected one of: Master AI / Sensei / Pupil / browser_* / RUN: / READ: / chrome extension)\n"
-        f"--- reply (first 600ch) ---\n{(reply or '')[:600]}"
+        f"--- reply (first 600ch) ---\n{(reply or '')[:600]}",
     )
 
 
@@ -172,13 +173,17 @@ class IdentitySelfReferenceTests(unittest.TestCase):
         # stt_server.py) instead of the surface words, so accept those too.
         low = reply.lower()
         broad_identifiers = MASTER_AI_SELF_IDENTIFIERS + (
-            "master_ai.py", "stt_server.py", "modelfile", "cloud_system",
+            "master_ai.py",
+            "stt_server.py",
+            "modelfile",
+            "cloud_system",
         )
         hits = [s for s in broad_identifiers if s in low]
         self.assertNotEqual(
-            hits, [],
+            hits,
+            [],
             f"[{LANE_LABEL}/self_reference] reply doesn't reference Master AI or its files\n"
-            f"--- reply (first 600ch) ---\n{reply[:600]}"
+            f"--- reply (first 600ch) ---\n{reply[:600]}",
         )
 
     def test_5_mode_awareness(self):
@@ -191,56 +196,79 @@ class IdentitySelfReferenceTests(unittest.TestCase):
         low = reply.lower()
         modes_named = [m for m in ("plan", "review", "auto") if m in low]
         self.assertNotEqual(
-            modes_named, [],
+            modes_named,
+            [],
             f"[{LANE_LABEL}/mode_awareness] reply names no mode at all "
             f"(expected at least one of plan/review/auto)\n"
-            f"--- reply (first 600ch) ---\n{reply[:600]}"
+            f"--- reply (first 600ch) ---\n{reply[:600]}",
         )
         ignorance = (
-            "i don't know what mode", "i'm not sure what mode",
-            "i cannot tell what mode", "i can't tell what mode",
-            "no way to know", "no information about",
+            "i don't know what mode",
+            "i'm not sure what mode",
+            "i cannot tell what mode",
+            "i can't tell what mode",
+            "no way to know",
+            "no information about",
         )
         ignorance_hits = [p for p in ignorance if p in low]
         self.assertEqual(
-            ignorance_hits, [],
+            ignorance_hits,
+            [],
             f"[{LANE_LABEL}/mode_awareness] reply claims ignorance of mode {ignorance_hits!r}\n"
-            f"--- reply (first 600ch) ---\n{reply[:600]}"
+            f"--- reply (first 600ch) ---\n{reply[:600]}",
         )
 
     def test_6_reasoning_surface_awareness(self):
         # The model has a real reasoning surface (reason:/reason deep:/etc.,
         # routed through sensei_reasoning_loop.run_reasoning_loop). When asked
         # "can you think deeper?" it must say YES and name the mechanism.
-        resp = _post_chat("can you think deeper or reason through something step by step if I ask?")
+        resp = _post_chat(
+            "can you think deeper or reason through something step by step if I ask?"
+        )
         reply = resp.get("reply", "")
         low = reply.lower()
         # Either the prefix words or planner/critic vocabulary should appear.
         reasoning_markers = (
-            "reason:", "reason ", "reasoning loop", "reasoning_loop",
-            "planner", "critic", "deeper thinking", "deep think", "think deeper",
-            "multi-step", "tight:", "think:",
+            "reason:",
+            "reason ",
+            "reasoning loop",
+            "reasoning_loop",
+            "planner",
+            "critic",
+            "deeper thinking",
+            "deep think",
+            "think deeper",
+            "multi-step",
+            "tight:",
+            "think:",
         )
         hits = [m for m in reasoning_markers if m in low]
         self.assertNotEqual(
-            hits, [],
+            hits,
+            [],
             f"[{LANE_LABEL}/reasoning] reply doesn't reference the reason: surface "
             f"or planner/critic vocabulary\n"
-            f"--- reply (first 600ch) ---\n{reply[:600]}"
+            f"--- reply (first 600ch) ---\n{reply[:600]}",
         )
         denials = (
-            "i can't reason", "i cannot reason", "i'm just inference",
-            "i'm just a language model", "i don't have reasoning",
+            "i can't reason",
+            "i cannot reason",
+            "i'm just inference",
+            "i'm just a language model",
+            "i don't have reasoning",
         )
         denial_hits = [d for d in denials if d in low]
         self.assertEqual(
-            denial_hits, [],
+            denial_hits,
+            [],
             f"[{LANE_LABEL}/reasoning] reply denies reasoning capability {denial_hits!r}\n"
-            f"--- reply (first 600ch) ---\n{reply[:600]}"
+            f"--- reply (first 600ch) ---\n{reply[:600]}",
         )
 
 
 if __name__ == "__main__":
-    print(f"[test_identity_self_reference] lane={LANE_LABEL}, "
-          f"base={BASE_URL}, token={'set' if _read_token() else 'empty'}")
+    print(
+        f"[test_identity_self_reference] lane={LANE_LABEL}, "
+        f"base={BASE_URL}, token={'set' if _read_token() else 'empty'}"
+    )
     unittest.main(verbosity=2)

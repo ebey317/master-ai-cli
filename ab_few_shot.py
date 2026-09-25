@@ -27,7 +27,6 @@ Tags directive presence so we can see at a glance whether few-shot
 helped the qwen2.5:7b "describe vs emit" gap.
 """
 
-import os
 import re
 import sys
 import time
@@ -45,7 +44,9 @@ def read_settings():
 
 
 def write_settings(lines):
-    SETTINGS.write_text("\n".join(lines) + ("\n" if lines and not lines[-1].endswith("\n") else ""))
+    SETTINGS.write_text(
+        "\n".join(lines) + ("\n" if lines and not lines[-1].endswith("\n") else "")
+    )
 
 
 def set_few_shot(on):
@@ -64,7 +65,9 @@ def set_few_shot(on):
     write_settings(out)
 
 
-DIRECTIVE_RE = re.compile(r"^\s*(RUN|RUNTERM|READ|CREATE|EDIT|REMEMBER|THINK|DONE|PLAN):", re.MULTILINE)
+DIRECTIVE_RE = re.compile(
+    r"^\s*(RUN|RUNTERM|READ|CREATE|EDIT|REMEMBER|THINK|DONE|PLAN):", re.MULTILINE
+)
 
 
 def has_directive(text):
@@ -85,6 +88,7 @@ def load_prompts(path):
 
 def run_one(prompt, mode_label):
     import master_ai
+
     messages = [{"role": "user", "content": prompt}]
     t0 = time.time()
     try:
@@ -106,8 +110,11 @@ def main():
         print(f"prompts file not found: {prompts_path}", file=sys.stderr)
         sys.exit(2)
 
-    out_path = (Path(sys.argv[2]) if len(sys.argv) > 2
-                else MD_DIR / f"handoff_fewshot_ab_{time.strftime('%Y-%m-%d')}.md")
+    out_path = (
+        Path(sys.argv[2])
+        if len(sys.argv) > 2
+        else MD_DIR / f"handoff_fewshot_ab_{time.strftime('%Y-%m-%d')}.md"
+    )
 
     prompts = load_prompts(prompts_path)
     if not prompts:
@@ -129,13 +136,17 @@ def main():
             off_text, off_t = run_one(prompt, "OFF")
             set_few_shot(True)
             on_text, on_t = run_one(prompt, "ON ")
-            results.append({
-                "prompt": prompt,
-                "off_text": off_text, "off_t": off_t,
-                "off_dir": has_directive(off_text),
-                "on_text": on_text, "on_t": on_t,
-                "on_dir": has_directive(on_text),
-            })
+            results.append(
+                {
+                    "prompt": prompt,
+                    "off_text": off_text,
+                    "off_t": off_t,
+                    "off_dir": has_directive(off_text),
+                    "on_text": on_text,
+                    "on_t": on_t,
+                    "on_dir": has_directive(on_text),
+                }
+            )
     finally:
         SETTINGS.write_text("\n".join(original_settings) + "\n")
         print(f"\nrestored {SETTINGS}")
@@ -151,14 +162,16 @@ def main():
     lines.append(f"# Few-shot A/B — {time.strftime('%Y-%m-%d %H:%M %Z')}")
     lines.append("")
     lines.append(f"- prompts: **{len(results)}**")
-    lines.append(f"- model: `master-ai` (qwen2.5:7b + Sensei SYSTEM)")
+    lines.append("- model: `master-ai` (qwen2.5:7b + Sensei SYSTEM)")
     lines.append(f"- prompts file: `{prompts_path}`")
     lines.append("")
     lines.append("## Summary")
     lines.append("")
     lines.append("| metric | OFF (control) | ON (few-shot) |")
     lines.append("|---|---|---|")
-    lines.append(f"| directives emitted | {off_dir}/{len(results)} | {on_dir}/{len(results)} |")
+    lines.append(
+        f"| directives emitted | {off_dir}/{len(results)} | {on_dir}/{len(results)} |"
+    )
     lines.append(f"| total reply chars  | {off_chars} | {on_chars} |")
     lines.append(f"| total elapsed (s)  | {off_total_t:.1f} | {on_total_t:.1f} |")
     lines.append("")
@@ -169,7 +182,9 @@ def main():
         lines.append("")
         lines.append(f"> {r['prompt']}")
         lines.append("")
-        lines.append(f"### OFF (control) — {r['off_t']:.1f}s — directive={r['off_dir']}")
+        lines.append(
+            f"### OFF (control) — {r['off_t']:.1f}s — directive={r['off_dir']}"
+        )
         lines.append("")
         lines.append("```")
         lines.append(r["off_text"])
@@ -186,7 +201,9 @@ def main():
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n")
     print(f"\nwrote {out_path}")
-    print(f"directive emission: OFF={off_dir}/{len(results)}  ON={on_dir}/{len(results)}")
+    print(
+        f"directive emission: OFF={off_dir}/{len(results)}  ON={on_dir}/{len(results)}"
+    )
 
 
 if __name__ == "__main__":

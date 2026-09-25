@@ -106,6 +106,7 @@ class ReadFenceSymlinkEscape(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_symlink_escape_denied(self):
@@ -113,8 +114,9 @@ class ReadFenceSymlinkEscape(unittest.TestCase):
         # resolved target /etc/passwd is outside. resolve() returns the
         # real target, and the fence checks the real target.
         ok, why = master_ai._read_path_ok(str(self.link))
-        self.assertFalse(ok,
-            "symlink that resolves outside allowed roots must be denied")
+        self.assertFalse(
+            ok, "symlink that resolves outside allowed roots must be denied"
+        )
 
 
 class AgentStandardsFlipped(unittest.TestCase):
@@ -125,20 +127,21 @@ class AgentStandardsFlipped(unittest.TestCase):
         checks = master_ai.agent_standards_checks()
         rpf = next((c for c in checks if c[1] == "read path fence"), None)
         self.assertIsNotNone(rpf, "read path fence check missing")
-        self.assertEqual(rpf[0], "PASS",
-            f"read path fence should be PASS after P2.3: {rpf}")
+        self.assertEqual(
+            rpf[0], "PASS", f"read path fence should be PASS after P2.3: {rpf}"
+        )
 
     def test_output_caps_now_pass(self):
         checks = master_ai.agent_standards_checks()
         oc = next((c for c in checks if c[1] == "output caps"), None)
         self.assertIsNotNone(oc)
-        self.assertEqual(oc[0], "PASS",
-            f"output caps should be PASS after P2.3: {oc}")
+        self.assertEqual(oc[0], "PASS", f"output caps should be PASS after P2.3: {oc}")
 
     def test_score_above_baseline(self):
         score = master_ai.agent_standards_score()
-        self.assertGreaterEqual(score, 90,
-            f"score should be ≥90 after P2.3 (baseline 87): {score}")
+        self.assertGreaterEqual(
+            score, 90, f"score should be ≥90 after P2.3 (baseline 87): {score}"
+        )
 
 
 if __name__ == "__main__":

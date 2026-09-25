@@ -3,17 +3,18 @@
 Mounts like ``~/.aws/credentials`` must resolve relative to the routed profile's
 home, not the user who launched the agent process.
 """
+
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping, Optional
 
 from . import profile_scope
 
 
 def resolve_mounts(
     spec: Mapping[str, str | Path],
-    profile: Optional[profile_scope.Profile] = None,
+    profile: profile_scope.Profile | None = None,
 ) -> dict[str, Path]:
     home = (profile or profile_scope.current()).resolved_home
     out: dict[str, Path] = {}
@@ -25,5 +26,5 @@ def resolve_mounts(
     return out
 
 
-def cache_key(*parts: object, profile: Optional[profile_scope.Profile] = None) -> tuple:
+def cache_key(*parts: object, profile: profile_scope.Profile | None = None) -> tuple:
     return profile_scope.cache_key("credential_files", *parts, profile=profile)

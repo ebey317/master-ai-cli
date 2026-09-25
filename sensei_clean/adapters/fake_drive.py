@@ -21,14 +21,19 @@ Test usage:
 
 Tokens for the fake are kept in-memory only; nothing is written to disk.
 """
+
 from __future__ import annotations
 
-import hashlib
-import os
-from dataclasses import dataclass, field
-from typing import Iterator, List, Optional
+from collections.abc import Iterator
+from dataclasses import dataclass
 
-from ..schemas import AccessGrant, ActionRecord, ApplyResult, CapabilityReport, ItemRecord, UndoRecord
+from ..schemas import (
+    AccessGrant,
+    ActionRecord,
+    ApplyResult,
+    ItemRecord,
+    UndoRecord,
+)
 from .cloud_drive import CloudDriveAdapter
 
 
@@ -40,7 +45,7 @@ class FakeFile:
     mime_type: str = "application/octet-stream"
     size_bytes: int = 0
     modified: str = "2026-01-01T00:00:00Z"
-    sha256: Optional[str] = None
+    sha256: str | None = None
     trashed: bool = False
     web_view_link: str = ""
     content: bytes = b""
@@ -101,7 +106,9 @@ def _suffix(name: str) -> str:
 
 def _classify(name: str, mime: str) -> tuple[str, str]:
     lower = name.lower()
-    if any(t in lower for t in ("resume", "cv", "career", "cover_letter", "transcript")):
+    if any(
+        t in lower for t in ("resume", "cv", "career", "cover_letter", "transcript")
+    ):
         return "career", "Career"
     if any(t in lower for t in ("tax", "w2", "w-2", "paystub", "1099")):
         return "financial", "Forms"
@@ -125,7 +132,7 @@ class FakeDriveAdapter(CloudDriveAdapter):
     def __init__(
         self,
         run_id: str,
-        files: Optional[List[FakeFile]] = None,
+        files: list[FakeFile] | None = None,
         account_label: str = "fake@example.com",
         root: str = "fake_drive:root",
     ) -> None:
@@ -143,18 +150,22 @@ class FakeDriveAdapter(CloudDriveAdapter):
         return self._account
 
     def authorize(self, mode: str) -> AccessGrant:
-        return AccessGrant(mode=mode, granted=True, details={
-            "provider": self.provider_id,
-            "account_label": self._account,
-        })
+        return AccessGrant(
+            mode=mode,
+            granted=True,
+            details={
+                "provider": self.provider_id,
+                "account_label": self._account,
+            },
+        )
 
-    def scan(self, cursor: Optional[str] = None) -> Iterator[ItemRecord]:
+    def scan(self, cursor: str | None = None) -> Iterator[ItemRecord]:
         for f in self._files.values():
             if f.trashed:
                 continue
             yield f.to_item(self.run_id, self.root)
 
-    def enrich(self, item: ItemRecord, jobs: List[str]) -> ItemRecord:
+    def enrich(self, item: ItemRecord, jobs: list[str]) -> ItemRecord:
         # For the fake, we already populated sha256 and metadata at
         # construction time. Real providers would call out to the API
         # here (e.g. Drive's get(fileId=..., fields="md5Checksum,..."))
@@ -169,8 +180,11 @@ class FakeDriveAdapter(CloudDriveAdapter):
             )
         file_id = action.source_path.split(":", 1)[-1]
         if file_id not in self._files:
-            return ApplyResult(action_id=action.action_id, success=False,
-                               message=f"file not found in fake drive: {file_id}")
+            return ApplyResult(
+                action_id=action.action_id,
+                success=False,
+                message=f"file not found in fake drive: {file_id}",
+            )
         original_parent = self._files[file_id].parent
         new_parent = (action.destination_path or "").split("/", 1)[0] or "Quarantine"
         self._files[file_id].parent = new_parent
@@ -194,13 +208,24 @@ class FakeDriveAdapter(CloudDriveAdapter):
     def undo(self, undo_record: UndoRecord) -> ApplyResult:
         file_id = undo_record.source_path.split(":", 1)[-1]
         if file_id not in self._files:
-            return ApplyResult(action_id=undo_record.action_id, success=False,
-                               message=f"file gone: {file_id}")
-        target = (undo_record.metadata or {}).get("reverse_parent") or undo_record.destination_path
+            return ApplyResult(
+                action_id=undo_record.action_id,
+                success=False,
+                message=f"file gone: {file_id}",
+            )
+        target = (undo_record.metadata or {}).get(
+            "reverse_parent"
+        ) or undo_record.destination_path
         self._files[file_id].parent = target
-        return ApplyResult(action_id=undo_record.action_id, success=True,
-                           message=f"restored {file_id} to {target}")
+        return ApplyResult(
+            action_id=undo_record.action_id,
+            success=True,
+            message=f"restored {file_id} to {target}",
+        )
 
     def open_view(self, item: ItemRecord) -> str:
         fid = item.identity.get("provider_id", "")
-        return self._files.get(fid, FakeFile(id=fid, name="?")).web_view_link or f"fake://view/{fid}"
+        return (
+            self._files.get(fid, FakeFile(id=fid, name="?")).web_view_link
+            or f"fake://view/{fid}"
+        )

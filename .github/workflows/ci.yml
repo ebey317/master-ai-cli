@@ -41,7 +41,7 @@ jobs:
 
     - name: Run mypy
       run: |
-        mypy --ignore-missing-imports --follow-imports=silent --exclude "sensei_clean/__init__.py" .
+        mypy --ignore-missing-imports --follow-imports=silent .
 
     - name: Run ruff
       run: |

@@ -36,10 +36,10 @@ import sys
 import time
 import traceback
 import uuid
-from dataclasses import dataclass, field, asdict
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional, Dict, List
-
+from typing import Any
 
 # ─── Constants ──────────────────────────────────────────────────────
 
@@ -57,6 +57,7 @@ log = logging.getLogger("skill_runtime")
 
 
 # ─── Errors ─────────────────────────────────────────────────────────
+
 
 class SkillError(Exception):
     """Generic skill-runtime error. Subclasses below for specific cases."""
@@ -84,6 +85,7 @@ class StepBudgetExceeded(SkillError):
 
 # ─── Data shapes ────────────────────────────────────────────────────
 
+
 @dataclass
 class Step:
     """One step in a skill recipe.
@@ -95,11 +97,12 @@ class Step:
       Return-dict MAY include "state_update" with partial state to merge.
       Return-dict MAY include "artifact" with named artifacts to store.
     """
+
     name: str
-    fn: Callable[["SkillState", dict], dict]
+    fn: Callable[[SkillState, dict], dict]
     description: str = ""
     retry_on_fail: int = 0
-    recovery_next: Optional[str] = None  # step to jump to when retries exhausted
+    recovery_next: str | None = None  # step to jump to when retries exhausted
 
 
 @dataclass
@@ -116,45 +119,51 @@ class SkillState:
       - artifacts   : dict keyed by step name (overwrite-on-collision)
       - data        : dict (recipes own the merge semantics in their step fns)
     """
+
     skill_name: str
     session_id: str
     current_step: str = START
-    next_step: Optional[str] = None
+    next_step: str | None = None
     step_count: int = 0
     started_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     done: bool = False
     aborted: bool = False
-    interrupt_reason: Optional[str] = None  # set when waiting on operator
-    history: List[dict] = field(default_factory=list)
-    errors: List[dict] = field(default_factory=list)
-    artifacts: Dict[str, Any] = field(default_factory=dict)
-    data: Dict[str, Any] = field(default_factory=dict)
-    params: Dict[str, Any] = field(default_factory=dict)
+    interrupt_reason: str | None = None  # set when waiting on operator
+    history: list[dict] = field(default_factory=list)
+    errors: list[dict] = field(default_factory=list)
+    artifacts: dict[str, Any] = field(default_factory=dict)
+    data: dict[str, Any] = field(default_factory=dict)
+    params: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: dict) -> "SkillState":
+    def from_dict(cls, d: dict) -> SkillState:
         return cls(**d)
 
     def append_history(self, step: str, result: dict) -> None:
-        self.history.append({
-            "step": step,
-            "result": _scrub_for_json(result),
-            "ts": time.time(),
-        })
+        self.history.append(
+            {
+                "step": step,
+                "result": _scrub_for_json(result),
+                "ts": time.time(),
+            }
+        )
 
     def append_error(self, step: str, error: str) -> None:
-        self.errors.append({
-            "step": step,
-            "error": str(error)[:2000],
-            "ts": time.time(),
-        })
+        self.errors.append(
+            {
+                "step": step,
+                "error": str(error)[:2000],
+                "ts": time.time(),
+            }
+        )
 
 
 # ─── Loader ─────────────────────────────────────────────────────────
+
 
 def _skill_dir(name: str) -> Path:
     return SKILLS_ROOT / name
@@ -170,8 +179,12 @@ def _validate_step_list(steps: list) -> None:
         raise SkillSchemaError("recipe.STEPS must be a non-empty list of Step objects")
     names = set()
     for s in steps:
-        if not (hasattr(s, "name") and hasattr(s, "fn") and callable(getattr(s, "fn", None))):
-            raise SkillSchemaError(f"recipe.STEPS entry is not Step-shaped (missing name/fn/callable): {s!r}")
+        if not (
+            hasattr(s, "name") and hasattr(s, "fn") and callable(getattr(s, "fn", None))
+        ):
+            raise SkillSchemaError(
+                f"recipe.STEPS entry is not Step-shaped (missing name/fn/callable): {s!r}"
+            )
         if not isinstance(s.name, str) or not s.name:
             raise SkillSchemaError(f"recipe.STEPS entry has invalid name: {s!r}")
         if s.name in names:
@@ -219,7 +232,7 @@ def load_skill(name: str) -> dict:
         raise SkillSchemaError(f"recipe.py at {recipe_path} has no STEPS attribute")
     _validate_step_list(steps_raw)
 
-    steps_by_name: Dict[str, Step] = {s.name: s for s in steps_raw}
+    steps_by_name: dict[str, Step] = {s.name: s for s in steps_raw}
     entrypoint = getattr(module, "ENTRYPOINT", steps_raw[0].name)
     if entrypoint not in steps_by_name:
         raise SkillSchemaError(
@@ -237,6 +250,7 @@ def load_skill(name: str) -> dict:
 
 
 # ─── Preconditions ──────────────────────────────────────────────────
+
 
 def check_preconditions(loaded: dict) -> None:
     """Run the recipe's CHECK_PRECONDITIONS hook if defined.
@@ -257,6 +271,7 @@ def check_preconditions(loaded: dict) -> None:
 
 
 # ─── Session persistence ────────────────────────────────────────────
+
 
 def _sessions_dir(name: str) -> Path:
     p = _skill_dir(name) / "sessions"
@@ -284,21 +299,23 @@ def load_state(name: str, session_id: str) -> SkillState:
     return SkillState.from_dict(json.loads(p.read_text()))
 
 
-def list_sessions(name: str) -> List[dict]:
+def list_sessions(name: str) -> list[dict]:
     d = _sessions_dir(name)
     out = []
     for f in sorted(d.glob("*.json")):
         try:
             data = json.loads(f.read_text())
-            out.append({
-                "session_id": data.get("session_id"),
-                "current_step": data.get("current_step"),
-                "done": data.get("done"),
-                "aborted": data.get("aborted"),
-                "interrupt_reason": data.get("interrupt_reason"),
-                "step_count": data.get("step_count", 0),
-                "updated_at": data.get("updated_at"),
-            })
+            out.append(
+                {
+                    "session_id": data.get("session_id"),
+                    "current_step": data.get("current_step"),
+                    "done": data.get("done"),
+                    "aborted": data.get("aborted"),
+                    "interrupt_reason": data.get("interrupt_reason"),
+                    "step_count": data.get("step_count", 0),
+                    "updated_at": data.get("updated_at"),
+                }
+            )
         except Exception:
             continue
     return out
@@ -306,11 +323,12 @@ def list_sessions(name: str) -> List[dict]:
 
 # ─── Runner ─────────────────────────────────────────────────────────
 
+
 def run_skill(
     name: str,
-    params: Optional[dict] = None,
+    params: dict | None = None,
     *,
-    session_id: Optional[str] = None,
+    session_id: str | None = None,
     step_budget: int = DEFAULT_STEP_BUDGET,
     resume: bool = False,
 ) -> SkillState:
@@ -377,7 +395,9 @@ def run_skill(
             state.artifacts[step_name] = result["artifact"]
         if result.get("interrupt"):
             state.current_step = INTERRUPT
-            state.interrupt_reason = str(result.get("interrupt_reason") or "operator_input_required")
+            state.interrupt_reason = str(
+                result.get("interrupt_reason") or "operator_input_required"
+            )
             state.append_history(step_name, result)
             state.step_count += 1
             save_state(state)
@@ -413,17 +433,30 @@ def _run_step_with_retries(step: Step, state: SkillState) -> dict:
             return out
         except Exception as e:
             last_err = e
-            state.append_error(step.name, f"attempt {attempt + 1}/{attempts}: {e}\n{traceback.format_exc()[:1200]}")
-            time.sleep(min(2 ** attempt, 8))  # bounded backoff: 1, 2, 4, 8, 8...
+            state.append_error(
+                step.name,
+                f"attempt {attempt + 1}/{attempts}: {e}\n{traceback.format_exc()[:1200]}",
+            )
+            time.sleep(min(2**attempt, 8))  # bounded backoff: 1, 2, 4, 8, 8...
 
     # Retries exhausted. If recipe declared a recovery step, route there;
     # else abort the session.
     if step.recovery_next:
-        return {"next": step.recovery_next, "state_update": {"_recovery_from": step.name, "_recovery_err": str(last_err)}}
-    return {"next": ABORT, "state_update": {"_aborted_at": step.name, "_abort_err": str(last_err)}}
+        return {
+            "next": step.recovery_next,
+            "state_update": {
+                "_recovery_from": step.name,
+                "_recovery_err": str(last_err),
+            },
+        }
+    return {
+        "next": ABORT,
+        "state_update": {"_aborted_at": step.name, "_abort_err": str(last_err)},
+    }
 
 
 # ─── Helpers ────────────────────────────────────────────────────────
+
 
 def _scrub_for_json(obj: Any) -> Any:
     """Make an arbitrary Python object JSON-safe."""
@@ -443,6 +476,7 @@ def _json_default(obj: Any) -> Any:
 
 
 # ─── CLI / smoke test ───────────────────────────────────────────────
+
 
 def _print_session_summary(state: SkillState) -> None:
     print(f"skill:        {state.skill_name}")

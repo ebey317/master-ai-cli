@@ -27,9 +27,8 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from skill_runtime import SKILLS_ROOT
 
@@ -38,7 +37,7 @@ def _sessions_dir(name: str) -> Path:
     return SKILLS_ROOT / name / "sessions"
 
 
-def _load_sessions(name: str, last_n: Optional[int] = None) -> list:
+def _load_sessions(name: str, last_n: int | None = None) -> list:
     """Full session records (not the summary-only skill_runtime.list_sessions()),
     sorted oldest-first, optionally truncated to the most recent last_n."""
     d = _sessions_dir(name)
@@ -65,12 +64,18 @@ class AnalysisReport:
     aborted_count: int = 0
     incomplete_count: int = 0  # neither done nor aborted (stuck/interrupted)
     success_rate: float = 0.0
-    step_abort_counts: dict = field(default_factory=dict)   # step -> count of sessions that ended aborted at that step
-    step_error_counts: dict = field(default_factory=dict)   # step -> count of error entries logged for that step
+    step_abort_counts: dict = field(
+        default_factory=dict
+    )  # step -> count of sessions that ended aborted at that step
+    step_error_counts: dict = field(
+        default_factory=dict
+    )  # step -> count of error entries logged for that step
     top_error_messages: list = field(default_factory=list)  # [(message, count), ...]
-    steps_retried: dict = field(default_factory=dict)       # step -> count of sessions where it appears >1x in history
-    first_run_ts: Optional[float] = None
-    last_run_ts: Optional[float] = None
+    steps_retried: dict = field(
+        default_factory=dict
+    )  # step -> count of sessions where it appears >1x in history
+    first_run_ts: float | None = None
+    last_run_ts: float | None = None
     note: str = ""
 
     def to_dict(self) -> dict:
@@ -90,7 +95,9 @@ class AnalysisReport:
         )
         if self.step_abort_counts:
             lines.append("  aborts by step:")
-            for step, n in sorted(self.step_abort_counts.items(), key=lambda kv: -kv[1]):
+            for step, n in sorted(
+                self.step_abort_counts.items(), key=lambda kv: -kv[1]
+            ):
                 lines.append(f"    {step}: {n}")
         if self.steps_retried:
             lines.append("  steps that retried within a session:")
@@ -151,7 +158,9 @@ def analyze_skill(name: str, last_n: int = 50) -> AnalysisReport:
         # A step that appears more than once in history within the same
         # session means it re-ran — either a retry_on_fail loop or a
         # recovery_next jump landed back on it.
-        step_hits = Counter(h.get("step") for h in sess.get("history", []) if h.get("step"))
+        step_hits = Counter(
+            h.get("step") for h in sess.get("history", []) if h.get("step")
+        )
         for step, count in step_hits.items():
             if count > 1:
                 retried_steps[step] += 1

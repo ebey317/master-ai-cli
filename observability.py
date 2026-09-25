@@ -21,14 +21,11 @@ Public API:
 from __future__ import annotations
 
 import json
-import os
-import statistics
 from collections import Counter
 from pathlib import Path
-from typing import Optional
 
 ROUTER_METRICS_FILE = Path.home() / ".master_ai_router_metrics.jsonl"
-AUDIT_TYPED_FILE    = Path.home() / ".master_ai_audit_typed.jsonl"
+AUDIT_TYPED_FILE = Path.home() / ".master_ai_audit_typed.jsonl"
 
 
 def _tail_jsonl(path: Path, limit: int) -> list[dict]:
@@ -50,9 +47,12 @@ def _tail_jsonl(path: Path, limit: int) -> list[dict]:
     return out
 
 
-def summarize(*, limit: int = 500,
-              metrics_path: Optional[Path] = None,
-              audit_path: Optional[Path] = None) -> dict:
+def summarize(
+    *,
+    limit: int = 500,
+    metrics_path: Path | None = None,
+    audit_path: Path | None = None,
+) -> dict:
     """Return a summary dict of the last ``limit`` events in each stream.
 
     Shape (all keys always present, counts may be 0):
@@ -76,7 +76,7 @@ def summarize(*, limit: int = 500,
     audit_path = audit_path or AUDIT_TYPED_FILE
 
     router_events = _tail_jsonl(metrics_path, limit)
-    audit_events  = _tail_jsonl(audit_path, limit)
+    audit_events = _tail_jsonl(audit_path, limit)
 
     by_route: Counter = Counter()
     by_model: Counter = Counter()
@@ -101,7 +101,7 @@ def summarize(*, limit: int = 500,
             m = e.get("model") or ""
             if m:
                 by_model[m] += 1
-            reason = (e.get("reason") or "")
+            reason = e.get("reason") or ""
             if "fallback" in reason.lower() or "unavailable" in reason.lower():
                 fallbacks.append({"reason": reason[:200], "ts": e.get("ts")})
         elif kind == "model_call":
@@ -143,19 +143,19 @@ def summarize(*, limit: int = 500,
 
     fallbacks = fallbacks[-5:]
     return {
-        "events_scanned":  {"router": len(router_events), "audit": len(audit_events)},
-        "by_route":        dict(by_route),
-        "by_model":        dict(by_model),
+        "events_scanned": {"router": len(router_events), "audit": len(audit_events)},
+        "by_route": dict(by_route),
+        "by_model": dict(by_model),
         "route_decisions": route_decisions,
-        "model_calls":     model_calls,
-        "executions":      {"ok": exec_ok, "fail": exec_fail},
-        "blocked":         {"total": blocked_total, "by_kind": dict(blocked_by_kind)},
-        "audit_status":    dict(audit_status),
-        "audit_by_kind":   dict(audit_by_kind),
-        "audit_by_risk":   dict(audit_by_risk),
-        "harvest":         {"hits": harvest_hits, "records": harvest_records},
-        "hook_fires":      hook_fires,
-        "fallbacks":       fallbacks,
+        "model_calls": model_calls,
+        "executions": {"ok": exec_ok, "fail": exec_fail},
+        "blocked": {"total": blocked_total, "by_kind": dict(blocked_by_kind)},
+        "audit_status": dict(audit_status),
+        "audit_by_kind": dict(audit_by_kind),
+        "audit_by_risk": dict(audit_by_risk),
+        "harvest": {"hits": harvest_hits, "records": harvest_records},
+        "hook_fires": hook_fires,
+        "fallbacks": fallbacks,
     }
 
 
@@ -168,8 +168,10 @@ def format_stats(summary: dict, width: int = 72) -> str:
         return "(no stats)"
     lines: list[str] = []
     es = summary.get("events_scanned", {})
-    lines.append(f"Observability — scanned {es.get('router', 0)} router events, "
-                  f"{es.get('audit', 0)} typed audit records")
+    lines.append(
+        f"Observability — scanned {es.get('router', 0)} router events, "
+        f"{es.get('audit', 0)} typed audit records"
+    )
     lines.append("")
 
     def _section(title: str, body: list[str]):
@@ -184,31 +186,34 @@ def format_stats(summary: dict, width: int = 72) -> str:
             return ["(none)"]
         return [f"{v:>5}  {k}" for k, v in items]
 
-    _section("Routes",
-             _topn(summary.get("by_route", {})))
-    _section("Models",
-             _topn(summary.get("by_model", {})))
+    _section("Routes", _topn(summary.get("by_route", {})))
+    _section("Models", _topn(summary.get("by_model", {})))
     blocked = summary.get("blocked", {})
-    _section("Blocked actions",
-             [f"total: {blocked.get('total', 0)}"]
-             + _topn(blocked.get("by_kind", {})))
+    _section(
+        "Blocked actions",
+        [f"total: {blocked.get('total', 0)}"] + _topn(blocked.get("by_kind", {})),
+    )
     exec_ok = summary.get("executions", {}).get("ok", 0)
     exec_fail = summary.get("executions", {}).get("fail", 0)
     total_exec = exec_ok + exec_fail
     success_rate = (exec_ok * 100 // total_exec) if total_exec else 0
-    _section("Executions",
-             [f"ok: {exec_ok}  fail: {exec_fail}  success: {success_rate}%"])
-    _section("Audit kinds",
-             _topn(summary.get("audit_by_kind", {})))
-    _section("Audit risk",
-             _topn(summary.get("audit_by_risk", {})))
-    _section("Harvest",
-             [f"hits: {summary.get('harvest', {}).get('hits', 0)}",
-              f"records: {summary.get('harvest', {}).get('records', 0)}"])
-    _section("Hook fires",
-             [f"total: {summary.get('hook_fires', 0)}"])
+    _section(
+        "Executions", [f"ok: {exec_ok}  fail: {exec_fail}  success: {success_rate}%"]
+    )
+    _section("Audit kinds", _topn(summary.get("audit_by_kind", {})))
+    _section("Audit risk", _topn(summary.get("audit_by_risk", {})))
+    _section(
+        "Harvest",
+        [
+            f"hits: {summary.get('harvest', {}).get('hits', 0)}",
+            f"records: {summary.get('harvest', {}).get('records', 0)}",
+        ],
+    )
+    _section("Hook fires", [f"total: {summary.get('hook_fires', 0)}"])
     fbs = summary.get("fallbacks", [])
     if fbs:
-        _section("Recent fallbacks (last 5)",
-                 [(f.get("reason") or "")[:width-6] for f in fbs])
+        _section(
+            "Recent fallbacks (last 5)",
+            [(f.get("reason") or "")[: width - 6] for f in fbs],
+        )
     return "\n".join(lines)

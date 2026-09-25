@@ -6,6 +6,7 @@ injects it when mode='quick' and skips it otherwise. Extension half:
 delegate to sensei_extension/test/test_quick_mode.js for the parser
 assertions.
 """
+
 import os
 import shutil
 import subprocess
@@ -18,13 +19,23 @@ sys.path.insert(0, os.path.expanduser("~/scripts"))
 
 import stt_server as srv  # noqa: E402
 
-JS_TEST = Path(__file__).resolve().parent / "sensei_extension" / "test" / "test_quick_mode.js"
+JS_TEST = (
+    Path(__file__).resolve().parent / "sensei_extension" / "test" / "test_quick_mode.js"
+)
 
 
 class QuickModeTeachingTests(unittest.TestCase):
     def test_teaching_lists_all_seven_commands(self):
         teach = srv._quick_mode_teaching()
-        for code in ("C x y", "T <text>", "K <key>", "N <url>", "J <expr>", "W <ms>", "ST <tabId>"):
+        for code in (
+            "C x y",
+            "T <text>",
+            "K <key>",
+            "N <url>",
+            "J <expr>",
+            "W <ms>",
+            "ST <tabId>",
+        ):
             self.assertIn(code, teach, f"missing command spec: {code}")
 
     def test_teaching_mentions_end_token(self):
@@ -48,7 +59,9 @@ class ApiPromptModeTests(unittest.TestCase):
             self.assertNotIn("QUICK MODE — emit exactly", out)
 
     def test_quick_mode_still_carries_prompt(self):
-        out = srv._api_prompt("the user prompt", source="chrome_extension", mode="quick")
+        out = srv._api_prompt(
+            "the user prompt", source="chrome_extension", mode="quick"
+        )
         self.assertIn("the user prompt", out)
         self.assertIn("[USER PROMPT]", out)
 
@@ -64,7 +77,9 @@ class QuickModeParserJsBridge(unittest.TestCase):
     def test_all_parser_assertions_pass(self):
         result = subprocess.run(
             ["node", str(JS_TEST)],
-            capture_output=True, text=True, timeout=20,
+            capture_output=True,
+            text=True,
+            timeout=20,
         )
         if result.returncode != 0:
             self.fail(

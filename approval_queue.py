@@ -79,16 +79,16 @@ Every entry has Elijah's who/what/where/why/when/how shape plus:
 import json
 import sys
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
 
 SCRIPTS_DIR = Path.home() / "scripts"
 JSONL_FILE = SCRIPTS_DIR / ".pending_actions.jsonl"
 MD_FILE = SCRIPTS_DIR / "pending_actions.md"
 AUDIT_LOG = Path.home() / ".master_ai_audit.log"
 
-_HANDLERS: Dict[str, Callable] = {}
+_HANDLERS: dict[str, Callable] = {}
 
 
 def register_handler(entry_type: str):
@@ -98,9 +98,11 @@ def register_handler(entry_type: str):
     dict and should raise on failure. Return value is str-truncated into
     entry['result'] for the audit trail.
     """
+
     def deco(fn):
         _HANDLERS[entry_type] = fn
         return fn
+
     return deco
 
 
@@ -125,7 +127,7 @@ def _next_id(existing_ids):
     return base + "-xx"  # shouldn't happen in practice
 
 
-def _read_all() -> List[dict]:
+def _read_all() -> list[dict]:
     if not JSONL_FILE.exists():
         return []
     entries = []
@@ -141,7 +143,7 @@ def _read_all() -> List[dict]:
     return entries
 
 
-def _write_all(entries: List[dict]):
+def _write_all(entries: list[dict]):
     JSONL_FILE.parent.mkdir(parents=True, exist_ok=True)
     # Atomic-ish: write to temp then rename
     tmp = JSONL_FILE.with_suffix(JSONL_FILE.suffix + ".tmp")
@@ -151,10 +153,18 @@ def _write_all(entries: List[dict]):
     tmp.replace(JSONL_FILE)
 
 
-def queue(entry_type: str, who: str, what: str, where: str, why: str,
-          when: str = "next Elijah review", how: str = "",
-          diff: str = "", payload: Optional[dict] = None,
-          trigger: str = "") -> str:
+def queue(
+    entry_type: str,
+    who: str,
+    what: str,
+    where: str,
+    why: str,
+    when: str = "next Elijah review",
+    how: str = "",
+    diff: str = "",
+    payload: dict | None = None,
+    trigger: str = "",
+) -> str:
     """Append a new PENDING entry. Returns the entry ID.
 
     `trigger` is the originating user ask — a short quote or summary of
@@ -169,8 +179,12 @@ def queue(entry_type: str, who: str, what: str, where: str, why: str,
         "ts": time.time(),
         "status": "PENDING",
         "type": entry_type,
-        "who": who, "what": what, "where": where,
-        "why": why, "when": when, "how": how,
+        "who": who,
+        "what": what,
+        "where": where,
+        "why": why,
+        "when": when,
+        "how": how,
         "diff": diff,
         "trigger": trigger,
         "payload": payload or {},
@@ -183,18 +197,18 @@ def queue(entry_type: str, who: str, what: str, where: str, why: str,
     return entry_id
 
 
-def list_all(status: Optional[str] = None) -> List[dict]:
+def list_all(status: str | None = None) -> list[dict]:
     entries = _read_all()
     if status:
         return [e for e in entries if e["status"] == status]
     return entries
 
 
-def list_pending() -> List[dict]:
+def list_pending() -> list[dict]:
     return list_all(status="PENDING")
 
 
-def get(entry_id: str) -> Optional[dict]:
+def get(entry_id: str) -> dict | None:
     for e in _read_all():
         if e["id"] == entry_id:
             return e
@@ -221,12 +235,19 @@ def approve(entry_id: str):
     if not handler:
         _update(entry_id, {"status": "APPROVED_NO_HANDLER"})
         _audit(f"APPROVE_NO_HANDLER id={entry_id} type={entry['type']}")
-        return False, (f"no handler registered for type '{entry['type']}' — "
-                       f"marked APPROVED_NO_HANDLER. Import the consumer module first.")
+        return False, (
+            f"no handler registered for type '{entry['type']}' — "
+            f"marked APPROVED_NO_HANDLER. Import the consumer module first."
+        )
     try:
         result = handler(entry)
-        _update(entry_id, {"status": "RAN",
-                           "result": str(result)[:500] if result is not None else ""})
+        _update(
+            entry_id,
+            {
+                "status": "RAN",
+                "result": str(result)[:500] if result is not None else "",
+            },
+        )
         _audit(f"APPROVE_RAN id={entry_id} type={entry['type']}")
         return True, f"ran: {result}"
     except Exception as e:
@@ -254,12 +275,22 @@ def render_md():
 
     def block(e, is_pending):
         ts = datetime.fromtimestamp(e["ts"]).strftime("%Y-%m-%d %H:%M:%S")
-        status_tag = "⏳ PENDING" if is_pending else {
-            "RAN": "✅ RAN", "REJECTED": "🚫 REJECTED",
-            "FAILED": "❌ FAILED", "APPROVED_NO_HANDLER": "⚠ NO HANDLER",
-        }.get(e["status"], e["status"])
+        status_tag = (
+            "⏳ PENDING"
+            if is_pending
+            else {
+                "RAN": "✅ RAN",
+                "REJECTED": "🚫 REJECTED",
+                "FAILED": "❌ FAILED",
+                "APPROVED_NO_HANDLER": "⚠ NO HANDLER",
+            }.get(e["status"], e["status"])
+        )
         diff_txt = e.get("diff") or ""
-        diff_block = f"\n**Diff preview:**\n```diff\n{diff_txt.rstrip()}\n```\n" if diff_txt else ""
+        diff_block = (
+            f"\n**Diff preview:**\n```diff\n{diff_txt.rstrip()}\n```\n"
+            if diff_txt
+            else ""
+        )
         result = e.get("result") or e.get("error") or ""
         result_block = f"\n**Result:** `{result[:200]}`\n" if result else ""
         trigger = (e.get("trigger") or "").strip()
@@ -316,14 +347,18 @@ def _load_handlers():
         try:
             __import__(mod_name)
         except Exception as e:
-            print(f"  (warning: couldn't load handlers from {mod_name}: {e})",
-                  file=sys.stderr)
+            print(
+                f"  (warning: couldn't load handlers from {mod_name}: {e})",
+                file=sys.stderr,
+            )
 
 
 # ── CLI ───────────────────────────────────────────────────────────────
 def _cli():
     if len(sys.argv) < 2:
-        print("usage: approval_queue.py {pending|diff|approve|reject|render|history} [id|all]")
+        print(
+            "usage: approval_queue.py {pending|diff|approve|reject|render|history} [id|all]"
+        )
         return 1
     cmd = sys.argv[1].lower()
 
@@ -336,9 +371,9 @@ def _cli():
         for e in pending:
             print(f"  [{e['id']}] {e['who']:30s} → {e['what']}")
         print()
-        print(f"  diff <id>     — full preview")
-        print(f"  approve <id>  — run it  ·  approve all — run every pending")
-        print(f"  reject <id>   — drop it")
+        print("  diff <id>     — full preview")
+        print("  approve <id>  — run it  ·  approve all — run every pending")
+        print("  reject <id>   — drop it")
         return 0
 
     if cmd == "history":
@@ -349,10 +384,12 @@ def _cli():
 
     if cmd == "diff":
         if len(sys.argv) < 3:
-            print("usage: diff <id>"); return 1
+            print("usage: diff <id>")
+            return 1
         e = get(sys.argv[2])
         if not e:
-            print(f"no entry {sys.argv[2]}"); return 1
+            print(f"no entry {sys.argv[2]}")
+            return 1
         print(f"=== [{e['id']}] {e['what']} ===")
         print(f"Status: {e['status']}")
         print(f"Who:    {e['who']}")
@@ -365,18 +402,21 @@ def _cli():
 
     if cmd == "approve":
         if len(sys.argv) < 3:
-            print("usage: approve <id|all>"); return 1
+            print("usage: approve <id|all>")
+            return 1
         _load_handlers()
         if sys.argv[2] == "all":
             pending = list_pending()
             if not pending:
-                print("(nothing pending)"); return 0
+                print("(nothing pending)")
+                return 0
             ok_count = 0
             for e in pending:
                 ok, msg = approve(e["id"])
                 marker = "✓" if ok else "✗"
                 print(f"  {marker} [{e['id']}] {msg}")
-                if ok: ok_count += 1
+                if ok:
+                    ok_count += 1
             print(f"\n{ok_count}/{len(pending)} approved")
             return 0
         ok, msg = approve(sys.argv[2])
@@ -385,7 +425,8 @@ def _cli():
 
     if cmd == "reject":
         if len(sys.argv) < 3:
-            print("usage: reject <id>"); return 1
+            print("usage: reject <id>")
+            return 1
         ok, msg = reject(sys.argv[2])
         print(("✓ " if ok else "✗ ") + msg)
         return 0 if ok else 1

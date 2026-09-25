@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import html
 import json
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 from .schemas import ActionRecord, CapabilityReport, FindingRecord, ItemRecord
-from .waste import summary as waste_summary, human_bytes
+from .waste import summary as waste_summary
 
 
 def write_jsonl(path: str, records: Iterable[object]) -> None:
@@ -33,7 +33,7 @@ def write_summary(
         f"- Items: {len(items)}",
         f"- Findings: {len(findings)}",
         f"- Actions: {len(actions)}",
-        f"- Preview index: previews.md",
+        "- Preview index: previews.md",
         "",
         "## Adapters",
     ]
@@ -63,17 +63,21 @@ def write_summary(
     # breakdown, reclaim totals. No new mutations; pure analytics over
     # the items + findings we already have.
     s = waste_summary(items, findings, biggest_n=15, oldest_n=10)
-    lines.extend([
-        "",
-        "## Storage Waste Report",
-        "",
-        f"- Total seen     : {s['total_items']:,} files / {s['total_bytes_human']}",
-        f"- Reclaim ready  : {s['reclaim_bytes_human']} ({s['duplicate_clusters']} duplicate clusters)",
-    ])
+    lines.extend(
+        [
+            "",
+            "## Storage Waste Report",
+            "",
+            f"- Total seen     : {s['total_items']:,} files / {s['total_bytes_human']}",
+            f"- Reclaim ready  : {s['reclaim_bytes_human']} ({s['duplicate_clusters']} duplicate clusters)",
+        ]
+    )
     if s["by_category"]:
         lines.extend(["", "### By category"])
         for row in s["by_category"][:15]:
-            lines.append(f"- {row['category']:<16s} {row['count']:>6,} files  {row['bytes_human']}")
+            lines.append(
+                f"- {row['category']:<16s} {row['count']:>6,} files  {row['bytes_human']}"
+            )
     if s["biggest"]:
         lines.extend(["", "### Biggest files"])
         for row in s["biggest"]:
@@ -82,7 +86,9 @@ def write_summary(
         lines.extend(["", "### Oldest files (forgotten?)"])
         for row in s["oldest"]:
             age = f"{row['age_days']}d" if row.get("age_days") is not None else "?"
-            lines.append(f"- {age:>5s} ago  {row['bytes_human']:>10s}  {row['name']}  ({row['path']})")
+            lines.append(
+                f"- {age:>5s} ago  {row['bytes_human']:>10s}  {row['name']}  ({row['path']})"
+            )
 
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -165,7 +171,8 @@ def write_review_html(
         # openable.
         src_html = (
             f'<a class="open-link" href="{html.escape(src_href)}">{html.escape(source)}</a>'
-            if src_href else f"<code>{html.escape(source)}</code>"
+            if src_href
+            else f"<code>{html.escape(source)}</code>"
         )
         rows.append(f"""
         <section class="move-row">
@@ -396,10 +403,10 @@ def write_review_html(
     </section>
 
     <h2>Places Checked</h2>
-    <section class="sources">{''.join(source_cards)}</section>
+    <section class="sources">{"".join(source_cards)}</section>
 
     <h2>What Sensei Wants To Move</h2>
-    {''.join(rows)}
+    {"".join(rows)}
   </main>
 </body>
 </html>

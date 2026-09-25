@@ -4,10 +4,10 @@
 first routed profile must not decide whether every other profile gets
 diagnostics.
 """
+
 from __future__ import annotations
 
 import threading
-from typing import Optional
 
 from . import profile_scope
 
@@ -26,7 +26,7 @@ class LSPServiceStub:
         return bool(self.enabled)
 
 
-def get_service() -> Optional[LSPServiceStub]:
+def get_service() -> LSPServiceStub | None:
     key = profile_scope.profile_key()
     with _LOCK:
         if key not in _SERVICES:

@@ -20,7 +20,6 @@ import sys
 import urllib.error
 import urllib.request
 
-
 TOKEN_PATH = os.path.expanduser("~/.master_ai_extension_token")
 DEFAULT_BACKEND = "http://127.0.0.1:8791"  # 2026-09-02: matches the :8080->:8791 migration (2026-08-21)
 ALLOWED_ENDPOINTS = {
@@ -36,7 +35,7 @@ ALLOWED_ENDPOINTS = {
 
 def _read_token() -> str:
     try:
-        with open(TOKEN_PATH, "r", encoding="utf-8") as f:
+        with open(TOKEN_PATH, encoding="utf-8") as f:
             return f.read().strip()
     except Exception:
         return ""
@@ -94,15 +93,24 @@ def _forward(msg):
     payload = msg.get("payload")
     if not isinstance(payload, dict):
         return _reject(msg, "payload must be an object", "bad_payload")
-    if "eval" in payload or "code" in payload and payload.get("endpoint") not in {"/chat", "/chat/continue"}:
+    if (
+        "eval" in payload
+        or "code" in payload
+        and payload.get("endpoint") not in {"/chat", "/chat/continue"}
+    ):
         return _reject(msg, "eval-style native payloads are refused", "eval_refused")
     endpoint = str(payload.get("endpoint") or "/health")
     if endpoint not in ALLOWED_ENDPOINTS:
         return _reject(msg, f"endpoint not allowed: {endpoint}", "endpoint_refused")
-    method = str(payload.get("method") or ("GET" if endpoint == "/health" else "POST")).upper()
+    method = str(
+        payload.get("method") or ("GET" if endpoint == "/health" else "POST")
+    ).upper()
     if method not in {"GET", "POST"}:
         return _reject(msg, "method must be GET or POST", "method_refused")
-    backend = str(payload.get("backend_url") or DEFAULT_BACKEND).rstrip("/") or DEFAULT_BACKEND
+    backend = (
+        str(payload.get("backend_url") or DEFAULT_BACKEND).rstrip("/")
+        or DEFAULT_BACKEND
+    )
     body = payload.get("body")
     data = None
     headers = {"X-Master-AI-Token": _read_token()}

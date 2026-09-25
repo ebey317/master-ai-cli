@@ -38,18 +38,24 @@ class HarvestPrivacyTests(unittest.TestCase):
             '{"ts":1,"prompt":"change /home/user/Documents/tax.txt","model":"x","response":"EDIT: private","task_type":"local"}\n'
             '{"ts":2,"prompt":"write a bash status script","model":"x","response":"CREATE: /tmp/status.sh","task_type":"local"}\n'
         )
-        examples = harvest.few_shot("write a bash script", max_examples=5, min_similarity=0.1)
+        examples = harvest.few_shot(
+            "write a bash script", max_examples=5, min_similarity=0.1
+        )
         prompts = [e["prompt"] for e in examples]
         self.assertIn("write a bash status script", prompts)
         self.assertNotIn("change /home/user/Documents/tax.txt", prompts)
 
     def test_format_redacts_basic_contact_data(self):
-        text = harvest.format_few_shot([{
-            "prompt": "email me at person@example.com",
-            "response": "call 555-123-4567",
-            "similarity": 1.0,
-            "model": "x",
-        }])
+        text = harvest.format_few_shot(
+            [
+                {
+                    "prompt": "email me at person@example.com",
+                    "response": "call 555-123-4567",
+                    "similarity": 1.0,
+                    "model": "x",
+                }
+            ]
+        )
         self.assertIn("[email]", text)
         self.assertIn("[phone]", text)
         self.assertNotIn("person@example.com", text)

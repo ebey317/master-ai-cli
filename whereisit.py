@@ -19,17 +19,17 @@ Stores covered (in order):
   - YouTube Music   — streaming reference (free tier with ads)
 """
 
-import sys
 import subprocess
+import sys
 import urllib.parse
 
 STORES = [
-    ("Bandcamp",         "https://bandcamp.com/search?q={q}&item_type=a"),
-    ("Discogs",          "https://www.discogs.com/search/?q={q}&type=master"),
+    ("Bandcamp", "https://bandcamp.com/search?q={q}&item_type=a"),
+    ("Discogs", "https://www.discogs.com/search/?q={q}&type=master"),
     ("Amazon Music MP3", "https://www.amazon.com/s?k={q}&i=digital-music"),
-    ("7digital",         "https://us.7digital.com/search?q={q}"),
-    ("Apple Music",      "https://music.apple.com/us/search?term={q}"),
-    ("YouTube Music",    "https://music.youtube.com/search?q={q}"),
+    ("7digital", "https://us.7digital.com/search?q={q}"),
+    ("Apple Music", "https://music.apple.com/us/search?term={q}"),
+    ("YouTube Music", "https://music.youtube.com/search?q={q}"),
 ]
 
 

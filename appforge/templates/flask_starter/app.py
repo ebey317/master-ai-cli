@@ -7,10 +7,12 @@ Run:
     python app.py
     → open http://localhost:5000
 """
-from flask import Flask, render_template, request, jsonify
+
 import json
 import sqlite3
 from pathlib import Path
+
+from flask import Flask, jsonify, render_template
 
 app = Flask(__name__)
 DB = Path(__file__).parent / "data.db"
@@ -29,7 +31,9 @@ def home():
 
 @app.route("/api/features")
 def features():
-    return jsonify(json.loads('{{FEATURES_JSON}}'))
+    return jsonify(json.loads("{{FEATURES_JSON}}"))
+
+
 {{AI_SNIPPET}}
 
 if __name__ == "__main__":

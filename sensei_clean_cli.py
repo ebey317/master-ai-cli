@@ -19,29 +19,30 @@ terms and secret patterns) get sensitivity bumped and their actions are
 routed to the 'monitored' lane with approval_required=True. Apply only
 acts on those when --approve-monitored is passed.
 """
+
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
-import os
 import sys
 from collections import defaultdict
 from dataclasses import replace
-from datetime import datetime
 from pathlib import Path
 
+from sensei_clean import status as _status
+from sensei_clean import waste as _waste
 from sensei_clean.adapters.local_fs import LocalFSAdapter
 from sensei_clean.apply import apply_actions, load_undo_records, undo_actions
 from sensei_clean.connectors import detect_sources
 from sensei_clean.engine import scan_run
 from sensei_clean.policy import MONITORED_SENSITIVITIES
-from sensei_clean.queue_builder import build_queue
-from sensei_clean.reports import write_jsonl, write_summary
-from sensei_clean.schemas import ActionRecord, CapabilityReport, FindingRecord, ItemRecord
-from sensei_clean import status as _status
-from sensei_clean import waste as _waste
-
+from sensei_clean.schemas import (
+    ActionRecord,
+    CapabilityReport,
+    FindingRecord,
+    ItemRecord,
+)
 
 # Source of truth for privacy: the harvest module if available, else a
 # minimal fallback that flags the same path roots. Import is optional
@@ -60,7 +61,9 @@ def _private_reason(item: ItemRecord) -> str:
     if _harvest is None:
         return ""
     try:
-        return _harvest._privacy_reason(prompt=item.identity.get("path", ""), response="")
+        return _harvest._privacy_reason(
+            prompt=item.identity.get("path", ""), response=""
+        )
     except Exception:
         return ""
 
@@ -90,23 +93,29 @@ def build_findings(items: list[ItemRecord], run_id: str) -> list[FindingRecord]:
             continue
         item_ids = [item.item_id for item in members]
         finding_id = hashlib.sha1(("dup:" + sha256).encode("utf-8")).hexdigest()
-        findings.append(FindingRecord(
-            schema_version="sensei.finding.v1",
-            run_id=run_id,
-            finding_id=finding_id,
-            finding_type="exact_duplicate",
-            item_ids=item_ids,
-            confidence=1.0,
-            risk=max(item.risk for item in members),
-            summary=f"{len(members)} exact duplicates",
-            evidence={"sha256": sha256},
-            notes=[],
-        ))
+        findings.append(
+            FindingRecord(
+                schema_version="sensei.finding.v1",
+                run_id=run_id,
+                finding_id=finding_id,
+                finding_type="exact_duplicate",
+                item_ids=item_ids,
+                confidence=1.0,
+                risk=max(item.risk for item in members),
+                summary=f"{len(members)} exact duplicates",
+                evidence={"sha256": sha256},
+                notes=[],
+            )
+        )
     return findings
 
 
-def build_actions(items: list[ItemRecord], findings: list[FindingRecord],
-                  run_id: str, quarantine_root: Path) -> list[ActionRecord]:
+def build_actions(
+    items: list[ItemRecord],
+    findings: list[FindingRecord],
+    run_id: str,
+    quarantine_root: Path,
+) -> list[ActionRecord]:
     """Build quarantine_move actions, routing private/financial/etc.
     items to the 'monitored' lane (approval_required=True).
     Same lane logic as queue_builder so actions.jsonl and queue.json
@@ -120,26 +129,30 @@ def build_actions(items: list[ItemRecord], findings: list[FindingRecord],
         for item_id in finding.item_ids[1:]:
             item = item_by_id[item_id]
             destination = quarantine_root / "duplicates" / item.display_name
-            action_id = hashlib.sha1((item.item_id + str(destination)).encode("utf-8")).hexdigest()
+            action_id = hashlib.sha1(
+                (item.item_id + str(destination)).encode("utf-8")
+            ).hexdigest()
             is_sensitive = item.sensitivity in MONITORED_SENSITIVITIES
             lane = "monitored" if is_sensitive else "unattended"
-            actions.append(ActionRecord(
-                schema_version="sensei.action.v1",
-                run_id=run_id,
-                action_id=action_id,
-                action_type="quarantine_move",
-                adapter=item.source["adapter"],
-                item_id=item.item_id,
-                source_path=item.identity["path"],
-                destination_path=str(destination),
-                confidence=1.0,
-                risk=max(item.risk, keeper.risk),
-                reversible=True,
-                lane=lane,
-                reason=f"exact duplicate of {keeper.identity['path']}",
-                approval_required=is_sensitive,
-                metadata={"sensitivity": item.sensitivity},
-            ))
+            actions.append(
+                ActionRecord(
+                    schema_version="sensei.action.v1",
+                    run_id=run_id,
+                    action_id=action_id,
+                    action_type="quarantine_move",
+                    adapter=item.source["adapter"],
+                    item_id=item.item_id,
+                    source_path=item.identity["path"],
+                    destination_path=str(destination),
+                    confidence=1.0,
+                    risk=max(item.risk, keeper.risk),
+                    reversible=True,
+                    lane=lane,
+                    reason=f"exact duplicate of {keeper.identity['path']}",
+                    approval_required=is_sensitive,
+                    metadata={"sensitivity": item.sensitivity},
+                )
+            )
     return actions
 
 
@@ -149,6 +162,7 @@ def _build_adapter(adapter_name: str, run_id: str):
     remote gets its own RcloneRemoteAdapter."""
     if adapter_name.startswith("rclone:"):
         from sensei_clean.adapters.rclone_remote import RcloneRemoteAdapter
+
         remote = adapter_name.split(":", 1)[1]
         return RcloneRemoteAdapter(run_id=run_id, remote=remote, list_enabled=True)
     return LocalFSAdapter(
@@ -172,6 +186,7 @@ def _apply_per_adapter(filtered, capabilities, undo_path: str):
     """Group actions by their adapter, run apply_actions per group with
     the matching capability. Aggregates all ApplyResults."""
     from collections import defaultdict
+
     groups: dict[str, list] = defaultdict(list)
     for a in filtered:
         groups[a.adapter].append(a)
@@ -179,13 +194,20 @@ def _apply_per_adapter(filtered, capabilities, undo_path: str):
     for adapter_name, group_actions in groups.items():
         cap = _capability_for(adapter_name, capabilities)
         if cap is None:
-            results.extend([
-                type("R", (), {
-                    "action_id": a.action_id, "success": False,
-                    "message": f"no capability for {adapter_name}",
-                })()
-                for a in group_actions
-            ])
+            results.extend(
+                [
+                    type(
+                        "R",
+                        (),
+                        {
+                            "action_id": a.action_id,
+                            "success": False,
+                            "message": f"no capability for {adapter_name}",
+                        },
+                    )()
+                    for a in group_actions
+                ]
+            )
             continue
         adapter = _build_adapter(adapter_name, group_actions[0].run_id)
         results.extend(apply_actions(adapter, group_actions, cap, undo_path))
@@ -195,7 +217,6 @@ def _apply_per_adapter(filtered, capabilities, undo_path: str):
 def _undo_per_adapter(records):
     """Group undo records by adapter, dispatch each to the right
     adapter. Preserves the caller's ordering."""
-    from collections import defaultdict
     # Preserve order: process records sequentially, building per-adapter
     # adapters lazily.
     adapters: dict[str, object] = {}
@@ -216,16 +237,21 @@ def make_run_dir(raw_run_dir: str | None, run_id: str) -> Path:
 
 # ────────────── scan ──────────────
 
+
 def cmd_scan(args: argparse.Namespace) -> int:
     has_cloud = any(r.startswith("rclone:") for r in args.roots)
     print(f"{BANNER}")
     print(f"  roots: {', '.join(args.roots)}")
-    print(f"  sha256: {'on' if args.sha256 else 'off (default — pass --sha256 to find duplicates)'}")
+    print(
+        f"  sha256: {'on' if args.sha256 else 'off (default — pass --sha256 to find duplicates)'}"
+    )
     if has_cloud:
         if args.list_cloud:
-            print(f"  cloud listing: ON (rclone lsjson)")
+            print("  cloud listing: ON (rclone lsjson)")
         else:
-            print(f"  cloud listing: off (default — pass --list-cloud to enumerate cloud files)")
+            print(
+                "  cloud listing: off (default — pass --list-cloud to enumerate cloud files)"
+            )
     print()
 
     run_path, capabilities, items, findings, actions = scan_run(
@@ -243,18 +269,23 @@ def cmd_scan(args: argparse.Namespace) -> int:
     print(f"Run dir   : {run_path}")
     print(f"Items     : {len(items)}")
     print(f"Findings  : {len(findings)}")
-    print(f"Actions   : {len(actions)} (monitored={monitored}, unattended={unattended})")
+    print(
+        f"Actions   : {len(actions)} (monitored={monitored}, unattended={unattended})"
+    )
     print(f"Reclaim   : ~{reclaim / 1e6:.1f} MB if all duplicates quarantined")
     print(f"Report    : {run_path / 'reports' / 'summary.md'}")
     print()
     print("Review the report, then:")
     print(f"  sensei-clean apply {run_path}")
-    print(f"  sensei-clean apply {run_path} --approve-monitored   # include sensitive items")
+    print(
+        f"  sensei-clean apply {run_path} --approve-monitored   # include sensitive items"
+    )
     return 0
 
 
-def _estimate_reclaim_bytes(items: list[ItemRecord],
-                            findings: list[FindingRecord]) -> int:
+def _estimate_reclaim_bytes(
+    items: list[ItemRecord], findings: list[FindingRecord]
+) -> int:
     item_size = {it.item_id: (it.size_bytes or 0) for it in items}
     total = 0
     for f in findings:
@@ -266,6 +297,7 @@ def _estimate_reclaim_bytes(items: list[ItemRecord],
 
 
 # ────────────── scan-all ──────────────
+
 
 def cmd_scan_all(args: argparse.Namespace) -> int:
     """Full System Scan: auto-discover every available source (local
@@ -291,9 +323,13 @@ def cmd_scan_all(args: argparse.Namespace) -> int:
     for s in sources:
         suffix = " (cloud probe-only)" if s in cloud_sources and not list_cloud else ""
         print(f"    - {s.kind:>22s}  {s.path}{suffix}")
-    print(f"  sha256 hashing     : {'on' if args.sha256 else 'off — pass --sha256 to find duplicates'}")
+    print(
+        f"  sha256 hashing     : {'on' if args.sha256 else 'off — pass --sha256 to find duplicates'}"
+    )
     if cloud_sources:
-        print(f"  cloud listing      : {'on' if list_cloud else 'off — pass --list-cloud to enumerate cloud files'}")
+        print(
+            f"  cloud listing      : {'on' if list_cloud else 'off — pass --list-cloud to enumerate cloud files'}"
+        )
     print()
 
     run_path, capabilities, items, findings, actions = scan_run(
@@ -312,11 +348,12 @@ def cmd_scan_all(args: argparse.Namespace) -> int:
     print(f"Report           : {run_path / 'reports' / 'summary.md'}")
     print(f"Review HTML      : {run_path / 'reports' / 'review.html'}")
     print()
-    print(f"Status saved. Run `sensei-clean status` any time to see the headline.")
+    print("Status saved. Run `sensei-clean status` any time to see the headline.")
     return 0
 
 
 # ────────────── status ──────────────
+
 
 def cmd_status(_args: argparse.Namespace) -> int:
     print(_status.format_status())
@@ -325,11 +362,12 @@ def cmd_status(_args: argparse.Namespace) -> int:
 
 # ────────────── open ──────────────
 
+
 def cmd_open(args: argparse.Namespace) -> int:
     """Open a single item from a prior scan run in its real app
     (xdg-open for local files, browser for cloud URLs)."""
-    from sensei_clean.opener import resolve_open_target, open_item
     from sensei_clean.adapters.rclone_remote import RcloneRemoteAdapter
+    from sensei_clean.opener import open_item, resolve_open_target
 
     run_dir = Path(args.run_dir).expanduser().resolve()
     inv = run_dir / "inventory.jsonl"
@@ -347,7 +385,10 @@ def cmd_open(args: argparse.Namespace) -> int:
     if args.path:
         wanted = str(Path(args.path).expanduser())
         for it in items:
-            if it.identity.get("path") == wanted or it.identity.get("path") == args.path:
+            if (
+                it.identity.get("path") == wanted
+                or it.identity.get("path") == args.path
+            ):
                 chosen = it
                 break
         if chosen is None:
@@ -361,6 +402,7 @@ def cmd_open(args: argparse.Namespace) -> int:
         chosen = max(nonempty, key=lambda i: i.size_bytes or 0)
     elif args.oldest:
         from sensei_clean.waste import oldest_files
+
         picks = oldest_files(items, n=1)
         if not picks:
             print("error: no items have a timestamp", file=sys.stderr)
@@ -368,11 +410,17 @@ def cmd_open(args: argparse.Namespace) -> int:
         chosen = picks[0]
     elif args.item is not None:
         if not 1 <= args.item <= len(items):
-            print(f"error: --item {args.item} out of range (1..{len(items)})", file=sys.stderr)
+            print(
+                f"error: --item {args.item} out of range (1..{len(items)})",
+                file=sys.stderr,
+            )
             return 2
         chosen = items[args.item - 1]
     else:
-        print("error: pass one of --item N / --path P / --biggest / --oldest", file=sys.stderr)
+        print(
+            "error: pass one of --item N / --path P / --biggest / --oldest",
+            file=sys.stderr,
+        )
         return 2
 
     # Pick the right adapter for this item so cloud URLs resolve.
@@ -407,6 +455,7 @@ def cmd_open(args: argparse.Namespace) -> int:
 
 # ────────────── apply ──────────────
 
+
 def cmd_apply(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir).expanduser().resolve()
     if not run_dir.is_dir():
@@ -416,8 +465,10 @@ def cmd_apply(args: argparse.Namespace) -> int:
     capabilities_file = run_dir / "capabilities.json"
     actions_file = run_dir / "actions.jsonl"
     if not capabilities_file.exists() or not actions_file.exists():
-        print(f"error: missing capabilities.json or actions.jsonl in {run_dir}",
-              file=sys.stderr)
+        print(
+            f"error: missing capabilities.json or actions.jsonl in {run_dir}",
+            file=sys.stderr,
+        )
         return 2
 
     cap_list = json.loads(capabilities_file.read_text())
@@ -426,7 +477,11 @@ def cmd_apply(args: argparse.Namespace) -> int:
         return 2
     capabilities = [CapabilityReport(**c) for c in cap_list]
 
-    raw_actions = [json.loads(line) for line in actions_file.read_text().splitlines() if line.strip()]
+    raw_actions = [
+        json.loads(line)
+        for line in actions_file.read_text().splitlines()
+        if line.strip()
+    ]
     actions = [ActionRecord(**a) for a in raw_actions]
 
     if not args.approve_monitored:
@@ -441,7 +496,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
         print(f"  run: {run_dir}")
         if skipped:
             print(f"  All {skipped} actions are in the monitored lane.")
-            print(f"  Re-run with --approve-monitored to include them.")
+            print("  Re-run with --approve-monitored to include them.")
         else:
             print("  No actions to apply.")
         return 0
@@ -450,7 +505,9 @@ def cmd_apply(args: argparse.Namespace) -> int:
     print(f"  run     : {run_dir}")
     print(f"  apply   : {len(filtered)} action(s)")
     if skipped:
-        print(f"  skipped : {skipped} monitored-lane action(s) (pass --approve-monitored to include)")
+        print(
+            f"  skipped : {skipped} monitored-lane action(s) (pass --approve-monitored to include)"
+        )
 
     if not args.yes:
         ans = input("  proceed? [yes/N]: ").strip().lower()
@@ -480,6 +537,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
 
 
 # ────────────── undo ──────────────
+
 
 def cmd_undo(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir).expanduser().resolve()
@@ -515,63 +573,100 @@ def cmd_undo(args: argparse.Namespace) -> int:
 
 # ────────────── arg parse ──────────────
 
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="sensei-clean", description=BANNER)
     sub = parser.add_subparsers(dest="cmd")
 
     p_scan = sub.add_parser("scan", help="inventory files and write review artifacts")
-    p_scan.add_argument("--run-dir", default=None,
-                        help="output directory (default: ~/sensei_runs/<ts>/)")
-    p_scan.add_argument("--roots", nargs="*", default=DEFAULT_ROOTS,
-                        help="local roots to scan")
-    p_scan.add_argument("--quarantine-root", default="~/Sensei-Quarantine",
-                        help="where apply would move quarantined files")
-    p_scan.add_argument("--sha256", action="store_true",
-                        help="hash files (needed to find duplicates)")
-    p_scan.add_argument("--list-cloud", action="store_true",
-                        help="actually list files in cloud remotes via rclone lsjson "
-                             "(default: probe-only, account/quota metadata only)")
+    p_scan.add_argument(
+        "--run-dir",
+        default=None,
+        help="output directory (default: ~/sensei_runs/<ts>/)",
+    )
+    p_scan.add_argument(
+        "--roots", nargs="*", default=DEFAULT_ROOTS, help="local roots to scan"
+    )
+    p_scan.add_argument(
+        "--quarantine-root",
+        default="~/Sensei-Quarantine",
+        help="where apply would move quarantined files",
+    )
+    p_scan.add_argument(
+        "--sha256", action="store_true", help="hash files (needed to find duplicates)"
+    )
+    p_scan.add_argument(
+        "--list-cloud",
+        action="store_true",
+        help="actually list files in cloud remotes via rclone lsjson "
+        "(default: probe-only, account/quota metadata only)",
+    )
 
-    p_all = sub.add_parser("scan-all",
-                           help="full system scan — auto-discover and scan every source")
-    p_all.add_argument("--run-dir", default=None,
-                       help="output directory (default: ~/sensei_runs/<ts>/)")
-    p_all.add_argument("--quarantine-root", default="~/Sensei-Quarantine",
-                       help="where apply would move quarantined files")
-    p_all.add_argument("--sha256", action="store_true",
-                       help="hash files (needed to find duplicates)")
-    p_all.add_argument("--list-cloud", action="store_true",
-                       help="actually list files in detected cloud remotes "
-                            "(default: probe-only)")
+    p_all = sub.add_parser(
+        "scan-all", help="full system scan — auto-discover and scan every source"
+    )
+    p_all.add_argument(
+        "--run-dir",
+        default=None,
+        help="output directory (default: ~/sensei_runs/<ts>/)",
+    )
+    p_all.add_argument(
+        "--quarantine-root",
+        default="~/Sensei-Quarantine",
+        help="where apply would move quarantined files",
+    )
+    p_all.add_argument(
+        "--sha256", action="store_true", help="hash files (needed to find duplicates)"
+    )
+    p_all.add_argument(
+        "--list-cloud",
+        action="store_true",
+        help="actually list files in detected cloud remotes (default: probe-only)",
+    )
 
     sub.add_parser("status", help="show last full-scan date + reclaim totals")
 
-    p_open = sub.add_parser("open",
-                            help="open an item from a scan run in its real app")
+    p_open = sub.add_parser("open", help="open an item from a scan run in its real app")
     p_open.add_argument("run_dir", help="path to a sensei_runs/<ts>/ directory")
     sel = p_open.add_mutually_exclusive_group()
-    sel.add_argument("--item", type=int, default=None,
-                     help="1-based index into inventory.jsonl")
-    sel.add_argument("--path", default=None,
-                     help="exact identity.path from the inventory (local or rclone:...)")
-    sel.add_argument("--biggest", action="store_true",
-                     help="open the largest file in the inventory")
-    sel.add_argument("--oldest", action="store_true",
-                     help="open the oldest file in the inventory (by modified time)")
-    p_open.add_argument("--print-only", action="store_true",
-                        help="resolve the target and print it; do not run xdg-open")
+    sel.add_argument(
+        "--item", type=int, default=None, help="1-based index into inventory.jsonl"
+    )
+    sel.add_argument(
+        "--path",
+        default=None,
+        help="exact identity.path from the inventory (local or rclone:...)",
+    )
+    sel.add_argument(
+        "--biggest", action="store_true", help="open the largest file in the inventory"
+    )
+    sel.add_argument(
+        "--oldest",
+        action="store_true",
+        help="open the oldest file in the inventory (by modified time)",
+    )
+    p_open.add_argument(
+        "--print-only",
+        action="store_true",
+        help="resolve the target and print it; do not run xdg-open",
+    )
 
     p_apply = sub.add_parser("apply", help="enact queued actions from a scan run")
     p_apply.add_argument("run_dir", help="path to the run directory from scan")
-    p_apply.add_argument("--yes", action="store_true",
-                         help="skip the confirmation prompt")
-    p_apply.add_argument("--approve-monitored", action="store_true",
-                         help="include monitored-lane (sensitive) actions")
+    p_apply.add_argument(
+        "--yes", action="store_true", help="skip the confirmation prompt"
+    )
+    p_apply.add_argument(
+        "--approve-monitored",
+        action="store_true",
+        help="include monitored-lane (sensitive) actions",
+    )
 
     p_undo = sub.add_parser("undo", help="reverse what apply did, newest first")
     p_undo.add_argument("run_dir", help="path to the run directory from a prior apply")
-    p_undo.add_argument("--yes", action="store_true",
-                        help="skip the confirmation prompt")
+    p_undo.add_argument(
+        "--yes", action="store_true", help="skip the confirmation prompt"
+    )
 
     if not argv or argv[0] in ("-h", "--help"):
         parser.print_help()
@@ -587,7 +682,16 @@ def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
     # Back-compat: bare invocation = scan with defaults.
-    if argv and argv[0] not in ("scan", "scan-all", "status", "open", "apply", "undo", "-h", "--help"):
+    if argv and argv[0] not in (
+        "scan",
+        "scan-all",
+        "status",
+        "open",
+        "apply",
+        "undo",
+        "-h",
+        "--help",
+    ):
         # Treat legacy flags (--run-dir, --roots, --sha256, --quarantine-root)
         # as `scan` arguments so old callers still work.
         argv = ["scan", *argv]

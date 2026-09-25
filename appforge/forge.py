@@ -11,10 +11,10 @@ Flow:
 
 v0.1: templates-only. AI-generated code comes in v0.2.
 """
+
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import sys
@@ -22,65 +22,85 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-HERE         = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parent
 TEMPLATE_DIR = HERE / "templates" / "flask_starter"
-SESSION_DIR  = Path.home() / ".appforge_sessions"
-OUT_DIR      = Path.home() / "Desktop"
+SESSION_DIR = Path.home() / ".appforge_sessions"
+OUT_DIR = Path.home() / "Desktop"
 
 # ── colors (work on light + dark terminals) ──────────────────────
-C  = "\033[36m"
-G  = "\033[32m"
-Y  = "\033[33m"
-R  = "\033[31m"
+C = "\033[36m"
+G = "\033[32m"
+Y = "\033[33m"
+R = "\033[31m"
 BC = "\033[1;34m"
-X  = "\033[0m"
-D  = "\033[2m"
+X = "\033[0m"
+D = "\033[2m"
 
 
 # ── question catalog ─────────────────────────────────────────────
 # Each question: (key, prompt, default, help_line).
 # Keep the list human-readable; each answer lands in the session JSON.
 QUESTIONS = [
-    ("name",
-     "What's your app called?",
-     "MyApp",
-     "Short name — becomes the zip filename and the title bar."),
-    ("tagline",
-     "One-sentence tagline — what does it do?",
-     "Does a thing that helps a person",
-     "Shown on Gumroad listing + splash page."),
-    ("audience",
-     "Who is this for? (kid / non-technical adult / developer / business)",
-     "non-technical adult",
-     "Shapes tone and the defaults we pick."),
-    ("platform",
-     "Where does it run? (web / desktop / mobile / cli)",
-     "web",
-     "v0.1 only outputs a Flask web app; other values recorded for v0.2."),
-    ("features",
-     "Top 3 features, comma-separated.",
-     "login, list view, form",
-     "Each feature becomes a stub route + placeholder UI card."),
-    ("needs_ai",
-     "Does this app need AI? (y/n)",
-     "n",
-     "If y, we wire in a /ask endpoint that calls your local Ollama."),
-    ("data_store",
-     "Where does data live? (sqlite / json-file / none)",
-     "sqlite",
-     "sqlite gets you a DB file next to app.py; json-file is simpler."),
-    ("color",
-     "Primary brand color (hex or name).",
-     "#2266cc",
-     "Used for buttons + header on the splash page."),
-    ("price",
-     "Gumroad price in USD (0 for free).",
-     "0",
-     "Dropped into the NEXT_STEPS file for listing."),
-    ("creator",
-     "Your name / creator handle.",
-     "Anonymous",
-     "Goes in the README + footer."),
+    (
+        "name",
+        "What's your app called?",
+        "MyApp",
+        "Short name — becomes the zip filename and the title bar.",
+    ),
+    (
+        "tagline",
+        "One-sentence tagline — what does it do?",
+        "Does a thing that helps a person",
+        "Shown on Gumroad listing + splash page.",
+    ),
+    (
+        "audience",
+        "Who is this for? (kid / non-technical adult / developer / business)",
+        "non-technical adult",
+        "Shapes tone and the defaults we pick.",
+    ),
+    (
+        "platform",
+        "Where does it run? (web / desktop / mobile / cli)",
+        "web",
+        "v0.1 only outputs a Flask web app; other values recorded for v0.2.",
+    ),
+    (
+        "features",
+        "Top 3 features, comma-separated.",
+        "login, list view, form",
+        "Each feature becomes a stub route + placeholder UI card.",
+    ),
+    (
+        "needs_ai",
+        "Does this app need AI? (y/n)",
+        "n",
+        "If y, we wire in a /ask endpoint that calls your local Ollama.",
+    ),
+    (
+        "data_store",
+        "Where does data live? (sqlite / json-file / none)",
+        "sqlite",
+        "sqlite gets you a DB file next to app.py; json-file is simpler.",
+    ),
+    (
+        "color",
+        "Primary brand color (hex or name).",
+        "#2266cc",
+        "Used for buttons + header on the splash page.",
+    ),
+    (
+        "price",
+        "Gumroad price in USD (0 for free).",
+        "0",
+        "Dropped into the NEXT_STEPS file for listing.",
+    ),
+    (
+        "creator",
+        "Your name / creator handle.",
+        "Anonymous",
+        "Goes in the README + footer.",
+    ),
 ]
 
 
@@ -138,10 +158,12 @@ def confirm(msg: str, default: bool = True) -> bool:
 # ── template render ──────────────────────────────────────────────
 def render_placeholder(text: str, answers: dict) -> str:
     """Replace {{KEY}} placeholders with the answer value (str)."""
+
     def sub(m):
         key = m.group(1).strip()
         val = answers.get(key, "")
         return str(val)
+
     return re.sub(r"\{\{\s*([A-Z_][A-Z0-9_]*)\s*\}\}", sub, text)
 
 
@@ -172,7 +194,8 @@ def build_app(answers: dict) -> Path:
         "        data=json.dumps({'model': 'master-ai:latest', 'prompt': q,"
         " 'stream': False}).encode(), timeout=60)\n    "
         "return {'answer': json.loads(r.read()).get('response','')}\n"
-        if answers.get("needs_ai", "n").lower().startswith("y") else ""
+        if answers.get("needs_ai", "n").lower().startswith("y")
+        else ""
     )
     for p in build.rglob("*"):
         if p.is_file():
@@ -201,13 +224,13 @@ def zip_build(build: Path, slug: str) -> Path:
 def write_next_steps(answers: dict, zip_path: Path) -> Path:
     slug = slugify(answers.get("name", "myapp"))
     out = OUT_DIR / f"{slug}_NEXT_STEPS.md"
-    tmpl = f"""# {answers.get('name')} — Next Steps
+    tmpl = f"""# {answers.get("name")} — Next Steps
 
 **Zip:** `{zip_path}`
-**Tagline:** {answers.get('tagline')}
-**Audience:** {answers.get('audience')}
-**Platform:** {answers.get('platform')}
-**Generated:** {datetime.now().isoformat(timespec='seconds')}
+**Tagline:** {answers.get("tagline")}
+**Audience:** {answers.get("audience")}
+**Platform:** {answers.get("platform")}
+**Generated:** {datetime.now().isoformat(timespec="seconds")}
 
 ---
 
@@ -226,7 +249,7 @@ python app.py
 1. Create a Gumroad account: https://gumroad.com/signup
 2. New Product → **Digital Product**
 3. Upload the zip (`{zip_path.name}`)
-4. Price: **${answers.get('price')}**  ·  Title: **{answers.get('name')}**
+4. Price: **${answers.get("price")}**  ·  Title: **{answers.get("name")}**
 5. Description: use the tagline + "what it does" + setup steps above
 6. Publish → share the product URL
 
@@ -245,7 +268,7 @@ python app.py
 
 ---
 
-Creator: {answers.get('creator')}
+Creator: {answers.get("creator")}
 """
     out.write_text(tmpl)
     return out
@@ -265,7 +288,9 @@ def resume_prompt():
     say(f"  {D}Recent sessions you can resume:{X}")
     for i, s in enumerate(sessions[:5], 1):
         say(f"    {Y}{i}{X}) {s.name}")
-    r = input(f"\n  Resume one? (1-{min(5,len(sessions))}, or Enter to start fresh) > ").strip()
+    r = input(
+        f"\n  Resume one? (1-{min(5, len(sessions))}, or Enter to start fresh) > "
+    ).strip()
     if r.isdigit() and 1 <= int(r) <= min(5, len(sessions)):
         return load_session(sessions[int(r) - 1])
     return None

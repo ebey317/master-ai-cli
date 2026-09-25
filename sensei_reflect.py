@@ -33,8 +33,7 @@ def parse_ts(value) -> datetime | None:
         except (OSError, ValueError, OverflowError):
             return None
     if isinstance(value, str):
-        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f",
-                    "%Y-%m-%d %H:%M:%S"):
+        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
             try:
                 return datetime.strptime(value[:26], fmt)
             except ValueError:
@@ -44,9 +43,7 @@ def parse_ts(value) -> datetime | None:
 
 def fetch_recent_audit(limit: int) -> list[dict]:
     if not DB_PATH.exists():
-        sys.exit(
-            "no FTS index yet — run `python3 sensei_memory_index.py build` first"
-        )
+        sys.exit("no FTS index yet — run `python3 sensei_memory_index.py build` first")
     conn = sqlite3.connect(DB_PATH)
     try:
         rows = conn.execute(
@@ -137,9 +134,13 @@ def build_digest(events: list[dict]) -> dict:
 
 
 def print_digest(d: dict) -> None:
-    print(f"--- sensei reflection {datetime.fromtimestamp(d['generated_at']).isoformat()} ---")
-    print(f"events in window: {d['window_event_count']}  "
-          f"({d['window_start']} → {d['window_end']})")
+    print(
+        f"--- sensei reflection {datetime.fromtimestamp(d['generated_at']).isoformat()} ---"
+    )
+    print(
+        f"events in window: {d['window_event_count']}  "
+        f"({d['window_start']} → {d['window_end']})"
+    )
     print(f"verdicts: {d['verdicts']}   results: {d['results']}")
     print("top source/kind:")
     for k, n in d["top_source_kind"]:
@@ -180,10 +181,12 @@ def cmd_show() -> int:
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="Sensei audit-log reflector")
-    ap.add_argument("--tail", type=int, default=2000,
-                    help="how many recent events to reflect on")
-    ap.add_argument("--show", action="store_true",
-                    help="print the most recent stored digest")
+    ap.add_argument(
+        "--tail", type=int, default=2000, help="how many recent events to reflect on"
+    )
+    ap.add_argument(
+        "--show", action="store_true", help="print the most recent stored digest"
+    )
     args = ap.parse_args(argv[1:])
 
     if args.show:

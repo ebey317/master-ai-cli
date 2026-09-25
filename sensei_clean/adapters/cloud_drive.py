@@ -22,17 +22,22 @@ Read-first contract:
     or a local export path. It must never silently download private
     content; the export must be explicit.
 """
+
 from __future__ import annotations
 
 import json
 import os
 from abc import abstractmethod
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator, List, Optional
 
-from ..schemas import AccessGrant, ActionRecord, ApplyResult, CapabilityReport, ItemRecord, UndoRecord
+from ..schemas import (
+    AccessGrant,
+    ActionRecord,
+    CapabilityReport,
+    ItemRecord,
+)
 from .base import BaseAdapter
-
 
 CONFIG_DIR = Path.home() / ".config" / "sensei-clean"
 
@@ -107,7 +112,7 @@ class CloudDriveAdapter(BaseAdapter):
         )
 
     @abstractmethod
-    def scan(self, cursor: Optional[str] = None) -> Iterator[ItemRecord]:
+    def scan(self, cursor: str | None = None) -> Iterator[ItemRecord]:
         """Yield ItemRecords for files in the configured root. Cursor
         is opaque pagination state."""
         raise NotImplementedError

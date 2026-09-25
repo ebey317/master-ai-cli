@@ -12,6 +12,7 @@ CLI can show:
 State lives at ~/.config/sensei-clean/state.json (0600). Never contains
 file names — only counts and totals, so it's safe to view at any time.
 """
+
 from __future__ import annotations
 
 import json
@@ -87,9 +88,12 @@ def format_status() -> str:
     """Human-readable status block used by the `status` subcommand."""
     state = load_state()
     if not state:
-        return ("No Sensei Clean runs recorded yet.\n"
-                "Run: sensei-clean scan-all   (or)   sensei-clean scan --roots <path>")
+        return (
+            "No Sensei Clean runs recorded yet.\n"
+            "Run: sensei-clean scan-all   (or)   sensei-clean scan --roots <path>"
+        )
     from .waste import human_bytes
+
     lines = ["Sensei Clean — last status"]
     if state.get("last_full_scan_iso"):
         lines.append(f"  last full scan : {state['last_full_scan_iso']}")
@@ -98,8 +102,10 @@ def format_status() -> str:
     if state.get("last_total_bytes") is not None:
         lines.append(f"  total size     : {human_bytes(state['last_total_bytes'])}")
     if state.get("last_reclaim_bytes") is not None:
-        lines.append(f"  reclaim ready  : {human_bytes(state['last_reclaim_bytes'])} "
-                     f"({state.get('last_duplicate_clusters', 0)} duplicate clusters)")
+        lines.append(
+            f"  reclaim ready  : {human_bytes(state['last_reclaim_bytes'])} "
+            f"({state.get('last_duplicate_clusters', 0)} duplicate clusters)"
+        )
     if state.get("last_run_dir"):
         lines.append(f"  last run dir   : {state['last_run_dir']}")
     if state.get("last_sources"):
@@ -112,6 +118,8 @@ def format_status() -> str:
     if state.get("last_apply_iso"):
         lines.append("")
         lines.append(f"  last apply     : {state['last_apply_iso']}")
-        lines.append(f"                   {state.get('last_apply_applied', 0)} applied, "
-                     f"{state.get('last_apply_failed', 0)} failed")
+        lines.append(
+            f"                   {state.get('last_apply_applied', 0)} applied, "
+            f"{state.get('last_apply_failed', 0)} failed"
+        )
     return "\n".join(lines)

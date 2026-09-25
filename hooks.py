@@ -31,29 +31,37 @@ import json
 import re
 import shlex
 import subprocess
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 HOOKS_CONFIG = Path.home() / ".master_ai_hooks.json"
 
 
-KINDS = frozenset({
-    "pre_run", "post_run",
-    "pre_runterm", "post_runterm",
-    "pre_read", "post_read",
-    "pre_create", "post_create",
-    "pre_edit", "post_edit",
-    "on_blocked",  # 2026-05-11: fires when ANY action lands BLOCKED.
-                   # Sibling to pre_/post_ — observes a state outcome,
-                   # not a lifecycle phase. Used by auto-extract-lesson.
-    "turn_answer_start",  # Phase 5.6 (2026-05-15): fires once per /chat
-                          # response right before the assistant reply text
-                          # is returned to the extension. target = the
-                          # reply string. Subscribers can record metrics,
-                          # tee to a transcript log, or trigger UI hints.
-                          # NEVER blocks — observers only.
-})
+KINDS = frozenset(
+    {
+        "pre_run",
+        "post_run",
+        "pre_runterm",
+        "post_runterm",
+        "pre_read",
+        "post_read",
+        "pre_create",
+        "post_create",
+        "pre_edit",
+        "post_edit",
+        "on_blocked",  # 2026-05-11: fires when ANY action lands BLOCKED.
+        # Sibling to pre_/post_ — observes a state outcome,
+        # not a lifecycle phase. Used by auto-extract-lesson.
+        "turn_answer_start",  # Phase 5.6 (2026-05-15): fires once per /chat
+        # response right before the assistant reply text
+        # is returned to the extension. target = the
+        # reply string. Subscribers can record metrics,
+        # tee to a transcript log, or trigger UI hints.
+        # NEVER blocks — observers only.
+    }
+)
 
 
 @dataclass
@@ -67,8 +75,8 @@ class FireResult:
 class Hook:
     id: str
     kind: str
-    fn: Optional[Callable] = None       # built-in: Python callable
-    shell: Optional[str] = None         # user-defined: shell template
+    fn: Callable | None = None  # built-in: Python callable
+    shell: str | None = None  # user-defined: shell template
     enabled: bool = True
     timeout_s: int = 30
     source: str = "builtin"
@@ -91,7 +99,7 @@ class HookRegistry:
     def enabled_for(self, kind: str) -> list[Hook]:
         return [h for h in self._hooks if h.kind == kind and h.enabled]
 
-    def find(self, hook_id: str) -> Optional[Hook]:
+    def find(self, hook_id: str) -> Hook | None:
         for h in self._hooks:
             if h.id == hook_id:
                 return h
@@ -119,23 +127,29 @@ class HookRegistry:
                 if h.fn is not None:
                     res = h.fn(target, action=action)
                     if isinstance(res, FireResult) and res.blocked:
-                        return FireResult(blocked=True,
-                                          reason=res.reason or "blocked",
-                                          hook_id=h.id)
+                        return FireResult(
+                            blocked=True, reason=res.reason or "blocked", hook_id=h.id
+                        )
                 elif h.shell:
                     cmd = h.shell.replace("{target}", str(target))
                     try:
-                        r = subprocess.run(cmd, shell=True, capture_output=True,
-                                           text=True, timeout=h.timeout_s)
+                        r = subprocess.run(
+                            cmd,
+                            shell=True,
+                            capture_output=True,
+                            text=True,
+                            timeout=h.timeout_s,
+                        )
                     except subprocess.TimeoutExpired:
                         continue  # hook timeout is NOT a block
                     if r.returncode != 0:
-                        reason_src = (r.stderr or r.stdout
-                                       or f"exit {r.returncode}").strip()
+                        reason_src = (
+                            r.stderr or r.stdout or f"exit {r.returncode}"
+                        ).strip()
                         first_line = (reason_src.splitlines() or [""])[0][:200]
-                        return FireResult(blocked=True,
-                                          reason=f"{h.id}: {first_line}",
-                                          hook_id=h.id)
+                        return FireResult(
+                            blocked=True, reason=f"{h.id}: {first_line}", hook_id=h.id
+                        )
             except Exception:
                 # Hook implementation errors are NOT blocks — they're bugs
                 # in the hook itself. Log via the caller's mechanism (this
@@ -145,6 +159,7 @@ class HookRegistry:
 
 
 # ── Built-in hook implementations ────────────────────────────────────
+
 
 def _syntax_check_py(target, action=None) -> FireResult:
     """post_edit / post_create hook. Runs ``python3 -m py_compile`` on
@@ -156,17 +171,23 @@ def _syntax_check_py(target, action=None) -> FireResult:
     if not Path(target).is_file():
         return FireResult()
     try:
-        r = subprocess.run(["python3", "-m", "py_compile", target],
-                           capture_output=True, text=True, timeout=10)
+        r = subprocess.run(
+            ["python3", "-m", "py_compile", target],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
     except Exception:
         return FireResult()  # don't block on tool failure
     if r.returncode == 0:
         return FireResult()
     err_src = (r.stderr or r.stdout or f"exit {r.returncode}").strip()
     last_line = (err_src.splitlines() or [""])[-1][:300]
-    return FireResult(blocked=True,
-                      reason=f"python syntax error: {last_line}",
-                      hook_id="syntax-check-py")
+    return FireResult(
+        blocked=True,
+        reason=f"python syntax error: {last_line}",
+        hook_id="syntax-check-py",
+    )
 
 
 def _syntax_check_sh(target, action=None) -> FireResult:
@@ -181,27 +202,32 @@ def _syntax_check_sh(target, action=None) -> FireResult:
     if not Path(target).is_file():
         return FireResult()
     try:
-        r = subprocess.run(["bash", "-n", target],
-                           capture_output=True, text=True, timeout=10)
+        r = subprocess.run(
+            ["bash", "-n", target], capture_output=True, text=True, timeout=10
+        )
     except Exception:
         return FireResult()
     if r.returncode == 0:
         return FireResult()
     err_src = (r.stderr or r.stdout or f"exit {r.returncode}").strip()
     first_line = (err_src.splitlines() or [""])[0][:300]
-    return FireResult(blocked=True,
-                      reason=f"shell syntax error: {first_line}",
-                      hook_id="syntax-check-sh")
+    return FireResult(
+        blocked=True,
+        reason=f"shell syntax error: {first_line}",
+        hook_id="syntax-check-sh",
+    )
 
 
 _SECRET_PATTERNS = [
-    (re.compile(r'\bAKIA[0-9A-Z]{16}\b'),                            "AWS access key id"),
-    (re.compile(r'\bASIA[0-9A-Z]{16}\b'),                            "AWS temporary key"),
-    (re.compile(r'-----BEGIN (?:RSA |OPENSSH |DSA |EC )?PRIVATE KEY-----'),
-                                                                     "private key block"),
-    (re.compile(r'\bgh[pousr]_[A-Za-z0-9]{36,}\b'),                  "GitHub token"),
-    (re.compile(r'\bxox[abprs]-[A-Za-z0-9-]{10,}\b'),                "Slack token"),
-    (re.compile(r'\bsk-[A-Za-z0-9]{20,}\b'),                          "OpenAI-style API key"),
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "AWS access key id"),
+    (re.compile(r"\bASIA[0-9A-Z]{16}\b"), "AWS temporary key"),
+    (
+        re.compile(r"-----BEGIN (?:RSA |OPENSSH |DSA |EC )?PRIVATE KEY-----"),
+        "private key block",
+    ),
+    (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b"), "GitHub token"),
+    (re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"), "Slack token"),
+    (re.compile(r"\bsk-[A-Za-z0-9]{20,}\b"), "OpenAI-style API key"),
 ]
 
 
@@ -245,6 +271,7 @@ def _auto_extract_lesson(target, action=None) -> FireResult:
         _EXTRACT_COUNT_SESSION += 1
     # Fire async so the user isn't blocked
     import threading
+
     threading.Thread(
         target=_extract_lesson_worker,
         args=(kind, blocked_target, reason),
@@ -256,10 +283,11 @@ def _auto_extract_lesson(target, action=None) -> FireResult:
 
 # Rate-limit globals for the auto-extract hook
 import threading as _threading
+
 _EXTRACT_LOCK = _threading.Lock()
 _EXTRACT_COUNT_SESSION = 0
 _EXTRACT_MAX_PER_SESSION = 10
-_EXTRACT_LESSON_MODEL = "qwen2.5:3b"   # fast small model; falls back below
+_EXTRACT_LESSON_MODEL = "qwen2.5:3b"  # fast small model; falls back below
 _EXTRACT_LESSON_TIMEOUT_S = 12
 _EXTRACT_OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 
@@ -275,19 +303,22 @@ def _extract_lesson_worker(kind: str, target: str, reason: str) -> None:
         f"Reason: {reason[:200]}\n\n"
         "If there is a one-line factual lesson worth remembering so "
         "this doesn't repeat (e.g. \"X isn't installed on this box, "
-        "use Y\"), reply with JUST the lesson, no preamble, max 150 "
+        'use Y"), reply with JUST the lesson, no preamble, max 150 '
         "chars.\n"
         "If there is no useful generic lesson, reply with exactly: SKIP"
     )
     try:
-        import urllib.request as _ureq
         import json as _json
-        body = _json.dumps({
-            "model": _EXTRACT_LESSON_MODEL,
-            "prompt": prompt,
-            "stream": False,
-            "options": {"num_predict": 80, "temperature": 0.2},
-        }).encode()
+        import urllib.request as _ureq
+
+        body = _json.dumps(
+            {
+                "model": _EXTRACT_LESSON_MODEL,
+                "prompt": prompt,
+                "stream": False,
+                "options": {"num_predict": 80, "temperature": 0.2},
+            }
+        ).encode()
         req = _ureq.Request(
             _EXTRACT_OLLAMA_URL,
             data=body,
@@ -304,19 +335,23 @@ def _extract_lesson_worker(kind: str, target: str, reason: str) -> None:
     if lesson_line.upper().strip().rstrip(".!:") == "SKIP":
         return
     # Strip directive prefix if the model wrapped it
-    lesson_line = re.sub(r'^\s*REMEMBER:\s*', '', lesson_line, flags=re.IGNORECASE).strip()
+    lesson_line = re.sub(
+        r"^\s*REMEMBER:\s*", "", lesson_line, flags=re.IGNORECASE
+    ).strip()
     # Sanity bounds
     if len(lesson_line) < 10 or len(lesson_line) > 200:
         return
     # Store via master_ai's path so it goes through confirm_remember's
     # validation + dedup + MEMORY_FILE write.
     try:
-        import sys
         import os as _os
+        import sys
+
         _scripts = _os.path.expanduser("~/scripts")
         if _scripts not in sys.path:
             sys.path.insert(0, _scripts)
         import master_ai as _ma
+
         _ma.confirm_remember(lesson_line)
     except Exception:
         pass
@@ -339,9 +374,11 @@ def _secret_scan(target, action=None) -> FireResult:
         return FireResult()
     for pat, label in _SECRET_PATTERNS:
         if pat.search(text):
-            return FireResult(blocked=True,
-                              reason=f"detected {label} in CREATE content",
-                              hook_id="secret-scan")
+            return FireResult(
+                blocked=True,
+                reason=f"detected {label} in CREATE content",
+                hook_id="secret-scan",
+            )
     return FireResult()
 
 
@@ -357,47 +394,100 @@ def _syntax_check_run_cmd(cmd, action=None) -> FireResult:
     try:
         shlex.split(cmd)
     except ValueError as e:
-        return FireResult(blocked=True,
-                          reason=f"shell tokenization failed: {e}",
-                          hook_id="syntax-check-run")
+        return FireResult(
+            blocked=True,
+            reason=f"shell tokenization failed: {e}",
+            hook_id="syntax-check-run",
+        )
     try:
-        r = subprocess.run(["bash", "-n", "-c", cmd],
-                           capture_output=True, text=True, timeout=10)
+        r = subprocess.run(
+            ["bash", "-n", "-c", cmd], capture_output=True, text=True, timeout=10
+        )
     except Exception:
         return FireResult()
     if r.returncode == 0:
         return FireResult()
     err_src = (r.stderr or r.stdout or f"exit {r.returncode}").strip()
     first_line = (err_src.splitlines() or [""])[0][:300]
-    return FireResult(blocked=True,
-                      reason=f"shell syntax error: {first_line}",
-                      hook_id="syntax-check-run")
+    return FireResult(
+        blocked=True,
+        reason=f"shell syntax error: {first_line}",
+        hook_id="syntax-check-run",
+    )
 
 
 # ── Module-level registry ─────────────────────────────────────────────
 
 _REGISTRY = HookRegistry()
-_REGISTRY.register(Hook(id="syntax-check-py-post-edit", kind="post_edit",
-                        fn=_syntax_check_py, source="builtin"))
-_REGISTRY.register(Hook(id="syntax-check-py-post-create", kind="post_create",
-                        fn=_syntax_check_py, source="builtin"))
-_REGISTRY.register(Hook(id="syntax-check-sh-post-edit", kind="post_edit",
-                        fn=_syntax_check_sh, source="builtin"))
-_REGISTRY.register(Hook(id="syntax-check-sh-post-create", kind="post_create",
-                        fn=_syntax_check_sh, source="builtin"))
-_REGISTRY.register(Hook(id="secret-scan-pre-create", kind="pre_create",
-                        fn=_secret_scan, source="builtin"))
-_REGISTRY.register(Hook(id="syntax-check-run-pre-run", kind="pre_run",
-                        fn=_syntax_check_run_cmd, source="builtin"))
-_REGISTRY.register(Hook(id="syntax-check-run-pre-runterm", kind="pre_runterm",
-                        fn=_syntax_check_run_cmd, source="builtin"))
+_REGISTRY.register(
+    Hook(
+        id="syntax-check-py-post-edit",
+        kind="post_edit",
+        fn=_syntax_check_py,
+        source="builtin",
+    )
+)
+_REGISTRY.register(
+    Hook(
+        id="syntax-check-py-post-create",
+        kind="post_create",
+        fn=_syntax_check_py,
+        source="builtin",
+    )
+)
+_REGISTRY.register(
+    Hook(
+        id="syntax-check-sh-post-edit",
+        kind="post_edit",
+        fn=_syntax_check_sh,
+        source="builtin",
+    )
+)
+_REGISTRY.register(
+    Hook(
+        id="syntax-check-sh-post-create",
+        kind="post_create",
+        fn=_syntax_check_sh,
+        source="builtin",
+    )
+)
+_REGISTRY.register(
+    Hook(
+        id="secret-scan-pre-create",
+        kind="pre_create",
+        fn=_secret_scan,
+        source="builtin",
+    )
+)
+_REGISTRY.register(
+    Hook(
+        id="syntax-check-run-pre-run",
+        kind="pre_run",
+        fn=_syntax_check_run_cmd,
+        source="builtin",
+    )
+)
+_REGISTRY.register(
+    Hook(
+        id="syntax-check-run-pre-runterm",
+        kind="pre_runterm",
+        fn=_syntax_check_run_cmd,
+        source="builtin",
+    )
+)
 # 2026-05-11: auto-extract-lesson hook — closes the REMEMBER:
 # self-teaching loop. When an action lands BLOCKED, an async worker
 # asks the small local model for a one-line lesson and stores it via
 # confirm_remember(). Default-enabled; user can disable via
 # `hooks disable auto-extract-lesson` (P1.4 hook command).
-_REGISTRY.register(Hook(id="auto-extract-lesson", kind="on_blocked",
-                        fn=_auto_extract_lesson, source="builtin"))
+_REGISTRY.register(
+    Hook(
+        id="auto-extract-lesson",
+        kind="on_blocked",
+        fn=_auto_extract_lesson,
+        source="builtin",
+    )
+)
 
 
 def _load_user_hooks(path: Path = HOOKS_CONFIG) -> int:
@@ -426,9 +516,16 @@ def _load_user_hooks(path: Path = HOOKS_CONFIG) -> int:
         enabled = bool(entry.get("enabled", False))
         timeout = int(entry.get("timeout_s") or 30)
         try:
-            _REGISTRY.register(Hook(id=hid, kind=kind, shell=shell,
-                                    enabled=enabled, timeout_s=timeout,
-                                    source="user"))
+            _REGISTRY.register(
+                Hook(
+                    id=hid,
+                    kind=kind,
+                    shell=shell,
+                    enabled=enabled,
+                    timeout_s=timeout,
+                    source="user",
+                )
+            )
             loaded += 1
         except ValueError:
             continue

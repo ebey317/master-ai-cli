@@ -5,9 +5,9 @@ Pure-function coverage of `resolve_open_target`, `review_link_href`,
 and `LocalFSAdapter.open_view`. `_xdg_open` itself is monkey-patched
 so no real apps spawn during tests.
 """
+
 from __future__ import annotations
 
-import json
 import os
 import unittest
 from pathlib import Path
@@ -17,7 +17,6 @@ from unittest import mock
 from sensei_clean.adapters.local_fs import LocalFSAdapter
 from sensei_clean.adapters.rclone_remote import RcloneRemoteAdapter
 from sensei_clean.opener import (
-    OpenTarget,
     open_item,
     resolve_open_target,
     review_link_href,
@@ -30,17 +29,37 @@ def _local_item(path: str, name: str = "x.txt", size: int = 10) -> ItemRecord:
         schema_version="sensei.item.v1",
         run_id="r1",
         item_id=f"id:{name}",
-        source={"adapter": "local_fs", "provider": "local", "capability": "local",
-                "account_label": "u", "root": str(Path(path).parent)},
-        identity={"path": path, "provider_id": path, "parent_id": str(Path(path).parent)},
+        source={
+            "adapter": "local_fs",
+            "provider": "local",
+            "capability": "local",
+            "account_label": "u",
+            "root": str(Path(path).parent),
+        },
+        identity={
+            "path": path,
+            "provider_id": path,
+            "parent_id": str(Path(path).parent),
+        },
         kind="file",
         display_name=name,
         mime="text/plain",
         size_bytes=size,
         timestamps={"created": None, "modified": "2026-01-01T00:00:00Z", "taken": None},
-        hashes={"sha256": None, "md5": None, "provider_hash": None, "perceptual_hash": None},
-        features={"extension": ".txt", "dimensions": None, "duration_seconds": None,
-                  "text_snippet": None, "face_count": None, "screenshot_likely": False},
+        hashes={
+            "sha256": None,
+            "md5": None,
+            "provider_hash": None,
+            "perceptual_hash": None,
+        },
+        features={
+            "extension": ".txt",
+            "dimensions": None,
+            "duration_seconds": None,
+            "text_snippet": None,
+            "face_count": None,
+            "screenshot_likely": False,
+        },
         sensitivity="documents",
         category_guess="Reading",
         confidence=1.0,
@@ -58,18 +77,38 @@ def _cloud_item(remote: str, provider_id: str, name: str) -> ItemRecord:
         schema_version="sensei.item.v1",
         run_id="r1",
         item_id=f"rclone:{remote}:{provider_id}",
-        source={"adapter": f"rclone:{remote}", "provider": f"rclone-{remote}",
-                "capability": "api", "account_label": remote, "root": f"rclone:{remote}:"},
-        identity={"path": f"rclone:{remote}:{rel}",
-                  "provider_id": provider_id, "parent_id": "", "relative_path": rel},
+        source={
+            "adapter": f"rclone:{remote}",
+            "provider": f"rclone-{remote}",
+            "capability": "api",
+            "account_label": remote,
+            "root": f"rclone:{remote}:",
+        },
+        identity={
+            "path": f"rclone:{remote}:{rel}",
+            "provider_id": provider_id,
+            "parent_id": "",
+            "relative_path": rel,
+        },
         kind="file",
         display_name=name,
         mime="application/pdf",
         size_bytes=42,
         timestamps={"created": None, "modified": "2026-01-01T00:00:00Z", "taken": None},
-        hashes={"sha256": None, "md5": None, "provider_hash": None, "perceptual_hash": None},
-        features={"extension": ".pdf", "dimensions": None, "duration_seconds": None,
-                  "text_snippet": None, "face_count": None, "screenshot_likely": False},
+        hashes={
+            "sha256": None,
+            "md5": None,
+            "provider_hash": None,
+            "perceptual_hash": None,
+        },
+        features={
+            "extension": ".pdf",
+            "dimensions": None,
+            "duration_seconds": None,
+            "text_snippet": None,
+            "face_count": None,
+            "screenshot_likely": False,
+        },
         sensitivity="documents",
         category_guess="Reading",
         confidence=0.9,
@@ -142,8 +181,10 @@ class ReviewLinkHrefTests(unittest.TestCase):
 class OpenItemSpawnTests(unittest.TestCase):
     def test_spawn_off_does_not_call_xdg_open(self):
         called = {"hit": False}
-        with mock.patch("sensei_clean.opener._xdg_open",
-                        side_effect=lambda a: (called.__setitem__("hit", True) or (True, "x"))):
+        with mock.patch(
+            "sensei_clean.opener._xdg_open",
+            side_effect=lambda a: called.__setitem__("hit", True) or (True, "x"),
+        ):
             with TemporaryDirectory() as tmp:
                 p = Path(tmp) / "x.txt"
                 p.write_text("hi")
@@ -155,9 +196,11 @@ class OpenItemSpawnTests(unittest.TestCase):
 
     def test_spawn_on_calls_xdg_open_with_target(self):
         captured = {}
+
         def fake(arg):
             captured["arg"] = arg
             return True, "fake spawn"
+
         with mock.patch("sensei_clean.opener._xdg_open", side_effect=fake):
             with TemporaryDirectory() as tmp:
                 p = Path(tmp) / "x.txt"
@@ -170,17 +213,21 @@ class OpenItemSpawnTests(unittest.TestCase):
     def test_spawn_refuses_missing_local_file(self):
         with TemporaryDirectory() as tmp:
             item = _local_item(str(Path(tmp) / "does_not_exist.txt"))
-            with mock.patch("sensei_clean.opener._xdg_open",
-                            side_effect=lambda a: (True, "should not run")):
+            with mock.patch(
+                "sensei_clean.opener._xdg_open",
+                side_effect=lambda a: (True, "should not run"),
+            ):
                 _t, ok, msg = open_item(item, spawn=True)
                 self.assertFalse(ok)
                 self.assertIn("missing", msg)
 
     def test_cloud_url_spawn_calls_xdg_open_with_url(self):
         captured = {}
+
         def fake(arg):
             captured["arg"] = arg
             return True, "fake spawn"
+
         item = _cloud_item("gdrive", "FID123", "doc.pdf")
         adapter = RcloneRemoteAdapter(run_id="r1", remote="gdrive")
         with mock.patch("sensei_clean.opener._xdg_open", side_effect=fake):
@@ -195,6 +242,7 @@ class GuiPickerHelpersTests(unittest.TestCase):
 
     def test_open_picker_choices_sorted_by_size_desc_and_capped(self):
         from sensei_clean_app import _open_picker_choices
+
         items = [
             _local_item("/tmp/a.txt", "a.txt", size=5),
             _local_item("/tmp/b.txt", "b.txt", size=100),
@@ -202,18 +250,21 @@ class GuiPickerHelpersTests(unittest.TestCase):
         ]
         choices = _open_picker_choices(items, n=10)
         # value is item_id, label includes size & category
-        names_in_order = [c[1].split(" ", 1)[1].split(" ", 1)[0]
-                          for c in choices]  # extract display name token
+        names_in_order = [
+            c[1].split(" ", 1)[1].split(" ", 1)[0] for c in choices
+        ]  # extract display name token
         self.assertEqual(names_in_order, ["b.txt", "c.txt", "a.txt"])
         self.assertEqual(len(choices), 3)
         # Cap honored
-        many = [_local_item(f"/tmp/f{i}.txt", f"f{i}.txt", size=i + 1)
-                for i in range(80)]
+        many = [
+            _local_item(f"/tmp/f{i}.txt", f"f{i}.txt", size=i + 1) for i in range(80)
+        ]
         capped = _open_picker_choices(many, n=20)
         self.assertEqual(len(capped), 20)
 
     def test_open_picker_choices_marks_cloud_items_with_cloud_glyph(self):
         from sensei_clean_app import _open_picker_choices
+
         cloud = _cloud_item("gdrive", "FID", "doc.pdf")
         choices = _open_picker_choices([cloud], n=10)
         self.assertEqual(len(choices), 1)
@@ -223,21 +274,25 @@ class GuiPickerHelpersTests(unittest.TestCase):
 
     def test_open_picker_choices_flags_sensitive_in_label(self):
         from sensei_clean_app import _open_picker_choices
+
         item = _local_item("/tmp/resume.pdf", "resume.pdf", size=200)
         # Override sensitivity to one in the monitored set
         from dataclasses import replace
+
         item = replace(item, sensitivity="career")
         choices = _open_picker_choices([item], n=5)
         self.assertIn("private", choices[0][1])
 
     def test_adapter_for_local_item_returns_local_fs(self):
         from sensei_clean_app import _adapter_for_item
+
         item = _local_item("/tmp/foo.txt")
         adapter = _adapter_for_item(item, run_id="r1", quarantine_root="/tmp/q")
         self.assertEqual(adapter.name, "local_fs")
 
     def test_adapter_for_cloud_item_returns_rclone(self):
         from sensei_clean_app import _adapter_for_item
+
         item = _cloud_item("gdrive", "FID", "doc.pdf")
         adapter = _adapter_for_item(item, run_id="r1", quarantine_root="/tmp/q")
         self.assertEqual(adapter.name, "rclone:gdrive")
@@ -248,23 +303,36 @@ class ReviewHtmlClickableLinksTests(unittest.TestCase):
         """Smoke: write_review_html renders an <a class="open-link">
         with a file:// href for a local quarantine_move action."""
         from sensei_clean.reports import write_review_html
-        from sensei_clean.schemas import ActionRecord, CapabilityReport, FindingRecord
+        from sensei_clean.schemas import ActionRecord, CapabilityReport
+
         with TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)
             p = tmpdir / "dup.txt"
             p.write_text("hi")
             item = _local_item(str(p), name="dup.txt")
             cap = CapabilityReport(
-                adapter="local_fs", provider="local", capability="local",
-                account_label="u", root=str(tmpdir), available=True,
+                adapter="local_fs",
+                provider="local",
+                capability="local",
+                account_label="u",
+                root=str(tmpdir),
+                available=True,
             )
             action = ActionRecord(
-                schema_version="sensei.action.v1", run_id="r1", action_id="a1",
-                action_type="quarantine_move", adapter="local_fs",
-                item_id=item.item_id, source_path=str(p),
+                schema_version="sensei.action.v1",
+                run_id="r1",
+                action_id="a1",
+                action_type="quarantine_move",
+                adapter="local_fs",
+                item_id=item.item_id,
+                source_path=str(p),
                 destination_path=str(tmpdir / "q" / "dup.txt"),
-                confidence=1.0, risk=10, reversible=True,
-                lane="unattended", reason="dup", approval_required=False,
+                confidence=1.0,
+                risk=10,
+                reversible=True,
+                lane="unattended",
+                reason="dup",
+                approval_required=False,
                 metadata={},
             )
             out_html = tmpdir / "review.html"

@@ -26,13 +26,12 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Tuple
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-REPOS: List[Tuple[str, str]] = [
+REPOS: list[tuple[str, str]] = [
     # (owner, repo)
     ("anthropics", "claude-code"),
     ("NousResearch", "hermes-agent"),
@@ -189,7 +188,7 @@ def _github_api(owner: str, repo: str, path: str) -> dict | list:
             return data
         return data
     except json.JSONDecodeError:
-        combined: List[dict] = []
+        combined: list[dict] = []
         decoder = json.JSONDecoder()
         text = result.stdout.strip()
         while text:
@@ -244,7 +243,7 @@ def _trim_message(msg: str, max_lines: int = 12) -> str:
     return "\n".join(lines[:max_lines]) + "\n[...message truncated...]"
 
 
-def _fetch_commits(owner: str, repo: str, since: datetime) -> List[dict]:
+def _fetch_commits(owner: str, repo: str, since: datetime) -> list[dict]:
     """Fetch commits on default branch since `since` using GitHub API."""
     since_iso = _iso(since)
     commits = _github_api(owner, repo, f"/commits?since={since_iso}&per_page=100")
@@ -255,7 +254,7 @@ def _fetch_commits(owner: str, repo: str, since: datetime) -> List[dict]:
 
 def _write_digest(
     run_date: datetime,
-    findings: Dict[Tuple[str, str], List[dict]],
+    findings: dict[tuple[str, str], list[dict]],
 ) -> Path:
     DIGEST_DIR.mkdir(parents=True, exist_ok=True)
     date_str = run_date.strftime("%Y-%m-%d")
@@ -345,7 +344,7 @@ def main() -> int:
     state = _load_state()
     state.setdefault("repos", {})
 
-    findings: Dict[Tuple[str, str], List[dict]] = {}
+    findings: dict[tuple[str, str], list[dict]] = {}
 
     for owner, repo in REPOS:
         repo_key = f"{owner}/{repo}"

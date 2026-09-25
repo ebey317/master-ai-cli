@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Iterator, List, Optional
+from collections.abc import Iterator
 
-from ..schemas import AccessGrant, ActionRecord, ApplyResult, CapabilityReport, ItemRecord, UndoRecord
+from ..schemas import (
+    AccessGrant,
+    ActionRecord,
+    ApplyResult,
+    CapabilityReport,
+    ItemRecord,
+    UndoRecord,
+)
 
 
 class BaseAdapter(ABC):
@@ -18,11 +25,11 @@ class BaseAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def scan(self, cursor: Optional[str] = None) -> Iterator[ItemRecord]:
+    def scan(self, cursor: str | None = None) -> Iterator[ItemRecord]:
         raise NotImplementedError
 
     @abstractmethod
-    def enrich(self, item: ItemRecord, jobs: List[str]) -> ItemRecord:
+    def enrich(self, item: ItemRecord, jobs: list[str]) -> ItemRecord:
         raise NotImplementedError
 
     @abstractmethod

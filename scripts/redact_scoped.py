@@ -4,10 +4,10 @@
 scoped env -> scoped config -> launch-time snapshot. This prevents profile A's
 turn from redacting (or failing to redact) based on the launch profile.
 """
+
 from __future__ import annotations
 
 import os
-from typing import Optional
 
 from . import profile_scope
 
@@ -19,7 +19,7 @@ _REDACT_ENABLED_AT_IMPORT = os.getenv("SENSEI_REDACT_SECRETS", "true").lower() i
 }
 
 
-def redaction_enabled(profile: Optional[profile_scope.Profile] = None) -> bool:
+def redaction_enabled(profile: profile_scope.Profile | None = None) -> bool:
     p = profile or profile_scope.current()
 
     # Fast path for legacy single-profile local runs with no scoped config.

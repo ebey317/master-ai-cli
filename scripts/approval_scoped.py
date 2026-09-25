@@ -4,23 +4,24 @@ Instead of a single module-level allowlist, each routed profile keeps its own
 persistent allowlist under its own home directory. Single-profile processes keep
 the legacy unscoped behaviour by defaulting to the local profile.
 """
+
 from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, Optional
 
 from . import profile_scope
 
 logger = logging.getLogger("sensei.approval")
 
 
-def _allowlist_path(profile: Optional[profile_scope.Profile] = None) -> Path:
+def _allowlist_path(profile: profile_scope.Profile | None = None) -> Path:
     return profile_scope.allowlist_dir(profile) / "allowed_commands.json"
 
 
-def _load(profile: Optional[profile_scope.Profile] = None) -> set[str]:
+def _load(profile: profile_scope.Profile | None = None) -> set[str]:
     path = _allowlist_path(profile)
     if not path.exists():
         return set()
@@ -32,18 +33,18 @@ def _load(profile: Optional[profile_scope.Profile] = None) -> set[str]:
         return set()
 
 
-def _save(allowed: set[str], profile: Optional[profile_scope.Profile] = None) -> None:
+def _save(allowed: set[str], profile: profile_scope.Profile | None = None) -> None:
     _allowlist_path(profile).write_text(
         json.dumps(sorted(allowed), indent=2), encoding="utf-8"
     )
 
 
-def is_allowed(command: str, profile: Optional[profile_scope.Profile] = None) -> bool:
+def is_allowed(command: str, profile: profile_scope.Profile | None = None) -> bool:
     return command in _load(profile)
 
 
 def allow(
-    commands: Iterable[str], profile: Optional[profile_scope.Profile] = None
+    commands: Iterable[str], profile: profile_scope.Profile | None = None
 ) -> None:
     s = _load(profile)
     s.update(commands)
@@ -51,7 +52,7 @@ def allow(
 
 
 def revoke(
-    commands: Iterable[str], profile: Optional[profile_scope.Profile] = None
+    commands: Iterable[str], profile: profile_scope.Profile | None = None
 ) -> None:
     s = _load(profile)
     s.difference_update(commands)

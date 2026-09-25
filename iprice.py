@@ -14,8 +14,8 @@ Usage:
 Output columns: name — artist — price — track count (album) or album (song).
 """
 
-import sys
 import json
+import sys
 import urllib.parse
 import urllib.request
 

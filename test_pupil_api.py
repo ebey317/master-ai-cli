@@ -12,13 +12,13 @@ Exit: 0 = all green, non-zero = at least one shape mismatch or error.
 Requires stt_server.py running on 127.0.0.1:8080 (typically via the
 master-ai-ui systemd user service).
 """
+
 import json
 import sys
 import time
 import unittest
 import urllib.error
 import urllib.request
-
 
 BASE = "http://127.0.0.1:8080"
 TIMEOUT_S = 10
@@ -32,10 +32,13 @@ def _get(path: str, timeout: float = TIMEOUT_S):
         return resp.status, json.loads(body) if body else {}
 
 
-def _post(path: str, payload: dict, timeout: float = TIMEOUT_S, expect_status: int = 200):
+def _post(
+    path: str, payload: dict, timeout: float = TIMEOUT_S, expect_status: int = 200
+):
     body = json.dumps(payload).encode()
     req = urllib.request.Request(
-        BASE + path, data=body,
+        BASE + path,
+        data=body,
         headers={"Content-Type": "application/json"},
     )
     try:
@@ -76,8 +79,16 @@ class PupilAPIContractTests(unittest.TestCase):
     def test_status_shape(self):
         status, body = _get("/status")
         self.assertEqual(status, 200)
-        for key in ("mode", "model", "memory_facts", "last_route",
-                    "queue_depth", "loaded_models", "mem", "ts"):
+        for key in (
+            "mode",
+            "model",
+            "memory_facts",
+            "last_route",
+            "queue_depth",
+            "loaded_models",
+            "mem",
+            "ts",
+        ):
             self.assertIn(key, body, f"/status missing key: {key}")
         self.assertIn(body["mode"], ("plan", "review", "auto"))
         self.assertIsInstance(body["memory_facts"], int)
@@ -108,8 +119,7 @@ class PupilAPIContractTests(unittest.TestCase):
             timeout=CHAT_TIMEOUT_S,
         )
         self.assertEqual(status, 200, f"unexpected body: {body}")
-        for key in ("reply", "route", "model", "latency_ms",
-                    "blocked_actions", "ts"):
+        for key in ("reply", "route", "model", "latency_ms", "blocked_actions", "ts"):
             self.assertIn(key, body, f"/chat missing key: {key}")
         self.assertIsInstance(body["reply"], str)
         self.assertIsInstance(body["route"], str)
@@ -137,8 +147,9 @@ class PupilAPIContractTests(unittest.TestCase):
                 self.assertEqual(status, 200)
                 self.assertEqual(body, {"ok": True, "mode": target})
                 _, after = _get("/status")
-                self.assertEqual(after["mode"], target,
-                                 f"/status did not reflect mode {target}")
+                self.assertEqual(
+                    after["mode"], target, f"/status did not reflect mode {target}"
+                )
         finally:
             _post("/mode", {"mode": original})
 
@@ -171,8 +182,9 @@ class PupilAPIContractTests(unittest.TestCase):
         with urllib.request.urlopen(req, timeout=5) as resp:
             self.assertEqual(resp.status, 200)
             ct = (resp.headers.get("Content-Type") or "").lower()
-            self.assertTrue(ct.startswith("text/event-stream"),
-                            f"unexpected Content-Type: {ct}")
+            self.assertTrue(
+                ct.startswith("text/event-stream"), f"unexpected Content-Type: {ct}"
+            )
             # Read enough bytes to capture the first event payload.
             chunk = b""
             deadline = time.time() + 5

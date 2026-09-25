@@ -19,6 +19,7 @@ Phase 6 sub-items covered:
   6.4 Mode toggle present in side_panel.html
   6.5 Lane B latency note documented in plan file
 """
+
 import json
 import os
 import re
@@ -31,9 +32,9 @@ from pathlib import Path
 os.environ["SENSEI_TUI"] = "0"
 sys.path.insert(0, os.path.expanduser("~/scripts"))
 
-import hooks  # noqa: E402
 import stt_server  # noqa: E402
 
+import hooks  # noqa: E402
 
 REPO = Path(__file__).resolve().parent
 
@@ -127,7 +128,9 @@ class Phase56HookTests(unittest.TestCase):
         self.assertIn("turn_answer_start", hooks.KINDS)
 
     def test_fire_turn_answer_start_does_not_block(self):
-        result = hooks.fire("turn_answer_start", "reply text", action={"turn_id": "abc", "round_num": 1})
+        result = hooks.fire(
+            "turn_answer_start", "reply text", action={"turn_id": "abc", "round_num": 1}
+        )
         self.assertFalse(getattr(result, "blocked", False))
 
     def test_stt_server_emits_turn_answer_start(self):
@@ -152,7 +155,15 @@ class Phase61QuickModeBackendTests(unittest.TestCase):
 
     def test_quick_mode_teaching_lists_seven_commands(self):
         teach = stt_server._quick_mode_teaching()
-        for spec in ("C x y", "T <text>", "K <key>", "N <url>", "J <expr>", "W <ms>", "ST <tabId>"):
+        for spec in (
+            "C x y",
+            "T <text>",
+            "K <key>",
+            "N <url>",
+            "J <expr>",
+            "W <ms>",
+            "ST <tabId>",
+        ):
             self.assertIn(spec, teach)
 
 
@@ -171,7 +182,9 @@ class Phase62QuickModeParserTests(unittest.TestCase):
     def test_quick_mode_parser_assertions_pass(self):
         result = subprocess.run(
             ["node", str(self.js_test)],
-            capture_output=True, text=True, timeout=20,
+            capture_output=True,
+            text=True,
+            timeout=20,
         )
         self.assertEqual(result.returncode, 0, msg=result.stdout + "\n" + result.stderr)
         self.assertIn("all Quick Mode parser assertions PASS", result.stdout)
@@ -202,7 +215,9 @@ class Phase64ModeToggleTests(unittest.TestCase):
     """6.4: Quick mode appears in the side panel mode picker."""
 
     def test_quick_option_in_side_panel_html(self):
-        with (REPO / "sensei_extension" / "side_panel.html").open(encoding="utf-8") as f:
+        with (REPO / "sensei_extension" / "side_panel.html").open(
+            encoding="utf-8"
+        ) as f:
             html = f.read()
         self.assertIn('value="quick"', html)
         self.assertIn("Quick mode", html)
@@ -213,7 +228,9 @@ class Phase65DocumentationTests(unittest.TestCase):
     directionality is on record alongside the implementation."""
 
     def test_plan_file_mentions_quick_mode_lane_b(self):
-        plan_path = Path(os.path.expanduser("~/.claude/plans/1-got-it-buzzing-robin.md"))
+        plan_path = Path(
+            os.path.expanduser("~/.claude/plans/1-got-it-buzzing-robin.md")
+        )
         if not plan_path.is_file():
             self.skipTest(f"plan file not present at {plan_path}")
         with plan_path.open(encoding="utf-8") as f:
@@ -228,8 +245,11 @@ class Phase5And6AcceptanceTests(unittest.TestCase):
 
     def _git_log_oneline(self):
         result = subprocess.run(
-            ["git", "log", "--oneline"], capture_output=True, text=True,
-            cwd=str(REPO), timeout=10,
+            ["git", "log", "--oneline"],
+            capture_output=True,
+            text=True,
+            cwd=str(REPO),
+            timeout=10,
         )
         return result.stdout if result.returncode == 0 else ""
 

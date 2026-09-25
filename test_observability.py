@@ -28,6 +28,7 @@ class SummaryShape(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _write_metrics(self, lines):
@@ -51,11 +52,28 @@ class SummaryShape(unittest.TestCase):
         self.assertEqual(s["harvest"], {"hits": 0, "records": 0})
 
     def test_route_decisions_rolled_up(self):
-        self._write_metrics([
-            {"kind": "route_decision", "route": "local", "model": "master-ai", "reason": "code"},
-            {"kind": "route_decision", "route": "local", "model": "master-ai", "reason": "chat"},
-            {"kind": "route_decision", "route": "cloud_fast", "model": "groq", "reason": "fast"},
-        ])
+        self._write_metrics(
+            [
+                {
+                    "kind": "route_decision",
+                    "route": "local",
+                    "model": "master-ai",
+                    "reason": "code",
+                },
+                {
+                    "kind": "route_decision",
+                    "route": "local",
+                    "model": "master-ai",
+                    "reason": "chat",
+                },
+                {
+                    "kind": "route_decision",
+                    "route": "cloud_fast",
+                    "model": "groq",
+                    "reason": "fast",
+                },
+            ]
+        )
         s = self._run()
         self.assertEqual(s["route_decisions"], 3)
         self.assertEqual(s["by_route"]["local"], 2)
@@ -64,31 +82,57 @@ class SummaryShape(unittest.TestCase):
         self.assertEqual(s["by_model"]["groq"], 1)
 
     def test_model_calls_counted(self):
-        self._write_metrics([
-            {"kind": "model_call", "model": "master-ai", "route": "local"},
-            {"kind": "model_call", "model": "master-ai", "route": "local"},
-            {"kind": "model_call", "model": "groq", "route": "cloud"},
-        ])
+        self._write_metrics(
+            [
+                {"kind": "model_call", "model": "master-ai", "route": "local"},
+                {"kind": "model_call", "model": "master-ai", "route": "local"},
+                {"kind": "model_call", "model": "groq", "route": "cloud"},
+            ]
+        )
         s = self._run()
         self.assertEqual(s["model_calls"], 3)
         self.assertEqual(s["by_model"]["master-ai"], 2)
 
     def test_executions_split_by_ok(self):
-        self._write_metrics([
-            {"kind": "execution", "action": "run", "ok": True},
-            {"kind": "execution", "action": "run", "ok": True},
-            {"kind": "execution", "action": "run", "ok": False, "error": "timeout"},
-        ])
+        self._write_metrics(
+            [
+                {"kind": "execution", "action": "run", "ok": True},
+                {"kind": "execution", "action": "run", "ok": True},
+                {"kind": "execution", "action": "run", "ok": False, "error": "timeout"},
+            ]
+        )
         s = self._run()
         self.assertEqual(s["executions"], {"ok": 2, "fail": 1})
 
     def test_audit_status_rolled_up(self):
-        self._write_audit([
-            {"kind": "RUN", "status": "completed", "risk": "safe", "audit_kind": "RUN"},
-            {"kind": "RUN", "status": "completed", "risk": "safe", "audit_kind": "RUN"},
-            {"kind": "EDIT", "status": "blocked", "risk": "normal", "audit_kind": "EDIT-FENCE-BLOCK"},
-            {"kind": "CREATE", "status": "completed", "risk": "normal", "audit_kind": "CREATE"},
-        ])
+        self._write_audit(
+            [
+                {
+                    "kind": "RUN",
+                    "status": "completed",
+                    "risk": "safe",
+                    "audit_kind": "RUN",
+                },
+                {
+                    "kind": "RUN",
+                    "status": "completed",
+                    "risk": "safe",
+                    "audit_kind": "RUN",
+                },
+                {
+                    "kind": "EDIT",
+                    "status": "blocked",
+                    "risk": "normal",
+                    "audit_kind": "EDIT-FENCE-BLOCK",
+                },
+                {
+                    "kind": "CREATE",
+                    "status": "completed",
+                    "risk": "normal",
+                    "audit_kind": "CREATE",
+                },
+            ]
+        )
         s = self._run()
         self.assertEqual(s["audit_status"]["completed"], 3)
         self.assertEqual(s["audit_status"]["blocked"], 1)
@@ -99,30 +143,67 @@ class SummaryShape(unittest.TestCase):
         self.assertEqual(s["audit_by_risk"]["normal"], 2)
 
     def test_blocked_status_flows_into_blocked_rollup(self):
-        self._write_audit([
-            {"kind": "RUN", "status": "blocked", "risk": "high", "audit_kind": "RUN-BLOCK"},
-            {"kind": "RUN", "status": "blocked", "risk": "high", "audit_kind": "RUN-BLOCK-CLEANUP"},
-            {"kind": "EDIT", "status": "blocked", "risk": "normal", "audit_kind": "EDIT-FENCE-BLOCK"},
-        ])
+        self._write_audit(
+            [
+                {
+                    "kind": "RUN",
+                    "status": "blocked",
+                    "risk": "high",
+                    "audit_kind": "RUN-BLOCK",
+                },
+                {
+                    "kind": "RUN",
+                    "status": "blocked",
+                    "risk": "high",
+                    "audit_kind": "RUN-BLOCK-CLEANUP",
+                },
+                {
+                    "kind": "EDIT",
+                    "status": "blocked",
+                    "risk": "normal",
+                    "audit_kind": "EDIT-FENCE-BLOCK",
+                },
+            ]
+        )
         s = self._run()
         self.assertEqual(s["blocked"]["total"], 3)
         self.assertEqual(s["blocked"]["by_kind"]["RUN"], 2)
         self.assertEqual(s["blocked"]["by_kind"]["EDIT"], 1)
 
     def test_hook_block_audit_increments_hook_fires(self):
-        self._write_audit([
-            {"kind": "EDIT", "status": "blocked", "risk": "normal",
-             "audit_kind": "HOOK-BLOCK-POST_EDIT"},
-        ])
+        self._write_audit(
+            [
+                {
+                    "kind": "EDIT",
+                    "status": "blocked",
+                    "risk": "normal",
+                    "audit_kind": "HOOK-BLOCK-POST_EDIT",
+                },
+            ]
+        )
         s = self._run()
         self.assertEqual(s["hook_fires"], 1)
 
     def test_fallback_reasons_collected(self):
-        self._write_metrics([
-            {"kind": "route_decision", "route": "local", "reason": "no cloud keys, fallback to master-ai"},
-            {"kind": "route_decision", "route": "local", "reason": "qwen3.5:cloud unavailable, using fireworks"},
-            {"kind": "route_decision", "route": "cloud_fast", "reason": "explicit 'fast:' → Groq"},
-        ])
+        self._write_metrics(
+            [
+                {
+                    "kind": "route_decision",
+                    "route": "local",
+                    "reason": "no cloud keys, fallback to master-ai",
+                },
+                {
+                    "kind": "route_decision",
+                    "route": "local",
+                    "reason": "qwen3.5:cloud unavailable, using fireworks",
+                },
+                {
+                    "kind": "route_decision",
+                    "route": "cloud_fast",
+                    "reason": "explicit 'fast:' → Groq",
+                },
+            ]
+        )
         s = self._run()
         # The two fallback/unavailable reasons should appear; the explicit
         # prefix should NOT.
@@ -132,12 +213,14 @@ class SummaryShape(unittest.TestCase):
             self.assertTrue("fallback" in r.lower() or "unavailable" in r.lower())
 
     def test_harvest_metrics_rolled_up(self):
-        self._write_metrics([
-            {"kind": "harvest_hit", "similarity": 0.9},
-            {"kind": "harvest_record", "model": "master-ai"},
-            {"kind": "harvest_record", "model": "groq"},
-            {"kind": "cached", "similarity": 0.95},
-        ])
+        self._write_metrics(
+            [
+                {"kind": "harvest_hit", "similarity": 0.9},
+                {"kind": "harvest_record", "model": "master-ai"},
+                {"kind": "harvest_record", "model": "groq"},
+                {"kind": "cached", "similarity": 0.95},
+            ]
+        )
         s = self._run()
         self.assertEqual(s["harvest"]["hits"], 2)  # harvest_hit + cached
         self.assertEqual(s["harvest"]["records"], 2)

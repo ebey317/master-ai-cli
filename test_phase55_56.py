@@ -4,6 +4,7 @@ hook). The parser logic in stt_server.py uses the same regex+json round-trip
 exercised here; the hooks.KINDS membership pins that fire() will accept the
 new kind.
 """
+
 import json
 import os
 import re
@@ -73,8 +74,7 @@ Irreversible: none
 
     def test_caps_to_safe_lengths(self):
         big_steps = ",".join(
-            f'{{"n":{i},"action":"BROWSER_WAIT","target":"100"}}'
-            for i in range(50)
+            f'{{"n":{i},"action":"BROWSER_WAIT","target":"100"}}' for i in range(50)
         )
         reply = f'<PLAN>{{"domains":[],"steps":[{big_steps}],"irreversible":[]}}</PLAN>'
         out = parse_plan_block(reply)
@@ -89,7 +89,9 @@ class Phase56HookKindTests(unittest.TestCase):
     def test_fire_with_unknown_kind_safe(self):
         # Sanity: KINDS membership controls accepted kinds; firing an unknown
         # kind should not crash (the hooks contract is observer-only here).
-        result = hooks.fire("turn_answer_start", "test reply text", action={"turn_id": "abc"})
+        result = hooks.fire(
+            "turn_answer_start", "test reply text", action={"turn_id": "abc"}
+        )
         self.assertFalse(getattr(result, "blocked", False))
 
 

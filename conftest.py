@@ -6,7 +6,9 @@ import pytest
 
 
 def _chrome_available() -> bool:
-    return any(shutil.which(b) for b in ("google-chrome", "chromium", "chromium-browser"))
+    return any(
+        shutil.which(b) for b in ("google-chrome", "chromium", "chromium-browser")
+    )
 
 
 def _ollama_available() -> bool:
@@ -39,18 +41,51 @@ def _cloud_keys_available() -> bool:
 # is missing. This keeps the clean-install pass rate honest without editing dozens
 # of individual test files.
 MODULE_SKIP_RULES = [
-    ("test_pupil_api.py", _pupil_available, "Pupil HTTP server not reachable at 127.0.0.1:8080"),
-    ("test_browser_directives.py", _pupil_available, "browser bridge not reachable at 127.0.0.1:8080"),
-    ("test_chrome_headless_e2e.py", _chrome_available, "Chrome/Chromium binary not found"),
-    ("test_drive_inspect_handler.py", _chrome_available, "Chrome/Chromium binary not found"),
-    ("test_identity_self_reference.py", _ollama_available, "Ollama not reachable at 127.0.0.1:11434"),
-    ("test_orchestrate_prefix_in_envelope.py", _cloud_keys_available, "no cloud API keys configured"),
-    ("test_plan_block_emission.py", _ollama_available, "Ollama not reachable at 127.0.0.1:11434"),
+    (
+        "test_pupil_api.py",
+        _pupil_available,
+        "Pupil HTTP server not reachable at 127.0.0.1:8080",
+    ),
+    (
+        "test_browser_directives.py",
+        _pupil_available,
+        "browser bridge not reachable at 127.0.0.1:8080",
+    ),
+    (
+        "test_chrome_headless_e2e.py",
+        _chrome_available,
+        "Chrome/Chromium binary not found",
+    ),
+    (
+        "test_drive_inspect_handler.py",
+        _chrome_available,
+        "Chrome/Chromium binary not found",
+    ),
+    (
+        "test_identity_self_reference.py",
+        _ollama_available,
+        "Ollama not reachable at 127.0.0.1:11434",
+    ),
+    (
+        "test_orchestrate_prefix_in_envelope.py",
+        _cloud_keys_available,
+        "no cloud API keys configured",
+    ),
+    (
+        "test_plan_block_emission.py",
+        _ollama_available,
+        "Ollama not reachable at 127.0.0.1:11434",
+    ),
 ]
 
 
 def pytest_collection_modifyitems(config, items):
-    force_skip = os.environ.get("MCLI_SKIP_ENV_TESTS", "0") in ("1", "true", "True", "yes")
+    force_skip = os.environ.get("MCLI_SKIP_ENV_TESTS", "0") in (
+        "1",
+        "true",
+        "True",
+        "yes",
+    )
     for item in items:
         module_name = item.module.__name__
         for rule_module, predicate, reason in MODULE_SKIP_RULES:
@@ -63,5 +98,6 @@ def pytest_collection_modifyitems(config, items):
 
 def pytest_configure(config):
     if os.environ.get("MCLI_SKIP_ENV_TESTS", "0") in ("1", "true", "True", "yes"):
-        config.addinivalue_line("markers", "env: environmental test skipped in clean-install mode")
-
+        config.addinivalue_line(
+            "markers", "env: environmental test skipped in clean-install mode"
+        )

@@ -10,15 +10,15 @@ Covers:
   - ask_cloud() returns None when turn is private and not approved
   - ask_cloud()'s privacy gate fires BEFORE provider dispatch (no network)
 """
-import os
+
 import sys
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path.home() / "scripts"))
 
-import master_ai
 import harvest
+import master_ai
 
 
 class TurnPrivacyStateTests(unittest.TestCase):
@@ -67,31 +67,35 @@ class PrivacyPolicySourceOfTruthTests(unittest.TestCase):
 
     def test_private_path_pictures_flagged(self):
         reason = master_ai._privacy_check_path_or_content(
-            "/home/user/Pictures/photo.jpg", "")
+            "/home/user/Pictures/photo.jpg", ""
+        )
         self.assertTrue(reason)
         # confirm harvest agrees
-        self.assertTrue(harvest.is_private(
-            prompt="/home/user/Pictures/photo.jpg"))
+        self.assertTrue(harvest.is_private(prompt="/home/user/Pictures/photo.jpg"))
 
     def test_private_path_jobseeker_flagged(self):
         reason = master_ai._privacy_check_path_or_content(
-            "/home/user/jobseeker/resume.txt", "")
+            "/home/user/jobseeker/resume.txt", ""
+        )
         self.assertTrue(reason)
 
     def test_private_term_in_content_flagged(self):
         # path is innocuous but content has a private term
         reason = master_ai._privacy_check_path_or_content(
-            "/tmp/notes.txt", "Here is my social security number: redacted")
+            "/tmp/notes.txt", "Here is my social security number: redacted"
+        )
         self.assertTrue(reason)
 
     def test_secret_value_in_content_flagged(self):
         reason = master_ai._privacy_check_path_or_content(
-            "/tmp/dump.txt", "AKIAABCDEFGHIJKLMNOP")
+            "/tmp/dump.txt", "AKIAABCDEFGHIJKLMNOP"
+        )
         self.assertTrue(reason)
 
     def test_clean_path_and_content_passes(self):
         reason = master_ai._privacy_check_path_or_content(
-            "/tmp/hello.txt", "hello world from a test")
+            "/tmp/hello.txt", "hello world from a test"
+        )
         self.assertFalse(reason)
 
 
@@ -120,7 +124,8 @@ class AskCloudGateTests(unittest.TestCase):
         try:
             master_ai._mark_turn_private("test")
             result = master_ai.ask_cloud(
-                [{"role": "user", "content": "hi"}], provider="groq")
+                [{"role": "user", "content": "hi"}], provider="groq"
+            )
             self.assertIsNone(result)
             self.assertFalse(sentinel_called["hit"])
         finally:
@@ -134,7 +139,8 @@ class AskCloudGateTests(unittest.TestCase):
         master_ai._cloud_allowed = lambda *a, **kw: False
         try:
             result = master_ai.ask_cloud(
-                [{"role": "user", "content": "hi"}], provider="groq")
+                [{"role": "user", "content": "hi"}], provider="groq"
+            )
             # _cloud_allowed False makes ask_cloud's named path return r=None,
             # then it tries the fallback chain which also hits _cloud_allowed
             # indirectly via per-provider keys; in this env all should return
@@ -173,45 +179,52 @@ class RunOutputExfilTests(unittest.TestCase):
 
     def test_private_path_in_cmd_marks_private(self):
         reason = master_ai._check_run_output_for_privacy(
-            "RUN", "cat /home/user/Documents/notes.txt", "hello")
+            "RUN", "cat /home/user/Documents/notes.txt", "hello"
+        )
         self.assertTrue(reason)
         self.assertTrue(master_ai._is_turn_private())
 
     def test_private_path_in_cmd_pictures(self):
         reason = master_ai._check_run_output_for_privacy(
-            "RUN", "ls /home/user/Pictures/", "drwxr-xr-x  ...")
+            "RUN", "ls /home/user/Pictures/", "drwxr-xr-x  ..."
+        )
         self.assertTrue(reason)
         self.assertTrue(master_ai._is_turn_private())
 
     def test_secret_in_output_marks_private(self):
         reason = master_ai._check_run_output_for_privacy(
-            "RUN", "cat /tmp/dump.txt", "AWS_KEY=AKIAABCDEFGHIJKLMNOP")
+            "RUN", "cat /tmp/dump.txt", "AWS_KEY=AKIAABCDEFGHIJKLMNOP"
+        )
         self.assertTrue(reason)
         self.assertTrue(master_ai._is_turn_private())
 
     def test_private_term_in_output_marks_private(self):
         reason = master_ai._check_run_output_for_privacy(
-            "RUN", "cat /tmp/foo.txt", "Subject: tax 1099 forms for 2025")
+            "RUN", "cat /tmp/foo.txt", "Subject: tax 1099 forms for 2025"
+        )
         self.assertTrue(reason)
         self.assertTrue(master_ai._is_turn_private())
 
     def test_clean_cmd_and_output_does_not_mark(self):
         reason = master_ai._check_run_output_for_privacy(
-            "RUN", "ls /tmp", "foo.txt\nbar.log")
+            "RUN", "ls /tmp", "foo.txt\nbar.log"
+        )
         self.assertFalse(reason)
         self.assertFalse(master_ai._is_turn_private())
 
     def test_runterm_kind_also_marks(self):
         # Same helper covers RUNTERM (visual scripts that cat private paths)
         reason = master_ai._check_run_output_for_privacy(
-            "RUNTERM", "bash /home/user/jobseeker/show_cover.sh", "")
+            "RUNTERM", "bash /home/user/jobseeker/show_cover.sh", ""
+        )
         self.assertTrue(reason)
         self.assertTrue(master_ai._is_turn_private())
 
     def test_marked_run_then_blocks_cloud(self):
         # Integration: after RUN exfil marks private, ask_cloud must block.
         master_ai._check_run_output_for_privacy(
-            "RUN", "cat /home/user/.aws/credentials", "[default]\naws_secret=...")
+            "RUN", "cat /home/user/.aws/credentials", "[default]\naws_secret=..."
+        )
         ok, _ = master_ai._check_cloud_send_allowed()
         self.assertFalse(ok)
 

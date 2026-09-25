@@ -45,9 +45,8 @@ import os
 import re
 import shutil
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from skill_runtime import SKILLS_ROOT  # ~/.master_ai_skills — single source of truth
 
@@ -72,12 +71,15 @@ _FM_FIELD_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+?)\s*$", re.MULTI
 _BYPASS_CALL_RE = re.compile(
     r"\b(?:subprocess\.(?:run|Popen|call|check_call|check_output)|os\.system)\s*\("
 )
-_SANDBOX_IMPORT_RE = re.compile(r"^\s*(?:import\s+sandbox\b|from\s+sandbox\s+import\b)", re.MULTILINE)
+_SANDBOX_IMPORT_RE = re.compile(
+    r"^\s*(?:import\s+sandbox\b|from\s+sandbox\s+import\b)", re.MULTILINE
+)
 _EVAL_EXEC_RE = re.compile(r"\b(?:eval|exec)\s*\(")
 _PIPE_TO_SHELL_RE = re.compile(r"curl\s+[^\n|]*\|\s*(?:bash|sh)\b")
 _PICKLE_LOADS_RE = re.compile(r"\bpickle\.loads\s*\(")
 _HARDCODED_SECRET_RE = re.compile(
-    r"(?:api[_-]?key|secret|token|password)\s*=\s*[\"'][A-Za-z0-9_\-]{20,}[\"']", re.IGNORECASE
+    r"(?:api[_-]?key|secret|token|password)\s*=\s*[\"'][A-Za-z0-9_\-]{20,}[\"']",
+    re.IGNORECASE,
 )
 
 # 2026-09-03: master_ai.py's _skill_state_reply() (the function that turns
@@ -105,6 +107,7 @@ def _log(msg: str) -> None:
 
 
 # ─── Source catalog storage (mirrors sensei_mcp_client._load/_save_catalog) ──
+
 
 def _load_catalog() -> dict:
     try:
@@ -161,6 +164,7 @@ def _source_path(source_name: str) -> Path:
 
 # ─── Frontmatter parsing (stdlib-only, no PyYAML dependency) ─────────
 
+
 def _parse_frontmatter(text: str) -> dict:
     """Extract simple `key: value` pairs from a leading `---` YAML block.
     Not a real YAML parser — this codebase has no PyYAML dependency and
@@ -191,16 +195,18 @@ def _fallback_description(text: str) -> str:
 
 # ─── Browse ───────────────────────────────────────────────────────────
 
+
 def _adapted_skill_names() -> set:
     if not SKILLS_ROOT.is_dir():
         return set()
     return {
-        d.name for d in SKILLS_ROOT.iterdir()
+        d.name
+        for d in SKILLS_ROOT.iterdir()
         if d.is_dir() and d.name != "_staging" and (d / "recipe.py").exists()
     }
 
 
-def browse_source(source_name: Optional[str] = None) -> list:
+def browse_source(source_name: str | None = None) -> list:
     """List skills available under a registered source. Read-only —
     installs nothing, executes nothing. Returns a list of dicts:
     {id, name, description, path, adapted}. `id` is the path relative to
@@ -231,23 +237,26 @@ def browse_source(source_name: Optional[str] = None) -> list:
         fm = _parse_frontmatter(text)
         name = fm.get("name") or skill_dir.name
         description = fm.get("description") or _fallback_description(text)
-        out.append({
-            "id": rel_id,
-            "name": name,
-            "description": description,
-            "path": str(skill_dir),
-            "adapted": skill_dir.name in adapted,
-        })
+        out.append(
+            {
+                "id": rel_id,
+                "name": name,
+                "description": description,
+                "path": str(skill_dir),
+                "adapted": skill_dir.name in adapted,
+            }
+        )
     return out
 
 
 # ─── Audit ──────────────────────────────────────────────────────────
 
+
 @dataclass
 class AuditResult:
     passed: bool
-    reasons: list = field(default_factory=list)   # hard-fail causes
-    warnings: list = field(default_factory=list)   # informational, non-blocking
+    reasons: list = field(default_factory=list)  # hard-fail causes
+    warnings: list = field(default_factory=list)  # informational, non-blocking
     scanned_files: int = 0
     has_recipe: bool = False
 
@@ -264,7 +273,9 @@ def _scan_file_for_findings(path: Path, text: str, is_recipe: bool) -> tuple:
 
     for i, line in enumerate(lines, 1):
         if _BYPASS_CALL_RE.search(line) and not has_sandbox_import:
-            bypass.append(f"{path}:{i}: direct subprocess/os.system call without `import sandbox`")
+            bypass.append(
+                f"{path}:{i}: direct subprocess/os.system call without `import sandbox`"
+            )
         if _EVAL_EXEC_RE.search(line):
             (bypass if is_recipe else other).append(f"{path}:{i}: eval()/exec() call")
         if _PIPE_TO_SHELL_RE.search(line):
@@ -316,7 +327,9 @@ def _audit_dir(skill_dir: Path) -> AuditResult:
             recipe_text = recipe_path.read_text(errors="replace")
         except OSError:
             recipe_text = ""
-        if _ABORT_USAGE_RE.search(recipe_text) and not _REASON_KEY_RE.search(recipe_text):
+        if _ABORT_USAGE_RE.search(recipe_text) and not _REASON_KEY_RE.search(
+            recipe_text
+        ):
             warnings.append(
                 f"{recipe_path}: uses ABORT but never sets state_update['_reason'] — "
                 f"master_ai.py's _skill_state_reply() reads '_reason' for the abort "
@@ -330,8 +343,13 @@ def _audit_dir(skill_dir: Path) -> AuditResult:
             "no recipe.py — not yet adapted to skill_runtime STEPS format; "
             "audit passing means safe to stage, not runnable"
         )
-    return AuditResult(passed=passed, reasons=reasons, warnings=warnings,
-                        scanned_files=scanned, has_recipe=has_recipe)
+    return AuditResult(
+        passed=passed,
+        reasons=reasons,
+        warnings=warnings,
+        scanned_files=scanned,
+        has_recipe=has_recipe,
+    )
 
 
 def audit_skill(source_name: str, skill_id: str) -> AuditResult:
@@ -342,8 +360,10 @@ def audit_skill(source_name: str, skill_id: str) -> AuditResult:
     if not skill_dir.is_dir():
         return AuditResult(passed=False, reasons=[f"no such skill dir: {skill_dir}"])
     result = _audit_dir(skill_dir)
-    _log(f"AUDIT {source_name}/{skill_id}: passed={result.passed} "
-         f"reasons={len(result.reasons)} warnings={len(result.warnings)}")
+    _log(
+        f"AUDIT {source_name}/{skill_id}: passed={result.passed} "
+        f"reasons={len(result.reasons)} warnings={len(result.warnings)}"
+    )
     return result
 
 
@@ -359,6 +379,7 @@ def audit_adapted_skill(name: str) -> AuditResult:
 
 
 # ─── Install (audit-gated staging, never a live drop-in) ─────────────
+
 
 def install_skill(source_name: str, skill_id: str) -> dict:
     """Audit first; refuse to copy anything that fails. On pass, copies

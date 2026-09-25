@@ -199,6 +199,7 @@ think: why does my bash script fail silently when using pipefail in a subshell?
 ### Programmatic
 ```python
 from sensei_reasoning_loop import run_reasoning_loop
+
 result = run_reasoning_loop("...", mode="standard")
 print(result["answer"])
 print(result["stages"]["critic"])  # inspect any intermediate stage

@@ -16,6 +16,7 @@ only used during this one setup session.
 Env override:
     MCLI_SKIP_SETUP=1   — bypass the wizard entirely (useful for tests/CI).
 """
+
 from __future__ import annotations
 
 import getpass
@@ -46,16 +47,16 @@ COLORS = {
 
 C = COLORS
 
-SPLASH = f"""{C['cyan']}
+SPLASH = f"""{C["cyan"]}
     ███╗   ███╗ █████╗ ███████╗████████╗███████╗██████╗     █████╗ ██╗
     ████╗ ████║██╔══██╗██╔════╝╚══██╔══╝██╔════╝██╔══██╗   ██╔══██╗██║
     ██╔████╔██║███████║███████╗   ██║   █████╗  ██████╔╝   ███████║██║
     ██║╚██╔╝██║██╔══██║╚════██║   ██║   ██╔══╝  ██╔══██╗   ██╔══██║██║
     ██║ ╚═╝ ██║██║  ██║███████║   ██║   ███████╗██║  ██║██╗██║  ██║██║
     ╚═╝     ╚═╝╚═╝  ╚═╝╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝╚═╝  ╚═╝╚═╝
-{C['reset']}
-{C['bold']}  Master AI — local-first agent CLI with vision, voice, MCP, and hybrid routing.{C['reset']}
-{C['dim']}  Fresh clone detected. Let's get you configured in under two minutes.{C['reset']}
+{C["reset"]}
+{C["bold"]}  Master AI — local-first agent CLI with vision, voice, MCP, and hybrid routing.{C["reset"]}
+{C["dim"]}  Fresh clone detected. Let's get you configured in under two minutes.{C["reset"]}
 """
 
 SYSTEM_PROMPT = """You are the Master AI setup assistant, running temporarily through GitHub Models.
@@ -266,6 +267,7 @@ def _ollama_has_models() -> bool:
         return False
     try:
         import urllib.request
+
         with urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=2) as r:
             data = json.loads(r.read())
             return len(data.get("models", [])) > 0
@@ -304,7 +306,9 @@ def _github_models_chat(messages: list[dict], token: str) -> str | None:
 
 
 def _manual_key_collection(keys: dict) -> dict:
-    _print(f"\n{C['bold']}Provider setup — paste any key, it's auto-detected.{C['reset']}")
+    _print(
+        f"\n{C['bold']}Provider setup — paste any key, it's auto-detected.{C['reset']}"
+    )
     _print(f"{C['dim']}Recognizes: " + ", ".join(PROVIDERS) + f"{C['reset']}")
     _print(f"{C['dim']}Enter with nothing to finish.{C['reset']}\n")
     for pid in PROVIDERS:
@@ -316,53 +320,74 @@ def _manual_key_collection(keys: dict) -> dict:
             break
         provider = _detect_provider(key)
         if not provider:
-            _print(f"{C['yellow']}  ? couldn't identify this key's provider from its prefix — skipped{C['reset']}")
+            _print(
+                f"{C['yellow']}  ? couldn't identify this key's provider from its prefix — skipped{C['reset']}"
+            )
             continue
         keys[provider] = key
         label = PROVIDERS.get(provider, {}).get("label", provider)
         _print(f"{C['green']}  ✓ {provider} — {label}{C['reset']}")
     return keys
 
+
 def _setup_openrouter(keys: dict) -> dict:
     """OpenRouter is the primary free-tier cloud lane — ask for it explicitly."""
     if keys.get("openrouter"):
         _print(f"{C['green']}  ✓ OpenRouter already configured{C['reset']}")
         return keys
-    _print(f"\n{C['bold']}OpenRouter setup (recommended free-tier cloud lane){C['reset']}")
-    _print(f"{C['dim']}Get a free key at https://openrouter.ai/settings/keys{C['reset']}")
-    key = getpass.getpass("  Paste OpenRouter API key (hidden, Enter to skip): ").strip()
+    _print(
+        f"\n{C['bold']}OpenRouter setup (recommended free-tier cloud lane){C['reset']}"
+    )
+    _print(
+        f"{C['dim']}Get a free key at https://openrouter.ai/settings/keys{C['reset']}"
+    )
+    key = getpass.getpass(
+        "  Paste OpenRouter API key (hidden, Enter to skip): "
+    ).strip()
     if key and key.startswith("sk-or-v1-"):
         keys["openrouter"] = key
         _print(f"{C['green']}  ✓ OpenRouter added{C['reset']}")
     elif key:
-        _print(f"{C['yellow']}  ? key doesn't look like sk-or-v1- — saved anyway, verify it works{C['reset']}")
+        _print(
+            f"{C['yellow']}  ? key doesn't look like sk-or-v1- — saved anyway, verify it works{C['reset']}"
+        )
         keys["openrouter"] = key
     return keys
+
 
 def _setup_telegram(keys: dict) -> dict:
     """Telegram outbound messaging setup."""
     _print(f"\n{C['bold']}Telegram bot setup (optional){C['reset']}")
     _print(f"{C['dim']}1. Message @BotFather on Telegram and create a bot.{C['reset']}")
-    _print(f"{C['dim']}2. Send your new bot one message so it can message you back.{C['reset']}")
+    _print(
+        f"{C['dim']}2. Send your new bot one message so it can message you back.{C['reset']}"
+    )
     _print(f"{C['dim']}3. Paste the bot token BotFather gives you.{C['reset']}")
     token = getpass.getpass("  Bot token (hidden, Enter to skip): ").strip()
     if token:
         if not token.count(":") == 1 or not token.split(":")[0].isdigit():
-            _print(f"{C['yellow']}  ? token usually looks like 123456:ABC... — saved anyway{C['reset']}")
+            _print(
+                f"{C['yellow']}  ? token usually looks like 123456:ABC... — saved anyway{C['reset']}"
+            )
         keys["telegram"] = token
         _print(f"{C['green']}  ✓ Telegram bot token added{C['reset']}")
         chat_id = _input("  Default chat ID (Enter to skip): ").strip()
         if chat_id:
             keys["telegram_chat_id"] = chat_id
-            _print(f"{C['green']}  ✓ Default chat ID added — override per message if needed{C['reset']}")
+            _print(
+                f"{C['green']}  ✓ Default chat ID added — override per message if needed{C['reset']}"
+            )
     return keys
+
 
 def _interactive_github_setup(token: str) -> dict:
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     keys = _load_keys()
 
     _print(f"{C['bold']}  Starting temporary GitHub Models setup chat.{C['reset']}")
-    _print(f"{C['dim']}  Type your question, 'save' to write keys, or 'done' to finish.{C['reset']}\n")
+    _print(
+        f"{C['dim']}  Type your question, 'save' to write keys, or 'done' to finish.{C['reset']}\n"
+    )
 
     # First assistant turn
     intro = (
@@ -391,13 +416,17 @@ def _interactive_github_setup(token: str) -> dict:
             _print(f"{C['green']}✓ Saved to {KEYS_FILE} (chmod 600).{C['reset']}")
             continue
         if lower in ("done", "finish", "quit", "exit"):
-            _print(f"\n{C['green']}✓ Setup complete. Disconnecting GitHub AI.{C['reset']}")
+            _print(
+                f"\n{C['green']}✓ Setup complete. Disconnecting GitHub AI.{C['reset']}"
+            )
             break
 
         messages.append({"role": "user", "content": user_text})
         reply = _github_models_chat(messages, token)
         if reply is None:
-            _print(f"{C['yellow']}GitHub Models is not answering. Falling back to manual key entry.{C['reset']}")
+            _print(
+                f"{C['yellow']}GitHub Models is not answering. Falling back to manual key entry.{C['reset']}"
+            )
             keys = _setup_openrouter(keys)
             keys = _setup_telegram(keys)
             keys = _manual_key_collection(keys)
@@ -420,7 +449,9 @@ def _run_manual_setup() -> dict:
     keys = _manual_key_collection(keys)
     _write_keys(keys)
     SETUP_DONE_FILE.touch()
-    _print(f"\n{C['green']}✓ Manual setup saved.{C['reset']} {C['cyan']}No GitHub AI was used.{C['reset']}")
+    _print(
+        f"\n{C['green']}✓ Manual setup saved.{C['reset']} {C['cyan']}No GitHub AI was used.{C['reset']}"
+    )
     return keys
 
 
@@ -442,29 +473,42 @@ def run_setup_if_first_run() -> None:
 
     os.system("clear")
     _print(SPLASH)
-    _print(f"{C['bold']}Welcome. This appears to be your first run from a fresh clone.{C['reset']}\n")
+    _print(
+        f"{C['bold']}Welcome. This appears to be your first run from a fresh clone.{C['reset']}\n"
+    )
 
     if not _yes_no("Run interactive setup? (Recommended)", default_no=False):
-        _print(f"{C['yellow']}Skipping setup. You can run it later with: master-ai --setup{C['reset']}\n")
+        _print(
+            f"{C['yellow']}Skipping setup. You can run it later with: master-ai --setup{C['reset']}\n"
+        )
         SETUP_DONE_FILE.touch()
         return
 
     token = os.environ.get("GITHUB_TOKEN", "").strip()
     if not token:
-        _print(f"\n{C['bold']}GitHub Models setup assistant uses a GitHub token.{C['reset']}")
-        _print(f"{C['dim']}Create one at https://github.com/settings/tokens with 'read:packages' and models access.{C['reset']}")
-        _print(f"{C['dim']}The token is hidden when typed and is only used during this setup session.{C['reset']}")
+        _print(
+            f"\n{C['bold']}GitHub Models setup assistant uses a GitHub token.{C['reset']}"
+        )
+        _print(
+            f"{C['dim']}Create one at https://github.com/settings/tokens with 'read:packages' and models access.{C['reset']}"
+        )
+        _print(
+            f"{C['dim']}The token is hidden when typed and is only used during this setup session.{C['reset']}"
+        )
         token = getpass.getpass("Paste GitHub token (hidden): ").strip()
 
     if token:
         keys = _interactive_github_setup(token)
     else:
-        _print(f"{C['yellow']}No GitHub token provided. Switching to manual setup.{C['reset']}")
+        _print(
+            f"{C['yellow']}No GitHub token provided. Switching to manual setup.{C['reset']}"
+        )
         keys = _run_manual_setup()
 
     # Reload globals in master_ai if it has already imported
     try:
         import master_ai
+
         master_ai.KEYS = keys
     except Exception:
         pass
@@ -477,7 +521,9 @@ def run_setup_explicit() -> None:
     _print(f"{C['bold']}  Re-running setup wizard.{C['reset']}\n")
 
     token = os.environ.get("GITHUB_TOKEN", "").strip()
-    use_github = _yes_no("Use GitHub Models assistant for interactive setup?", default_no=False)
+    use_github = _yes_no(
+        "Use GitHub Models assistant for interactive setup?", default_no=False
+    )
     if use_github:
         if not token:
             token = getpass.getpass("Paste GitHub token (hidden): ").strip()
@@ -490,6 +536,7 @@ def run_setup_explicit() -> None:
 
     try:
         import master_ai
+
         master_ai.KEYS = _load_keys()
     except Exception:
         pass

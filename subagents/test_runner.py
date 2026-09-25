@@ -34,9 +34,11 @@ _ERROR_LINE = re.compile(r"errors=(\d+)", re.I)
 
 
 def _available():
-    return sorted(p.stem for p in SCRIPTS_DIR.glob("test_*.py")
-                  if p.is_file() and not p.stem.startswith("test_"
-                                                              "_"))
+    return sorted(
+        p.stem
+        for p in SCRIPTS_DIR.glob("test_*.py")
+        if p.is_file() and not p.stem.startswith("test__")
+    )
 
 
 def _run_one(stem):
@@ -45,12 +47,13 @@ def _run_one(stem):
         return {"name": stem, "error": "not found"}
     t0 = time.time()
     try:
-        r = subprocess.run(["python3", str(path)],
-                           capture_output=True, text=True, timeout=120)
+        r = subprocess.run(
+            ["python3", str(path)], capture_output=True, text=True, timeout=120
+        )
     except subprocess.TimeoutExpired:
         return {"name": stem, "error": "timeout (>120s)"}
     elapsed = time.time() - t0
-    combined = (r.stderr + "\n" + r.stdout)
+    combined = r.stderr + "\n" + r.stdout
     m_ran = _RAN_LINE.search(combined)
     m_fail = _FAIL_LINE.search(combined)
     m_err = _ERROR_LINE.search(combined)

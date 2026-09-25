@@ -28,6 +28,7 @@ Why this is the right shape of test:
 
 Run: python3 ~/scripts/test_chrome_headless_e2e.py
 """
+
 import base64
 import hashlib
 import json
@@ -37,7 +38,6 @@ import shutil
 import socket
 import struct
 import subprocess
-import sys
 import tempfile
 import time
 import unittest
@@ -146,9 +146,12 @@ class WS:
         except OSError:
             pass
 
+
 FIXTURE_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
-    "sensei_extension", "test", "job_app_smoke.html",
+    "sensei_extension",
+    "test",
+    "job_app_smoke.html",
 )
 FIXTURE_URL = f"file://{FIXTURE_PATH}"
 
@@ -158,16 +161,16 @@ FIXTURE_URL = f"file://{FIXTURE_PATH}"
 # and is fast: the question this test answers is "if the model emits
 # the right actions, does the page actually accept them?"
 ACTIONS = [
-    {"kind": "BROWSER_FILL",  "target": "#firstName :: Elijah"},
-    {"kind": "BROWSER_FILL",  "target": "#lastName :: W."},
-    {"kind": "BROWSER_FILL",  "target": "#email :: you@example.com"},
-    {"kind": "BROWSER_FILL",  "target": "#phone :: 317-555-0100"},
-    {"kind": "BROWSER_FILL",  "target": "#city :: Indianapolis"},
-    {"kind": "BROWSER_FILL",  "target": "#state :: IN"},
-    {"kind": "BROWSER_FILL",  "target": "#zip :: 46201"},
-    {"kind": "BROWSER_FILL",  "target": "#yearsExperience :: 10"},
+    {"kind": "BROWSER_FILL", "target": "#firstName :: Elijah"},
+    {"kind": "BROWSER_FILL", "target": "#lastName :: W."},
+    {"kind": "BROWSER_FILL", "target": "#email :: you@example.com"},
+    {"kind": "BROWSER_FILL", "target": "#phone :: 317-555-0100"},
+    {"kind": "BROWSER_FILL", "target": "#city :: Indianapolis"},
+    {"kind": "BROWSER_FILL", "target": "#state :: IN"},
+    {"kind": "BROWSER_FILL", "target": "#zip :: 46201"},
+    {"kind": "BROWSER_FILL", "target": "#yearsExperience :: 10"},
     {"kind": "BROWSER_CLICK", "target": 'input[name="workAuth"][value="yes"]'},
-    {"kind": "BROWSER_FILL",  "target": "#coverLetter :: I want this job"},
+    {"kind": "BROWSER_FILL", "target": "#coverLetter :: I want this job"},
     {"kind": "BROWSER_CLICK", "target": "#submitButton"},
 ]
 
@@ -254,6 +257,7 @@ DRIVER_JS = r"""
 class CdpClient:
     """Minimal Chrome DevTools Protocol client — synchronous over our
     stdlib WebSocket."""
+
     def __init__(self, ws_url):
         self.ws = WS(ws_url)
         self.msg_id = 0
@@ -280,7 +284,7 @@ class CdpClient:
                 raise RuntimeError(f"timeout waiting for {name}")
             try:
                 msg = json.loads(self.ws.recv_text())
-            except socket.timeout:
+            except TimeoutError:
                 raise RuntimeError(f"timeout waiting for {name}")
             if msg.get("method") == name:
                 return msg.get("params") or {}
@@ -334,14 +338,15 @@ def _run_in_chrome():
             # handlers register before we touch elements.
             time.sleep(0.2)
 
-            driver = DRIVER_JS.replace(
-                "__ACTIONS_JSON__", json.dumps(ACTIONS)
+            driver = DRIVER_JS.replace("__ACTIONS_JSON__", json.dumps(ACTIONS))
+            res = cdp.call(
+                "Runtime.evaluate",
+                {
+                    "expression": driver,
+                    "returnByValue": True,
+                    "awaitPromise": False,
+                },
             )
-            res = cdp.call("Runtime.evaluate", {
-                "expression": driver,
-                "returnByValue": True,
-                "awaitPromise": False,
-            })
             value = (res.get("result") or {}).get("value")
             if value is None:
                 raise RuntimeError(f"Runtime.evaluate returned no value: {res}")
@@ -372,7 +377,7 @@ class ChromeHeadlessEndToEnd(unittest.TestCase):
         for a in result.get("actions") or []:
             status = "OK " if a.get("ok") else "FAIL"
             extra = a.get("error") or (a.get("val") or "")[:60]
-            print(f"  {status}  {a.get('kind','?'):5}  {a.get('sel','')}  {extra}")
+            print(f"  {status}  {a.get('kind', '?'):5}  {a.get('sel', '')}  {extra}")
         print("\n=== FIXTURE STATE ===")
         print(json.dumps(result.get("state"), indent=2))
         print("\n=== RESULT TEXT (top 200 chars) ===")
@@ -380,16 +385,22 @@ class ChromeHeadlessEndToEnd(unittest.TestCase):
 
         # Every action must have executed without "not found".
         bad = [a for a in (result.get("actions") or []) if not a.get("ok")]
-        self.assertEqual(bad, [],
-                         f"{len(bad)} action(s) failed to execute on the page")
+        self.assertEqual(bad, [], f"{len(bad)} action(s) failed to execute on the page")
 
         state = result.get("state") or {}
-        self.assertTrue(state.get("submitted"),
-                        f"submit handler did not fire — state={state}")
-        self.assertEqual(state.get("missing") or [], [],
-                         f"submit handler reported missing fields: {state.get('missing')}")
-        self.assertEqual(state.get("attempts"), 1,
-                         f"submit fired {state.get('attempts')} time(s), expected 1")
+        self.assertTrue(
+            state.get("submitted"), f"submit handler did not fire — state={state}"
+        )
+        self.assertEqual(
+            state.get("missing") or [],
+            [],
+            f"submit handler reported missing fields: {state.get('missing')}",
+        )
+        self.assertEqual(
+            state.get("attempts"),
+            1,
+            f"submit fired {state.get('attempts')} time(s), expected 1",
+        )
 
 
 if __name__ == "__main__":

@@ -4,18 +4,25 @@ import hashlib
 import mimetypes
 import os
 import shutil
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
-from typing import Iterator, List, Optional
 
-from ..schemas import AccessGrant, ActionRecord, ApplyResult, CapabilityReport, ItemRecord, UndoRecord
+from ..schemas import (
+    AccessGrant,
+    ActionRecord,
+    ApplyResult,
+    CapabilityReport,
+    ItemRecord,
+    UndoRecord,
+)
 from .base import BaseAdapter
 
 
 class LocalFSAdapter(BaseAdapter):
     name = "local_fs"
 
-    def __init__(self, run_id: str, roots: List[str], quarantine_root: str) -> None:
+    def __init__(self, run_id: str, roots: list[str], quarantine_root: str) -> None:
         self.run_id = run_id
         self.roots = [Path(root).expanduser().resolve() for root in roots]
         self.quarantine_root = Path(quarantine_root).expanduser().resolve()
@@ -40,7 +47,7 @@ class LocalFSAdapter(BaseAdapter):
     def authorize(self, mode: str) -> AccessGrant:
         return AccessGrant(mode=mode, granted=True, details={"capability": "local"})
 
-    def scan(self, cursor: Optional[str] = None) -> Iterator[ItemRecord]:
+    def scan(self, cursor: str | None = None) -> Iterator[ItemRecord]:
         del cursor
         for root in self.roots:
             if not root.exists():
@@ -50,7 +57,7 @@ class LocalFSAdapter(BaseAdapter):
                     continue
                 yield self._item_for_path(path, root)
 
-    def enrich(self, item: ItemRecord, jobs: List[str]) -> ItemRecord:
+    def enrich(self, item: ItemRecord, jobs: list[str]) -> ItemRecord:
         path = Path(item.identity["path"])
         hashes = dict(item.hashes)
         features = dict(item.features)
@@ -69,18 +76,30 @@ class LocalFSAdapter(BaseAdapter):
         return replace(item, hashes=hashes, features=features, notes=notes)
 
     def can_apply(self, action: ActionRecord) -> bool:
-        return action.adapter == self.name and action.action_type in {"archive_move", "quarantine_move"}
+        return action.adapter == self.name and action.action_type in {
+            "archive_move",
+            "quarantine_move",
+        }
 
     def apply(self, action: ActionRecord) -> ApplyResult:
         if not self.can_apply(action):
-            return ApplyResult(action_id=action.action_id, success=False, message="unsupported action")
+            return ApplyResult(
+                action_id=action.action_id, success=False, message="unsupported action"
+            )
 
         source = Path(action.source_path)
         if action.destination_path is None:
-            return ApplyResult(action_id=action.action_id, success=False, message="missing destination_path")
+            return ApplyResult(
+                action_id=action.action_id,
+                success=False,
+                message="missing destination_path",
+            )
         if not source.exists():
-            return ApplyResult(action_id=action.action_id, success=False,
-                               message=f"source missing: {source}")
+            return ApplyResult(
+                action_id=action.action_id,
+                success=False,
+                message=f"source missing: {source}",
+            )
         intended_dest = Path(action.destination_path)
         intended_dest.parent.mkdir(parents=True, exist_ok=True)
         # Uniquify: never overwrite an existing file at the destination.
@@ -90,8 +109,9 @@ class LocalFSAdapter(BaseAdapter):
         try:
             shutil.move(str(source), str(actual_dest))
         except (OSError, shutil.Error) as exc:
-            return ApplyResult(action_id=action.action_id, success=False,
-                               message=f"move failed: {exc}")
+            return ApplyResult(
+                action_id=action.action_id, success=False, message=f"move failed: {exc}"
+            )
         undo = UndoRecord(
             schema_version="sensei.undo.v1",
             run_id=action.run_id,
@@ -123,7 +143,10 @@ class LocalFSAdapter(BaseAdapter):
             if not candidate.exists():
                 return candidate
         # Pathological case — return a hash-suffixed name as last resort
-        return parent / f"{stem}.{hashlib.sha1(str(dest).encode()).hexdigest()[:8]}{suffix}"
+        return (
+            parent
+            / f"{stem}.{hashlib.sha1(str(dest).encode()).hexdigest()[:8]}{suffix}"
+        )
 
     def open_view(self, item: ItemRecord) -> str:
         """Local 'view' is the file's own path. The CLI's `open`
@@ -206,9 +229,23 @@ class LocalFSAdapter(BaseAdapter):
     def _classify(self, path: Path, mime: str) -> tuple[str, str]:
         name = path.name.lower()
         full_path = str(path).lower()
-        if any(token in full_path for token in ("resume", "cv", "career", "cover_letter", "transcript")):
+        if any(
+            token in full_path
+            for token in ("resume", "cv", "career", "cover_letter", "transcript")
+        ):
             return "career", "Career"
-        if any(token in full_path for token in ("w2", "w-2", "tax", "paystub", "pay stub", "passport", "license")):
+        if any(
+            token in full_path
+            for token in (
+                "w2",
+                "w-2",
+                "tax",
+                "paystub",
+                "pay stub",
+                "passport",
+                "license",
+            )
+        ):
             return "financial", "Forms"
         if any(token in full_path for token in ("poem", "poetry", "lyrics")):
             return "creative", "Poetry"
@@ -235,7 +272,13 @@ class LocalFSAdapter(BaseAdapter):
     def _confidence(self, path: Path, mime: str, category_guess: str) -> float:
         if category_guess in {"Photos", "Videos", "Music"} and "/" in mime:
             return 0.96
-        if category_guess in {"Reading", "Office", "Spreadsheets", "Presentations", "Android-Apps"}:
+        if category_guess in {
+            "Reading",
+            "Office",
+            "Spreadsheets",
+            "Presentations",
+            "Android-Apps",
+        }:
             return 0.85
         if category_guess in {"Career", "Forms", "Poetry"}:
             return 0.7
@@ -270,8 +313,15 @@ class LocalFSAdapter(BaseAdapter):
     def _iso(self, timestamp: float) -> str:
         from datetime import datetime, timezone
 
-        return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        return (
+            datetime.fromtimestamp(timestamp, tz=timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
 
     def _is_screenshot(self, name: str) -> bool:
         lowered = name.lower()
-        return any(token in lowered for token in ("screenshot", "screen shot", "screen_shot", "img_20"))
+        return any(
+            token in lowered
+            for token in ("screenshot", "screen shot", "screen_shot", "img_20")
+        )

@@ -6,8 +6,8 @@ Sensei will call this via SEND_TELEGRAM: <chat_id> <message> directives.
 """
 
 import json
-import urllib.request
 import urllib.error
+import urllib.request
 from pathlib import Path
 
 
@@ -50,9 +50,17 @@ def send_message(chat_id, text, token=None, silent=False):
     chat_id = chat_id or _get_default_chat_id()
     token = token or _get_token()
     if not token:
-        return {"ok": False, "error": "TELEGRAM_BOT_TOKEN not found in ~/.master_ai_keys", "message_id": None}
+        return {
+            "ok": False,
+            "error": "TELEGRAM_BOT_TOKEN not found in ~/.master_ai_keys",
+            "message_id": None,
+        }
     if not chat_id:
-        return {"ok": False, "error": "chat_id is empty and no TELEGRAM_CHAT_ID default set", "message_id": None}
+        return {
+            "ok": False,
+            "error": "chat_id is empty and no TELEGRAM_CHAT_ID default set",
+            "message_id": None,
+        }
     if not text:
         return {"ok": False, "error": "message text is empty", "message_id": None}
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -70,8 +78,16 @@ def send_message(chat_id, text, token=None, silent=False):
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = json.loads(resp.read().decode("utf-8"))
         if body.get("ok"):
-            return {"ok": True, "message_id": body["result"].get("message_id"), "error": None}
-        return {"ok": False, "error": body.get("description", "unknown Telegram error"), "message_id": None}
+            return {
+                "ok": True,
+                "message_id": body["result"].get("message_id"),
+                "error": None,
+            }
+        return {
+            "ok": False,
+            "error": body.get("description", "unknown Telegram error"),
+            "message_id": None,
+        }
     except urllib.error.HTTPError as e:
         try:
             detail = json.loads(e.read().decode("utf-8")).get("description", str(e))
@@ -100,12 +116,14 @@ def get_updates(token=None, limit=10):
                 continue
             chat = msg.get("chat", {})
             from_user = msg.get("from", {})
-            out.append({
-                "chat_id": chat.get("id"),
-                "username": from_user.get("username"),
-                "first_name": from_user.get("first_name"),
-                "text": msg.get("text", ""),
-            })
+            out.append(
+                {
+                    "chat_id": chat.get("id"),
+                    "username": from_user.get("username"),
+                    "first_name": from_user.get("first_name"),
+                    "text": msg.get("text", ""),
+                }
+            )
         return {"ok": True, "updates": out}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -113,6 +131,7 @@ def get_updates(token=None, limit=10):
 
 if __name__ == "__main__":
     import sys
+
     if len(sys.argv) >= 3 and sys.argv[1] == "send":
         chat_id = sys.argv[2]
         text = " ".join(sys.argv[3:])

@@ -46,7 +46,9 @@ class ConfirmRememberDirect(unittest.TestCase):
         return [l for l in self.path.read_text().splitlines() if l.strip()]
 
     def test_appends_simple_fact(self):
-        self.assertTrue(master_ai.confirm_remember("user prefers Thunderbird for email"))
+        self.assertTrue(
+            master_ai.confirm_remember("user prefers Thunderbird for email")
+        )
         self.assertEqual(self._mem(), ["user prefers Thunderbird for email"])
 
     def test_empty_returns_false(self):
@@ -56,8 +58,12 @@ class ConfirmRememberDirect(unittest.TestCase):
         self.assertEqual(self._mem(), [])
 
     def test_duplicate_skipped(self):
-        self.assertTrue(master_ai.confirm_remember("never spawn terminal for thunderbird"))
-        self.assertFalse(master_ai.confirm_remember("never spawn terminal for thunderbird"))
+        self.assertTrue(
+            master_ai.confirm_remember("never spawn terminal for thunderbird")
+        )
+        self.assertFalse(
+            master_ai.confirm_remember("never spawn terminal for thunderbird")
+        )
         self.assertEqual(len(self._mem()), 1)
 
     def test_long_fact_truncated(self):
@@ -104,7 +110,8 @@ class ProcessReplyExtractsRemember(unittest.TestCase):
     def test_single_remember_line_fires(self):
         master_ai.process_reply(
             "REMEMBER: when user says 'open my email', open Thunderbird via desktop launcher",
-            [], streamed=False,
+            [],
+            streamed=False,
         )
         mem = self._mem()
         self.assertEqual(len(mem), 1)
@@ -116,7 +123,8 @@ class ProcessReplyExtractsRemember(unittest.TestCase):
             "REMEMBER: first lesson\n"
             "REMEMBER: second lesson\n"
             "REMEMBER: third lesson",
-            [], streamed=False,
+            [],
+            streamed=False,
         )
         mem = self._mem()
         self.assertEqual(len(mem), 3)
@@ -137,13 +145,17 @@ class ProcessReplyExtractsRemember(unittest.TestCase):
                 "REMEMBER: this is example documentation only\n"
                 "REMEMBER: another example line\n"
                 ">>>CONTENT",
-                [], streamed=False,
+                [],
+                streamed=False,
             )
         finally:
             master_ai.confirm_create = orig_create
-        self.assertEqual(self._mem(), [],
+        self.assertEqual(
+            self._mem(),
+            [],
             "REMEMBER inside <<<CONTENT>>>CONTENT must not fire — "
-            "those are document lines, not directives")
+            "those are document lines, not directives",
+        )
 
     def test_remember_inside_find_replace_body_does_NOT_fire(self):
         """Same protection for <<<FIND>>>FIND and <<<REPLACE>>>REPLACE."""
@@ -160,12 +172,14 @@ class ProcessReplyExtractsRemember(unittest.TestCase):
                 "<<<REPLACE\n"
                 "REMEMBER: don't catch this either\n"
                 ">>>REPLACE",
-                [], streamed=False,
+                [],
+                streamed=False,
             )
         finally:
             master_ai.confirm_edit = orig_edit
-        self.assertEqual(self._mem(), [],
-            "REMEMBER inside <<<FIND/REPLACE>>> blocks must not fire")
+        self.assertEqual(
+            self._mem(), [], "REMEMBER inside <<<FIND/REPLACE>>> blocks must not fire"
+        )
 
     def test_remember_AFTER_create_block_still_fires(self):
         """The block-state filter resets at the >>>CONTENT marker, so a
@@ -180,7 +194,8 @@ class ProcessReplyExtractsRemember(unittest.TestCase):
                 "REMEMBER: inside the body — ignored\n"
                 ">>>CONTENT\n"
                 "REMEMBER: outside the body — should fire",
-                [], streamed=False,
+                [],
+                streamed=False,
             )
         finally:
             master_ai.confirm_create = orig_create
@@ -191,7 +206,8 @@ class ProcessReplyExtractsRemember(unittest.TestCase):
         # _real_directive enforces the backtick-parity rule.
         master_ai.process_reply(
             "I can write to memory via `REMEMBER:` syntax.",
-            [], streamed=False,
+            [],
+            streamed=False,
         )
         self.assertEqual(self._mem(), [])
 
@@ -199,7 +215,8 @@ class ProcessReplyExtractsRemember(unittest.TestCase):
         # The directive parser is case-insensitive (matches RUN/run/Run pattern).
         master_ai.process_reply(
             "remember: lowercase works too",
-            [], streamed=False,
+            [],
+            streamed=False,
         )
         mem = self._mem()
         self.assertEqual(len(mem), 1)
@@ -210,12 +227,12 @@ class ProcessReplyExtractsRemember(unittest.TestCase):
         # We monkeypatch run to record calls and verify both happen.
         run_calls = []
         orig_run = master_ai.confirm_run
-        master_ai.confirm_run = lambda c: (run_calls.append(c) or True)
+        master_ai.confirm_run = lambda c: run_calls.append(c) or True
         try:
             master_ai.process_reply(
-                "REMEMBER: pwd is a safe quick check\n"
-                "RUN: pwd",
-                [], streamed=False,
+                "REMEMBER: pwd is a safe quick check\nRUN: pwd",
+                [],
+                streamed=False,
             )
         finally:
             master_ai.confirm_run = orig_run
@@ -229,23 +246,31 @@ class BlockedFeedbackInvitesRemember(unittest.TestCase):
 
     def test_tool_blocked_message_mentions_remember(self):
         import inspect
+
         src = inspect.getsource(master_ai.process_reply)
         self.assertIn("[TOOL BLOCKED]", src)
         # The blocked-feedback body must invite the model to emit REMEMBER:
         idx = src.find("[TOOL BLOCKED]")
-        window = src[idx:idx + 1500]
-        self.assertIn("REMEMBER:", window,
+        window = src[idx : idx + 1500]
+        self.assertIn(
+            "REMEMBER:",
+            window,
             "TOOL BLOCKED feedback should invite a REMEMBER: line — "
-            "that's how the model self-teaches from failures")
+            "that's how the model self-teaches from failures",
+        )
 
     def test_hook_blocked_message_mentions_remember(self):
         import inspect
+
         src = inspect.getsource(master_ai.process_reply)
         idx = src.find("[HOOK BLOCKED]")
         self.assertGreater(idx, 0, "HOOK BLOCKED feedback must exist")
-        window = src[idx:idx + 1000]
-        self.assertIn("REMEMBER:", window,
-            "HOOK BLOCKED feedback should invite a REMEMBER: line too")
+        window = src[idx : idx + 1000]
+        self.assertIn(
+            "REMEMBER:",
+            window,
+            "HOOK BLOCKED feedback should invite a REMEMBER: line too",
+        )
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ loads model weights and sets keep_alive — nothing clever.
 Requires Ollama to allow at least two loaded models:
   OLLAMA_MAX_LOADED_MODELS=2
 """
+
 import json
 import urllib.request
 

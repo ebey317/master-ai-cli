@@ -26,6 +26,7 @@ Uses the same stdlib WebSocket CDP client as test_chrome_headless_e2e.py.
 
 Run: python3 ~/scripts/test_drive_inspect_handler.py
 """
+
 import base64
 import hashlib
 import json
@@ -35,7 +36,6 @@ import shutil
 import socket
 import struct
 import subprocess
-import sys
 import tempfile
 import time
 import unittest
@@ -48,6 +48,7 @@ _WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 class WS:
     def __init__(self, url, timeout=15):
         import urllib.parse
+
         u = urllib.parse.urlparse(url)
         host = u.hostname or "127.0.0.1"
         port = u.port or 80
@@ -142,8 +143,9 @@ class CDP:
 
     def call(self, method, params=None):
         self.msg_id += 1
-        self.ws.send_text(json.dumps({"id": self.msg_id, "method": method,
-                                      "params": params or {}}))
+        self.ws.send_text(
+            json.dumps({"id": self.msg_id, "method": method, "params": params or {}})
+        )
         while True:
             msg = json.loads(self.ws.recv_text())
             if msg.get("id") == self.msg_id:
@@ -159,7 +161,7 @@ class CDP:
                 raise RuntimeError(f"timeout waiting for {event_name}")
             try:
                 msg = json.loads(self.ws.recv_text())
-            except socket.timeout:
+            except TimeoutError:
                 raise RuntimeError(f"timeout waiting for {event_name}")
             if msg.get("method") == event_name:
                 return msg.get("params") or {}
@@ -196,13 +198,17 @@ def _run_handler_on_fixture(fixture_url, action):
     user_data = tempfile.mkdtemp(prefix="sensei-drive-cdp-")
     proc = subprocess.Popen(
         [
-            chrome, "--headless=new", "--disable-gpu", "--no-first-run",
+            chrome,
+            "--headless=new",
+            "--disable-gpu",
+            "--no-first-run",
             "--no-default-browser-check",
             f"--remote-debugging-port={port}",
             f"--user-data-dir={user_data}",
             "about:blank",
         ],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
     try:
@@ -224,10 +230,13 @@ def _run_handler_on_fixture(fixture_url, action):
             cdp.wait_for("Page.loadEventFired", timeout=15)
             time.sleep(0.3)
             # Sanity: confirm content_script registered the listener.
-            sanity = cdp.call("Runtime.evaluate", {
-                "expression": "Boolean(window.__senseiCapturedListener)",
-                "returnByValue": True,
-            })
+            sanity = cdp.call(
+                "Runtime.evaluate",
+                {
+                    "expression": "Boolean(window.__senseiCapturedListener)",
+                    "returnByValue": True,
+                },
+            )
             if not (sanity.get("result") or {}).get("value"):
                 raise RuntimeError(
                     "content_script listener not captured — "
@@ -235,16 +244,15 @@ def _run_handler_on_fixture(fixture_url, action):
                 )
             # Dispatch the action through the captured listener exactly
             # like side_panel.js does at runtime.
-            expr = (
-                "window.__senseiDispatch("
-                + json.dumps(action)
-                + ")"
+            expr = "window.__senseiDispatch(" + json.dumps(action) + ")"
+            res = cdp.call(
+                "Runtime.evaluate",
+                {
+                    "expression": expr,
+                    "returnByValue": True,
+                    "awaitPromise": True,
+                },
             )
-            res = cdp.call("Runtime.evaluate", {
-                "expression": expr,
-                "returnByValue": True,
-                "awaitPromise": True,
-            })
             value = (res.get("result") or {}).get("value")
             if value is None:
                 raise RuntimeError(f"dispatch returned no value: {res}")
@@ -269,13 +277,17 @@ def _run_context_on_fixture(fixture_url, options):
     user_data = tempfile.mkdtemp(prefix="sensei-context-cdp-")
     proc = subprocess.Popen(
         [
-            chrome, "--headless=new", "--disable-gpu", "--no-first-run",
+            chrome,
+            "--headless=new",
+            "--disable-gpu",
+            "--no-first-run",
             "--no-default-browser-check",
             f"--remote-debugging-port={port}",
             f"--user-data-dir={user_data}",
             "about:blank",
         ],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
     try:
@@ -296,18 +308,24 @@ def _run_context_on_fixture(fixture_url, options):
             cdp.call("Page.navigate", {"url": fixture_url})
             cdp.wait_for("Page.loadEventFired", timeout=15)
             time.sleep(1.2)
-            sanity = cdp.call("Runtime.evaluate", {
-                "expression": "Boolean(window.__senseiCapturedListener)",
-                "returnByValue": True,
-            })
+            sanity = cdp.call(
+                "Runtime.evaluate",
+                {
+                    "expression": "Boolean(window.__senseiCapturedListener)",
+                    "returnByValue": True,
+                },
+            )
             if not (sanity.get("result") or {}).get("value"):
                 raise RuntimeError("content_script listener not captured")
             expr = "window.__senseiContext(" + json.dumps(options) + ")"
-            res = cdp.call("Runtime.evaluate", {
-                "expression": expr,
-                "returnByValue": True,
-                "awaitPromise": True,
-            })
+            res = cdp.call(
+                "Runtime.evaluate",
+                {
+                    "expression": expr,
+                    "returnByValue": True,
+                    "awaitPromise": True,
+                },
+            )
             value = (res.get("result") or {}).get("value")
             if value is None:
                 raise RuntimeError(f"context returned no value: {res}")
@@ -323,111 +341,176 @@ def _run_context_on_fixture(fixture_url, options):
         shutil.rmtree(user_data, ignore_errors=True)
 
 
-_TEST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "sensei_extension", "test")
+_TEST_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "sensei_extension", "test"
+)
 
 SEARCH_URL = "file://" + os.path.join(_TEST_DIR, "fake_drive_search.html")
 EMPTY_URL = "file://" + os.path.join(_TEST_DIR, "fake_drive_empty_folder.html")
 FILE_UPLOAD_URL = "file://" + os.path.join(_TEST_DIR, "file_upload_smoke.html")
-PAGE_CONTEXT_URL = "file://" + os.path.join(_TEST_DIR, "page_context_shadow_spa_iframe.html")
+PAGE_CONTEXT_URL = "file://" + os.path.join(
+    _TEST_DIR, "page_context_shadow_spa_iframe.html"
+)
 FRAMEWORK_FILL_URL = "file://" + os.path.join(_TEST_DIR, "framework_fill_smoke.html")
 
 INSPECT_ACTION = {
     "kind": "BROWSER_DRIVE_INSPECT_FOLDER",
-    "target": json.dumps({"query": "resume",
-                          "variants": ["Resume", "resume", "résumé", "CV", "career"]}),
+    "target": json.dumps(
+        {"query": "resume", "variants": ["Resume", "resume", "résumé", "CV", "career"]}
+    ),
 }
 
 
 class DriveInspectHandlerTests(unittest.TestCase):
     def test_page_context_covers_shadow_iframes_and_spa_mutation(self):
-        result = _run_context_on_fixture(PAGE_CONTEXT_URL, {
-            "includeVisibleText": True,
-            "includeInteractiveElements": True,
-            "waitForStableMs": 650,
-            "maxWaitMs": 4000,
-        })
+        result = _run_context_on_fixture(
+            PAGE_CONTEXT_URL,
+            {
+                "includeVisibleText": True,
+                "includeInteractiveElements": True,
+                "waitForStableMs": 650,
+                "maxWaitMs": 4000,
+            },
+        )
         print("\n=== PAGE-CONTEXT RESULT ===")
-        print(json.dumps({
-            "ok": result.get("ok"),
-            "title": (result.get("page_context") or {}).get("title"),
-            "observe_state": (result.get("page_context") or {}).get("observe_state"),
-            "iframes": (result.get("page_context") or {}).get("iframes"),
-            "interactive_elements": (result.get("page_context") or {}).get("interactive_elements"),
-        }, indent=2)[:2500])
+        print(
+            json.dumps(
+                {
+                    "ok": result.get("ok"),
+                    "title": (result.get("page_context") or {}).get("title"),
+                    "observe_state": (result.get("page_context") or {}).get(
+                        "observe_state"
+                    ),
+                    "iframes": (result.get("page_context") or {}).get("iframes"),
+                    "interactive_elements": (result.get("page_context") or {}).get(
+                        "interactive_elements"
+                    ),
+                },
+                indent=2,
+            )[:2500]
+        )
 
         self.assertTrue(result.get("ok"), f"context returned ok=false: {result}")
         ctx = result.get("page_context") or {}
         interactive = ctx.get("interactive_elements") or ""
-        self.assertIn("Shadow Apply", interactive,
-                      "open shadow DOM button should be visible to the page reader")
+        self.assertIn(
+            "Shadow Apply",
+            interactive,
+            "open shadow DOM button should be visible to the page reader",
+        )
         visible = ctx.get("visible_text") or ""
-        self.assertIn("SPA loaded application step", visible,
-                      "debounced MutationObserver should let URL-unchanged SPA content settle")
+        self.assertIn(
+            "SPA loaded application step",
+            visible,
+            "debounced MutationObserver should let URL-unchanged SPA content settle",
+        )
         obs = ctx.get("observe_state") or {}
-        self.assertGreater(int(obs.get("version") or 0), 0,
-                           "observe_state.version should increment after ready/mutation triggers")
-        self.assertIn("main-content MutationObserver debounced", obs.get("triggers") or [])
+        self.assertGreater(
+            int(obs.get("version") or 0),
+            0,
+            "observe_state.version should increment after ready/mutation triggers",
+        )
+        self.assertIn(
+            "main-content MutationObserver debounced", obs.get("triggers") or []
+        )
         iframes = ctx.get("iframes") or []
-        self.assertTrue(any(frame.get("same_origin") for frame in iframes),
-                        f"same-origin iframe summary missing: {iframes}")
-        self.assertTrue(any(frame.get("cross_origin") for frame in iframes),
-                        f"cross-origin iframe metadata missing: {iframes}")
+        self.assertTrue(
+            any(frame.get("same_origin") for frame in iframes),
+            f"same-origin iframe summary missing: {iframes}",
+        )
+        self.assertTrue(
+            any(frame.get("cross_origin") for frame in iframes),
+            f"cross-origin iframe metadata missing: {iframes}",
+        )
 
     def test_search_results_extracts_resume_folder(self):
         result = _run_handler_on_fixture(SEARCH_URL, INSPECT_ACTION)
         print("\n=== SEARCH-PAGE RESULT ===")
-        print(json.dumps({
-            k: (v if not isinstance(v, dict) else
-                {kk: (vv if kk != "visible_text" else "<truncated>") for kk, vv in v.items()})
-            for k, v in result.items()
-        }, indent=2)[:2000])
+        print(
+            json.dumps(
+                {
+                    k: (
+                        v
+                        if not isinstance(v, dict)
+                        else {
+                            kk: (vv if kk != "visible_text" else "<truncated>")
+                            for kk, vv in v.items()
+                        }
+                    )
+                    for k, v in result.items()
+                },
+                indent=2,
+            )[:2000]
+        )
 
-        self.assertTrue(result.get("ok"),
-                        f"handler returned ok=false: {result}")
+        self.assertTrue(result.get("ok"), f"handler returned ok=false: {result}")
         state = result.get("drive_state") or {}
-        self.assertTrue(state.get("is_drive") is not None,
-                        "drive_state should carry is_drive flag")
-        self.assertFalse(state.get("empty"),
-                         "search-results page should not be flagged empty")
+        self.assertTrue(
+            state.get("is_drive") is not None, "drive_state should carry is_drive flag"
+        )
+        self.assertFalse(
+            state.get("empty"), "search-results page should not be flagged empty"
+        )
 
         items = state.get("items") or []
-        self.assertGreaterEqual(len(items), 3,
-                                f"expected 3+ items on search page, got {len(items)}: "
-                                f"{[i.get('name') for i in items]}")
+        self.assertGreaterEqual(
+            len(items),
+            3,
+            f"expected 3+ items on search page, got {len(items)}: "
+            f"{[i.get('name') for i in items]}",
+        )
 
         # The model's next round uses the items list to find + open the
         # résumé folder. Verify the specific row is reachable.
         names = [str(i.get("name") or "") for i in items]
-        resume_match = next((i for i in items
-                             if "resume" in (i.get("name") or "").lower()
-                             or "resume" in (i.get("aria_label") or "").lower()),
-                            None)
-        self.assertIsNotNone(resume_match,
-                             f"no 'resume' item in {names}")
-        self.assertTrue(resume_match.get("selector"),
-                        f"matched item missing selector: {resume_match}")
-        print(f"  ✓ resume-row matched: {resume_match.get('name')!r} "
-              f"selector={resume_match.get('selector')!r}")
+        resume_match = next(
+            (
+                i
+                for i in items
+                if "resume" in (i.get("name") or "").lower()
+                or "resume" in (i.get("aria_label") or "").lower()
+            ),
+            None,
+        )
+        self.assertIsNotNone(resume_match, f"no 'resume' item in {names}")
+        self.assertTrue(
+            resume_match.get("selector"),
+            f"matched item missing selector: {resume_match}",
+        )
+        print(
+            f"  ✓ resume-row matched: {resume_match.get('name')!r} "
+            f"selector={resume_match.get('selector')!r}"
+        )
 
     def test_empty_folder_detects_drop_files_here(self):
         result = _run_handler_on_fixture(EMPTY_URL, INSPECT_ACTION)
         print("\n=== EMPTY-FOLDER RESULT ===")
-        print(json.dumps({
-            k: (v if not isinstance(v, dict) else
-                {kk: (vv if kk != "visible_text" else "<truncated>") for kk, vv in v.items()})
-            for k, v in result.items()
-        }, indent=2)[:1500])
+        print(
+            json.dumps(
+                {
+                    k: (
+                        v
+                        if not isinstance(v, dict)
+                        else {
+                            kk: (vv if kk != "visible_text" else "<truncated>")
+                            for kk, vv in v.items()
+                        }
+                    )
+                    for k, v in result.items()
+                },
+                indent=2,
+            )[:1500]
+        )
 
-        self.assertTrue(result.get("ok"),
-                        f"handler returned ok=false: {result}")
+        self.assertTrue(result.get("ok"), f"handler returned ok=false: {result}")
         state = result.get("drive_state") or {}
-        self.assertTrue(state.get("empty"),
-                        "empty-folder page should set drive_state.empty=true")
+        self.assertTrue(
+            state.get("empty"), "empty-folder page should set drive_state.empty=true"
+        )
         reason = (state.get("empty_reason") or "").lower()
         self.assertTrue(
             "drop files here" in reason or "new" in reason or "empty" in reason,
-            f"empty_reason should describe the empty-state copy, got {reason!r}"
+            f"empty_reason should describe the empty-state copy, got {reason!r}",
         )
         print(f"  ✓ empty-folder detection: reason={state.get('empty_reason')!r}")
 
@@ -450,8 +533,7 @@ class DriveInspectHandlerTests(unittest.TestCase):
         print("\n=== FILE-UPLOAD RESULT ===")
         print(json.dumps(result, indent=2)[:1500])
 
-        self.assertTrue(result.get("ok"),
-                        f"handler returned ok=false: {result}")
+        self.assertTrue(result.get("ok"), f"handler returned ok=false: {result}")
         upload = result.get("file_upload") or {}
         self.assertEqual(upload.get("file_name"), "sensei-smoke-resume.pdf")
         self.assertEqual(upload.get("file_size"), len(payload))
@@ -467,8 +549,7 @@ class DriveInspectHandlerTests(unittest.TestCase):
         print("\n=== FRAMEWORK-FILL RESULT ===")
         print(json.dumps(result, indent=2)[:1500])
 
-        self.assertTrue(result.get("ok"),
-                        f"handler returned ok=false: {result}")
+        self.assertTrue(result.get("ok"), f"handler returned ok=false: {result}")
         framework = result.get("frameworkState") or {}
         self.assertEqual(framework.get("value"), "Elijah")
         self.assertGreaterEqual(int(framework.get("inputEvents") or 0), 1)

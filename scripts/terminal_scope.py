@@ -1,9 +1,9 @@
 """Read TERMINAL_ENV / TERMINAL_CWD through the active profile scope."""
+
 from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Mapping
 
 from . import profile_scope
 

@@ -64,7 +64,7 @@ def remove_pictures():
 
 
 def do_app_only():
-    print(f"\nThis will remove:")
+    print("\nThis will remove:")
     for f in APP_FILES:
         print(f"  {f}")
     print(f"Your pictures in {PICTURES_DIR} will be LEFT UNTOUCHED.\n")
@@ -76,7 +76,7 @@ def do_app_only():
 
 
 def do_everything():
-    print(f"\nThis will remove:")
+    print("\nThis will remove:")
     for f in APP_FILES:
         print(f"  {f}")
     print(f"AND DELETE all pictures in {PICTURES_DIR}.")

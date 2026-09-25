@@ -8,6 +8,7 @@ and cloud lanes / the Chrome extension can retry instead of hanging.
 
 Run: python3 ~/scripts/test_api_handle_wedge.py
 """
+
 import sys
 import threading
 import time
@@ -45,24 +46,30 @@ class WedgeRegressionTests(unittest.TestCase):
 
             t = threading.Thread(target=_holder, daemon=True)
             t.start()
-            self.assertTrue(holder_acquired.wait(timeout=2.0),
-                            "holder thread never acquired lock — test setup broken")
+            self.assertTrue(
+                holder_acquired.wait(timeout=2.0),
+                "holder thread never acquired lock — test setup broken",
+            )
 
             start = time.monotonic()
             try:
-                stt_server.api_handle({
-                    "prompt": "hello",
-                    "mode": "plan",
-                    "source": "chrome_extension",
-                    "session_id": "wedge-regression",
-                })
+                stt_server.api_handle(
+                    {
+                        "prompt": "hello",
+                        "mode": "plan",
+                        "source": "chrome_extension",
+                        "session_id": "wedge-regression",
+                    }
+                )
                 self.fail("expected ApiHandleBusy, got normal return")
             except stt_server.ApiHandleBusy as e:
                 elapsed = time.monotonic() - start
                 # Must fail fast — well under the prod 120s budget.
-                self.assertLess(elapsed, 2.0,
-                                f"ApiHandleBusy raised but took {elapsed:.2f}s "
-                                f"(timeout was 0.5s)")
+                self.assertLess(
+                    elapsed,
+                    2.0,
+                    f"ApiHandleBusy raised but took {elapsed:.2f}s (timeout was 0.5s)",
+                )
                 self.assertIn("dispatch lock", str(e).lower())
             finally:
                 holder_release.set()
@@ -73,8 +80,10 @@ class WedgeRegressionTests(unittest.TestCase):
         ApiHandleBusy. (It may raise other things — bad payload, missing model
         — but the wedge protection must not false-fire.)"""
         # Make sure the lock is unheld before we start.
-        self.assertTrue(stt_server._API_HANDLE_LOCKS["local"].acquire(timeout=1.0),
-                        "lock was already held going into the uncontended test")
+        self.assertTrue(
+            stt_server._API_HANDLE_LOCKS["local"].acquire(timeout=1.0),
+            "lock was already held going into the uncontended test",
+        )
         stt_server._API_HANDLE_LOCKS["local"].release()
 
         # Use a payload that triggers an early ValueError (missing prompt)

@@ -27,10 +27,14 @@ class ReadBeforeEditGuardrail(unittest.TestCase):
         src = inspect.getsource(master_ai.process_reply)
         # The guard names the repair message explicitly so a refactor
         # that drops it gets caught.
-        self.assertIn("READ_BEFORE_EDIT", src,
-            "process_reply lost the READ→EDIT guardrail (P1.6 regression)")
-        self.assertIn("[Directive repair]", src,
-            "Directive repair feedback channel missing")
+        self.assertIn(
+            "READ_BEFORE_EDIT",
+            src,
+            "process_reply lost the READ→EDIT guardrail (P1.6 regression)",
+        )
+        self.assertIn(
+            "[Directive repair]", src, "Directive repair feedback channel missing"
+        )
         # The unread_edits set construction must consult both read_paths
         # and create_files (just-created files are exempt).
         self.assertIn("unread_edits", src)
@@ -41,14 +45,18 @@ class ReadBeforeEditGuardrail(unittest.TestCase):
         # repair turn (not `return reply` which would advance the chain).
         src = inspect.getsource(master_ai.process_reply)
         idx = src.find("DIRECTIVE_REPAIR_READ_BEFORE_EDIT")
-        self.assertGreater(idx, 0,
-            "log line for the guard is the anchor — should exist")
+        self.assertGreater(
+            idx, 0, "log line for the guard is the anchor — should exist"
+        )
         # The next `return None` after that log point should be the guard
         # exit. Crude but effective: take the substring after idx, look
         # for the next return statement.
-        after = src[idx:idx + 1500]
-        self.assertIn("return None", after,
-            "READ-before-EDIT guard must return None to trigger repair")
+        after = src[idx : idx + 1500]
+        self.assertIn(
+            "return None",
+            after,
+            "READ-before-EDIT guard must return None to trigger repair",
+        )
 
 
 if __name__ == "__main__":

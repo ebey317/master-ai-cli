@@ -31,10 +31,9 @@ What this does NOT exercise (out of scope — needs real Chrome):
 
 Run: python3 ~/scripts/test_extension_e2e_smoke.py
 """
+
 import json
-import os
 import re
-import sys
 import time
 import unittest
 import urllib.error
@@ -53,8 +52,15 @@ FIXTURE_URL = f"file://{FIXTURE_PATH}"
 # in job_app_smoke.html. Used to assert the model proposed a fill for
 # every required field (so the submit handler will not 422).
 REQUIRED_FIELD_IDS = [
-    "firstName", "lastName", "email", "phone",
-    "city", "state", "zip", "yearsExperience", "coverLetter",
+    "firstName",
+    "lastName",
+    "email",
+    "phone",
+    "city",
+    "state",
+    "zip",
+    "yearsExperience",
+    "coverLetter",
 ]
 REQUIRED_RADIO_NAME = "workAuth"
 
@@ -71,8 +77,10 @@ def _parse_fill_target(target):
     if raw.startswith("{"):
         try:
             obj = json.loads(raw)
-            return (str(obj.get("selector") or obj.get("target") or "").strip(),
-                    str(obj.get("value") or obj.get("text") or ""))
+            return (
+                str(obj.get("selector") or obj.get("target") or "").strip(),
+                str(obj.get("value") or obj.get("text") or ""),
+            )
         except json.JSONDecodeError:
             pass
     m = re.match(r"^(.*?)\s*(?:=>|:=|::)\s*([\s\S]*)$", raw)
@@ -93,23 +101,26 @@ def _selector_matches(soup, selector):
     except Exception:
         return []
 
+
 # Mirrors what content_script.js's interactiveElements() emits for
 # job_app_smoke.html. Each line: "N. role \"name\" selector=...".
-SYNTHETIC_INTERACTIVE = "\n".join([
-    '1. textbox "First name" selector=#firstName',
-    '2. textbox "Last name" selector=#lastName',
-    '3. textbox "Email" selector=#email',
-    '4. textbox "Phone" selector=#phone',
-    '5. textbox "City" selector=#city',
-    '6. combobox "State" selector=#state',
-    '7. textbox "ZIP code" selector=#zip',
-    '8. spinbutton "Years of experience" selector=#yearsExperience',
-    '9. radio "Yes" selector=input[name="workAuth"][value="yes"]',
-    '10. radio "No" selector=input[name="workAuth"][value="no"]',
-    '11. textbox "Cover letter" selector=#coverLetter',
-    '12. input "Résumé file" selector=#resume',
-    '13. button "Submit application" selector=#submitButton',
-])
+SYNTHETIC_INTERACTIVE = "\n".join(
+    [
+        '1. textbox "First name" selector=#firstName',
+        '2. textbox "Last name" selector=#lastName',
+        '3. textbox "Email" selector=#email',
+        '4. textbox "Phone" selector=#phone',
+        '5. textbox "City" selector=#city',
+        '6. combobox "State" selector=#state',
+        '7. textbox "ZIP code" selector=#zip',
+        '8. spinbutton "Years of experience" selector=#yearsExperience',
+        '9. radio "Yes" selector=input[name="workAuth"][value="yes"]',
+        '10. radio "No" selector=input[name="workAuth"][value="no"]',
+        '11. textbox "Cover letter" selector=#coverLetter',
+        '12. input "Résumé file" selector=#resume',
+        '13. button "Submit application" selector=#submitButton',
+    ]
+)
 
 PROMPT = (
     "Fill out this job application for Elijah W., phone 317-555-0100, "
@@ -128,7 +139,8 @@ def _read_token():
 def _post(path, body, *, timeout=TIMEOUT_S, token=None):
     data = json.dumps(body).encode()
     req = urllib.request.Request(
-        BASE + path, data=data,
+        BASE + path,
+        data=data,
         headers={
             "Content-Type": "application/json",
             **({"X-Master-AI-Token": token} if token else {}),
@@ -172,8 +184,13 @@ def _simulate_action_result(action):
         "action_id": action.get("id") or action.get("action_id"),
         "action": action,
     }
-    if kind in ("BROWSER_FILL", "BROWSER_CLICK", "BROWSER_NAV",
-                "BROWSER_READ", "BROWSER_SCREENSHOT"):
+    if kind in (
+        "BROWSER_FILL",
+        "BROWSER_CLICK",
+        "BROWSER_NAV",
+        "BROWSER_READ",
+        "BROWSER_SCREENSHOT",
+    ):
         return {
             **base,
             "verdict": "accept",
@@ -188,7 +205,12 @@ def _simulate_action_result(action):
                 **({"clicked": target} if kind == "BROWSER_CLICK" else {}),
             },
         }
-    return {**base, "verdict": "accept", "result": "success", "final_state": {"ok": True}}
+    return {
+        **base,
+        "verdict": "accept",
+        "result": "success",
+        "final_state": {"ok": True},
+    }
 
 
 class JobAppEndToEndSmoke(unittest.TestCase):
@@ -210,10 +232,12 @@ class JobAppEndToEndSmoke(unittest.TestCase):
         token = self.token
 
         # Round 1 — initial /chat call.
-        status, body = _post("/chat", _build_chat_body(PROMPT),
-                             timeout=CHAT_TIMEOUT_S, token=token)
-        self.assertNotEqual(status, 503,
-                            f"wedge protection 503 fired unexpectedly: {body}")
+        status, body = _post(
+            "/chat", _build_chat_body(PROMPT), timeout=CHAT_TIMEOUT_S, token=token
+        )
+        self.assertNotEqual(
+            status, 503, f"wedge protection 503 fired unexpectedly: {body}"
+        )
         self.assertEqual(status, 200, f"/chat returned {status}: {body}")
 
         rounds = [body]
@@ -229,15 +253,16 @@ class JobAppEndToEndSmoke(unittest.TestCase):
                 "parent_turn_id": parent_turn_id,
                 "source": "chrome_extension",
                 "mode": "auto",  # explicit; defends against the pre-import-_m
-                                 # bug at stt_server.py:948 that fires when
-                                 # /chat/continue omits mode. Fixed locally
-                                 # but the running service may still have
-                                 # the old code until restart.
+                # bug at stt_server.py:948 that fires when
+                # /chat/continue omits mode. Fixed locally
+                # but the running service may still have
+                # the old code until restart.
                 "session_id": _build_chat_body(PROMPT)["session_id"],
                 "action_results": results,
             }
-            status, body = _post("/chat/continue", cont_body,
-                                 timeout=CHAT_TIMEOUT_S, token=token)
+            status, body = _post(
+                "/chat/continue", cont_body, timeout=CHAT_TIMEOUT_S, token=token
+            )
             self.assertNotEqual(status, 503, f"503 mid-loop: {body}")
             self.assertEqual(status, 200, f"/chat/continue returned {status}: {body}")
             parent_turn_id = body.get("turn_id") or parent_turn_id
@@ -250,35 +275,56 @@ class JobAppEndToEndSmoke(unittest.TestCase):
         print("\n=== ROUNDS ===")
         for i, r in enumerate(rounds, 1):
             actions = r.get("actions") or []
-            kinds = [f'{(a.get("kind") or "")}: {(a.get("target") or "")[:80]}' for a in actions]
-            print(f"  round {i}: done={r.get('done')} actions={len(actions)} terminal={r.get('terminal_reason')}")
+            kinds = [
+                f"{(a.get('kind') or '')}: {(a.get('target') or '')[:80]}"
+                for a in actions
+            ]
+            print(
+                f"  round {i}: done={r.get('done')} actions={len(actions)} terminal={r.get('terminal_reason')}"
+            )
             for k in kinds:
                 print(f"      {k}")
 
         # Hard assertions — these are the pass criteria from JOB_APP_CHECKLIST.md.
-        self.assertTrue(body.get("done"),
-                        f"flow did not terminate cleanly after {round_idx} rounds; "
-                        f"last terminal_reason={body.get('terminal_reason')}")
+        self.assertTrue(
+            body.get("done"),
+            f"flow did not terminate cleanly after {round_idx} rounds; "
+            f"last terminal_reason={body.get('terminal_reason')}",
+        )
 
         kinds = [str(a.get("kind") or "").upper() for a in all_actions]
         self.assertIn("BROWSER_FILL", kinds, "no BROWSER_FILL emitted")
         self.assertIn("BROWSER_CLICK", kinds, "no BROWSER_CLICK emitted")
 
         # The Submit click should come AFTER the fills.
-        last_click_idx = max((i for i, k in enumerate(kinds) if k == "BROWSER_CLICK"), default=-1)
-        first_fill_idx = next((i for i, k in enumerate(kinds) if k == "BROWSER_FILL"), -1)
-        self.assertGreater(last_click_idx, first_fill_idx,
-                           "last BROWSER_CLICK should come after the first BROWSER_FILL "
-                           f"(kinds={kinds})")
+        last_click_idx = max(
+            (i for i, k in enumerate(kinds) if k == "BROWSER_CLICK"), default=-1
+        )
+        first_fill_idx = next(
+            (i for i, k in enumerate(kinds) if k == "BROWSER_FILL"), -1
+        )
+        self.assertGreater(
+            last_click_idx,
+            first_fill_idx,
+            "last BROWSER_CLICK should come after the first BROWSER_FILL "
+            f"(kinds={kinds})",
+        )
 
         # Submit target should reference the actual submit selector somewhere.
-        submit_action = next((a for a in all_actions
-                              if (a.get("kind") or "").upper() == "BROWSER_CLICK"
-                              and "submit" in (a.get("target") or "").lower()),
-                             None)
-        self.assertIsNotNone(submit_action,
-                             "no BROWSER_CLICK targeted the Submit button. "
-                             "Actions: " + json.dumps(all_actions, indent=2))
+        submit_action = next(
+            (
+                a
+                for a in all_actions
+                if (a.get("kind") or "").upper() == "BROWSER_CLICK"
+                and "submit" in (a.get("target") or "").lower()
+            ),
+            None,
+        )
+        self.assertIsNotNone(
+            submit_action,
+            "no BROWSER_CLICK targeted the Submit button. "
+            "Actions: " + json.dumps(all_actions, indent=2),
+        )
 
         # ---- Selector-resolves-against-fixture validation ----
         # Catch the failure mode where the model emits the right SHAPE of
@@ -326,25 +372,36 @@ class JobAppEndToEndSmoke(unittest.TestCase):
                     if name:
                         radio_clicked_for.add(name)
 
-        self.assertEqual(unresolved, [],
-                         "model emitted actions whose selectors don't resolve on "
-                         "the fixture HTML — content_script.js findElement would "
-                         "fail in real Chrome:\n  " + "\n  ".join(unresolved))
+        self.assertEqual(
+            unresolved,
+            [],
+            "model emitted actions whose selectors don't resolve on "
+            "the fixture HTML — content_script.js findElement would "
+            "fail in real Chrome:\n  " + "\n  ".join(unresolved),
+        )
 
         # Every required text/select field must have a corresponding FILL.
-        missing_fills = [fid for fid in REQUIRED_FIELD_IDS if fid not in filled_field_ids]
-        self.assertEqual(missing_fills, [],
-                         f"required fields not covered by BROWSER_FILL actions: "
-                         f"{missing_fills}. Filled: {sorted(filled_field_ids)}")
+        missing_fills = [
+            fid for fid in REQUIRED_FIELD_IDS if fid not in filled_field_ids
+        ]
+        self.assertEqual(
+            missing_fills,
+            [],
+            f"required fields not covered by BROWSER_FILL actions: "
+            f"{missing_fills}. Filled: {sorted(filled_field_ids)}",
+        )
 
         # The workAuth radio group must have a CLICK on at least one value.
-        self.assertIn(REQUIRED_RADIO_NAME, radio_clicked_for,
-                      f"workAuth radio not clicked — submit handler will block. "
-                      f"Radios clicked: {sorted(radio_clicked_for)}")
+        self.assertIn(
+            REQUIRED_RADIO_NAME,
+            radio_clicked_for,
+            f"workAuth radio not clicked — submit handler will block. "
+            f"Radios clicked: {sorted(radio_clicked_for)}",
+        )
 
-        print(f"  ✓ all selectors resolve on fixture")
+        print("  ✓ all selectors resolve on fixture")
         print(f"  ✓ all required fields filled: {sorted(filled_field_ids)}")
-        print(f"  ✓ workAuth radio clicked")
+        print("  ✓ workAuth radio clicked")
 
 
 if __name__ == "__main__":

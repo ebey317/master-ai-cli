@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 
-
 name = "workflow_describer"
 description = "Describe one recorded browser workflow step in a short sentence"
 
@@ -36,7 +35,9 @@ def _payload(task, context):
 
 def describe(step):
     kind = str(step.get("kind") or step.get("type") or "").upper()
-    target = _clip(step.get("target") or step.get("selector") or step.get("url") or "target")
+    target = _clip(
+        step.get("target") or step.get("selector") or step.get("url") or "target"
+    )
     value = _clip(step.get("value") or step.get("text") or "")
     label = _clip(step.get("label") or step.get("name") or "")
     if kind == "BROWSER_NAV":

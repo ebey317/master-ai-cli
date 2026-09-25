@@ -27,13 +27,11 @@ whole registry down.
 from __future__ import annotations
 
 import importlib.util
-import os
 import sys
 import traceback
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
-
 
 SUBAGENTS_DIR = Path.home() / "scripts" / "subagents"
 
@@ -43,12 +41,12 @@ class Subagent:
     name: str
     description: str
     run: Callable[..., dict]
-    source: str = ""           # absolute path to source file
-    module_name: str = ""      # for re-discovery
+    source: str = ""  # absolute path to source file
+    module_name: str = ""  # for re-discovery
 
 
 _REGISTRY: dict[str, Subagent] = {}
-_DISCOVERED_DIR: Optional[Path] = None
+_DISCOVERED_DIR: Path | None = None
 
 
 def _load_module_from_path(path: Path):
@@ -81,7 +79,7 @@ def _register_module(mod, source_path: str) -> bool:
     return True
 
 
-def discover(directory: Optional[Path] = None) -> int:
+def discover(directory: Path | None = None) -> int:
     """Scan ``directory`` (defaults to SUBAGENTS_DIR) for *.py files and
     register each one that exposes the contract (name, description, run).
     Returns the number of subagents currently registered (cumulative)."""
@@ -117,21 +115,23 @@ def list_subagents() -> list[Subagent]:
     return sorted(_REGISTRY.values(), key=lambda s: s.name)
 
 
-def get(name: str) -> Optional[Subagent]:
+def get(name: str) -> Subagent | None:
     if not isinstance(name, str):
         return None
     return _REGISTRY.get(name)
 
 
-def run(name: str, task: str = "", context: Optional[dict] = None) -> dict:
+def run(name: str, task: str = "", context: dict | None = None) -> dict:
     """Execute the named subagent. Returns {'error': ...} on lookup or
     runtime failure; the subagent's own return dict otherwise. The
     return value is treated as INERT data by the executor — no directive
     parsing happens on it."""
     sa = get(name)
     if sa is None:
-        return {"error": f"unknown subagent: {name!r}",
-                "available": [s.name for s in list_subagents()]}
+        return {
+            "error": f"unknown subagent: {name!r}",
+            "available": [s.name for s in list_subagents()],
+        }
     try:
         result = sa.run(task, context=context)
         if not isinstance(result, dict):

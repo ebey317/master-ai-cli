@@ -357,9 +357,7 @@ def _main() -> int:
     out = run_jev_gate(
         args.task,
         plan_text,
-        revise_fn=None
-        if args.no_retry
-        else (lambda prompt: (_import_revise()(prompt))),
+        revise_fn=None if args.no_retry else (lambda prompt: _import_revise()(prompt)),
     )
     for line in out["progress"]:
         print(line)

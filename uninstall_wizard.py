@@ -13,6 +13,7 @@ Removal levels:
   2) full user data + entry points     (keeps Ollama/models)
   3) total wipe                        (optional Ollama + models)
 """
+
 from __future__ import annotations
 
 import getpass
@@ -37,15 +38,15 @@ C = {
     "reset": "\033[0m",
 }
 
-SPLASH = f"""{C['red']}
+SPLASH = f"""{C["red"]}
     ██╗   ██╗███╗   ██╗██╗███╗   ██╗███████╗████████╗ █████╗ ██╗     ██╗
     ██║   ██║████╗  ██║██║████╗  ██║██╔════╝╚══██╔══╝██╔══██╗██║     ██║
     ██║   ██║██╔██╗ ██║██║██╔██╗ ██║███████╗   ██║   ███████║██║     ██║
     ██║   ██║██║╚██╗██║██║██║╚██╗██║╚════██║   ██║   ██╔══██║██║     ██║
     ███████╗██║ ╚████║██║██║ ╚████║███████║   ██║   ██║  ██║███████╗███████╗
     ╚══════╝╚═╝  ╚═══╝╚═╝╚═╝  ╚═══╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚══════╝╚══════╝
-{C['reset']}
-{C['bold']}  Master AI — Uninstall Wizard{C['reset']}
+{C["reset"]}
+{C["bold"]}  Master AI — Uninstall Wizard{C["reset"]}
 """
 
 SYSTEM_PROMPT = """You are the Master AI uninstall assistant, running temporarily through GitHub Models.
@@ -111,7 +112,10 @@ def _github_models_chat(messages: list[dict], token: str) -> str | None:
     req = urllib.request.Request(
         GITHUB_MODELS_ENDPOINT,
         data=data,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        },
     )
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
@@ -200,8 +204,13 @@ def _remove_ollama() -> None:
     os.system("sudo systemctl disable ollama 2>/dev/null")
     if shutil.which("ollama"):
         _print(f"{C['yellow']}  → Removing downloaded Ollama models...{C['reset']}")
-        os.system("ollama list 2>/dev/null | tail -n +2 | awk '{print $1}' | xargs -r ollama rm 2>/dev/null")
-    if _yes_no("Uninstall Ollama binary and data (/usr/local/bin/ollama, /usr/share/ollama)", default_no=True):
+        os.system(
+            "ollama list 2>/dev/null | tail -n +2 | awk '{print $1}' | xargs -r ollama rm 2>/dev/null"
+        )
+    if _yes_no(
+        "Uninstall Ollama binary and data (/usr/local/bin/ollama, /usr/share/ollama)",
+        default_no=True,
+    ):
         os.system("sudo rm -f /usr/local/bin/ollama")
         os.system("sudo rm -rf /usr/share/ollama")
         os.system("sudo rm -f /etc/systemd/system/ollama.service")
@@ -221,12 +230,16 @@ def level_1_pip_and_keys() -> None:
     for r in removed:
         _print(f"{C['green']}  ✓ Removed: {r}{C['reset']}")
     _remove_systemd_services()
-    _print(f"\n{C['green']}✓ Level 1 complete. Run `pip install -e .` to reinstall.{C['reset']}")
+    _print(
+        f"\n{C['green']}✓ Level 1 complete. Run `pip install -e .` to reinstall.{C['reset']}"
+    )
 
 
 def level_2_full_user_data() -> None:
     _print(f"\n{C['bold']}Level 2: full user data + entry points{C['reset']}")
-    _print(f"{C['dim']}Removes pip package, keys, memory, approved, entry points, and systemd services. Keeps Ollama.{C['reset']}\n")
+    _print(
+        f"{C['dim']}Removes pip package, keys, memory, approved, entry points, and systemd services. Keeps Ollama.{C['reset']}\n"
+    )
     if not _yes_no("Proceed", default_no=True):
         _print(f"{C['dim']}Cancelled.{C['reset']}")
         return
@@ -244,7 +257,9 @@ def level_2_full_user_data() -> None:
 
 def level_3_total_wipe() -> None:
     _print(f"\n{C['red']}{C['bold']}Level 3: TOTAL WIPE{C['reset']}")
-    _print(f"{C['red']}This removes everything including Ollama and downloaded models.{C['reset']}")
+    _print(
+        f"{C['red']}This removes everything including Ollama and downloaded models.{C['reset']}"
+    )
     _print(f"{C['red']}This cannot be undone.{C['reset']}\n")
     if not _yes_no("Proceed", default_no=True):
         _print(f"{C['dim']}Cancelled.{C['reset']}")
@@ -257,7 +272,9 @@ def level_3_total_wipe() -> None:
 def _interactive_github_uninstall(token: str) -> None:
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     _print(f"{C['bold']}  Temporary GitHub Models uninstall assistant.{C['reset']}")
-    _print(f"{C['dim']}  Type a question, or type 1 / 2 / 3 to choose a level, or 'cancel'.{C['reset']}\n")
+    _print(
+        f"{C['dim']}  Type a question, or type 1 / 2 / 3 to choose a level, or 'cancel'.{C['reset']}\n"
+    )
 
     intro = (
         "I can help you uninstall Master AI. There are three levels:\n"
@@ -290,7 +307,9 @@ def _interactive_github_uninstall(token: str) -> None:
         messages.append({"role": "user", "content": user_text})
         reply = _github_models_chat(messages, token)
         if reply is None:
-            _print(f"{C['yellow']}GitHub Models not answering. Switching to manual menu.{C['reset']}")
+            _print(
+                f"{C['yellow']}GitHub Models not answering. Switching to manual menu.{C['reset']}"
+            )
             return
         messages.append({"role": "assistant", "content": reply})
         _print(f"\n{C['green']}Assistant:{C['reset']} {reply}\n")
@@ -300,8 +319,12 @@ def _interactive_github_uninstall(token: str) -> None:
 
 def menu() -> None:
     _print(f"\n{C['bold']}Choose an uninstall level:{C['reset']}\n")
-    _print(f"  {C['yellow']}1){C['reset']} Remove pip package + API keys/config (keeps Ollama)")
-    _print(f"  {C['yellow']}2){C['reset']} Remove all user data + entry points (keeps Ollama)")
+    _print(
+        f"  {C['yellow']}1){C['reset']} Remove pip package + API keys/config (keeps Ollama)"
+    )
+    _print(
+        f"  {C['yellow']}2){C['reset']} Remove all user data + entry points (keeps Ollama)"
+    )
     _print(f"  {C['yellow']}3){C['reset']} TOTAL WIPE — Ollama + models + everything")
     _print(f"  {C['dim']}x) Cancel{C['reset']}\n")
     try:
@@ -325,7 +348,9 @@ def run_uninstall(use_github: bool = False) -> None:
     token = os.environ.get("GITHUB_TOKEN", "").strip()
     if use_github:
         if not token:
-            token = getpass.getpass("Paste GitHub token for temporary uninstall assistant (hidden): ").strip()
+            token = getpass.getpass(
+                "Paste GitHub token for temporary uninstall assistant (hidden): "
+            ).strip()
         if token:
             _interactive_github_uninstall(token)
             return

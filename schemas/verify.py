@@ -9,6 +9,7 @@ Three checks:
 
 Exits 0 if all three pass, 1 otherwise.
 """
+
 import json
 import sys
 from pathlib import Path
@@ -16,7 +17,9 @@ from pathlib import Path
 try:
     from jsonschema import Draft202012Validator, SchemaError
 except ImportError:
-    sys.stderr.write("FAIL: jsonschema not installed (pip3 install --user jsonschema)\n")
+    sys.stderr.write(
+        "FAIL: jsonschema not installed (pip3 install --user jsonschema)\n"
+    )
     sys.exit(1)
 
 SCHEMA_PATH = Path("/home/user/scripts/schemas/browser_planner_v1.json")
@@ -62,7 +65,10 @@ def main() -> int:
                 "executor_instruction": "Open the visible 'Resume Detailed.pdf' tile",
                 "constraints": {"allowed_directive_types": ["BROWSER_CLICK"]},
                 "expected_outcome": "PDF viewer opens",
-                "rationale": {"reason": "File visible in page signature.", "uncertainty": "low"},
+                "rationale": {
+                    "reason": "File visible in page signature.",
+                    "uncertainty": "low",
+                },
             },
             True,
             "minimal PlannerStep",
@@ -76,7 +82,10 @@ def main() -> int:
                 "executor_instruction": "Ask user which resume to use",
                 "constraints": {"allowed_directive_types": ["BROWSER_READ"]},
                 "expected_outcome": "user chooses",
-                "rationale": {"reason": "Multiple resumes visible.", "uncertainty": "medium"},
+                "rationale": {
+                    "reason": "Multiple resumes visible.",
+                    "uncertainty": "medium",
+                },
                 "needs_user_input": True,
                 "user_question": None,
             },
@@ -109,7 +118,10 @@ def main() -> int:
                 "step_id": "s1",
                 "type": "BROWSER_NAV",
                 "args": {"url": "https://example.com"},
-                "synthesized_from": {"planner_step_id": "s1", "executor_model": "fast_lane"},
+                "synthesized_from": {
+                    "planner_step_id": "s1",
+                    "executor_model": "fast_lane",
+                },
             },
             True,
             "BROWSER_NAV valid https URL",
@@ -121,7 +133,10 @@ def main() -> int:
                 "step_id": "s1",
                 "type": "BROWSER_NAV",
                 "args": {"url": "javascript:alert(1)"},
-                "synthesized_from": {"planner_step_id": "s1", "executor_model": "fast_lane"},
+                "synthesized_from": {
+                    "planner_step_id": "s1",
+                    "executor_model": "fast_lane",
+                },
             },
             False,
             "BROWSER_NAV with javascript: URL must be blocked by ^https?:// pattern",
@@ -133,7 +148,10 @@ def main() -> int:
                 "step_id": "s1",
                 "type": "BROWSER_NAV",
                 "args": {"url": "file:///etc/passwd"},
-                "synthesized_from": {"planner_step_id": "s1", "executor_model": "fast_lane"},
+                "synthesized_from": {
+                    "planner_step_id": "s1",
+                    "executor_model": "fast_lane",
+                },
             },
             False,
             "BROWSER_NAV with file:// URL must be blocked",
@@ -145,7 +163,10 @@ def main() -> int:
                 "step_id": "s1",
                 "type": "BROWSER_CLICK",
                 "args": {},
-                "synthesized_from": {"planner_step_id": "s1", "executor_model": "fast_lane"},
+                "synthesized_from": {
+                    "planner_step_id": "s1",
+                    "executor_model": "fast_lane",
+                },
             },
             False,
             "BROWSER_CLICK with no selector/text/role must fail anyOf",
@@ -157,7 +178,10 @@ def main() -> int:
                 "step_id": "s1",
                 "type": "BROWSER_CLICK",
                 "args": {"text": "Sign in"},
-                "synthesized_from": {"planner_step_id": "s1", "executor_model": "fast_lane"},
+                "synthesized_from": {
+                    "planner_step_id": "s1",
+                    "executor_model": "fast_lane",
+                },
             },
             True,
             "BROWSER_CLICK with text only is valid",
@@ -169,7 +193,10 @@ def main() -> int:
                 "step_id": "s1",
                 "type": "BROWSER_FILL",
                 "args": {"text": ""},
-                "synthesized_from": {"planner_step_id": "s1", "executor_model": "fast_lane"},
+                "synthesized_from": {
+                    "planner_step_id": "s1",
+                    "executor_model": "fast_lane",
+                },
             },
             False,
             "BROWSER_FILL with empty text must fail minLength: 1",
@@ -181,7 +208,10 @@ def main() -> int:
                 "step_id": "s1",
                 "type": "BROWSER_SCREENSHOT",
                 "args": {"scope": "element"},
-                "synthesized_from": {"planner_step_id": "s1", "executor_model": "fast_lane"},
+                "synthesized_from": {
+                    "planner_step_id": "s1",
+                    "executor_model": "fast_lane",
+                },
             },
             False,
             "BROWSER_SCREENSHOT scope=element without selector must fail conditional",
@@ -193,7 +223,10 @@ def main() -> int:
                 "step_id": "s1",
                 "type": "BROWSER_SCREENSHOT",
                 "args": {"scope": "viewport"},
-                "synthesized_from": {"planner_step_id": "s1", "executor_model": "fast_lane"},
+                "synthesized_from": {
+                    "planner_step_id": "s1",
+                    "executor_model": "fast_lane",
+                },
             },
             True,
             "BROWSER_SCREENSHOT scope=viewport without selector is valid",
@@ -205,7 +238,10 @@ def main() -> int:
                 "step_id": "s1",
                 "type": "BROWSER_WAIT",
                 "args": {"condition": "selector_visible"},
-                "synthesized_from": {"planner_step_id": "s1", "executor_model": "fast_lane"},
+                "synthesized_from": {
+                    "planner_step_id": "s1",
+                    "executor_model": "fast_lane",
+                },
             },
             False,
             "BROWSER_WAIT selector_visible without selector must fail conditional",
@@ -217,7 +253,10 @@ def main() -> int:
                 "step_id": "s1",
                 "type": "BROWSER_WAIT",
                 "args": {"condition": "text_present", "text": "Loaded"},
-                "synthesized_from": {"planner_step_id": "s1", "executor_model": "fast_lane"},
+                "synthesized_from": {
+                    "planner_step_id": "s1",
+                    "executor_model": "fast_lane",
+                },
             },
             True,
             "BROWSER_WAIT text_present with text is valid",
@@ -229,7 +268,10 @@ def main() -> int:
                 "step_id": "s1",
                 "type": "BROWSER_SCROLL",
                 "args": {"direction": "top", "amount": 500},
-                "synthesized_from": {"planner_step_id": "s1", "executor_model": "fast_lane"},
+                "synthesized_from": {
+                    "planner_step_id": "s1",
+                    "executor_model": "fast_lane",
+                },
             },
             False,
             "BROWSER_SCROLL direction=top with amount must fail (top forbids amount)",
@@ -241,7 +283,10 @@ def main() -> int:
                 "step_id": "s1",
                 "type": "BROWSER_SCROLL",
                 "args": {"direction": "into_view", "selector": "#footer"},
-                "synthesized_from": {"planner_step_id": "s1", "executor_model": "fast_lane"},
+                "synthesized_from": {
+                    "planner_step_id": "s1",
+                    "executor_model": "fast_lane",
+                },
             },
             True,
             "BROWSER_SCROLL into_view with selector is valid",
@@ -253,7 +298,10 @@ def main() -> int:
                 "step_id": "s1",
                 "type": "BROWSER_KEY",
                 "args": {"key": "Enter"},
-                "synthesized_from": {"planner_step_id": "s1", "executor_model": "fast_lane"},
+                "synthesized_from": {
+                    "planner_step_id": "s1",
+                    "executor_model": "fast_lane",
+                },
             },
             True,
             "BROWSER_KEY Enter is valid",
@@ -265,7 +313,10 @@ def main() -> int:
                 "step_id": "s1",
                 "type": "BROWSER_KEY",
                 "args": {"key": "a"},
-                "synthesized_from": {"planner_step_id": "s1", "executor_model": "fast_lane"},
+                "synthesized_from": {
+                    "planner_step_id": "s1",
+                    "executor_model": "fast_lane",
+                },
             },
             False,
             "BROWSER_KEY 'a' (typed character) must fail enum",
@@ -281,7 +332,10 @@ def main() -> int:
                     "step_id": "s1",
                     "type": "BROWSER_READ",
                     "args": {},
-                    "synthesized_from": {"planner_step_id": "s1", "executor_model": "fast_lane"},
+                    "synthesized_from": {
+                        "planner_step_id": "s1",
+                        "executor_model": "fast_lane",
+                    },
                 },
                 "observation": "Read 320 chars from page",
                 "error_class": "selector_not_found",
@@ -301,7 +355,10 @@ def main() -> int:
                     "step_id": "s1",
                     "type": "BROWSER_READ",
                     "args": {},
-                    "synthesized_from": {"planner_step_id": "s1", "executor_model": "fast_lane"},
+                    "synthesized_from": {
+                        "planner_step_id": "s1",
+                        "executor_model": "fast_lane",
+                    },
                 },
                 "observation": "Read 320 chars from page",
                 "error_class": None,
@@ -321,7 +378,10 @@ def main() -> int:
                     "step_id": "s1",
                     "type": "BROWSER_CLICK",
                     "args": {"selector": "#missing"},
-                    "synthesized_from": {"planner_step_id": "s1", "executor_model": "fast_lane"},
+                    "synthesized_from": {
+                        "planner_step_id": "s1",
+                        "executor_model": "fast_lane",
+                    },
                 },
                 "observation": "Selector not found",
                 "error_class": None,
@@ -336,7 +396,12 @@ def main() -> int:
                 "envelope": "planner_done",
                 "step_id": "s5",
                 "summary": "Application submitted",
-                "evidence": [{"source": "page_signature", "locator": "Submission confirmation page"}],
+                "evidence": [
+                    {
+                        "source": "page_signature",
+                        "locator": "Submission confirmation page",
+                    }
+                ],
                 "user_visible": "I submitted your application to Acme.",
             },
             True,
@@ -392,7 +457,9 @@ def main() -> int:
         else:
             failed += 1
             if expected_valid:
-                fail_details.append(f"  Expected VALID but got errors:\n    " + "\n    ".join(errors[:3]))
+                fail_details.append(
+                    "  Expected VALID but got errors:\n    " + "\n    ".join(errors[:3])
+                )
                 print(f"FAIL  [{name:20s}] {desc}")
             else:
                 fail_details.append("  Expected INVALID but validated cleanly")

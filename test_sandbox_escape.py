@@ -12,6 +12,7 @@ manually before writing these tests.
 Run: python3 ~/scripts/test_sandbox_escape.py
 Exit: 0 = all green, non-zero = a real containment failure.
 """
+
 import os
 import sys
 import time
@@ -25,8 +26,12 @@ import master_ai  # noqa: E402
 
 def _proc_count_for_user():
     import subprocess
-    out = subprocess.run(["ps", "-u", os.environ.get("USER", "elijah"), "--no-headers"],
-                         capture_output=True, text=True).stdout
+
+    out = subprocess.run(
+        ["ps", "-u", os.environ.get("USER", "elijah"), "--no-headers"],
+        capture_output=True,
+        text=True,
+    ).stdout
     return len(out.splitlines())
 
 
@@ -70,7 +75,9 @@ class SecretPathsHidden(unittest.TestCase):
             self.skipTest("no real ~/.master_ai_keys on this box to test against")
         r = master_ai.run_command("wc -c < ~/.master_ai_keys 2>/dev/null || echo 0")
         size_seen = int(r.strip().split()[0]) if r.strip().split() else -1
-        self.assertEqual(size_seen, 0, "sandbox failed to hide ~/.master_ai_keys contents")
+        self.assertEqual(
+            size_seen, 0, "sandbox failed to hide ~/.master_ai_keys contents"
+        )
 
     def test_ssh_dir_contents_hidden_from_inside(self):
         real = os.path.expanduser("~/.ssh")
@@ -80,9 +87,12 @@ class SecretPathsHidden(unittest.TestCase):
         r = master_ai.run_command("ls -a ~/.ssh 2>&1 | wc -l")
         inside_count = int(r.strip().split()[0]) if r.strip().split() else -1
         # Empty tmpfs overlay shows only "." and ".." -> 2 lines.
-        self.assertEqual(inside_count, 2,
-                         f"expected ~/.ssh to read as empty inside the sandbox, "
-                         f"got {inside_count} entries (outside has {outside_count})")
+        self.assertEqual(
+            inside_count,
+            2,
+            f"expected ~/.ssh to read as empty inside the sandbox, "
+            f"got {inside_count} entries (outside has {outside_count})",
+        )
 
 
 class ForkBombContained(unittest.TestCase):
@@ -93,6 +103,7 @@ class ForkBombContained(unittest.TestCase):
         # seconds to plateau, then check the system-wide count never
         # climbed anywhere near an unbounded run.
         import threading
+
         result_holder = {}
 
         def _run():
@@ -108,9 +119,12 @@ class ForkBombContained(unittest.TestCase):
         # Contained means "didn't run away" -- a generous headroom check,
         # not an exact number (cgroup TasksMax=200 for this scope, but
         # other unrelated processes exist on a live desktop too).
-        self.assertLess(during, before + 250,
-                        f"fork bomb grew system-wide process count from "
-                        f"{before} to {during} -- containment failed")
+        self.assertLess(
+            during,
+            before + 250,
+            f"fork bomb grew system-wide process count from "
+            f"{before} to {during} -- containment failed",
+        )
 
 
 class StandardsCheckReflectsSandbox(unittest.TestCase):

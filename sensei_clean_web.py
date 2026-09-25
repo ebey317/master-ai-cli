@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import socket
 import threading
 import time
@@ -19,7 +18,6 @@ from sensei_clean.connectors import detect_sources, supported_connector_catalog
 from sensei_clean.engine import scan_run
 from sensei_clean.runner import apply_per_adapter, undo_per_adapter
 from sensei_clean.schemas import ActionRecord, CapabilityReport
-
 
 APP_TITLE = "Sensei Clean"
 JOBS: dict[str, dict] = {}
@@ -146,10 +144,20 @@ def _run_scan(job_id: str, payload: dict) -> None:
     suffix_allowlist = None
     if mode == "office":
         suffix_allowlist = {
-            ".doc", ".docx", ".odt", ".rtf",
-            ".xls", ".xlsx", ".ods", ".csv",
-            ".ppt", ".pptx", ".odp",
-            ".pdf", ".txt", ".md",
+            ".doc",
+            ".docx",
+            ".odt",
+            ".rtf",
+            ".xls",
+            ".xlsx",
+            ".ods",
+            ".csv",
+            ".ppt",
+            ".pptx",
+            ".odp",
+            ".pdf",
+            ".txt",
+            ".md",
         }
 
     def progress(phase: str, done: int, total: int) -> None:
@@ -172,21 +180,23 @@ def _run_scan(job_id: str, payload: dict) -> None:
             progress=progress,
         )
         waste = _load_waste(run_path)
-        job.update({
-            "state": "done",
-            "phase": "done",
-            "runDir": str(run_path),
-            "reviewUrl": f"/report?run={urllib.parse.quote(str(run_path))}&file=review.html",
-            "summaryUrl": f"/report?run={urllib.parse.quote(str(run_path))}&file=summary.md",
-            "filesScanned": len(items),
-            "duplicateGroups": len(findings),
-            "movesReady": sum(1 for a in actions if a.lane != "monitored"),
-            "movesNeedExtra": sum(1 for a in actions if a.lane == "monitored"),
-            "actions": [_human_action(a) for a in actions[:200]],
-            "waste": waste,
-            "capabilities": [c.to_dict() for c in caps],
-            "message": "Scan finished.",
-        })
+        job.update(
+            {
+                "state": "done",
+                "phase": "done",
+                "runDir": str(run_path),
+                "reviewUrl": f"/report?run={urllib.parse.quote(str(run_path))}&file=review.html",
+                "summaryUrl": f"/report?run={urllib.parse.quote(str(run_path))}&file=summary.md",
+                "filesScanned": len(items),
+                "duplicateGroups": len(findings),
+                "movesReady": sum(1 for a in actions if a.lane != "monitored"),
+                "movesNeedExtra": sum(1 for a in actions if a.lane == "monitored"),
+                "actions": [_human_action(a) for a in actions[:200]],
+                "waste": waste,
+                "capabilities": [c.to_dict() for c in caps],
+                "message": "Scan finished.",
+            }
+        )
     except Exception as exc:
         job.update({"state": "error", "message": str(exc)})
 
@@ -194,17 +204,20 @@ def _run_scan(job_id: str, payload: dict) -> None:
 def _source_payload() -> list[dict]:
     rows = []
     for src in detect_sources():
-        rows.append({
-            "id": src.connector_id,
-            "label": src.label,
-            "path": src.path,
-            "displayPath": _friendly_path(src.path),
-            "kind": src.kind,
-            "kindLabel": _friendly_kind(src.kind),
-            "available": src.available,
-            "notes": _friendly_notes(src.notes),
-            "selected": src.available and src.connector_id in {"downloads", "pictures"},
-        })
+        rows.append(
+            {
+                "id": src.connector_id,
+                "label": src.label,
+                "path": src.path,
+                "displayPath": _friendly_path(src.path),
+                "kind": src.kind,
+                "kindLabel": _friendly_kind(src.kind),
+                "available": src.available,
+                "notes": _friendly_notes(src.notes),
+                "selected": src.available
+                and src.connector_id in {"downloads", "pictures"},
+            }
+        )
     return rows
 
 
@@ -749,18 +762,25 @@ class Handler(BaseHTTPRequestHandler):
             state = clean_status.load_state()
             if state.get("last_reclaim_bytes") is not None:
                 from sensei_clean.waste import human_bytes
-                state["last_reclaim_bytes_human"] = human_bytes(state.get("last_reclaim_bytes", 0))
-            self._json({
-                "title": APP_TITLE,
-                "state": state,
-                "sources": _source_payload(),
-                "catalog": supported_connector_catalog(),
-            })
+
+                state["last_reclaim_bytes_human"] = human_bytes(
+                    state.get("last_reclaim_bytes", 0)
+                )
+            self._json(
+                {
+                    "title": APP_TITLE,
+                    "state": state,
+                    "sources": _source_payload(),
+                    "catalog": supported_connector_catalog(),
+                }
+            )
             return
         if parsed.path == "/api/job":
             query = urllib.parse.parse_qs(parsed.query)
             job_id = (query.get("id") or [""])[0]
-            self._json(JOBS.get(job_id) or {"state": "missing", "message": "Scan not found."})
+            self._json(
+                JOBS.get(job_id) or {"state": "missing", "message": "Scan not found."}
+            )
             return
         if parsed.path == "/report":
             query = urllib.parse.parse_qs(parsed.query)
@@ -773,7 +793,11 @@ class Handler(BaseHTTPRequestHandler):
             if not path.exists():
                 self._send(404, "text/plain; charset=utf-8", b"not found")
                 return
-            ctype = "text/html; charset=utf-8" if name.endswith(".html") else "text/plain; charset=utf-8"
+            ctype = (
+                "text/html; charset=utf-8"
+                if name.endswith(".html")
+                else "text/plain; charset=utf-8"
+            )
             self._send(200, ctype, path.read_bytes())
             return
         self._send(404, "text/plain; charset=utf-8", b"not found")
@@ -784,7 +808,9 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/scan":
             job_id = str(int(time.time() * 1000))
             JOBS[job_id] = {"state": "queued", "message": "Queued."}
-            thread = threading.Thread(target=_run_scan, args=(job_id, payload), daemon=True)
+            thread = threading.Thread(
+                target=_run_scan, args=(job_id, payload), daemon=True
+            )
             thread.start()
             self._json({"jobId": job_id})
             return
@@ -793,15 +819,27 @@ class Handler(BaseHTTPRequestHandler):
             include_extra = bool(payload.get("includeExtra", False))
             actions = _load_actions(run_dir)
             caps = _load_capabilities(run_dir)
-            selected = actions if include_extra else [a for a in actions if a.lane != "monitored"]
+            selected = (
+                actions
+                if include_extra
+                else [a for a in actions if a.lane != "monitored"]
+            )
             results = apply_per_adapter(selected, caps, str(run_dir / "undo.jsonl"))
             moved = sum(1 for r in results if r.success)
             failed = sum(1 for r in results if not r.success)
             try:
-                clean_status.record_apply(run_dir=str(run_dir), applied=moved, failed=failed)
+                clean_status.record_apply(
+                    run_dir=str(run_dir), applied=moved, failed=failed
+                )
             except Exception:
                 pass
-            self._json({"moved": moved, "failed": failed, "messages": [r.message for r in results if not r.success]})
+            self._json(
+                {
+                    "moved": moved,
+                    "failed": failed,
+                    "messages": [r.message for r in results if not r.success],
+                }
+            )
             return
         if parsed.path == "/api/undo":
             run_dir = Path(str(payload.get("runDir") or "")).expanduser().resolve()
@@ -809,7 +847,13 @@ class Handler(BaseHTTPRequestHandler):
             results = undo_per_adapter(list(reversed(records)))
             undone = sum(1 for r in results if r.success)
             failed = sum(1 for r in results if not r.success)
-            self._json({"undone": undone, "failed": failed, "messages": [r.message for r in results if not r.success]})
+            self._json(
+                {
+                    "undone": undone,
+                    "failed": failed,
+                    "messages": [r.message for r in results if not r.success],
+                }
+            )
             return
         self._send(404, "text/plain; charset=utf-8", b"not found")
 

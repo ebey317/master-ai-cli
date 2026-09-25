@@ -5,6 +5,7 @@ Runs outside Hermes. Stores schedules in ~/.master_ai_schedules.json and
 executes master-ai slash commands on time/cadence. Logs to
 ~/.master_ai_scheduler.log.
 """
+
 import json
 import os
 import re
@@ -123,10 +124,14 @@ def _scheduler_loop():
             if not s.get("enabled", True):
                 continue
             last = s.get("last_run")
-            anchor = datetime.fromisoformat(last) if last else datetime.fromisoformat(
-                s.get("created") or now.isoformat()
+            anchor = (
+                datetime.fromisoformat(last)
+                if last
+                else datetime.fromisoformat(s.get("created") or now.isoformat())
             )
-            boundary = _next_time(s.get("when", "00:00"), s.get("cadence", "daily"), anchor)
+            boundary = _next_time(
+                s.get("when", "00:00"), s.get("cadence", "daily"), anchor
+            )
             if now >= boundary:
                 log(f"triggering schedule {s.get('id')}: {s.get('command')}")
                 Thread(target=_run_command, args=(s["command"],), daemon=True).start()
@@ -139,8 +144,10 @@ def _scheduler_loop():
 def _pid_file():
     return Path.home() / ".master_ai_scheduler.pid"
 
+
 def _stop_file():
     return Path.home() / ".master_ai_scheduler.stop"
+
 
 def start_daemon():
     if SHUTDOWN.is_set():
@@ -162,6 +169,7 @@ def start_daemon():
     log(f"scheduler daemon started (pid {os.getpid()})")
     return t
 
+
 def stop_daemon():
     SHUTDOWN.set()
     _stop_file().touch()
@@ -174,6 +182,7 @@ def stop_daemon():
             log(f"stop_daemon kill error: {e}")
         pid_path.unlink(missing_ok=True)
     return True
+
 
 def daemon_status():
     pid_path = _pid_file()
@@ -188,17 +197,21 @@ def daemon_status():
         return "stopped (stale pid)"
 
 
-def add_schedule(command: str, when: str = "00:00", cadence: str = "daily", sid: str = None):
+def add_schedule(
+    command: str, when: str = "00:00", cadence: str = "daily", sid: str = None
+):
     schedules = load_schedules()
     sid = sid or f"sched_{int(time.time())}"
-    schedules.append({
-        "id": sid,
-        "command": command,
-        "when": when,
-        "cadence": cadence,
-        "enabled": True,
-        "created": datetime.now().isoformat(),
-    })
+    schedules.append(
+        {
+            "id": sid,
+            "command": command,
+            "when": when,
+            "cadence": cadence,
+            "enabled": True,
+            "created": datetime.now().isoformat(),
+        }
+    )
     save_schedules(schedules)
     return sid
 
@@ -217,11 +230,14 @@ def list_schedules():
 
 if __name__ == "__main__":
     import argparse
+
     ap = argparse.ArgumentParser()
     ap.add_argument("action", choices=["start", "add", "remove", "list", "stop"])
     ap.add_argument("--command")
     ap.add_argument("--when", default="00:00")
-    ap.add_argument("--cadence", default="daily", choices=["hourly", "daily", "weekly", "monthly"])
+    ap.add_argument(
+        "--cadence", default="daily", choices=["hourly", "daily", "weekly", "monthly"]
+    )
     ap.add_argument("--id")
     args = ap.parse_args()
 
@@ -243,7 +259,9 @@ if __name__ == "__main__":
         print(f"removed {removed} schedule(s)")
     elif args.action == "list":
         for s in list_schedules():
-            print(f"{s['id']}  {s.get('when','--')} {s.get('cadence','daily'):8}  {s['command']}  enabled={s.get('enabled',True)}")
+            print(
+                f"{s['id']}  {s.get('when', '--')} {s.get('cadence', 'daily'):8}  {s['command']}  enabled={s.get('enabled', True)}"
+            )
     elif args.action == "stop":
         stop_daemon()
         print("scheduler stopped")

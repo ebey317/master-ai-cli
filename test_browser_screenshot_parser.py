@@ -15,6 +15,7 @@ After this fix:
 Other directive kinds (RUN, BROWSER_CLICK, BROWSER_FILL, BROWSER_NAV,
 BROWSER_READ) still require a non-empty target — no regression there.
 """
+
 import os
 import sys
 import unittest
@@ -22,6 +23,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from stt_server import _api_parse_actions, _fallback_action
+
 from typed_actions import parse_directive, parse_reply
 
 
@@ -39,7 +41,13 @@ class FallbackActionTests(unittest.TestCase):
             self.assertEqual(action["target"], target)
 
     def test_empty_target_still_dropped_for_other_kinds(self):
-        for kind in ("RUN", "BROWSER_CLICK", "BROWSER_FILL", "BROWSER_NAV", "BROWSER_READ"):
+        for kind in (
+            "RUN",
+            "BROWSER_CLICK",
+            "BROWSER_FILL",
+            "BROWSER_NAV",
+            "BROWSER_READ",
+        ):
             with self.subTest(kind=kind):
                 self.assertIsNone(_fallback_action(kind, "", model="cloud_fast"))
 
@@ -47,7 +55,9 @@ class FallbackActionTests(unittest.TestCase):
 class ApiParseActionsTests(unittest.TestCase):
     def test_bare_screenshot_line_yields_action(self):
         reply = "I will capture the visible tab.\nBROWSER_SCREENSHOT:"
-        actions = _api_parse_actions(reply, model="cloud_fast", source="chrome_extension")
+        actions = _api_parse_actions(
+            reply, model="cloud_fast", source="chrome_extension"
+        )
         self.assertEqual(len(actions), 1)
         self.assertEqual(actions[0]["kind"], "BROWSER_SCREENSHOT")
         self.assertEqual(actions[0]["target"], "viewport")
@@ -80,21 +90,27 @@ class ApiParseActionsTests(unittest.TestCase):
 
     def test_drive_inspect_line_yields_action(self):
         reply = 'BROWSER_DRIVE_INSPECT_FOLDER: {"query":"resume","variants":["Resume","resume"]}'
-        actions = _api_parse_actions(reply, model="cloud_fast", source="chrome_extension", mode="auto")
+        actions = _api_parse_actions(
+            reply, model="cloud_fast", source="chrome_extension", mode="auto"
+        )
         self.assertEqual(len(actions), 1)
         self.assertEqual(actions[0]["kind"], "BROWSER_DRIVE_INSPECT_FOLDER")
         self.assertEqual(actions[0]["risk"], "safe")
         self.assertFalse(actions[0]["requires_confirm"])
 
     def test_new_browser_observation_actions_parse(self):
-        reply = "\n".join([
-            "BROWSER_WAIT: 2000",
-            "BROWSER_SCROLL: down",
-            "BROWSER_FIND: Resume",
-            "BROWSER_EXTRACT_LIST: drive",
-            "BROWSER_DOUBLE_CLICK: [aria-label='Resume']",
-        ])
-        actions = _api_parse_actions(reply, model="cloud_fast", source="chrome_extension", mode="auto")
+        reply = "\n".join(
+            [
+                "BROWSER_WAIT: 2000",
+                "BROWSER_SCROLL: down",
+                "BROWSER_FIND: Resume",
+                "BROWSER_EXTRACT_LIST: drive",
+                "BROWSER_DOUBLE_CLICK: [aria-label='Resume']",
+            ]
+        )
+        actions = _api_parse_actions(
+            reply, model="cloud_fast", source="chrome_extension", mode="auto"
+        )
         self.assertEqual(
             [a["kind"] for a in actions],
             [

@@ -127,6 +127,7 @@ class HandleTightReasoningDepthGuard(unittest.TestCase):
 
     def test_signature_has_depth_with_deep_default(self):
         import inspect
+
         sig = inspect.signature(master_ai.handle_tight_reasoning)
         self.assertIn("depth", sig.parameters)
         self.assertEqual(sig.parameters["depth"].default, "deep")

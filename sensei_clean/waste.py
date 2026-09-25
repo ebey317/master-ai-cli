@@ -14,17 +14,19 @@ Used by reports.write_summary to fill out the Storage Waste Report
 section, by the GUI to render the metrics, and by the
 `sensei-clean status` command to show the last-scan headline number.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Iterable
 
 from .schemas import FindingRecord, ItemRecord
 
 
-def reclaimable_bytes(items: Iterable[ItemRecord], findings: Iterable[FindingRecord]) -> int:
+def reclaimable_bytes(
+    items: Iterable[ItemRecord], findings: Iterable[FindingRecord]
+) -> int:
     """How many bytes would be reclaimed if every exact_duplicate
     finding's extra copies were moved to quarantine. Keeps the largest
     copy of each cluster (since 'largest' rarely differs for true
@@ -85,11 +87,13 @@ def by_category(items: Iterable[ItemRecord]) -> dict[str, tuple[int, int]]:
     for it in items:
         agg[it.category_guess][0] += 1
         agg[it.category_guess][1] += it.size_bytes or 0
-    return dict(sorted(
-        ((k, (v[0], v[1])) for k, v in agg.items()),
-        key=lambda kv: kv[1][1],
-        reverse=True,
-    ))
+    return dict(
+        sorted(
+            ((k, (v[0], v[1])) for k, v in agg.items()),
+            key=lambda kv: kv[1][1],
+            reverse=True,
+        )
+    )
 
 
 def human_bytes(n: int) -> str:
@@ -105,8 +109,12 @@ def human_bytes(n: int) -> str:
     return f"{f:.1f} {units[-1]}"
 
 
-def summary(items: list[ItemRecord], findings: list[FindingRecord],
-            biggest_n: int = 10, oldest_n: int = 10) -> dict:
+def summary(
+    items: list[ItemRecord],
+    findings: list[FindingRecord],
+    biggest_n: int = 10,
+    oldest_n: int = 10,
+) -> dict:
     """Single-call rollup used by reports + status + GUI."""
     total_bytes = sum((it.size_bytes or 0) for it in items)
     reclaim = reclaimable_bytes(items, findings)
@@ -116,7 +124,9 @@ def summary(items: list[ItemRecord], findings: list[FindingRecord],
         "total_bytes_human": human_bytes(total_bytes),
         "reclaim_bytes": reclaim,
         "reclaim_bytes_human": human_bytes(reclaim),
-        "duplicate_clusters": sum(1 for f in findings if f.finding_type == "exact_duplicate"),
+        "duplicate_clusters": sum(
+            1 for f in findings if f.finding_type == "exact_duplicate"
+        ),
         "by_category": [
             {"category": cat, "count": c, "bytes": b, "bytes_human": human_bytes(b)}
             for cat, (c, b) in by_category(items).items()

@@ -22,13 +22,13 @@ auto-route hits this exact code path with no `fast:` prefix.
 
 Run: python3 ~/scripts/test_cloud_plan_emission.py
 """
+
 import json
 import re
 import sys
 import unittest
 import urllib.error
 import urllib.request
-from pathlib import Path
 
 sys.path.insert(0, "/home/user/scripts")
 
@@ -38,19 +38,21 @@ sys.path.insert(0, "/home/user/scripts")
 import master_ai  # noqa: E402
 
 FIXTURE_URL = "file:///home/user/scripts/sensei_extension/test/job_app_smoke.html"
-INTERACTIVE_ELEMENTS = "\n".join([
-    '1. textbox "First name" selector=#firstName',
-    '2. textbox "Last name" selector=#lastName',
-    '3. textbox "Email" selector=#email',
-    '4. textbox "Phone" selector=#phone',
-    '5. textbox "City" selector=#city',
-    '6. combobox "State" selector=#state',
-    '7. textbox "ZIP code" selector=#zip',
-    '8. spinbutton "Years of experience" selector=#yearsExperience',
-    '9. radio "Yes" selector=input[name="workAuth"][value="yes"]',
-    '10. textbox "Cover letter" selector=#coverLetter',
-    '11. button "Submit application" selector=#submitButton',
-])
+INTERACTIVE_ELEMENTS = "\n".join(
+    [
+        '1. textbox "First name" selector=#firstName',
+        '2. textbox "Last name" selector=#lastName',
+        '3. textbox "Email" selector=#email',
+        '4. textbox "Phone" selector=#phone',
+        '5. textbox "City" selector=#city',
+        '6. combobox "State" selector=#state',
+        '7. textbox "ZIP code" selector=#zip',
+        '8. spinbutton "Years of experience" selector=#yearsExperience',
+        '9. radio "Yes" selector=input[name="workAuth"][value="yes"]',
+        '10. textbox "Cover letter" selector=#coverLetter',
+        '11. button "Submit application" selector=#submitButton',
+    ]
+)
 
 USER_PROMPT = (
     "[API REQUEST]\n"
@@ -80,16 +82,16 @@ USER_PROMPT = (
 # committed teaching changes, update this constant.
 PLAN_AS_BLOCK_CONTRACT = (
     "PLAN-AS-BLOCK CONTRACT (multi-step browser work) — mirrors Anthropic's \"Ask "
-    "before acting\" pattern. TRIGGER: a Chrome-extension turn that needs 3+ "
+    'before acting" pattern. TRIGGER: a Chrome-extension turn that needs 3+ '
     "BROWSER_* actions on the same page. Count the directives you are about to "
     "emit BEFORE you start the reply. If 3+, this contract fires.\n"
     "REPLY SHAPE when the contract fires — strict:\n"
     " 1. The VERY FIRST line of your reply is `<PLAN>` at column 0. The "
     "PLAN block IS the reasoning surface for multi-step browser work.\n"
     " 2. Inside the block, three labels in this order: `Sites:` (space-separated "
-    "origins or \"this page\"), then `Steps:` (numbered 1., 2., …, one short "
-    "line each), then `Irreversible:` (either \"none\" or one line naming the "
-    "irreversible step, e.g., \"Click Submit creates an application record\").\n"
+    'origins or "this page"), then `Steps:` (numbered 1., 2., …, one short '
+    'line each), then `Irreversible:` (either "none" or one line naming the '
+    'irreversible step, e.g., "Click Submit creates an application record").\n'
     " 3. Close with `</PLAN>` on its own line at column 0.\n"
     " 4. AFTER `</PLAN>`, emit the BROWSER_* directives one per line. DO NOT "
     "put directives inside the block — the block is the human-readable plan; "
@@ -118,8 +120,7 @@ def _build_cloud_system():
         "BROWSER_READ: <css-selector>\n"
         "BROWSER_NAV: <url>\n"
         "BROWSER_SCREENSHOT: viewport\n\n"
-        "BROWSER_DRIVE_INSPECT_FOLDER: {\"query\":\"resume\"}\n\n"
-        + PLAN_AS_BLOCK_CONTRACT
+        'BROWSER_DRIVE_INSPECT_FOLDER: {"query":"resume"}\n\n' + PLAN_AS_BLOCK_CONTRACT
     )
 
 
@@ -152,48 +153,61 @@ def _groq(messages, *, timeout=60):
 class CloudPlanEmissionTests(unittest.TestCase):
     def test_groq_emits_plan_block_on_multi_step_browser_turn(self):
         system = _build_cloud_system()
-        reply = _groq([
-            {"role": "system", "content": system},
-            {"role": "user", "content": USER_PROMPT},
-        ])
+        reply = _groq(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": USER_PROMPT},
+            ]
+        )
 
         print("\n=== GROQ REPLY (first 1600 chars) ===")
         print(reply[:1600])
 
         m_open = reply.find("<PLAN>")
         m_close = reply.find("</PLAN>")
-        self.assertGreaterEqual(m_open, 0,
-                                "Groq did not emit <PLAN> on a multi-step "
-                                "Chrome-extension turn — the committed "
-                                "CLOUD_SYSTEM teaching doesn't carry through")
+        self.assertGreaterEqual(
+            m_open,
+            0,
+            "Groq did not emit <PLAN> on a multi-step "
+            "Chrome-extension turn — the committed "
+            "CLOUD_SYSTEM teaching doesn't carry through",
+        )
         self.assertGreater(m_close, m_open, "</PLAN> missing or before <PLAN>")
-        block = reply[m_open + len("<PLAN>"): m_close]
+        block = reply[m_open + len("<PLAN>") : m_close]
 
         # The three required labels per CONTRACT.
-        self.assertRegex(block, r"(?im)^\s*Sites:",
-                         "<PLAN> block missing Sites: line")
-        self.assertRegex(block, r"(?im)^\s*Steps:",
-                         "<PLAN> block missing Steps: section")
-        self.assertRegex(block, r"(?im)^\s*Irreversible:",
-                         "<PLAN> block missing Irreversible: line")
+        self.assertRegex(block, r"(?im)^\s*Sites:", "<PLAN> block missing Sites: line")
+        self.assertRegex(
+            block, r"(?im)^\s*Steps:", "<PLAN> block missing Steps: section"
+        )
+        self.assertRegex(
+            block, r"(?im)^\s*Irreversible:", "<PLAN> block missing Irreversible: line"
+        )
 
         # Steps should enumerate 3+ items.
         step_lines = re.findall(r"(?m)^\s*\d+\.\s+.+", block)
-        self.assertGreaterEqual(len(step_lines), 3,
-                                f"only {len(step_lines)} numbered steps in PLAN block")
+        self.assertGreaterEqual(
+            len(step_lines), 3, f"only {len(step_lines)} numbered steps in PLAN block"
+        )
 
         # BROWSER_* directives appear AFTER </PLAN>, not inside.
-        tail = reply[m_close + len("</PLAN>"):]
-        self.assertRegex(tail, r"BROWSER_(FILL|CLICK)\s*:",
-                         "no BROWSER_* directive after </PLAN>; block is "
-                         "render-only and execution is gone")
-        self.assertNotRegex(block, r"(?m)^BROWSER_(FILL|CLICK|NAV|READ|SCREENSHOT)\s*:",
-                            "BROWSER_* directive appears INSIDE PLAN block — "
-                            "those should follow </PLAN>")
+        tail = reply[m_close + len("</PLAN>") :]
+        self.assertRegex(
+            tail,
+            r"BROWSER_(FILL|CLICK)\s*:",
+            "no BROWSER_* directive after </PLAN>; block is "
+            "render-only and execution is gone",
+        )
+        self.assertNotRegex(
+            block,
+            r"(?m)^BROWSER_(FILL|CLICK|NAV|READ|SCREENSHOT)\s*:",
+            "BROWSER_* directive appears INSIDE PLAN block — "
+            "those should follow </PLAN>",
+        )
 
-        print(f"  ✓ <PLAN> block present with all 3 labels")
+        print("  ✓ <PLAN> block present with all 3 labels")
         print(f"  ✓ {len(step_lines)} numbered steps")
-        print(f"  ✓ BROWSER_* directives follow </PLAN>")
+        print("  ✓ BROWSER_* directives follow </PLAN>")
 
 
 if __name__ == "__main__":

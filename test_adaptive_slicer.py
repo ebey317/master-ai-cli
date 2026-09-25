@@ -19,16 +19,18 @@ sys.path.insert(0, os.path.expanduser("~/scripts"))
 
 import master_ai  # noqa: E402
 
-
 # Synthetic file contents at different densities. Keep them small so the
 # slicer can find the symbol's def line and the truncation cap is the
 # obvious failure mode if pre/post/max_chars aren't wired through.
-_SPARSE_CONTENT = "\n".join([
-    "# only one ref to FOO in this file",
-    "FOO = 'sparse'",
-    "x = 1",
-    "y = 2",
-] + ["pad = 'x'"] * 50)
+_SPARSE_CONTENT = "\n".join(
+    [
+        "# only one ref to FOO in this file",
+        "FOO = 'sparse'",
+        "x = 1",
+        "y = 2",
+    ]
+    + ["pad = 'x'"] * 50
+)
 
 _DENSE_CONTENT = "\n".join(
     [f"line_{i} = FOO + {i}" for i in range(50)]
@@ -113,18 +115,22 @@ class AdaptiveParamsGuards(unittest.TestCase):
         pre, post, mc = master_ai._adaptive_slice_params("", "FOO", "explain FOO")
         self.assertEqual(
             (pre, post, mc),
-            (master_ai._SLICER_PRE_LINES,
-             master_ai._SLICER_POST_LINES,
-             master_ai._SLICER_MAX_CHARS),
+            (
+                master_ai._SLICER_PRE_LINES,
+                master_ai._SLICER_POST_LINES,
+                master_ai._SLICER_MAX_CHARS,
+            ),
         )
 
     def test_empty_symbol_returns_defaults(self):
         pre, post, mc = master_ai._adaptive_slice_params(_DENSE_CONTENT, "", "explain")
         self.assertEqual(
             (pre, post, mc),
-            (master_ai._SLICER_PRE_LINES,
-             master_ai._SLICER_POST_LINES,
-             master_ai._SLICER_MAX_CHARS),
+            (
+                master_ai._SLICER_PRE_LINES,
+                master_ai._SLICER_POST_LINES,
+                master_ai._SLICER_MAX_CHARS,
+            ),
         )
 
     def test_no_intent_match_uses_density_only(self):
@@ -151,13 +157,18 @@ class SliceAroundSymbolMaxChars(unittest.TestCase):
             + ["    body line " + str(i) for i in range(500)]
         )
         result = master_ai._slice_around_symbol(
-            content, "target_fn",
-            pre_lines=200, post_lines=200, max_chars=500,
+            content,
+            "target_fn",
+            pre_lines=200,
+            post_lines=200,
+            max_chars=500,
         )
         self.assertIsNotNone(result)
         _, _, slice_text, _ = result
-        self.assertTrue(slice_text.endswith("chars] ..."),
-            f"slicer did not truncate at max_chars=500; len={len(slice_text)}")
+        self.assertTrue(
+            slice_text.endswith("chars] ..."),
+            f"slicer did not truncate at max_chars=500; len={len(slice_text)}",
+        )
         self.assertIn("[TRUNCATED at 500 chars]", slice_text)
 
     def test_default_max_chars_preserves_legacy_behavior(self):

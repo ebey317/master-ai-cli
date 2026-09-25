@@ -16,7 +16,6 @@ to ~/scripts and the cwd to prevent runaway scans.
 
 from __future__ import annotations
 
-import os
 import re
 import subprocess
 from pathlib import Path
@@ -36,12 +35,26 @@ def _find_by_name(pattern):
             continue
         try:
             r = subprocess.run(
-                ["find", str(root), "-type", "f",
-                 "-iname", pattern,
-                 "-not", "-path", "*/.git/*",
-                 "-not", "-path", "*/__pycache__/*",
-                 "-not", "-path", "*/node_modules/*"],
-                capture_output=True, text=True, timeout=10,
+                [
+                    "find",
+                    str(root),
+                    "-type",
+                    "f",
+                    "-iname",
+                    pattern,
+                    "-not",
+                    "-path",
+                    "*/.git/*",
+                    "-not",
+                    "-path",
+                    "*/__pycache__/*",
+                    "-not",
+                    "-path",
+                    "*/node_modules/*",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
         except Exception:
             continue
@@ -60,13 +73,20 @@ def _grep_for(text, directory=None):
             continue
         try:
             r = subprocess.run(
-                ["grep", "-rn", "-I",
-                 "--exclude-dir=.git",
-                 "--exclude-dir=__pycache__",
-                 "--exclude-dir=node_modules",
-                 "--max-count=10",
-                 text, str(root)],
-                capture_output=True, text=True, timeout=15,
+                [
+                    "grep",
+                    "-rn",
+                    "-I",
+                    "--exclude-dir=.git",
+                    "--exclude-dir=__pycache__",
+                    "--exclude-dir=node_modules",
+                    "--max-count=10",
+                    text,
+                    str(root),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
         except Exception:
             continue
@@ -80,8 +100,9 @@ def _grep_for(text, directory=None):
                     lno_i = int(lno)
                 except ValueError:
                     lno_i = None
-                matches.append({"path": p, "line": lno_i,
-                                "snippet": snip.strip()[:200]})
+                matches.append(
+                    {"path": p, "line": lno_i, "snippet": snip.strip()[:200]}
+                )
     return matches
 
 
@@ -98,8 +119,12 @@ def run(task, context=None):
         if not rest:
             return {"error": "file_finder: 'grep:' needs a search string"}
         matches = _grep_for(rest, directory)
-        return {"matches": matches, "kind": "grep", "needle": rest,
-                "summary": f"{len(matches)} match(es) for grep {rest!r}"}
+        return {
+            "matches": matches,
+            "kind": "grep",
+            "needle": rest,
+            "summary": f"{len(matches)} match(es) for grep {rest!r}",
+        }
     if task.startswith("name:"):
         pat = task[5:].strip()
     else:
@@ -107,5 +132,9 @@ def run(task, context=None):
     if not pat:
         return {"error": "file_finder: empty pattern"}
     matches = _find_by_name(pat)
-    return {"matches": matches, "kind": "name", "pattern": pat,
-            "summary": f"{len(matches)} match(es) for name {pat!r}"}
+    return {
+        "matches": matches,
+        "kind": "name",
+        "pattern": pat,
+        "summary": f"{len(matches)} match(es) for name {pat!r}",
+    }

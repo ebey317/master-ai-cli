@@ -5,6 +5,7 @@ for perpetual-watcher's generated proposals.
 Runs entirely against a temp proposals directory; never touches the real
 ~/.master_ai_proposals/.
 """
+
 import shutil
 import tempfile
 import unittest
@@ -74,9 +75,7 @@ class PerpetualReviewTests(unittest.TestCase):
         self.assertIn("- [x] Approve", text)
         self.assertIn("- [ ] Reject", text)
         # ...but the unrelated Integration Plan checkboxes are untouched.
-        self.assertIn(
-            "- [ ] Review each commit for applicability", text
-        )
+        self.assertIn("- [ ] Review each commit for applicability", text)
         self.assertIn("- [ ] Create skill:", text)
 
     def test_decided_proposal_is_no_longer_pending(self):
@@ -133,9 +132,7 @@ class PerpetualReviewTests(unittest.TestCase):
         # The real Decision section got the approve mark...
         self.assertIn("- [x] Approve", text_after)
         # ...and the stray note-line above it was never touched.
-        self.assertIn(
-            "- [x] Reject (this is just a note, not a decision)", text_after
-        )
+        self.assertIn("- [x] Reject (this is just a note, not a decision)", text_after)
 
     def test_path_traversal_via_absolute_id_is_rejected(self):
         # CodeRabbit finding, 2026-09-13 (CWE-22): Path(base) / "/abs/x"
@@ -149,9 +146,7 @@ class PerpetualReviewTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIn("no proposal matching", msg)
             # And the decoy file itself must be untouched.
-            self.assertEqual(
-                outside.read_text(), "not a proposal, just a decoy file"
-            )
+            self.assertEqual(outside.read_text(), "not a proposal, just a decoy file")
         finally:
             shutil.rmtree(outside.parent, ignore_errors=True)
 

@@ -51,7 +51,9 @@ class SingleLineDirectives(unittest.TestCase):
         self.assertFalse(actions[0].requires_confirm)
 
     def test_run_skill(self):
-        actions = ta.parse_reply_with_bodies("RUN_SKILL: file_finder query=typed_actions")
+        actions = ta.parse_reply_with_bodies(
+            "RUN_SKILL: file_finder query=typed_actions"
+        )
         self.assertEqual(len(actions), 1)
         self.assertEqual(actions[0].kind, "RUN_SKILL")
         self.assertEqual(actions[0].target, "file_finder query=typed_actions")
@@ -99,12 +101,7 @@ class BacktickParitySuppression(unittest.TestCase):
 
 class CreateEditBodyBlocks(unittest.TestCase):
     def test_create_with_content_block(self):
-        text = (
-            "CREATE: /tmp/hello.py\n"
-            "<<<CONTENT\n"
-            "print('hello')\n"
-            ">>>CONTENT\n"
-        )
+        text = "CREATE: /tmp/hello.py\n<<<CONTENT\nprint('hello')\n>>>CONTENT\n"
         actions = ta.parse_reply_with_bodies(text)
         creates = [a for a in actions if a.kind == "CREATE"]
         self.assertEqual(len(creates), 1)
@@ -169,7 +166,9 @@ class CreateEditBodyBlocks(unittest.TestCase):
         self.assertEqual(remembers, [])
         creates = [a for a in actions if a.kind == "CREATE"]
         self.assertEqual(len(creates), 1)
-        self.assertIn("REMEMBER: this is just a code comment", creates[0].create_content)
+        self.assertIn(
+            "REMEMBER: this is just a code comment", creates[0].create_content
+        )
 
 
 class MixedReply(unittest.TestCase):

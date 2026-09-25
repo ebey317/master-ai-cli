@@ -8,8 +8,8 @@ from tempfile import TemporaryDirectory
 from unittest import mock
 
 from sensei_clean import status as _status
-from sensei_clean.apply import apply_actions, load_undo_records, undo_actions
 from sensei_clean.adapters.local_fs import LocalFSAdapter
+from sensei_clean.apply import apply_actions, load_undo_records, undo_actions
 from sensei_clean.connectors import detect_sources, supported_connector_catalog
 from sensei_clean.engine import scan_run
 
@@ -88,19 +88,25 @@ class SenseiCleanConnectorTests(unittest.TestCase):
             for folder in [downloads, cloud, android]:
                 folder.mkdir(parents=True, exist_ok=True)
 
-            (downloads / "invoice.txt").write_text("consumer invoice preview text", encoding="utf-8")
+            (downloads / "invoice.txt").write_text(
+                "consumer invoice preview text", encoding="utf-8"
+            )
             (downloads / "copy_a.txt").write_text("duplicate payload", encoding="utf-8")
             (downloads / "copy_b.txt").write_text("duplicate payload", encoding="utf-8")
             _write_docx(downloads / "office.docx", "office preview text")
-            (cloud / "sheet.xlsx").write_text("not a real xlsx but should be inventoried", encoding="utf-8")
+            (cloud / "sheet.xlsx").write_text(
+                "not a real xlsx but should be inventoried", encoding="utf-8"
+            )
             (android / "photo.jpg").write_bytes(b"fakejpg")
 
             run_dir = root / "run"
             organize_root = root / "organized"
             quarantine_root = root / "quarantine"
             state_dir = root / "state"
-            with mock.patch.object(_status, "STATE_DIR", state_dir), \
-                 mock.patch.object(_status, "STATE_FILE", state_dir / "state.json"):
+            with (
+                mock.patch.object(_status, "STATE_DIR", state_dir),
+                mock.patch.object(_status, "STATE_FILE", state_dir / "state.json"),
+            ):
                 run_path, caps, items, findings, actions = scan_run(
                     roots=[str(downloads), str(cloud), str(android)],
                     sha256=True,
@@ -117,7 +123,9 @@ class SenseiCleanConnectorTests(unittest.TestCase):
             self.assertTrue((run_path / "reports" / "summary.md").exists())
             self.assertTrue((run_path / "reports" / "previews.md").exists())
             self.assertTrue((run_path / "reports" / "review.html").exists())
-            review_html = (run_path / "reports" / "review.html").read_text(encoding="utf-8")
+            review_html = (run_path / "reports" / "review.html").read_text(
+                encoding="utf-8"
+            )
             self.assertIn("Sensei Clean Review", review_html)
             self.assertIn("What Sensei Wants To Move", review_html)
             self.assertIn("Move extra copy", review_html)
@@ -134,12 +142,18 @@ class SenseiCleanConnectorTests(unittest.TestCase):
             )
             selected = [a for a in actions if a.lane != "monitored"]
             self.assertTrue(selected, "expected unattended actions for Downloads")
-            results = apply_actions(adapter, selected, cap, str(run_path / "undo.jsonl"))
-            self.assertTrue(all(r.success for r in results), [r.message for r in results])
+            results = apply_actions(
+                adapter, selected, cap, str(run_path / "undo.jsonl")
+            )
+            self.assertTrue(
+                all(r.success for r in results), [r.message for r in results]
+            )
 
             records = load_undo_records(str(run_path / "undo.jsonl"))
             undo_results = undo_actions(adapter, list(reversed(records)))
-            self.assertTrue(all(r.success for r in undo_results), [r.message for r in undo_results])
+            self.assertTrue(
+                all(r.success for r in undo_results), [r.message for r in undo_results]
+            )
             self.assertTrue((downloads / "invoice.txt").exists())
 
 

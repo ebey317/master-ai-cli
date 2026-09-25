@@ -9,8 +9,8 @@ present. For Sensei that maps to config flag + local auth state.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 
 @dataclass(frozen=True)

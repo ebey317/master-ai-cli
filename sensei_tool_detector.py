@@ -10,8 +10,8 @@ import os
 import shutil
 import subprocess
 import time
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 INVENTORY_PATH = Path.home() / ".sensei_tool_inventory.json"
 PROBE_TIMEOUT_S = 2.0
@@ -21,32 +21,78 @@ TOOLS: dict[str, list[str]] = {
     "vcs": ["git", "gh", "svn", "hg"],
     "editors": ["vim", "nvim", "nano", "emacs", "code"],
     "shells": ["bash", "zsh", "fish"],
-    "languages": ["python3", "node", "npm", "npx", "pip", "ruby", "go",
-                  "rustc", "cargo", "java", "deno", "bun", "perl", "lua"],
+    "languages": [
+        "python3",
+        "node",
+        "npm",
+        "npx",
+        "pip",
+        "ruby",
+        "go",
+        "rustc",
+        "cargo",
+        "java",
+        "deno",
+        "bun",
+        "perl",
+        "lua",
+    ],
     "build": ["make", "cmake", "gcc", "g++", "pkg-config"],
-    "network": ["curl", "wget", "ssh", "rsync", "nc", "dig", "ping", "mtr",
-                "tailscale"],
-    "files_text": ["jq", "yq", "fd", "fzf", "rg", "tar", "gzip", "xz",
-                   "zip", "unzip"],
+    "network": [
+        "curl",
+        "wget",
+        "ssh",
+        "rsync",
+        "nc",
+        "dig",
+        "ping",
+        "mtr",
+        "tailscale",
+    ],
+    "files_text": ["jq", "yq", "fd", "fzf", "rg", "tar", "gzip", "xz", "zip", "unzip"],
     "media": ["ffmpeg", "ffprobe", "yt-dlp"],
     "libreoffice": ["libreoffice", "soffice", "unopkg"],
     "db": ["sqlite3", "psql", "mysql", "redis-cli"],
     "ai": ["ollama"],
     "browsers": ["google-chrome", "firefox"],
-    "desktop_x": ["wmctrl", "xdotool", "xclip", "xsel", "scrot",
-                  "gnome-screenshot", "gnome-terminal"],
-    "system": ["tmux", "screen", "htop", "btop", "lsof", "systemctl",
-               "journalctl", "watch", "parallel"],
+    "desktop_x": [
+        "wmctrl",
+        "xdotool",
+        "xclip",
+        "xsel",
+        "scrot",
+        "gnome-screenshot",
+        "gnome-terminal",
+    ],
+    "system": [
+        "tmux",
+        "screen",
+        "htop",
+        "btop",
+        "lsof",
+        "systemctl",
+        "journalctl",
+        "watch",
+        "parallel",
+    ],
     "crypto": ["openssl", "gpg", "sha256sum", "base64"],
     "extras": ["tree", "bat", "hyperfine", "ncdu"],
-    "email_clients": ["thunderbird", "evolution", "mutt", "neomutt",
-                      "alpine", "sylpheed", "claws-mail", "geary"],
+    "email_clients": [
+        "thunderbird",
+        "evolution",
+        "mutt",
+        "neomutt",
+        "alpine",
+        "sylpheed",
+        "claws-mail",
+        "geary",
+    ],
 }
 
 # Tools whose --version writes to stderr or needs a different flag.
 VERSION_FLAG_OVERRIDES: dict[str, list[str]] = {
     "gnome-terminal": ["--version"],
-    "java": ["-version"],   # writes to stderr
+    "java": ["-version"],  # writes to stderr
     "convert": ["-version"],
     "openssl": ["version"],
     "soffice": ["--version"],
@@ -92,13 +138,15 @@ def detect(tools: Iterable[str]) -> list[dict]:
             mtime = int(st.st_mtime)
         except OSError:
             mtime = None
-        rows.append({
-            "name": name,
-            "found": True,
-            "path": path,
-            "version": probe_version(path, name),
-            "mtime": mtime,
-        })
+        rows.append(
+            {
+                "name": name,
+                "found": True,
+                "path": path,
+                "version": probe_version(path, name),
+                "mtime": mtime,
+            }
+        )
     return rows
 
 

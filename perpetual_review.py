@@ -46,7 +46,9 @@ _NEXT_HEADING_RE = re.compile(r"^##[^#]", re.MULTILINE)
 # never the full file, so an unrelated checkbox elsewhere (e.g. the
 # "## Integration Plan" section's "Create skill:", "Add tests:", ...) can
 # never be mistaken for a decision or get rewritten by approve/reject.
-_DECISION_RE = re.compile(r"^(- \[)([ xX])(\] (Approve|Reject|Defer))\s*$", re.MULTILINE)
+_DECISION_RE = re.compile(
+    r"^(- \[)([ xX])(\] (Approve|Reject|Defer))\s*$", re.MULTILINE
+)
 _MODIFY_RE = re.compile(r"^- \[([ xX])\] Modify:\s*(.*)$", re.MULTILINE)
 
 _HEADER_FIELDS = ("Source", "Commits", "Category", "Priority")
@@ -222,7 +224,10 @@ def _set_decision(proposal_id, decision):
 
         new_section, n = _DECISION_RE.subn(_sub, section)
         if n == 0:
-            return False, f"{path.stem}: no Decision checklist found (malformed proposal)"
+            return (
+                False,
+                f"{path.stem}: no Decision checklist found (malformed proposal)",
+            )
         new_text = text[:start] + new_section + text[end:]
         _atomic_write(path, new_text)
         return True, f"{path.stem} marked {decision}"

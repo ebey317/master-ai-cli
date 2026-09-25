@@ -2,8 +2,14 @@ from __future__ import annotations
 
 from .schemas import ActionRecord, CapabilityReport, ItemRecord
 
-
-MONITORED_SENSITIVITIES = {"private", "financial", "medical", "identity", "credential", "career"}
+MONITORED_SENSITIVITIES = {
+    "private",
+    "financial",
+    "medical",
+    "identity",
+    "credential",
+    "career",
+}
 
 
 def allowed_actions(capability: str, sensitivity: str) -> list[str]:

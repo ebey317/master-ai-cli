@@ -16,18 +16,17 @@ version dict.
 Cached internally by content hash so repeated calls with the same prompt
 text don't re-hash or re-fork git.
 """
+
 from __future__ import annotations
 
 import hashlib
 import subprocess
 from pathlib import Path
-from typing import Optional
-
 
 _GIT_DIR = Path(__file__).resolve().parent  # ~/scripts
 
 
-def _git_commit_short() -> Optional[str]:
+def _git_commit_short() -> str | None:
     """Return the 10-char short HEAD, or None if git is unavailable / errors.
 
     Bounded by a 2s subprocess timeout. Failures (no git, not a repo, etc.)
@@ -100,7 +99,7 @@ def compute_prompt_version(assembled_prompt_text: str) -> dict:
 
 # Module-level "current" pointer — audit writers read this between calls
 # without needing the original prompt text in scope.
-_LAST_VERSION: Optional[dict] = None
+_LAST_VERSION: dict | None = None
 
 
 def stamp(assembled_prompt_text: str) -> dict:

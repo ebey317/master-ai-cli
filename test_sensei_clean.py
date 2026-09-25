@@ -8,20 +8,44 @@ from sensei_clean.queue_builder import build_queue
 from sensei_clean.schemas import ActionRecord, CapabilityReport, ItemRecord
 
 
-def make_item(path: str, confidence: float = 1.0, risk: int = 20, sensitivity: str = "documents") -> ItemRecord:
+def make_item(
+    path: str, confidence: float = 1.0, risk: int = 20, sensitivity: str = "documents"
+) -> ItemRecord:
     return ItemRecord(
         schema_version="sensei.item.v1",
         run_id="run1",
         item_id=f"id:{path}",
-        source={"adapter": "local_fs", "provider": "local", "capability": "local", "account_label": "me", "root": "/tmp"},
-        identity={"path": path, "provider_id": path, "parent_id": str(Path(path).parent)},
+        source={
+            "adapter": "local_fs",
+            "provider": "local",
+            "capability": "local",
+            "account_label": "me",
+            "root": "/tmp",
+        },
+        identity={
+            "path": path,
+            "provider_id": path,
+            "parent_id": str(Path(path).parent),
+        },
         kind="file",
         display_name=Path(path).name,
         mime="text/plain",
         size_bytes=10,
         timestamps={"created": None, "modified": "2026-01-01T00:00:00Z", "taken": None},
-        hashes={"sha256": None, "md5": None, "provider_hash": None, "perceptual_hash": None},
-        features={"extension": ".txt", "dimensions": None, "duration_seconds": None, "text_snippet": None, "face_count": None, "screenshot_likely": False},
+        hashes={
+            "sha256": None,
+            "md5": None,
+            "provider_hash": None,
+            "perceptual_hash": None,
+        },
+        features={
+            "extension": ".txt",
+            "dimensions": None,
+            "duration_seconds": None,
+            "text_snippet": None,
+            "face_count": None,
+            "screenshot_likely": False,
+        },
         sensitivity=sensitivity,
         category_guess="Reading",
         confidence=confidence,
@@ -48,7 +72,11 @@ class SenseiCleanTests(unittest.TestCase):
             sample = source / "resume.txt"
             sample.write_text("resume")
 
-            adapter = LocalFSAdapter(run_id="run1", roots=[str(source)], quarantine_root=str(Path(tmpdir) / "quarantine"))
+            adapter = LocalFSAdapter(
+                run_id="run1",
+                roots=[str(source)],
+                quarantine_root=str(Path(tmpdir) / "quarantine"),
+            )
             items = list(adapter.scan())
 
             self.assertEqual(len(items), 1)
@@ -66,7 +94,11 @@ class SenseiCleanTests(unittest.TestCase):
             sample.write_text("hello")
             destination = root / "Sensei-Quarantine" / "duplicates" / "dup.txt"
 
-            adapter = LocalFSAdapter(run_id="run1", roots=[str(source)], quarantine_root=str(root / "Sensei-Quarantine"))
+            adapter = LocalFSAdapter(
+                run_id="run1",
+                roots=[str(source)],
+                quarantine_root=str(root / "Sensei-Quarantine"),
+            )
             action = ActionRecord(
                 schema_version="sensei.action.v1",
                 run_id="run1",
@@ -105,13 +137,21 @@ class SenseiCleanTests(unittest.TestCase):
             root="/tmp",
             available=True,
         )
-        item = make_item("/tmp/private.txt", confidence=0.95, risk=20, sensitivity="private")
+        item = make_item(
+            "/tmp/private.txt", confidence=0.95, risk=20, sensitivity="private"
+        )
         queue = build_queue([item], [], [capability])
         self.assertEqual(queue["monitored"][0]["item_id"], item.item_id)
 
 
-def _make_action(action_id, source, destination, sensitivity="documents",
-                 action_type="quarantine_move", adapter="local_fs"):
+def _make_action(
+    action_id,
+    source,
+    destination,
+    sensitivity="documents",
+    action_type="quarantine_move",
+    adapter="local_fs",
+):
     return ActionRecord(
         schema_version="sensei.action.v1",
         run_id="run1",
@@ -149,6 +189,7 @@ class SenseiCleanSafetyTests(unittest.TestCase):
     def test_apply_enforces_policy_can_apply(self):
         """apply_actions must refuse actions policy.can_apply rejects."""
         from tempfile import TemporaryDirectory
+
         from sensei_clean.apply import apply_actions
 
         with TemporaryDirectory() as tmpdir:
@@ -157,12 +198,17 @@ class SenseiCleanSafetyTests(unittest.TestCase):
             src.mkdir()
             f = src / "x.txt"
             f.write_text("data")
-            adapter = LocalFSAdapter(run_id="r1", roots=[str(src)],
-                                     quarantine_root=str(root / "Q"))
+            adapter = LocalFSAdapter(
+                run_id="r1", roots=[str(src)], quarantine_root=str(root / "Q")
+            )
             # capability with available=False should block apply
             cap = CapabilityReport(
-                adapter="local_fs", provider="local", capability="local",
-                account_label="me", root=str(root), available=False,
+                adapter="local_fs",
+                provider="local",
+                capability="local",
+                account_label="me",
+                root=str(root),
+                available=False,
             )
             action = _make_action("a1", f, root / "Q/duplicates/x.txt")
             results = apply_actions(adapter, [action], cap, str(root / "undo.jsonl"))
@@ -174,6 +220,7 @@ class SenseiCleanSafetyTests(unittest.TestCase):
         """Journal must have one line per successful action, not a single
         batch write at the end."""
         from tempfile import TemporaryDirectory
+
         from sensei_clean.apply import apply_actions
 
         with TemporaryDirectory() as tmpdir:
@@ -183,22 +230,27 @@ class SenseiCleanSafetyTests(unittest.TestCase):
             files = [src / f"f{i}.txt" for i in range(3)]
             for f in files:
                 f.write_text(f.name)
-            adapter = LocalFSAdapter(run_id="r1", roots=[str(src)],
-                                     quarantine_root=str(root / "Q"))
+            adapter = LocalFSAdapter(
+                run_id="r1", roots=[str(src)], quarantine_root=str(root / "Q")
+            )
             cap = _local_capability(root)
-            actions = [_make_action(f"a{i}", f, root / f"Q/duplicates/{f.name}")
-                       for i, f in enumerate(files)]
+            actions = [
+                _make_action(f"a{i}", f, root / f"Q/duplicates/{f.name}")
+                for i, f in enumerate(files)
+            ]
             undo_path = root / "undo.jsonl"
             results = apply_actions(adapter, actions, cap, str(undo_path))
             self.assertEqual(sum(1 for r in results if r.success), 3)
             lines = [ln for ln in undo_path.read_text().splitlines() if ln.strip()]
-            self.assertEqual(len(lines), 3,
-                             f"expected 3 journal lines, got {len(lines)}")
+            self.assertEqual(
+                len(lines), 3, f"expected 3 journal lines, got {len(lines)}"
+            )
 
     def test_apply_uniquifies_same_basename_destinations(self):
         """Same-basename quarantine targets must not collide; second gets
         a numeric suffix."""
         from tempfile import TemporaryDirectory
+
         from sensei_clean.apply import apply_actions
 
         with TemporaryDirectory() as tmpdir:
@@ -210,8 +262,9 @@ class SenseiCleanSafetyTests(unittest.TestCase):
             f1.write_text("one")
             f2.write_text("two")
             quarantine = root / "Q"
-            adapter = LocalFSAdapter(run_id="r1", roots=[str(root)],
-                                     quarantine_root=str(quarantine))
+            adapter = LocalFSAdapter(
+                run_id="r1", roots=[str(root)], quarantine_root=str(quarantine)
+            )
             cap = _local_capability(root)
             actions = [
                 _make_action("a1", f1, quarantine / "duplicates" / "dup.txt"),
@@ -228,6 +281,7 @@ class SenseiCleanSafetyTests(unittest.TestCase):
         """End-to-end: scan-like actions -> apply -> undo restores
         originals at original paths."""
         from tempfile import TemporaryDirectory
+
         from sensei_clean.apply import apply_actions, load_undo_records, undo_actions
 
         with TemporaryDirectory() as tmpdir:
@@ -237,8 +291,9 @@ class SenseiCleanSafetyTests(unittest.TestCase):
             f = src / "doc.txt"
             f.write_text("hello")
             quarantine = root / "Q"
-            adapter = LocalFSAdapter(run_id="r1", roots=[str(src)],
-                                     quarantine_root=str(quarantine))
+            adapter = LocalFSAdapter(
+                run_id="r1", roots=[str(src)], quarantine_root=str(quarantine)
+            )
             cap = _local_capability(root)
             action = _make_action("a1", f, quarantine / "duplicates" / "doc.txt")
             undo_path = root / "undo.jsonl"

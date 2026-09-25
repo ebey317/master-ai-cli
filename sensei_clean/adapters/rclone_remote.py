@@ -34,17 +34,24 @@ The rclone binary call is wrapped in `_run_rclone()`. Tests can
 monkey-patch that or set SENSEI_CLEAN_RCLONE to point at a fake binary
 shim so the test suite never depends on real network.
 """
+
 from __future__ import annotations
 
 import json
 import os
 import shutil
 import subprocess
-from typing import Iterator, List, Optional, Tuple
+from collections.abc import Iterator
 
-from ..schemas import AccessGrant, ActionRecord, ApplyResult, CapabilityReport, ItemRecord, UndoRecord
+from ..schemas import (
+    AccessGrant,
+    ActionRecord,
+    ApplyResult,
+    CapabilityReport,
+    ItemRecord,
+    UndoRecord,
+)
 from .cloud_drive import CloudDriveAdapter
-
 
 RCLONE_BIN_ENV = "SENSEI_CLEAN_RCLONE"
 DEFAULT_TIMEOUT = 15  # seconds — network call may be slow
@@ -54,14 +61,18 @@ def _rclone_bin() -> str:
     return os.environ.get(RCLONE_BIN_ENV) or shutil.which("rclone") or "rclone"
 
 
-def _run_rclone(argv: list[str], timeout: int = DEFAULT_TIMEOUT) -> Tuple[int, str, str]:
+def _run_rclone(
+    argv: list[str], timeout: int = DEFAULT_TIMEOUT
+) -> tuple[int, str, str]:
     """Run rclone with the given args. Returns (returncode, stdout, stderr).
     Exit code 127 + empty stdout/stderr means rclone wasn't found."""
     bin_ = _rclone_bin()
     if not shutil.which(bin_):
         return 127, "", "rclone not on PATH"
     try:
-        out = subprocess.run([bin_, *argv], capture_output=True, text=True, timeout=timeout)
+        out = subprocess.run(
+            [bin_, *argv], capture_output=True, text=True, timeout=timeout
+        )
         return out.returncode, out.stdout, out.stderr
     except subprocess.TimeoutExpired as e:
         return 124, "", f"rclone timed out after {timeout}s: {e}"
@@ -101,7 +112,7 @@ def rclone_lsjson(remote: str, path: str = "", timeout: int = 120) -> list[dict]
     return data if isinstance(data, list) else []
 
 
-def rclone_moveto(src_spec: str, dst_spec: str, timeout: int = 120) -> Tuple[bool, str]:
+def rclone_moveto(src_spec: str, dst_spec: str, timeout: int = 120) -> tuple[bool, str]:
     """Run `rclone moveto SRC DST`. SRC and DST must be full
     `<remote>:<path>` specs. Returns (ok, message)."""
     rc, _out, err = _run_rclone(["moveto", src_spec, dst_spec], timeout=timeout)
@@ -114,7 +125,9 @@ def rclone_about(remote: str, timeout: int = DEFAULT_TIMEOUT) -> dict:
     """Run `rclone about <remote>: --json` and return parsed JSON. On
     any error returns a dict with an 'error' key — never raises. Reads
     only account/quota metadata, never file names."""
-    rc, out, err = _run_rclone(["about", f"{remote.rstrip(':')}:", "--json"], timeout=timeout)
+    rc, out, err = _run_rclone(
+        ["about", f"{remote.rstrip(':')}:", "--json"], timeout=timeout
+    )
     if rc != 0:
         return {"error": (err or out).strip()[:240] or f"rc={rc}"}
     try:
@@ -188,15 +201,19 @@ class RcloneRemoteAdapter(CloudDriveAdapter):
     def authorize(self, mode: str) -> AccessGrant:
         info = rclone_about(self.remote)
         granted = "error" not in info and bool(info)
-        return AccessGrant(mode=mode, granted=granted, details={
-            "provider": self.provider_id,
-            "remote": self.remote,
-            "rclone_about_keys": sorted(info.keys()) if info else [],
-        })
+        return AccessGrant(
+            mode=mode,
+            granted=granted,
+            details={
+                "provider": self.provider_id,
+                "remote": self.remote,
+                "rclone_about_keys": sorted(info.keys()) if info else [],
+            },
+        )
 
     # ── scan ─────────────────────────────────────────────────────
 
-    def scan(self, cursor: Optional[str] = None) -> Iterator[ItemRecord]:
+    def scan(self, cursor: str | None = None) -> Iterator[ItemRecord]:
         """Probe-only by default. With list_enabled=True, calls
         `rclone lsjson` and yields one ItemRecord per file."""
         if not self.list_enabled:
@@ -270,7 +287,7 @@ class RcloneRemoteAdapter(CloudDriveAdapter):
             notes=[],
         )
 
-    def enrich(self, item: ItemRecord, jobs: List[str]) -> ItemRecord:
+    def enrich(self, item: ItemRecord, jobs: list[str]) -> ItemRecord:
         # Cloud hashes already came from lsjson --hash; no further
         # enrichment required this round.
         return item
@@ -287,24 +304,35 @@ class RcloneRemoteAdapter(CloudDriveAdapter):
 
     def apply(self, action: ActionRecord) -> ApplyResult:
         if not self.can_apply(action):
-            return ApplyResult(action_id=action.action_id, success=False,
-                               message=f"{self.name} cannot run {action.action_type}")
+            return ApplyResult(
+                action_id=action.action_id,
+                success=False,
+                message=f"{self.name} cannot run {action.action_type}",
+            )
         if not action.source_path.startswith("rclone:"):
-            return ApplyResult(action_id=action.action_id, success=False,
-                               message=f"non-rclone source: {action.source_path}")
+            return ApplyResult(
+                action_id=action.action_id,
+                success=False,
+                message=f"non-rclone source: {action.source_path}",
+            )
         if not (action.destination_path or "").startswith("rclone:"):
-            return ApplyResult(action_id=action.action_id, success=False,
-                               message=f"non-rclone destination: {action.destination_path}")
+            return ApplyResult(
+                action_id=action.action_id,
+                success=False,
+                message=f"non-rclone destination: {action.destination_path}",
+            )
         # Refuse cross-remote moves and any move that would leave the
         # configured remote — nothing leaves the provider.
-        src_remote = action.source_path[len("rclone:"):].split(":", 1)[0]
-        dst_remote = action.destination_path[len("rclone:"):].split(":", 1)[0]
+        src_remote = action.source_path[len("rclone:") :].split(":", 1)[0]
+        dst_remote = action.destination_path[len("rclone:") :].split(":", 1)[0]
         if src_remote != self.remote or dst_remote != self.remote:
-            return ApplyResult(action_id=action.action_id, success=False,
-                               message=f"cross-remote move refused: "
-                                       f"{src_remote}->{dst_remote}")
-        src_spec = action.source_path[len("rclone:"):]
-        dst_spec = action.destination_path[len("rclone:"):]
+            return ApplyResult(
+                action_id=action.action_id,
+                success=False,
+                message=f"cross-remote move refused: {src_remote}->{dst_remote}",
+            )
+        src_spec = action.source_path[len("rclone:") :]
+        dst_spec = action.destination_path[len("rclone:") :]
         ok, msg = rclone_moveto(src_spec, dst_spec)
         if not ok:
             return ApplyResult(action_id=action.action_id, success=False, message=msg)
@@ -318,23 +346,33 @@ class RcloneRemoteAdapter(CloudDriveAdapter):
             destination_path=action.source_path,
             metadata={"remote": self.remote},
         )
-        return ApplyResult(action_id=action.action_id, success=True,
-                           message=msg, undo_record=undo)
+        return ApplyResult(
+            action_id=action.action_id, success=True, message=msg, undo_record=undo
+        )
 
     def undo(self, undo_record: UndoRecord) -> ApplyResult:
         if not undo_record.source_path.startswith("rclone:"):
-            return ApplyResult(action_id=undo_record.action_id, success=False,
-                               message=f"non-rclone undo source: {undo_record.source_path}")
+            return ApplyResult(
+                action_id=undo_record.action_id,
+                success=False,
+                message=f"non-rclone undo source: {undo_record.source_path}",
+            )
         if not undo_record.destination_path.startswith("rclone:"):
-            return ApplyResult(action_id=undo_record.action_id, success=False,
-                               message=f"non-rclone undo destination: {undo_record.destination_path}")
-        src_spec = undo_record.source_path[len("rclone:"):]
-        dst_spec = undo_record.destination_path[len("rclone:"):]
+            return ApplyResult(
+                action_id=undo_record.action_id,
+                success=False,
+                message=f"non-rclone undo destination: {undo_record.destination_path}",
+            )
+        src_spec = undo_record.source_path[len("rclone:") :]
+        dst_spec = undo_record.destination_path[len("rclone:") :]
         ok, msg = rclone_moveto(src_spec, dst_spec)
         if not ok:
-            return ApplyResult(action_id=undo_record.action_id, success=False, message=msg)
-        return ApplyResult(action_id=undo_record.action_id, success=True,
-                           message=f"restored: {msg}")
+            return ApplyResult(
+                action_id=undo_record.action_id, success=False, message=msg
+            )
+        return ApplyResult(
+            action_id=undo_record.action_id, success=True, message=f"restored: {msg}"
+        )
 
     def open_view(self, item: ItemRecord) -> str:
         if self.remote in {"gdrive", "drive"}:
@@ -346,18 +384,24 @@ class RcloneRemoteAdapter(CloudDriveAdapter):
 
 # ── module-level helpers ──────────────────────────────────────────
 
+
 def _suffix(name: str) -> str:
     dot = name.rfind(".")
     return name[dot:].lower() if dot >= 0 else ""
 
 
-def _classify_cloud(name: str, mime: str, rel_path: str) -> Tuple[str, str]:
+def _classify_cloud(name: str, mime: str, rel_path: str) -> tuple[str, str]:
     """Same shape as LocalFSAdapter._classify but path-aware for
     cloud-style relative paths (no /home prefix)."""
     lower = (name + "/" + rel_path).lower()
-    if any(t in lower for t in ("resume", "cv", "career", "cover_letter", "transcript")):
+    if any(
+        t in lower for t in ("resume", "cv", "career", "cover_letter", "transcript")
+    ):
         return "career", "Career"
-    if any(t in lower for t in ("tax", "w2", "w-2", "paystub", "1099", "passport", "license")):
+    if any(
+        t in lower
+        for t in ("tax", "w2", "w-2", "paystub", "1099", "passport", "license")
+    ):
         return "financial", "Forms"
     if any(t in lower for t in ("private", "intimate", "nsfw")):
         return "private", "Private"

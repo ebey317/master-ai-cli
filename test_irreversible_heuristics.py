@@ -16,11 +16,24 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
-PURCHASE_RE = re.compile(r"\b(buy|purchase|pay|checkout|order|subscribe|add to cart)\b", re.I)
-DELETE_RE = re.compile(r"\b(delete|remove|destroy|uninstall|erase|wipe|cancel.*(account|subscription))\b", re.I)
-AUTH_RE = re.compile(r"\b(sign[-_\s]*up|sign[-_\s]*in|log[-_\s]*in|log[-_\s]*out|register|authorize|grant\s*access|oauth|api\s*key)\b", re.I)
-SENSITIVE_RE = re.compile(r"\b(password|ssn|social.*security|credit.*card|cvv|cvc|api.*key|bank.*account|routing.*number|passport|passport.*number|medical(.*record)?|diagnosis|health.*insurance|patient.*id|driver.*license|driver.*licence|date.*of.*birth|dob)\b", re.I)
-PASSWORD_SEL = re.compile(r"type=[\"']?password[\"']?|name=[\"']?(password|pwd|passwd)[\"']?", re.I)
+PURCHASE_RE = re.compile(
+    r"\b(buy|purchase|pay|checkout|order|subscribe|add to cart)\b", re.I
+)
+DELETE_RE = re.compile(
+    r"\b(delete|remove|destroy|uninstall|erase|wipe|cancel.*(account|subscription))\b",
+    re.I,
+)
+AUTH_RE = re.compile(
+    r"\b(sign[-_\s]*up|sign[-_\s]*in|log[-_\s]*in|log[-_\s]*out|register|authorize|grant\s*access|oauth|api\s*key)\b",
+    re.I,
+)
+SENSITIVE_RE = re.compile(
+    r"\b(password|ssn|social.*security|credit.*card|cvv|cvc|api.*key|bank.*account|routing.*number|passport|passport.*number|medical(.*record)?|diagnosis|health.*insurance|patient.*id|driver.*license|driver.*licence|date.*of.*birth|dob)\b",
+    re.I,
+)
+PASSWORD_SEL = re.compile(
+    r"type=[\"']?password[\"']?|name=[\"']?(password|pwd|passwd)[\"']?", re.I
+)
 PURCHASE_URL_RE = re.compile(r"/(checkout|cart|pay|order)\b", re.I)
 READONLY_BROWSER_KINDS = {
     "BROWSER_READ",
@@ -37,18 +50,40 @@ def classify_browser_action(action):
     kind = str(action.get("kind") or "").upper()
     target = str(action.get("target") or "").lower()
 
-    if kind == "BROWSER_FILL" and (PASSWORD_SEL.search(target) or SENSITIVE_RE.search(target)):
-        return {"safe": False, "requires_confirm": True, "gated_by": "irreversible_heuristic:sensitive_fill"}
+    if kind == "BROWSER_FILL" and (
+        PASSWORD_SEL.search(target) or SENSITIVE_RE.search(target)
+    ):
+        return {
+            "safe": False,
+            "requires_confirm": True,
+            "gated_by": "irreversible_heuristic:sensitive_fill",
+        }
     if kind == "BROWSER_CLICK":
         if PURCHASE_RE.search(target):
-            return {"safe": False, "requires_confirm": True, "gated_by": "irreversible_heuristic:purchase"}
+            return {
+                "safe": False,
+                "requires_confirm": True,
+                "gated_by": "irreversible_heuristic:purchase",
+            }
         if DELETE_RE.search(target):
-            return {"safe": False, "requires_confirm": True, "gated_by": "irreversible_heuristic:delete"}
+            return {
+                "safe": False,
+                "requires_confirm": True,
+                "gated_by": "irreversible_heuristic:delete",
+            }
         if AUTH_RE.search(target):
-            return {"safe": False, "requires_confirm": True, "gated_by": "irreversible_heuristic:auth"}
+            return {
+                "safe": False,
+                "requires_confirm": True,
+                "gated_by": "irreversible_heuristic:auth",
+            }
     if kind == "BROWSER_NAV":
         if PURCHASE_RE.search(target) or PURCHASE_URL_RE.search(target):
-            return {"safe": False, "requires_confirm": True, "gated_by": "irreversible_heuristic:purchase_url"}
+            return {
+                "safe": False,
+                "requires_confirm": True,
+                "gated_by": "irreversible_heuristic:purchase_url",
+            }
     if kind in READONLY_BROWSER_KINDS:
         return {"safe": True, "requires_confirm": False, "gated_by": None}
     return {"safe": True, "requires_confirm": False, "gated_by": None}
@@ -101,7 +136,10 @@ class BrowserHeuristicTests(unittest.TestCase):
     def test_medical_record_fill_is_sensitive_gated(self):
         # Anthropic-spec hard-limit category — medical data.
         self.assert_gated(
-            {"kind": "BROWSER_FILL", "target": "input[aria-label='medical record number']"},
+            {
+                "kind": "BROWSER_FILL",
+                "target": "input[aria-label='medical record number']",
+            },
             "irreversible_heuristic:sensitive_fill",
         )
 
@@ -113,7 +151,10 @@ class BrowserHeuristicTests(unittest.TestCase):
 
     def test_health_insurance_fill_is_sensitive_gated(self):
         self.assert_gated(
-            {"kind": "BROWSER_FILL", "target": "input[aria-label='Health Insurance ID']"},
+            {
+                "kind": "BROWSER_FILL",
+                "target": "input[aria-label='Health Insurance ID']",
+            },
             "irreversible_heuristic:sensitive_fill",
         )
 
@@ -149,10 +190,12 @@ class BrowserHeuristicTests(unittest.TestCase):
         self.assert_safe({"kind": "BROWSER_SCREENSHOT", "target": "viewport"})
 
     def test_drive_inspect_is_safe(self):
-        self.assert_safe({
-            "kind": "BROWSER_DRIVE_INSPECT_FOLDER",
-            "target": '{"query":"resume"}',
-        })
+        self.assert_safe(
+            {
+                "kind": "BROWSER_DRIVE_INSPECT_FOLDER",
+                "target": '{"query":"resume"}',
+            }
+        )
 
     def test_read_more_click_is_safe(self):
         self.assert_safe({"kind": "BROWSER_CLICK", "target": "a.read-more"})
@@ -165,14 +208,19 @@ class ContinuationFormattingTests(unittest.TestCase):
     def test_format_action_results_includes_gated_by(self):
         from stt_server import _format_action_results  # noqa: WPS433
 
-        text = _format_action_results([
-            {
-                "action": {"kind": "BROWSER_CLICK", "target": "button[aria-label='Buy now']"},
-                "verdict": "accept",
-                "result": "success",
-                "gated_by": "irreversible_heuristic:purchase",
-            }
-        ])
+        text = _format_action_results(
+            [
+                {
+                    "action": {
+                        "kind": "BROWSER_CLICK",
+                        "target": "button[aria-label='Buy now']",
+                    },
+                    "verdict": "accept",
+                    "result": "success",
+                    "gated_by": "irreversible_heuristic:purchase",
+                }
+            ]
+        )
         self.assertIn("gated_by: irreversible_heuristic:purchase", text)
 
 

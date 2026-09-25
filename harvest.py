@@ -13,9 +13,8 @@ Upgrade path later: swap _jaccard for an nomic-embed-text cosine lookup.
 """
 
 import json
-import os
-import time
 import re
+import time
 from pathlib import Path
 
 HARVEST_FILE = Path.home() / ".master_ai_harvest.jsonl"
@@ -37,7 +36,9 @@ _PRIVATE_PATH_PATTERNS = (
     # content lives in -- keep the path fence only for folders that are
     # inherently about identity/sensitive-document storage rather than
     # everyday workspace files.
-    re.compile(r"(?i)(?:^|[\s'\"`])(?:~|/home/[^/\s'\"`]+)/(?:Pictures|Downloads|jobseeker)(?:/|$|[\s'\"`])"),
+    re.compile(
+        r"(?i)(?:^|[\s'\"`])(?:~|/home/[^/\s'\"`]+)/(?:Pictures|Downloads|jobseeker)(?:/|$|[\s'\"`])"
+    ),
     re.compile(r"(?i)(?:^|/)\.(?:ssh|gnupg)(?:/|$)"),
     re.compile(r"(?i)(?:^|/)\.aws/(?:credentials|config)(?:$|[\s'\"`])"),
     re.compile(r"(?i)(?:^|/)\.master_ai_keys(?:$|[\s'\"`])"),
@@ -66,15 +67,19 @@ _SECRET_VALUE_PATTERNS = (
     re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"),
     re.compile(r"\bsk-[A-Za-z0-9]{20,}\b"),
 )
-_IMAGE_PATH_RE = re.compile(r"(?i)(?:~|/home/[^/\s'\"`]+|/tmp)[^\s'\"`]*\.(?:png|jpe?g|webp|gif|heic|bmp)\b")
+_IMAGE_PATH_RE = re.compile(
+    r"(?i)(?:~|/home/[^/\s'\"`]+|/tmp)[^\s'\"`]*\.(?:png|jpe?g|webp|gif|heic|bmp)\b"
+)
 _REDACT_PATTERNS = (
     (re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I), "[email]"),
     (re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"), "[phone]"),
     (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "[ssn]"),
 )
 
+
 def _tokens(text):
     return set(_TOKEN_RE.findall((text or "").lower()))
+
 
 def _jaccard(a, b):
     if not a or not b:
@@ -82,6 +87,7 @@ def _jaccard(a, b):
     inter = len(a & b)
     union = len(a | b)
     return inter / union if union else 0.0
+
 
 def _privacy_reason(prompt="", response="", meta=None):
     text = f"{prompt or ''}\n{response or ''}"
@@ -100,15 +106,18 @@ def _privacy_reason(prompt="", response="", meta=None):
             return "secret pattern"
     return ""
 
+
 def is_private(prompt="", response="", meta=None):
     """True when text should not enter harvest, few-shot, or fine-tune data."""
     return bool(_privacy_reason(prompt, response, meta=meta))
+
 
 def _redact_for_prompt(text):
     out = text or ""
     for pat, repl in _REDACT_PATTERNS:
         out = pat.sub(repl, out)
     return out
+
 
 def _record_private_skip(reason, model, task_type):
     entry = {
@@ -124,8 +133,10 @@ def _record_private_skip(reason, model, task_type):
     except OSError:
         pass
 
+
 _entries = None
 _last_mtime = 0
+
 
 def _load():
     global _entries, _last_mtime
@@ -149,7 +160,9 @@ def _load():
                     continue
                 try:
                     e = json.loads(line)
-                    if _privacy_reason(e.get("prompt", ""), e.get("response", ""), e.get("meta")):
+                    if _privacy_reason(
+                        e.get("prompt", ""), e.get("response", ""), e.get("meta")
+                    ):
                         continue
                     e["_tokens"] = _tokens(e.get("prompt", ""))
                     entries.append(e)
@@ -274,7 +287,7 @@ def stats():
     by_task = {}
     first_ts = None
     last_ts = None
-    for e in (_entries or []):
+    for e in _entries or []:
         by_model[e.get("model", "?")] = by_model.get(e.get("model", "?"), 0) + 1
         by_task[e.get("task_type", "?")] = by_task.get(e.get("task_type", "?"), 0) + 1
         ts = e.get("ts", 0)
@@ -301,7 +314,7 @@ def format_stats():
     """Human-readable stats block for Sensei `harvest` command."""
     s = stats()
     lines = []
-    lines.append(f"📦 Harvest layer")
+    lines.append("📦 Harvest layer")
     lines.append(f"   entries : {s['total_entries']}")
     lines.append(f"   file    : {s['file']} ({s['file_size_bytes']} bytes)")
     if s["first_entry_ts"]:
@@ -309,10 +322,14 @@ def format_stats():
         last = time.strftime("%Y-%m-%d %H:%M", time.localtime(s["last_entry_ts"]))
         lines.append(f"   range   : {first} → {last}")
     if s["by_model"]:
-        models = ", ".join(f"{m}={n}" for m, n in sorted(s["by_model"].items(), key=lambda x: -x[1]))
+        models = ", ".join(
+            f"{m}={n}" for m, n in sorted(s["by_model"].items(), key=lambda x: -x[1])
+        )
         lines.append(f"   models  : {models}")
     if s["by_task"]:
-        tasks = ", ".join(f"{t}={n}" for t, n in sorted(s["by_task"].items(), key=lambda x: -x[1]))
+        tasks = ", ".join(
+            f"{t}={n}" for t, n in sorted(s["by_task"].items(), key=lambda x: -x[1])
+        )
         lines.append(f"   tasks   : {tasks}")
     return "\n".join(lines)
 
@@ -323,6 +340,7 @@ def format_stats():
 #   python3 harvest.py few_shot "query"    # top-3 similar as examples
 if __name__ == "__main__":
     import sys
+
     if len(sys.argv) == 1:
         print(format_stats())
     elif sys.argv[1] == "lookup" and len(sys.argv) > 2:

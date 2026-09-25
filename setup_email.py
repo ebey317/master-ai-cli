@@ -18,11 +18,12 @@ provider you choose to configure it:
 If you weren't here and I weren't here, this is how you'd do it. Self-contained,
 idempotent, safe to re-run.
 """
+
+import getpass
 import json
 import os
-import sys
-import getpass
 import subprocess
+import sys
 from pathlib import Path
 
 KEYS_FILE = Path.home() / ".master_ai_keys"
@@ -34,9 +35,11 @@ PROVIDERS = {
         "key_password": "gmail_app_password",
         "key_sender": "gmail_sender",
         "default_sender": "you@example.com",
-        "host": "smtp.gmail.com", "port": 465, "ssl": True,
+        "host": "smtp.gmail.com",
+        "port": 465,
+        "ssl": True,
         "instructions": (
-            "Sign in as your Gmail account → app-name box → type \"Master AI\" → click\n"
+            'Sign in as your Gmail account → app-name box → type "Master AI" → click\n'
             "  Create → Google shows a 16-character string (with spaces). Copy it."
         ),
     },
@@ -46,10 +49,12 @@ PROVIDERS = {
         "key_password": "aol_app_password",
         "key_sender": "aol_sender",
         "default_sender": "",
-        "host": "smtp.aol.com", "port": 465, "ssl": True,
+        "host": "smtp.aol.com",
+        "port": 465,
+        "ssl": True,
         "instructions": (
-            "Sign in to AOL → Account Security → \"Generate app password\" or\n"
-            "  \"3rd-party app passwords\" → name it \"Master AI\" → copy the 16-char string."
+            'Sign in to AOL → Account Security → "Generate app password" or\n'
+            '  "3rd-party app passwords" → name it "Master AI" → copy the 16-char string.'
         ),
     },
     "outlook": {
@@ -58,15 +63,17 @@ PROVIDERS = {
         "key_password": "outlook_app_password",
         "key_sender": "outlook_sender",
         "default_sender": "",
-        "host": "smtp-mail.outlook.com", "port": 587, "ssl": False,
+        "host": "smtp-mail.outlook.com",
+        "port": 587,
+        "ssl": False,
         "instructions": (
-            "Sign in to your Outlook/Hotmail/Live account → Security → \"Create a new app\n"
-            "  password\" → copy the 16-char string. Requires two-step verification enabled."
+            'Sign in to your Outlook/Hotmail/Live account → Security → "Create a new app\n'
+            '  password" → copy the 16-char string. Requires two-step verification enabled.'
         ),
     },
 }
 
-BANNER = "\033[1;32m"   # bright green
+BANNER = "\033[1;32m"  # bright green
 BOLD = "\033[1m"
 DIM = "\033[2m"
 RED = "\033[91m"
@@ -128,7 +135,8 @@ def open_url(url):
     try:
         subprocess.Popen(
             ["xdg-open", url],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
         return True
@@ -201,10 +209,11 @@ def test_send(name, cfg, keys):
     if result.get("ok"):
         ok(f"{cfg['label']} test send OK — check your inbox at {sender}")
         return True
-    else:
-        fail(f"{cfg['label']} test send FAILED: {result.get('error')}")
-        print(f"{DIM}  Common fixes: re-check the app password (no extra spaces), confirm 2-factor is enabled, confirm the sender address matches the account that generated the password.{RESET}")
-        return False
+    fail(f"{cfg['label']} test send FAILED: {result.get('error')}")
+    print(
+        f"{DIM}  Common fixes: re-check the app password (no extra spaces), confirm 2-factor is enabled, confirm the sender address matches the account that generated the password.{RESET}"
+    )
+    return False
 
 
 def main():
@@ -213,9 +222,13 @@ def main():
     print("Your password is typed into a hidden prompt — it never echoes to the")
     print("screen, never enters shell history, never enters Claude's chat.\n")
     if KEYS_FILE.exists():
-        print(f"{DIM}Existing keys file: {KEYS_FILE} ({KEYS_FILE.stat().st_size} bytes){RESET}")
+        print(
+            f"{DIM}Existing keys file: {KEYS_FILE} ({KEYS_FILE.stat().st_size} bytes){RESET}"
+        )
     else:
-        print(f"{DIM}No keys file yet — will be created at {KEYS_FILE} with chmod 600.{RESET}")
+        print(
+            f"{DIM}No keys file yet — will be created at {KEYS_FILE} with chmod 600.{RESET}"
+        )
     print()
     keys = read_keys()
     for name, cfg in PROVIDERS.items():
@@ -229,15 +242,23 @@ def main():
     if not any_tested:
         warn("No provider was configured — nothing to test.")
     banner("Done")
-    print(f"You can now ask Sensei to send email. The model emits {BOLD}SEND_EMAIL:{RESET} directives;")
-    print(f"the dispatcher uses the provider that matches the {BOLD}from={RESET} address (or default = Gmail).")
+    print(
+        f"You can now ask Sensei to send email. The model emits {BOLD}SEND_EMAIL:{RESET} directives;"
+    )
+    print(
+        f"the dispatcher uses the provider that matches the {BOLD}from={RESET} address (or default = Gmail)."
+    )
     print()
-    print(f"Re-run {BOLD}python3 ~/scripts/setup_email.py{RESET} anytime to update or add a provider.")
+    print(
+        f"Re-run {BOLD}python3 ~/scripts/setup_email.py{RESET} anytime to update or add a provider."
+    )
 
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n\nInterrupted. Existing keys file is unchanged unless a save already happened above.")
+        print(
+            "\n\nInterrupted. Existing keys file is unchanged unless a save already happened above."
+        )
         sys.exit(130)

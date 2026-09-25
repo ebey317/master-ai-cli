@@ -17,7 +17,6 @@ Auto-creates the picture folder if missing and prints where to drop pictures.
 Handles JPG, PNG, GIF, BMP, WEBP. Fade crossfade between images (~0.5s).
 """
 
-import sys
 import argparse
 from pathlib import Path
 
@@ -29,8 +28,7 @@ FPS = 60
 
 def get_image_files(folder):
     return sorted(
-        p for p in folder.iterdir()
-        if p.is_file() and p.suffix.lower() in EXTENSIONS
+        p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in EXTENSIONS
     )
 
 
@@ -49,11 +47,23 @@ def load_and_scale(path, screen_size, pygame):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Full-screen image slideshow with fade.")
-    parser.add_argument("--interval", "-i", type=int, default=5,
-                        help="Seconds per image (3-30, default 5)")
-    parser.add_argument("--folder", "-f", type=Path, default=DEFAULT_FOLDER,
-                        help=f"Picture folder (default: {DEFAULT_FOLDER})")
+    parser = argparse.ArgumentParser(
+        description="Full-screen image slideshow with fade."
+    )
+    parser.add_argument(
+        "--interval",
+        "-i",
+        type=int,
+        default=5,
+        help="Seconds per image (3-30, default 5)",
+    )
+    parser.add_argument(
+        "--folder",
+        "-f",
+        type=Path,
+        default=DEFAULT_FOLDER,
+        help=f"Picture folder (default: {DEFAULT_FOLDER})",
+    )
     args = parser.parse_args()
 
     interval = max(3, min(30, args.interval))
@@ -63,19 +73,20 @@ def main():
     if not folder.exists():
         folder.mkdir(parents=True, exist_ok=True)
         print(f"Created folder: {folder}")
-        print(f"Drop pictures (jpg / png / gif / bmp / webp) in there, then re-run.")
+        print("Drop pictures (jpg / png / gif / bmp / webp) in there, then re-run.")
         return
 
     files = get_image_files(folder)
     if not files:
         print(f"No pictures found in {folder}")
-        print(f"Drop pictures (jpg / png / gif / bmp / webp) in there, then re-run.")
+        print("Drop pictures (jpg / png / gif / bmp / webp) in there, then re-run.")
         return
 
     print(f"Found {len(files)} pictures in {folder}")
     print(f"Interval: {interval}s. ESC/Q quits, SPACE pauses, +/- adjusts.")
 
     import pygame
+
     pygame.init()
     info = pygame.display.Info()
     screen = pygame.display.set_mode(

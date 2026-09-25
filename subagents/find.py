@@ -20,7 +20,6 @@ import re
 import unicodedata
 from typing import Any
 
-
 name = "find"
 description = "Find browser elements semantically inside a compact AX tree"
 
@@ -60,7 +59,8 @@ _ROLE_HINTS = {
 def _norm(text: Any) -> str:
     raw = str(text or "").lower()
     raw = "".join(
-        ch for ch in unicodedata.normalize("NFD", raw)
+        ch
+        for ch in unicodedata.normalize("NFD", raw)
         if unicodedata.category(ch) != "Mn"
     )
     return re.sub(r"[^a-z0-9]+", " ", raw).strip()
@@ -89,8 +89,15 @@ def _iter_nodes(ax_tree: Any):
     if not isinstance(ax_tree, dict):
         return
     buckets = [
-        "buttons", "links", "inputs", "dialogs", "file_folder_rows",
-        "lists", "headings", "landmarks", "rows",
+        "buttons",
+        "links",
+        "inputs",
+        "dialogs",
+        "file_folder_rows",
+        "lists",
+        "headings",
+        "landmarks",
+        "rows",
     ]
     seen = set()
     count = 0
@@ -102,7 +109,10 @@ def _iter_nodes(ax_tree: Any):
             if not isinstance(node, dict):
                 continue
             ref = str(node.get("ref") or "")
-            key = ref or f"{bucket}:{node.get('role')}:{node.get('name')}:{node.get('selector')}"
+            key = (
+                ref
+                or f"{bucket}:{node.get('role')}:{node.get('name')}:{node.get('selector')}"
+            )
             if key in seen:
                 continue
             seen.add(key)
@@ -112,7 +122,9 @@ def _iter_nodes(ax_tree: Any):
             yield node
 
 
-def _score_node(node: dict, query: str, expanded: set[str], role_targets: set[str]) -> tuple[int, list[str]]:
+def _score_node(
+    node: dict, query: str, expanded: set[str], role_targets: set[str]
+) -> tuple[int, list[str]]:
     role = _norm(node.get("role"))
     name_text = _norm(node.get("name"))
     value_text = _norm(node.get("value"))
@@ -140,10 +152,16 @@ def _score_node(node: dict, query: str, expanded: set[str], role_targets: set[st
     if direct_overlap:
         score += min(36, 18 * len(direct_overlap))
         reasons.append("direct:" + ",".join(sorted(direct_overlap)[:5]))
-    if role in {"button", "link"} and {"apply", "submit", "send", "continue"} & expanded:
+    if (
+        role in {"button", "link"}
+        and {"apply", "submit", "send", "continue"} & expanded
+    ):
         score += 18
         reasons.append("actionable")
-    if role in {"textbox", "searchbox", "combobox"} and {"field", "input", "type", "enter", "search"} & expanded:
+    if (
+        role in {"textbox", "searchbox", "combobox"}
+        and {"field", "input", "type", "enter", "search"} & expanded
+    ):
         score += 18
         reasons.append("input_role")
     if node.get("state", {}).get("disabled"):
@@ -169,15 +187,17 @@ def run(task, context=None):
         if score <= 0:
             continue
         confidence = max(0.05, min(0.99, score / 120.0))
-        scored.append({
-            "ref": str(node.get("ref") or ""),
-            "name": str(node.get("name") or "")[:240],
-            "role": str(node.get("role") or "")[:80],
-            "selector": str(node.get("selector") or "")[:300],
-            "confidence": round(confidence, 3),
-            "score": score,
-            "reasons": reasons[:6],
-        })
+        scored.append(
+            {
+                "ref": str(node.get("ref") or ""),
+                "name": str(node.get("name") or "")[:240],
+                "role": str(node.get("role") or "")[:80],
+                "selector": str(node.get("selector") or "")[:300],
+                "confidence": round(confidence, 3),
+                "score": score,
+                "reasons": reasons[:6],
+            }
+        )
     scored.sort(key=lambda item: (-item["score"], -item["confidence"], item["name"]))
     matches = [
         {k: v for k, v in item.items() if k not in {"score", "reasons"}}

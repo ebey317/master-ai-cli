@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import pytest
-
 from scripts import (
     approval_scoped,
     auxiliary_health_scoped,
@@ -57,7 +55,9 @@ def test_redaction_resolves_profile_env(tmp_path, monkeypatch):
     )
     assert redact_scoped.redaction_enabled(profile) is True
 
-    no_env = profile_scope.Profile(name="work", home_dir=tmp_path, config={"security": {"redact_secrets": False}})
+    no_env = profile_scope.Profile(
+        name="work", home_dir=tmp_path, config={"security": {"redact_secrets": False}}
+    )
     assert redact_scoped.redaction_enabled(no_env) is False
 
 

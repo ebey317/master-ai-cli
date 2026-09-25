@@ -28,53 +28,80 @@ from __future__ import annotations
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 sys.path.insert(0, os.path.expanduser("~/scripts"))
 
 import master_ai  # noqa: E402
 
-
 __all__ = ["route", "detect", "RouteDecision"]
 
 
-_KNOWN_ROUTES = frozenset({
-    "local", "cloud", "cloud_fast", "cloud_deep", "cloud_vision",
-    "vision", "web", "weather", "system_query", "link_lookup",
-    "time_sensitive_warn", "recall_memory", "save_refresh",
-    "ask_user", "scope_check", "cached",
-})
+_KNOWN_ROUTES = frozenset(
+    {
+        "local",
+        "cloud",
+        "cloud_fast",
+        "cloud_deep",
+        "cloud_vision",
+        "vision",
+        "web",
+        "weather",
+        "system_query",
+        "link_lookup",
+        "time_sensitive_warn",
+        "recall_memory",
+        "save_refresh",
+        "ask_user",
+        "scope_check",
+        "cached",
+    }
+)
 
-_KNOWN_KEYS = frozenset({
-    "route", "model", "reason", "stripped_text",
-    "synth_reply", "question", "payload", "response",
-    "similarity", "source_model", "original_query",
-    "have_groq", "have_or", "query",
-})
+_KNOWN_KEYS = frozenset(
+    {
+        "route",
+        "model",
+        "reason",
+        "stripped_text",
+        "synth_reply",
+        "question",
+        "payload",
+        "response",
+        "similarity",
+        "source_model",
+        "original_query",
+        "have_groq",
+        "have_or",
+        "query",
+    }
+)
 
 
 @dataclass
 class RouteDecision:
     route: str
     reason: str = ""
-    model: Optional[str] = None
-    stripped_text: Optional[str] = None
-    synth_reply: Optional[str] = None
-    question: Optional[str] = None
-    payload: Optional[str] = None
-    response: Optional[str] = None
-    similarity: Optional[float] = None
-    source_model: Optional[str] = None
-    original_query: Optional[str] = None
-    have_groq: Optional[bool] = None
-    have_or: Optional[bool] = None
-    query: Optional[str] = None
+    model: str | None = None
+    stripped_text: str | None = None
+    synth_reply: str | None = None
+    question: str | None = None
+    payload: str | None = None
+    response: str | None = None
+    similarity: float | None = None
+    source_model: str | None = None
+    original_query: str | None = None
+    have_groq: bool | None = None
+    have_or: bool | None = None
+    query: str | None = None
     extras: dict = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, d: dict) -> "RouteDecision":
+    def from_dict(cls, d: dict) -> RouteDecision:
         if not isinstance(d, dict):
-            raise TypeError(f"RouteDecision.from_dict expects dict, got {type(d).__name__}")
+            raise TypeError(
+                f"RouteDecision.from_dict expects dict, got {type(d).__name__}"
+            )
         if "route" not in d:
             raise ValueError("RouteDecision requires a 'route' key")
         known = {k: d[k] for k in _KNOWN_KEYS if k in d}
@@ -102,7 +129,9 @@ def route(history, user_text, image_path=None) -> dict:
     """
     decision = master_ai.orchestrate(history, user_text, image_path=image_path)
     if not isinstance(decision, dict) or "route" not in decision:
-        raise RuntimeError(f"master_ai.orchestrate returned malformed decision: {decision!r}")
+        raise RuntimeError(
+            f"master_ai.orchestrate returned malformed decision: {decision!r}"
+        )
     return decision
 
 

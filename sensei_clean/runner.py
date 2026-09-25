@@ -1,20 +1,26 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 from .adapters.local_fs import LocalFSAdapter
 from .apply import apply_actions, undo_actions
 from .schemas import ActionRecord, ApplyResult, CapabilityReport, UndoRecord
 
-
-DEFAULT_LOCAL_ROOTS = ["~/Desktop", "~/Downloads", "~/Documents", "~/Pictures", "~/Videos"]
+DEFAULT_LOCAL_ROOTS = [
+    "~/Desktop",
+    "~/Downloads",
+    "~/Documents",
+    "~/Pictures",
+    "~/Videos",
+]
 
 
 def build_adapter(adapter_name: str, run_id: str):
     if adapter_name.startswith("rclone:"):
         from .adapters.rclone_remote import RcloneRemoteAdapter
+
         remote = adapter_name.split(":", 1)[1]
         return RcloneRemoteAdapter(run_id=run_id, remote=remote, list_enabled=True)
     return LocalFSAdapter(
@@ -24,7 +30,9 @@ def build_adapter(adapter_name: str, run_id: str):
     )
 
 
-def capability_for(adapter_name: str, capabilities: list[CapabilityReport]) -> CapabilityReport | None:
+def capability_for(
+    adapter_name: str, capabilities: list[CapabilityReport]
+) -> CapabilityReport | None:
     for capability in capabilities:
         if capability.adapter == adapter_name:
             return capability
@@ -44,14 +52,16 @@ def apply_per_adapter(
     for adapter_name, group_actions in groups.items():
         cap = capability_for(adapter_name, capabilities)
         if cap is None:
-            results.extend([
-                ApplyResult(
-                    action_id=action.action_id,
-                    success=False,
-                    message=f"no source connection for {adapter_name}",
-                )
-                for action in group_actions
-            ])
+            results.extend(
+                [
+                    ApplyResult(
+                        action_id=action.action_id,
+                        success=False,
+                        message=f"no source connection for {adapter_name}",
+                    )
+                    for action in group_actions
+                ]
+            )
             continue
         adapter = build_adapter(adapter_name, group_actions[0].run_id)
         results.extend(apply_actions(adapter, group_actions, cap, undo_path))
@@ -67,4 +77,3 @@ def undo_per_adapter(records: Iterable[UndoRecord]) -> list[ApplyResult]:
         adapter = adapters[record.adapter]
         results.extend(undo_actions(adapter, [record]))
     return results
-

@@ -91,9 +91,14 @@ class IsApprovedTtl(unittest.TestCase):
         master_ai.save_approved("dup", cwd="/tmp/scratch", scope="cwd")
         master_ai.save_approved("dup", cwd="/tmp/scratch", scope="cwd")
         # File should contain exactly one entry for "dup" in /tmp/scratch.
-        lines = [l for l in self.path.read_text().splitlines()
-                 if "dup" in l and "/tmp/scratch" in l]
-        self.assertEqual(len(lines), 1, f"expected 1 dedup'd entry, got {len(lines)}: {lines}")
+        lines = [
+            l
+            for l in self.path.read_text().splitlines()
+            if "dup" in l and "/tmp/scratch" in l
+        ]
+        self.assertEqual(
+            len(lines), 1, f"expected 1 dedup'd entry, got {len(lines)}: {lines}"
+        )
 
     def test_load_approved_returns_command_set(self):
         # Back-compat accessor still works.
@@ -110,13 +115,15 @@ class AgentStandardsApprovalFlipped(unittest.TestCase):
         checks = master_ai.agent_standards_checks()
         ap = next((c for c in checks if c[1] == "approval expiry"), None)
         self.assertIsNotNone(ap)
-        self.assertEqual(ap[0], "PASS",
-            f"approval expiry should be PASS after P2.2: {ap}")
+        self.assertEqual(
+            ap[0], "PASS", f"approval expiry should be PASS after P2.2: {ap}"
+        )
 
     def test_score_in_target_band(self):
         score = master_ai.agent_standards_score()
-        self.assertGreaterEqual(score, 93,
-            f"score should be ≥93 after P2.3 + P2.2: {score}")
+        self.assertGreaterEqual(
+            score, 93, f"score should be ≥93 after P2.3 + P2.2: {score}"
+        )
 
 
 if __name__ == "__main__":

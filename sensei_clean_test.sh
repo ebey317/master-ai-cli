@@ -33,7 +33,7 @@ sel="${sel:-1}"
 if command -v sensei-clean >/dev/null 2>&1; then
   SC=sensei-clean
 else
-  SC="python3 $HOME/scripts/sensei_clean.py"
+  SC="python3 $HOME/scripts/sensei_clean_cli.py"
 fi
 
 OUT=/tmp/sensei_clean_scan.out

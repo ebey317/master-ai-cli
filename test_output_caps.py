@@ -32,8 +32,11 @@ class OutputCapsTest(unittest.TestCase):
         self.assertNotIn(big, formatted)
         body_start = formatted.find("Output:\n") + len("Output:\n")
         body = formatted[body_start:]
-        self.assertLessEqual(len(body), 13000,
-            f"truncated body should be near 12000 chars, got {len(body)}")
+        self.assertLessEqual(
+            len(body),
+            13000,
+            f"truncated body should be near 12000 chars, got {len(body)}",
+        )
 
     def test_empty_output_replaced(self):
         result = master_ai.run_command("true")
@@ -44,8 +47,7 @@ class OutputCapsTest(unittest.TestCase):
         checks = master_ai.agent_standards_checks()
         oc = next((c for c in checks if c[1] == "output caps"), None)
         self.assertIsNotNone(oc, "output caps check missing")
-        self.assertEqual(oc[0], "PASS",
-            f"output caps should be PASS: {oc}")
+        self.assertEqual(oc[0], "PASS", f"output caps should be PASS: {oc}")
 
 
 if __name__ == "__main__":

@@ -17,19 +17,21 @@ import json
 import os
 import re
 import sys
-import time
-import uuid
 import threading
-import urllib.request
+import time
 import urllib.error
-from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+import urllib.request
+import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # reentry-desk MCP client (lazy import so bridge still starts if server is absent)
 try:
-    import sys as _sys
     import os as _os
+    import sys as _sys
+
     _sys.path.insert(0, _os.path.expanduser("~/scripts"))
     import reentry_client as _reentry
+
     _REENTRY_OK = True
 except ImportError:
     _REENTRY_OK = False
@@ -82,7 +84,13 @@ When the user gives you a browser-automation goal, plan the BROWSER_* directives
 EXT_TOKEN_PATH = os.path.expanduser("~/.master_ai_extension_token")
 AUDIT_PATH = os.path.expanduser("~/.sensei_bridge_audit.jsonl")
 SAFE_ROOT = os.path.expanduser("~")
-SAFE_DENY = ("/.ssh/", "/.gnupg/", "/.master_ai_keys", "/.master_ai_extension_token", "/.aws/")
+SAFE_DENY = (
+    "/.ssh/",
+    "/.gnupg/",
+    "/.master_ai_keys",
+    "/.master_ai_extension_token",
+    "/.aws/",
+)
 
 
 SYSTEM_PROMPT = """You are a browser automation agent. You control Chrome by emitting directives. You NEVER describe what you did. You NEVER summarize. You NEVER respond with prose. Every reply must be one or more directives from the list below.
@@ -212,8 +220,7 @@ def _maybe_log_l3_telemetry(action_obj: dict, result: object) -> None:
         skipped = result.get("skipped_no_match", []) or []
         # Fields that have at least one constraint key
         skipped_with_constraints = [
-            e for e in skipped
-            if isinstance(e, dict) and e.get("constraints")
+            e for e in skipped if isinstance(e, dict) and e.get("constraints")
         ]
         # Collect maxlength values for distribution analysis
         maxlengths = []
@@ -231,8 +238,11 @@ def _maybe_log_l3_telemetry(action_obj: dict, result: object) -> None:
             # Carry the full constraint objects for the first 10 skipped fields;
             # beyond 10, log only counts to keep the file manageable.
             "skipped_constraints_sample": [
-                {"ref": e.get("ref"), "label": (e.get("label") or "")[:80],
-                 "constraints": e.get("constraints")}
+                {
+                    "ref": e.get("ref"),
+                    "label": (e.get("label") or "")[:80],
+                    "constraints": e.get("constraints"),
+                }
                 for e in skipped_with_constraints[:10]
             ],
         }
@@ -242,7 +252,7 @@ def _maybe_log_l3_telemetry(action_obj: dict, result: object) -> None:
         pass  # telemetry must never crash the bridge
 
 
-def _build_fill_form_action(handoff_text: str, session_id: str) -> "dict | None":
+def _build_fill_form_action(handoff_text: str, session_id: str) -> dict | None:
     """Convert a fill_form result text → BROWSER_FILL_FORM queue action.
 
     Parses the handoff JSON returned by reentry-desk fill_form, maps the client
@@ -295,7 +305,7 @@ def _build_fill_form_action(handoff_text: str, session_id: str) -> "dict | None"
         "id": uuid.uuid4().hex,
         "kind": "BROWSER_FILL_FORM",
         "profile": profile,
-        "target": "",          # document-level scope
+        "target": "",  # document-level scope
         "status": "queued",
         "queued_ts": time.time(),
         "_session_id": session_id,
@@ -304,19 +314,23 @@ def _build_fill_form_action(handoff_text: str, session_id: str) -> "dict | None"
     }
 
 
-def _ollama_chat(model: str, messages: list[dict], timeout: float = 90.0, stream: bool = False) -> dict:
+def _ollama_chat(
+    model: str, messages: list[dict], timeout: float = 90.0, stream: bool = False
+) -> dict:
     """Call Ollama chat API.
-    
+
     When stream=True, the caller should handle streaming response separately.
     For now, kept simple: stream param is for future extension.
     """
-    body = json.dumps({
-        "model": model,
-        "messages": messages,
-        "stream": stream,
-        "keep_alive": "1h",
-        "think": "medium",
-    }).encode("utf-8")
+    body = json.dumps(
+        {
+            "model": model,
+            "messages": messages,
+            "stream": stream,
+            "keep_alive": "1h",
+            "think": "medium",
+        }
+    ).encode("utf-8")
     req = urllib.request.Request(
         f"{OLLAMA}/api/chat",
         data=body,
@@ -329,20 +343,22 @@ def _ollama_chat(model: str, messages: list[dict], timeout: float = 90.0, stream
 
 def _ollama_chat_stream(model: str, messages: list[dict], timeout: float = 90.0):
     """Stream Ollama chat response in real-time.
-    
+
     Yields content chunks as they arrive, so the Sensei CLI can show
     plan mode output live instead of waiting for the full response.
-    
+
     Usage:
         for chunk in _ollama_chat_stream(model, messages):
             print(chunk, end='', flush=True)  # or emit to client
     """
-    body = json.dumps({
-        "model": model,
-        "messages": messages,
-        "stream": True,
-        "keep_alive": "1h",
-    }).encode("utf-8")
+    body = json.dumps(
+        {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            "keep_alive": "1h",
+        }
+    ).encode("utf-8")
     req = urllib.request.Request(
         f"{OLLAMA}/api/chat",
         data=body,
@@ -391,7 +407,7 @@ CLOUD_TOOLS_TIMEOUT = float(os.environ.get("SENSEI_CLOUD_TOOLS_TIMEOUT", "60"))
 _KEYS_FILE = os.path.expanduser("~/.master_ai_keys")
 
 
-def _load_key(name: str) -> "str | None":
+def _load_key(name: str) -> str | None:
     """Parse NAME=value lines out of ~/.master_ai_keys.
 
     This is shell-export format (comments + KEY=value lines), not JSON —
@@ -407,7 +423,7 @@ def _load_key(name: str) -> "str | None":
                 if not line or line.startswith("#"):
                     continue
                 if line.startswith("export "):
-                    line = line[len("export "):]
+                    line = line[len("export ") :]
                 if "=" not in line:
                     continue
                 k, _, v = line.partition("=")
@@ -426,31 +442,62 @@ def _load_key(name: str) -> "str | None":
 # already has two separately-drifting extension trees; a cross-file import
 # between the bridge and the MCP server would be a third coupling point.
 BROWSER_TOOLS = [
-    {"type": "function", "function": {
-        "name": "browse",
-        "description": "Open a URL in the browser.",
-        "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]},
-    }},
-    {"type": "function", "function": {
-        "name": "click",
-        "description": "Click an element by visible label, ref_N name, or CSS selector.",
-        "parameters": {"type": "object", "properties": {"what": {"type": "string"}}, "required": ["what"]},
-    }},
-    {"type": "function", "function": {
-        "name": "fill",
-        "description": "Type text into a field by label or selector.",
-        "parameters": {"type": "object", "properties": {"where": {"type": "string"}, "text": {"type": "string"}}, "required": ["where", "text"]},
-    }},
-    {"type": "function", "function": {
-        "name": "read",
-        "description": "Read the visible content of the current page.",
-        "parameters": {"type": "object", "properties": {}},
-    }},
-    {"type": "function", "function": {
-        "name": "search",
-        "description": "Search the web for a query when the user wants to find/look up something and did not name a specific website.",
-        "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
-    }},
+    {
+        "type": "function",
+        "function": {
+            "name": "browse",
+            "description": "Open a URL in the browser.",
+            "parameters": {
+                "type": "object",
+                "properties": {"url": {"type": "string"}},
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "click",
+            "description": "Click an element by visible label, ref_N name, or CSS selector.",
+            "parameters": {
+                "type": "object",
+                "properties": {"what": {"type": "string"}},
+                "required": ["what"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fill",
+            "description": "Type text into a field by label or selector.",
+            "parameters": {
+                "type": "object",
+                "properties": {"where": {"type": "string"}, "text": {"type": "string"}},
+                "required": ["where", "text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read",
+            "description": "Read the visible content of the current page.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search",
+            "description": "Search the web for a query when the user wants to find/look up something and did not name a specific website.",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 
@@ -459,14 +506,16 @@ def _ollama_chat_tools(model: str, messages: list[dict], timeout: float) -> dict
     against the 5-tool BROWSER_TOOLS schema on 2026-08-26 — see module
     docstring above for why this exists instead of CLAF's format-grammar
     path."""
-    body = json.dumps({
-        "model": model,
-        "messages": messages,
-        "tools": BROWSER_TOOLS,
-        "stream": False,
-        "keep_alive": "1h",
-        "think": "medium",
-    }).encode("utf-8")
+    body = json.dumps(
+        {
+            "model": model,
+            "messages": messages,
+            "tools": BROWSER_TOOLS,
+            "stream": False,
+            "keep_alive": "1h",
+            "think": "medium",
+        }
+    ).encode("utf-8")
     req = urllib.request.Request(
         f"{OLLAMA}/api/chat",
         data=body,
@@ -475,7 +524,6 @@ def _ollama_chat_tools(model: str, messages: list[dict], timeout: float) -> dict
     )
     with urllib.request.urlopen(req, timeout=timeout) as res:
         return json.loads(res.read().decode("utf-8"))
-
 
 
 # 2026-08-27: OpenRouter->claude-sonnet-4.6 was here first. Operator caught
@@ -527,17 +575,19 @@ def _opencode_free_chat_tools(messages: list[dict], timeout: float) -> dict:
     constrained local tier first) and not through sensei_router.ask_cloud
     (broken key loading, see _load_key's docstring). No key needed here —
     the relay is anonymous/keyless for this specific model."""
-    body = json.dumps({
-        "model": _OPENCODE_FREE_MODEL,
-        # 2026-09-06: ling-3.0-flash-fin-free doesn't leak reasoning into
-        # content (unlike the nemotron model tried first — see comment above
-        # _OPENCODE_FREE_MODEL), so this budget only needs to cover a real
-        # answer, not a chain-of-thought too. 3000 with room to spare at the
-        # ~2-7s response times measured directly for this model.
-        "max_tokens": 3000,
-        "messages": messages,
-        "tools": BROWSER_TOOLS,
-    }).encode("utf-8")
+    body = json.dumps(
+        {
+            "model": _OPENCODE_FREE_MODEL,
+            # 2026-09-06: ling-3.0-flash-fin-free doesn't leak reasoning into
+            # content (unlike the nemotron model tried first — see comment above
+            # _OPENCODE_FREE_MODEL), so this budget only needs to cover a real
+            # answer, not a chain-of-thought too. 3000 with room to spare at the
+            # ~2-7s response times measured directly for this model.
+            "max_tokens": 3000,
+            "messages": messages,
+            "tools": BROWSER_TOOLS,
+        }
+    ).encode("utf-8")
     req = urllib.request.Request(
         _OPENCODE_FREE_URL,
         data=body,
@@ -566,13 +616,36 @@ def _tool_calls_to_actions(tool_calls: list[dict]) -> list[dict]:
         else:
             args = raw_args or {}
         if name == "browse":
-            actions.append({"kind": "BROWSER_NAV", "target": str(args.get("url", "")), "value": "", "status": "ready"})
+            actions.append(
+                {
+                    "kind": "BROWSER_NAV",
+                    "target": str(args.get("url", "")),
+                    "value": "",
+                    "status": "ready",
+                }
+            )
         elif name == "click":
-            actions.append({"kind": "BROWSER_CLICK", "target": str(args.get("what", "")), "value": "", "status": "ready"})
+            actions.append(
+                {
+                    "kind": "BROWSER_CLICK",
+                    "target": str(args.get("what", "")),
+                    "value": "",
+                    "status": "ready",
+                }
+            )
         elif name == "fill":
-            actions.append({"kind": "BROWSER_FILL", "target": str(args.get("where", "")), "value": str(args.get("text", "")), "status": "ready"})
+            actions.append(
+                {
+                    "kind": "BROWSER_FILL",
+                    "target": str(args.get("where", "")),
+                    "value": str(args.get("text", "")),
+                    "status": "ready",
+                }
+            )
         elif name == "read":
-            actions.append({"kind": "BROWSER_READ", "target": "", "value": "", "status": "ready"})
+            actions.append(
+                {"kind": "BROWSER_READ", "target": "", "value": "", "status": "ready"}
+            )
         elif name == "search":
             # No native BROWSER_SEARCH kind exists on the extension side —
             # same fix as the SYSTEM_PROMPT few-shot examples added earlier
@@ -580,7 +653,9 @@ def _tool_calls_to_actions(tool_calls: list[dict]) -> list[dict]:
             # nothing downstream needs a new action kind.
             q = str(args.get("query", ""))
             url = "https://www.google.com/search?q=" + urllib.parse.quote_plus(q)
-            actions.append({"kind": "BROWSER_NAV", "target": url, "value": "", "status": "ready"})
+            actions.append(
+                {"kind": "BROWSER_NAV", "target": url, "value": "", "status": "ready"}
+            )
     return actions
 
 
@@ -592,7 +667,9 @@ def _chat_via_tools(prompt: str, history: list[dict]) -> tuple[str, list[dict], 
     messages = list(history) + [{"role": "user", "content": prompt}]
     if LOCAL_TOOLS_ENABLED:
         try:
-            resp = _ollama_chat_tools(DEFAULT_MODEL, messages, timeout=LOCAL_TOOLS_TIMEOUT)
+            resp = _ollama_chat_tools(
+                DEFAULT_MODEL, messages, timeout=LOCAL_TOOLS_TIMEOUT
+            )
             msg = resp.get("message") or {}
             tool_calls = msg.get("tool_calls") or []
             text = (msg.get("content") or "").strip()
@@ -607,7 +684,11 @@ def _chat_via_tools(prompt: str, history: list[dict]) -> tuple[str, list[dict], 
     msg = choice.get("message") or {}
     tool_calls = msg.get("tool_calls") or []
     text = (msg.get("content") or "").strip()
-    return text, _tool_calls_to_actions(tool_calls), f"opencode-free/{_OPENCODE_FREE_MODEL}"
+    return (
+        text,
+        _tool_calls_to_actions(tool_calls),
+        f"opencode-free/{_OPENCODE_FREE_MODEL}",
+    )
 
 
 _DIRECTIVE_RE = re.compile(
@@ -616,15 +697,38 @@ _DIRECTIVE_RE = re.compile(
 )
 
 PLACEHOLDER_VALUES = {
-    "user@example.com", "test@example.com", "test@test.com", "example@example.com",
-    "your-email@example.com", "youremail@example.com", "name@example.com",
-    "password", "password123", "examplepass123", "yourpassword",
-    "test", "testpassword", "test123", "password1", "passw0rd",
-    "john", "jane", "john doe", "jane doe", "first last", "firstname lastname",
-    "123-456-7890", "555-555-5555", "(555) 555-5555", "5551234567",
-    "123 main st", "1234 example st",
-    "me@foo.com", "sky9!",
-    "bob@real.com", "hunter2",
+    "user@example.com",
+    "test@example.com",
+    "test@test.com",
+    "example@example.com",
+    "your-email@example.com",
+    "youremail@example.com",
+    "name@example.com",
+    "password",
+    "password123",
+    "examplepass123",
+    "yourpassword",
+    "test",
+    "testpassword",
+    "test123",
+    "password1",
+    "passw0rd",
+    "john",
+    "jane",
+    "john doe",
+    "jane doe",
+    "first last",
+    "firstname lastname",
+    "123-456-7890",
+    "555-555-5555",
+    "(555) 555-5555",
+    "5551234567",
+    "123 main st",
+    "1234 example st",
+    "me@foo.com",
+    "sky9!",
+    "bob@real.com",
+    "hunter2",
 }
 
 
@@ -663,15 +767,25 @@ def parse_directives(text: str) -> tuple[list[dict], str]:
             target, value = (s.strip() for s in rest.split("::", 1))
         action = {"kind": kind, "target": target, "value": value, "status": "ready"}
         actions.append(action)
-    placeholder_fills = [a for a in actions if a["kind"] == "BROWSER_FILL" and _is_placeholder_value(a["value"])]
+    placeholder_fills = [
+        a
+        for a in actions
+        if a["kind"] == "BROWSER_FILL" and _is_placeholder_value(a["value"])
+    ]
     if placeholder_fills:
         actions = [a for a in actions if a not in placeholder_fills]
         labels = ", ".join(a["target"] for a in placeholder_fills)
-        cleaned_lines = [ln for ln in cleaned_lines if not re.match(r"^\s*DONE:", ln, re.IGNORECASE)]
-        cleaned_lines.append(f"ASK: I need real values for these fields (model tried to use placeholder data): {labels}")
+        cleaned_lines = [
+            ln for ln in cleaned_lines if not re.match(r"^\s*DONE:", ln, re.IGNORECASE)
+        ]
+        cleaned_lines.append(
+            f"ASK: I need real values for these fields (model tried to use placeholder data): {labels}"
+        )
         has_ask = True
     if has_ask:
-        actions = [a for a in actions if not (a["kind"] == "BROWSER_FILL" and not a["value"])]
+        actions = [
+            a for a in actions if not (a["kind"] == "BROWSER_FILL" and not a["value"])
+        ]
         actions = [a for a in actions if a["kind"] != "BROWSER_SUBMIT"]
     cleaned = "\n".join(s for s in cleaned_lines if s.strip())
     return actions, cleaned
@@ -697,7 +811,9 @@ def _looks_conversational(prompt: str) -> bool:
     return bool(_CONVERSATIONAL_RE.match(p)) or bool(_SMALL_TALK_RE.match(p))
 
 
-def _build_messages(prompt: str, page_context: dict | None, history: list[dict]) -> list[dict]:
+def _build_messages(
+    prompt: str, page_context: dict | None, history: list[dict]
+) -> list[dict]:
     msgs: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT + TOOL_CATALOG}]
     msgs.extend(history)
     user_text = prompt or ""
@@ -705,7 +821,11 @@ def _build_messages(prompt: str, page_context: dict | None, history: list[dict])
     # Strip broken/inaccessible page context so the model does not hallucinate selectors.
     pc = page_context or {}
     url = pc.get("url") or ""
-    is_inaccessible = not url or url.startswith(("chrome://", "about:", "edge://", "data:")) or url in ("chrome://newtab/", "about:blank")
+    is_inaccessible = (
+        not url
+        or url.startswith(("chrome://", "about:", "edge://", "data:"))
+        or url in ("chrome://newtab/", "about:blank")
+    )
     if pc and not skip_heavy_context and not is_inaccessible:
         ctx_lines = ["[PAGE_CONTEXT]"]
         if url:
@@ -772,7 +892,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Master-AI-Token")
+        self.send_header(
+            "Access-Control-Allow-Headers", "Content-Type, X-Master-AI-Token"
+        )
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
@@ -796,24 +918,30 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/health":
-            return self._send_json(200, {
-                "ok": True,
-                "service": "sensei_bridge",
-                "model": DEFAULT_MODEL,
-                "vision_model": VISION_MODEL,
-                "ollama": OLLAMA,
-            })
+            return self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "service": "sensei_bridge",
+                    "model": DEFAULT_MODEL,
+                    "vision_model": VISION_MODEL,
+                    "ollama": OLLAMA,
+                },
+            )
         if self.path == "/version":
             return self._send_json(200, {"version": "0.1.0"})
         if self.path in ("/apply_profile", "/profile"):
             profile_path = os.path.expanduser("~/projects/claf/apply_profile.json")
             try:
                 import json as _json
+
                 with open(profile_path) as _f:
                     profile = _json.load(_f)
                 return self._send_json(200, {"ok": True, "profile": profile})
             except Exception as e:
-                return self._send_json(404, {"ok": False, "error": f"profile not found: {e}"})
+                return self._send_json(
+                    404, {"ok": False, "error": f"profile not found: {e}"}
+                )
         if self.path == "/mode":
             claf_env = os.path.expanduser("~/projects/claf/.env")
             claf_mode = "unknown"
@@ -834,12 +962,15 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 lane = "unknown"
             auth = "api_key" if lane == "api" else "oauth"
-            return self._send_json(200, {
-                "ok": True,
-                "claf_mode": claf_mode,
-                "auth": auth,
-                "model": claf_model,
-            })
+            return self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "claf_mode": claf_mode,
+                    "auth": auth,
+                    "model": claf_model,
+                },
+            )
         # /extension/queue_state?session_id=... — observe queue depth without
         # consuming. Helps detect session mismatch when an action sits queued
         # forever because Chrome is polling a different session bucket.
@@ -856,8 +987,12 @@ class Handler(BaseHTTPRequestHandler):
                     depth = len(_action_queue.get(session_id, []))
                     per_session = {session_id: depth}
                 else:
-                    per_session = {sid: len(items) for sid, items in _action_queue.items()}
-            return self._send_json(200, {"ok": True, "queue_depth": per_session, "session_id": session_id})
+                    per_session = {
+                        sid: len(items) for sid, items in _action_queue.items()
+                    }
+            return self._send_json(
+                200, {"ok": True, "queue_depth": per_session, "session_id": session_id}
+            )
         # /extension/queue?session_id=... — pop + return pending actions for the session.
         # Side panel polls this on a short interval to pick up actions that MCP
         # (or any other producer) has pushed in.
@@ -867,7 +1002,9 @@ class Handler(BaseHTTPRequestHandler):
         # it, an old extension polls /extension/pending forever and 404s on every
         # call, so no browser action ever executes (the "panel shows Ready but
         # nothing happens" bug).
-        if self.path.startswith("/extension/queue") or self.path.startswith("/extension/pending"):
+        if self.path.startswith("/extension/queue") or self.path.startswith(
+            "/extension/pending"
+        ):
             qs = self.path.split("?", 1)
             session_id = "default"
             if len(qs) == 2:
@@ -894,12 +1031,21 @@ class Handler(BaseHTTPRequestHandler):
                             actions.extend(_extra)
             with _last_queue_pop_lock:
                 _last_queue_pop[session_id] = time.time()
-            _audit({"event": "queue_pop", "session_id": session_id, "count": len(actions)})
+            _audit(
+                {"event": "queue_pop", "session_id": session_id, "count": len(actions)}
+            )
             # Return both "actions" (new) and "pending" (old) keys so either
             # extension build reads the payload regardless of which it expects.
-            return self._send_json(200, {"ok": True, "session_id": session_id,
-                                         "actions": actions, "pending": actions,
-                                         "count": len(actions)})
+            return self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "session_id": session_id,
+                    "actions": actions,
+                    "pending": actions,
+                    "count": len(actions),
+                },
+            )
         # /extension/sessions — expose known session ids for MCP fallback:
         # primary request id -> mcp-default -> chat-default -> active panel.
         if self.path == "/extension/sessions":
@@ -915,13 +1061,16 @@ class Handler(BaseHTTPRequestHandler):
                 known.add(active_sid)
             with _last_queue_pop_lock:
                 last_pop = dict(_last_queue_pop)
-            return self._send_json(200, {
-                "ok": True,
-                "active_side_panel_session": active_sid,
-                "known_sessions": sorted(s for s in known if s),
-                "queue_depth": queue_depth,
-                "last_queue_pop": last_pop,
-            })
+            return self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "active_side_panel_session": active_sid,
+                    "known_sessions": sorted(s for s in known if s),
+                    "queue_depth": queue_depth,
+                    "last_queue_pop": last_pop,
+                },
+            )
         # /extension/result?action_id=... — look up Chrome's outcome for a
         # specific queued action. Returns 404 (not yet) or 200 with the result.
         # MCP callers use this to close the loop after pushing an action.
@@ -938,8 +1087,12 @@ class Handler(BaseHTTPRequestHandler):
             with _results_lock:
                 rec = _action_results.get(action_id)
             if rec is None:
-                return self._send_json(200, {"ok": False, "action_id": action_id, "status": "pending"})
-            return self._send_json(200, {"ok": True, "action_id": action_id, "result": rec})
+                return self._send_json(
+                    200, {"ok": False, "action_id": action_id, "status": "pending"}
+                )
+            return self._send_json(
+                200, {"ok": True, "action_id": action_id, "result": rec}
+            )
         return self._send_json(404, {"error": "not found"})
 
     def do_POST(self) -> None:
@@ -949,15 +1102,22 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/mode":
                 new_mode = str(body.get("mode") or "").strip().lower()
                 if new_mode not in ("local", "hybrid", "cloud"):
-                    return self._send_json(400, {"error": "mode must be local | hybrid | cloud"})
+                    return self._send_json(
+                        400, {"error": "mode must be local | hybrid | cloud"}
+                    )
                 import subprocess as _sp
+
                 result = _sp.run(
                     [os.path.expanduser("~/scripts/set_sensei_mode.sh"), new_mode],
-                    capture_output=True, text=True, timeout=10
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
                 )
                 if result.returncode == 0:
                     return self._send_json(200, {"ok": True, "claf_mode": new_mode})
-                return self._send_json(500, {"ok": False, "error": result.stderr.strip()})
+                return self._send_json(
+                    500, {"ok": False, "error": result.stderr.strip()}
+                )
             if path == "/chat":
                 return self._handle_chat(body, continuation=False)
             if path == "/chat/continue":
@@ -976,7 +1136,9 @@ class Handler(BaseHTTPRequestHandler):
                 stamped = []
                 for a in actions:
                     if not isinstance(a, dict) or "kind" not in a:
-                        return self._send_json(400, {"error": "each action needs a 'kind'"})
+                        return self._send_json(
+                            400, {"error": "each action needs a 'kind'"}
+                        )
                     a2 = dict(a)
                     a2.setdefault("id", uuid.uuid4().hex)
                     a2["queued_ts"] = time.time()
@@ -989,7 +1151,9 @@ class Handler(BaseHTTPRequestHandler):
                     stamped.append(a2)
                 with _queue_lock:
                     bucket = _action_queue.setdefault(session_id, [])
-                    overflow = max(0, (len(bucket) + len(stamped)) - _QUEUE_MAX_PER_SESSION)
+                    overflow = max(
+                        0, (len(bucket) + len(stamped)) - _QUEUE_MAX_PER_SESSION
+                    )
                     if overflow:
                         # drop oldest queued items, keep the new ones
                         del bucket[:overflow]
@@ -1004,13 +1168,24 @@ class Handler(BaseHTTPRequestHandler):
                         excess = len(_action_session_map) - _ACTION_SESSION_MAX
                         for old_id in list(_action_session_map.keys())[:excess]:
                             _action_session_map.pop(old_id, None)
-                _audit({"event": "queue_push", "session_id": session_id,
-                        "count": len(stamped), "depth": depth})
-                return self._send_json(200, {
-                    "ok": True, "session_id": session_id,
-                    "count": len(stamped), "queue_depth": depth,
-                    "action_ids": [a["id"] for a in stamped],
-                })
+                _audit(
+                    {
+                        "event": "queue_push",
+                        "session_id": session_id,
+                        "count": len(stamped),
+                        "depth": depth,
+                    }
+                )
+                return self._send_json(
+                    200,
+                    {
+                        "ok": True,
+                        "session_id": session_id,
+                        "count": len(stamped),
+                        "queue_depth": depth,
+                        "action_ids": [a["id"] for a in stamped],
+                    },
+                )
             if path in ("/extension/action_result", "/extension/mcp_result"):
                 # /extension/mcp_result is the OLD result-post endpoint some
                 # extension builds still use (counterpart of /extension/pending).
@@ -1045,7 +1220,9 @@ class Handler(BaseHTTPRequestHandler):
                         _action_results[aid] = record
                         # Trim oldest if over the cap.
                         if len(_action_results) > _RESULTS_MAX:
-                            for old_id in list(_action_results.keys())[: len(_action_results) - _RESULTS_MAX]:
+                            for old_id in list(_action_results.keys())[
+                                : len(_action_results) - _RESULTS_MAX
+                            ]:
                                 _action_results.pop(old_id, None)
                 # Audit payload: inject resolved session_id, then merge body
                 # so body's session_id wins if present. If body had empty/missing
@@ -1064,9 +1241,14 @@ class Handler(BaseHTTPRequestHandler):
                 # we can distinguish "LLM ignores maxlength" (prompt-engineering
                 # problem) from "extension never sent maxlength" (extension problem).
                 _maybe_log_l3_telemetry(action_obj, body.get("result"))
-                return self._send_json(200, {
-                    "ok": True, "indexed": bool(aid), "session_id": resolved_sid,
-                })
+                return self._send_json(
+                    200,
+                    {
+                        "ok": True,
+                        "indexed": bool(aid),
+                        "session_id": resolved_sid,
+                    },
+                )
             if path == "/extension/approve_action":
                 _audit({"event": "approve_action", **body})
                 return self._send_json(200, {"ok": True})
@@ -1115,7 +1297,7 @@ class Handler(BaseHTTPRequestHandler):
         model_used = model
 
         def _sse_write(payload: dict) -> None:
-            self.wfile.write(f"data: {json.dumps(payload)}\n\n".encode("utf-8"))
+            self.wfile.write(f"data: {json.dumps(payload)}\n\n".encode())
             self.wfile.flush()
 
         try:
@@ -1145,11 +1327,13 @@ class Handler(BaseHTTPRequestHandler):
                     while th.is_alive():
                         th.join(timeout=1.5)
                         if th.is_alive():
-                            _sse_write({
-                                "heartbeat": True,
-                                "elapsed_s": round(time.time() - t0, 1),
-                                "session_id": session_id,
-                            })
+                            _sse_write(
+                                {
+                                    "heartbeat": True,
+                                    "elapsed_s": round(time.time() - t0, 1),
+                                    "session_id": session_id,
+                                }
+                            )
                     if "err" in result:
                         raise result["err"]
                     reply_text, actions, model_used = result["ok"]
@@ -1170,25 +1354,33 @@ class Handler(BaseHTTPRequestHandler):
                 if model.startswith("opencode-free/"):
                     resp = _opencode_free_chat_tools(msgs, timeout=CLOUD_TOOLS_TIMEOUT)
                     choice = (resp.get("choices") or [{}])[0]
-                    reply_text = ((choice.get("message") or {}).get("content") or "").strip()
-                    _sse_write({"chunk": reply_text, "session_id": session_id, "model": model})
+                    reply_text = (
+                        (choice.get("message") or {}).get("content") or ""
+                    ).strip()
+                    _sse_write(
+                        {"chunk": reply_text, "session_id": session_id, "model": model}
+                    )
                     model_used = model
                 else:
                     full_text = []
                     for chunk in _ollama_chat_stream(model, msgs, timeout=120.0):
                         full_text.append(chunk)
-                        _sse_write({
-                            "chunk": chunk,
-                            "session_id": session_id,
-                            "model": model,
-                        })
+                        _sse_write(
+                            {
+                                "chunk": chunk,
+                                "session_id": session_id,
+                                "model": model,
+                            }
+                        )
                     reply_text = "".join(full_text)
                     model_used = model
                 actions, cleaned = parse_directives(reply_text)
             else:
                 if model.startswith("opencode-free/"):
                     try:
-                        resp = _opencode_free_chat_tools(msgs, timeout=CLOUD_TOOLS_TIMEOUT)
+                        resp = _opencode_free_chat_tools(
+                            msgs, timeout=CLOUD_TOOLS_TIMEOUT
+                        )
                         choice = (resp.get("choices") or [{}])[0]
                         msg = choice.get("message") or {}
                         reply_text = (msg.get("content") or "").strip()
@@ -1197,9 +1389,17 @@ class Handler(BaseHTTPRequestHandler):
                         model_used = model
                     except urllib.error.HTTPError as cloud_err:
                         if getattr(cloud_err, "code", None) in (503, 502, 504, 429):
-                            _audit({"event": "cloud_relay_unavailable", "code": cloud_err.code, "fallback": "qwen2.5vl:3b"})
+                            _audit(
+                                {
+                                    "event": "cloud_relay_unavailable",
+                                    "code": cloud_err.code,
+                                    "fallback": "qwen2.5vl:3b",
+                                }
+                            )
                             resp = _ollama_chat("qwen2.5vl:3b", msgs, timeout=120.0)
-                            reply_text = (resp.get("message") or {}).get("content") or ""
+                            reply_text = (resp.get("message") or {}).get(
+                                "content"
+                            ) or ""
                             actions, cleaned = parse_directives(reply_text)
                             model_used = "qwen2.5vl:3b"
                         else:
@@ -1212,13 +1412,16 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             if sse_started:
                 _sse_write({"error": str(e), "session_id": session_id, "done": True})
-                return
-            return self._send_json(503, {
-                "error": f"chat backend unreachable: {e}",
-                "reply": "[bridge] could not reach local model or cloud escalation.",
-                "actions": [],
-                "session_id": session_id,
-            })
+                return None
+            return self._send_json(
+                503,
+                {
+                    "error": f"chat backend unreachable: {e}",
+                    "reply": "[bridge] could not reach local model or cloud escalation.",
+                    "actions": [],
+                    "session_id": session_id,
+                },
+            )
 
         elapsed = round(time.time() - t0, 2)
         turn_id = uuid.uuid4().hex
@@ -1230,16 +1433,18 @@ class Handler(BaseHTTPRequestHandler):
             ]
             _sessions[session_id] = new_hist[-30:]
 
-        _audit({
-            "event": "chat",
-            "continuation": continuation,
-            "session_id": session_id,
-            "turn_id": turn_id,
-            "model": model_used,
-            "elapsed_s": elapsed,
-            "actions_count": len(actions),
-            "prompt": prompt[:200],
-        })
+        _audit(
+            {
+                "event": "chat",
+                "continuation": continuation,
+                "session_id": session_id,
+                "turn_id": turn_id,
+                "model": model_used,
+                "elapsed_s": elapsed,
+                "actions_count": len(actions),
+                "prompt": prompt[:200],
+            }
+        )
 
         result_payload = {
             "reply": cleaned or reply_text,
@@ -1254,9 +1459,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if sse_started:
             _sse_write(result_payload)
-            return
+            return None
         return self._send_json(200, result_payload)
-
 
     # ---- /agent/run ----
     def _handle_agent_run(self, body: dict) -> None:
@@ -1272,7 +1476,9 @@ class Handler(BaseHTTPRequestHandler):
             result = _run_agent_goal(session_id, goal, mode=mode, max_rounds=max_rounds)
             return self._send_json(200, result)
         except Exception as e:
-            _audit({"event": "agent_run_error", "session_id": session_id, "error": str(e)})
+            _audit(
+                {"event": "agent_run_error", "session_id": session_id, "error": str(e)}
+            )
             return self._send_json(500, {"error": str(e), "session_id": session_id})
 
     # ---- /agent/chat ----
@@ -1282,7 +1488,9 @@ class Handler(BaseHTTPRequestHandler):
         if not prompt:
             return self._send_json(400, {"error": "missing prompt"})
         with _agent_lock:
-            sess = _agent_sessions.setdefault(session_id, {"messages": [], "tab_id": None, "url": "", "round": 0})
+            sess = _agent_sessions.setdefault(
+                session_id, {"messages": [], "tab_id": None, "url": "", "round": 0}
+            )
         page_context = {}
         try:
             cdp = CdpClient()
@@ -1290,33 +1498,48 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
         try:
-            reply, actions, model = _agent_chat(session_id, prompt, page_context, sess["messages"])
-            sess["messages"].extend([
-                {"role": "user", "content": prompt},
-                {"role": "assistant", "content": reply},
-            ])
+            reply, actions, model = _agent_chat(
+                session_id, prompt, page_context, sess["messages"]
+            )
+            sess["messages"].extend(
+                [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": reply},
+                ]
+            )
             # If the model produced actions, queue them for extension/CDP execution.
             if actions:
                 _queue_actions(session_id, actions)
-            return self._send_json(200, {
-                "reply": reply, "actions": actions, "model": model,
-                "session_id": session_id, "status": "ok",
-            })
+            return self._send_json(
+                200,
+                {
+                    "reply": reply,
+                    "actions": actions,
+                    "model": model,
+                    "session_id": session_id,
+                    "status": "ok",
+                },
+            )
         except Exception as e:
             return self._send_json(500, {"error": str(e), "session_id": session_id})
 
         # ---- /extension/classify_domain ----
+
     def _handle_classify(self, body: dict) -> None:
         url = str(body.get("url") or "")
         host = ""
         try:
             from urllib.parse import urlparse
+
             host = urlparse(url).hostname or ""
         except Exception:
             pass
         category = "unknown"
         low = host.lower()
-        if any(k in low for k in ("indeed.", "ziprecruiter.", "linkedin.", "lever.", "greenhouse.")):
+        if any(
+            k in low
+            for k in ("indeed.", "ziprecruiter.", "linkedin.", "lever.", "greenhouse.")
+        ):
             category = "job_board"
         elif any(k in low for k in ("docs.google.", "drive.google.", "sheets.google.")):
             category = "drive"
@@ -1331,13 +1554,18 @@ class Handler(BaseHTTPRequestHandler):
         if not ok:
             return self._send_json(200, {"ok": False, "error": resolved})
         if not os.path.exists(resolved):
-            return self._send_json(200, {"ok": False, "error": f"not found: {resolved}"})
-        return self._send_json(200, {
-            "ok": True,
-            "path": resolved,
-            "size": os.path.getsize(resolved),
-            "is_file": os.path.isfile(resolved),
-        })
+            return self._send_json(
+                200, {"ok": False, "error": f"not found: {resolved}"}
+            )
+        return self._send_json(
+            200,
+            {
+                "ok": True,
+                "path": resolved,
+                "size": os.path.getsize(resolved),
+                "is_file": os.path.isfile(resolved),
+            },
+        )
 
     # ---- /extension/read_local_file ----
     def _handle_read_file(self, body: dict) -> None:
@@ -1351,12 +1579,15 @@ class Handler(BaseHTTPRequestHandler):
         try:
             with open(resolved, "rb") as f:
                 data = f.read(max_bytes)
-            return self._send_json(200, {
-                "ok": True,
-                "path": resolved,
-                "bytes": len(data),
-                "text": data.decode("utf-8", errors="replace"),
-            })
+            return self._send_json(
+                200,
+                {
+                    "ok": True,
+                    "path": resolved,
+                    "bytes": len(data),
+                    "text": data.decode("utf-8", errors="replace"),
+                },
+            )
         except Exception as e:
             return self._send_json(200, {"ok": False, "error": str(e)})
 
@@ -1366,10 +1597,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(503, {"error": "reentry_client not available"})
         tool = path.split("/reentry/", 1)[-1].rstrip("/")
         if tool not in _reentry.TOOL_MAP:
-            return self._send_json(404, {
-                "error": f"unknown reentry tool '{tool}'",
-                "available": list(_reentry.TOOL_MAP),
-            })
+            return self._send_json(
+                404,
+                {
+                    "error": f"unknown reentry tool '{tool}'",
+                    "available": list(_reentry.TOOL_MAP),
+                },
+            )
         try:
             # session_id is a bridge concern, not a reentry-desk argument
             session_id = str(body.get("session_id") or "default")
@@ -1393,13 +1627,15 @@ class Handler(BaseHTTPRequestHandler):
                         bucket.append(action)
                     with _action_session_lock:
                         _action_session_map[action["id"]] = session_id
-                    _audit({
-                        "event": "reentry_fill_queued",
-                        "session_id": session_id,
-                        "action_id": action["id"],
-                        "form": action.get("_form"),
-                        "client_id": action.get("_client_id"),
-                    })
+                    _audit(
+                        {
+                            "event": "reentry_fill_queued",
+                            "session_id": session_id,
+                            "action_id": action["id"],
+                            "form": action.get("_form"),
+                            "client_id": action.get("_client_id"),
+                        }
+                    )
                     response["fill_queued"] = True
                     response["action_id"] = action["id"]
                     response["session_id"] = session_id
@@ -1430,10 +1666,13 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- /tool/describe_step ----
     def _handle_describe_step(self, body: dict) -> None:
-        return self._send_json(200, {
-            "ok": True,
-            "summary": str(body.get("step") or "(no step)")[:200],
-        })
+        return self._send_json(
+            200,
+            {
+                "ok": True,
+                "summary": str(body.get("step") or "(no step)")[:200],
+            },
+        )
 
 
 # ── AGENTIC SENSEI — CDP-driven autonomous browser agent ────────────────────
@@ -1446,8 +1685,6 @@ class Handler(BaseHTTPRequestHandler):
 #   - Falls back to extension queue when CDP is unavailable
 # ───────────────────────────────────────────────────────────────────────────
 
-import contextlib
-import urllib.parse
 import urllib.request
 
 _CDP_WS_TIMEOUT = 30.0
@@ -1458,9 +1695,15 @@ _agent_sessions: dict[str, dict] = {}
 _agent_lock = threading.Lock()
 
 
-def _cdp_json_rpc(ws_url: str, method: str, params: dict | None = None, timeout: float = _CDP_WS_TIMEOUT) -> dict:
+def _cdp_json_rpc(
+    ws_url: str,
+    method: str,
+    params: dict | None = None,
+    timeout: float = _CDP_WS_TIMEOUT,
+) -> dict:
     """Send one CDP command over WebSocket and return the result."""
     import websockets.sync.client as wsc
+
     req_id = int(time.time() * 1000000) % 0x7FFFFFFF
     payload = {"id": req_id, "method": method, "params": params or {}}
     with wsc.connect(ws_url, close_timeout=2, open_timeout=timeout) as ws:
@@ -1497,7 +1740,10 @@ class CdpClient:
                     return p
         # Create a new tab.
         target_url = url or "about:blank"
-        req = urllib.request.Request(f"{self.cdp_base}/json/new?{urllib.parse.urlencode({'': target_url})[1:]}", method="PUT")
+        req = urllib.request.Request(
+            f"{self.cdp_base}/json/new?{urllib.parse.urlencode({'': target_url})[1:]}",
+            method="PUT",
+        )
         with urllib.request.urlopen(req, timeout=_CDP_HTTP_TIMEOUT) as res:
             return json.loads(res.read().decode())
 
@@ -1518,11 +1764,15 @@ class CdpClient:
     def evaluate(self, expression: str) -> dict:
         if not self._ws_url:
             raise RuntimeError("not connected")
-        return _cdp_json_rpc(self._ws_url, "Runtime.evaluate", {
-            "expression": expression,
-            "returnByValue": True,
-            "awaitPromise": True,
-        })
+        return _cdp_json_rpc(
+            self._ws_url,
+            "Runtime.evaluate",
+            {
+                "expression": expression,
+                "returnByValue": True,
+                "awaitPromise": True,
+            },
+        )
 
     def read_page(self) -> dict:
         expr = r"""
@@ -1647,14 +1897,18 @@ def _agent_select_model(prompt: str, has_screenshot: bool = False) -> str:
     return DEFAULT_MODEL
 
 
-def _agent_chat(session_id: str, prompt: str, page_context: dict, history: list[dict]) -> tuple[str, list[dict], str]:
+def _agent_chat(
+    session_id: str, prompt: str, page_context: dict, history: list[dict]
+) -> tuple[str, list[dict], str]:
     """Run one agent chat turn. Returns (reply_text, actions, model_used)."""
     msgs = [{"role": "system", "content": _AGENT_SYSTEM_PROMPT}]
     # Keep last 12 messages to give the model conversation memory without blowing context.
     msgs.extend(history[-12:])
     ctx_text = ""
     if page_context:
-        ctx_text = json.dumps(page_context, separators=(",", ":"), ensure_ascii=False)[:8000]
+        ctx_text = json.dumps(page_context, separators=(",", ":"), ensure_ascii=False)[
+            :8000
+        ]
     user_text = prompt
     if ctx_text:
         user_text = f"[PAGE_STATE]\n{ctx_text}\n\n[USER/GOAL]\n{prompt}"
@@ -1704,16 +1958,31 @@ def _is_human_gate(action: dict, reply: str) -> bool:
     if action.get("kind") == "ASK":
         return True
     text = (reply or "").lower()
-    gate_words = ["payment", "purchase", "checkout", "password", "credit card", "ssn", "social security", "submit application", "final", "delete"]
+    gate_words = [
+        "payment",
+        "purchase",
+        "checkout",
+        "password",
+        "credit card",
+        "ssn",
+        "social security",
+        "submit application",
+        "final",
+        "delete",
+    ]
     if any(w in text for w in gate_words):
         return True
     return False
 
 
-def _run_agent_goal(session_id: str, goal: str, mode: str = "auto", max_rounds: int = 8) -> dict:
+def _run_agent_goal(
+    session_id: str, goal: str, mode: str = "auto", max_rounds: int = 8
+) -> dict:
     """Main autonomous loop. Returns a status dict."""
     with _agent_lock:
-        sess = _agent_sessions.setdefault(session_id, {"messages": [], "tab_id": None, "url": "", "round": 0})
+        sess = _agent_sessions.setdefault(
+            session_id, {"messages": [], "tab_id": None, "url": "", "round": 0}
+        )
     sess["messages"].append({"role": "user", "content": goal})
 
     cdp: CdpClient | None = None
@@ -1724,7 +1993,13 @@ def _run_agent_goal(session_id: str, goal: str, mode: str = "auto", max_rounds: 
         cdp._get_pages()
         chrome_ok = True
     except Exception as e:
-        _audit({"event": "agent_cdp_unavailable", "session_id": session_id, "error": str(e)})
+        _audit(
+            {
+                "event": "agent_cdp_unavailable",
+                "session_id": session_id,
+                "error": str(e),
+            }
+        )
 
     if not chrome_ok:
         # Do not hallucinate. Without CDP / an open browser we cannot act.
@@ -1733,7 +2008,12 @@ def _run_agent_goal(session_id: str, goal: str, mode: str = "auto", max_rounds: 
         nav_action = None
         url = _extract_url_from_goal(goal)
         if url:
-            nav_action = {"kind": "BROWSER_NAV", "target": url, "value": "", "status": "ready"}
+            nav_action = {
+                "kind": "BROWSER_NAV",
+                "target": url,
+                "value": "",
+                "status": "ready",
+            }
             _queue_actions(session_id, [nav_action])
         return {
             "ok": True,
@@ -1760,9 +2040,19 @@ def _run_agent_goal(session_id: str, goal: str, mode: str = "auto", max_rounds: 
             except Exception as e:
                 page_context = {"error": str(e)}
         try:
-            reply, actions, model = _agent_chat(session_id, goal if round_num == 1 else "Continue.", page_context, sess["messages"])
+            reply, actions, model = _agent_chat(
+                session_id,
+                goal if round_num == 1 else "Continue.",
+                page_context,
+                sess["messages"],
+            )
         except Exception as e:
-            return {"ok": False, "session_id": session_id, "error": f"chat failed: {e}", "round": round_num}
+            return {
+                "ok": False,
+                "session_id": session_id,
+                "error": f"chat failed: {e}",
+                "round": round_num,
+            }
 
         final_reply = reply
         sess["messages"].append({"role": "assistant", "content": reply})
@@ -1771,22 +2061,46 @@ def _run_agent_goal(session_id: str, goal: str, mode: str = "auto", max_rounds: 
         # Filter to executable actions and check human gates.
         exec_actions = []
         for a in actions:
-            if a.get("kind") in ("BROWSER_NAV", "BROWSER_CLICK", "BROWSER_FILL", "BROWSER_SUBMIT", "BROWSER_READ"):
+            if a.get("kind") in (
+                "BROWSER_NAV",
+                "BROWSER_CLICK",
+                "BROWSER_FILL",
+                "BROWSER_SUBMIT",
+                "BROWSER_READ",
+            ):
                 if mode != "auto" or _is_human_gate(a, reply):
                     # In review mode or on sensitive actions, queue to extension for approval.
                     _queue_actions(session_id, [a])
                     return {
-                        "ok": True, "session_id": session_id, "round": round_num,
-                        "status": "waiting_for_approval", "reply": reply, "queued_action": a,
+                        "ok": True,
+                        "session_id": session_id,
+                        "round": round_num,
+                        "status": "waiting_for_approval",
+                        "reply": reply,
+                        "queued_action": a,
                         "model": model,
                     }
                 exec_actions.append(a)
 
         if not exec_actions:
             if any(a.get("kind") == "ASK" for a in actions):
-                return {"ok": True, "session_id": session_id, "round": round_num, "status": "needs_info", "reply": reply, "model": model}
+                return {
+                    "ok": True,
+                    "session_id": session_id,
+                    "round": round_num,
+                    "status": "needs_info",
+                    "reply": reply,
+                    "model": model,
+                }
             if any(a.get("kind") == "DONE" for a in actions) or not actions:
-                return {"ok": True, "session_id": session_id, "round": round_num, "status": "done", "reply": reply, "model": model}
+                return {
+                    "ok": True,
+                    "session_id": session_id,
+                    "round": round_num,
+                    "status": "done",
+                    "reply": reply,
+                    "model": model,
+                }
 
         # Execute via CDP.
         results = []
@@ -1796,18 +2110,44 @@ def _run_agent_goal(session_id: str, goal: str, mode: str = "auto", max_rounds: 
             else:
                 # No CDP: queue to extension and stop (it will execute when panel is open).
                 _queue_actions(session_id, [a])
-                return {"ok": True, "session_id": session_id, "round": round_num, "status": "queued_to_extension", "reply": reply, "queued_action": a, "model": model}
+                return {
+                    "ok": True,
+                    "session_id": session_id,
+                    "round": round_num,
+                    "status": "queued_to_extension",
+                    "reply": reply,
+                    "queued_action": a,
+                    "model": model,
+                }
             results.append({"action": a, "result": result})
-            _audit({"event": "agent_action", "session_id": session_id, "round": round_num, "action": a, "result": result})
+            _audit(
+                {
+                    "event": "agent_action",
+                    "session_id": session_id,
+                    "round": round_num,
+                    "action": a,
+                    "result": result,
+                }
+            )
             if not result.get("ok"):
                 break
 
         # Continue loop with results summary as the next user message.
-        summary = "[ACTION_RESULTS]\n" + json.dumps(results, separators=(",", ":"), ensure_ascii=False)[:4000]
+        summary = (
+            "[ACTION_RESULTS]\n"
+            + json.dumps(results, separators=(",", ":"), ensure_ascii=False)[:4000]
+        )
         sess["messages"].append({"role": "user", "content": summary})
         goal = "Continue."
 
-    return {"ok": True, "session_id": session_id, "round": round_num, "status": "max_rounds", "reply": final_reply, "last_actions": last_actions}
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "round": round_num,
+        "status": "max_rounds",
+        "reply": final_reply,
+        "last_actions": last_actions,
+    }
 
 
 def _extract_url_from_goal(goal: str) -> str | None:
@@ -1818,21 +2158,25 @@ def _extract_url_from_goal(goal: str) -> str | None:
         return None
 
     # 1. Explicit URL anywhere in the goal.
-    url_m = re.search(r'https?://[^\s]+', g)
+    url_m = re.search(r"https?://[^\s]+", g)
     if url_m:
         return url_m.group(0)
 
     low = g.lower()
 
     # 2. 'go to paypal.com' / 'navigate to paypal.com'
-    nav_m = re.search(r'\b(?:go to|navigate to|open|visit)\s+([a-zA-Z0-9][a-zA-Z0-9\-.]+(?:\.[a-zA-Z]{2,})?)\b', g, re.I)
+    nav_m = re.search(
+        r"\b(?:go to|navigate to|open|visit)\s+([a-zA-Z0-9][a-zA-Z0-9\-.]+(?:\.[a-zA-Z]{2,})?)\b",
+        g,
+        re.I,
+    )
     if nav_m:
         host = nav_m.group(1).strip()
-        if host and not re.match(r'^(http|file|chrome|about|data)$', host, re.I):
+        if host and not re.match(r"^(http|file|chrome|about|data)$", host, re.I):
             return f"https://{host}"
 
     # 3. Search intent: extract quoted query, otherwise strip filler and search.
-    if not re.search(r'\b(search|google|look up|look-up|lookup|find me|query)\b', low):
+    if not re.search(r"\b(search|google|look up|look-up|lookup|find me|query)\b", low):
         return None
 
     m = re.search(r'["\']([^"\']+)["\']', g)
@@ -1844,18 +2188,18 @@ def _extract_url_from_goal(goal: str) -> str | None:
     # Strip leading and trailing filler. Work on lowercase indices but slice original.
     strip_patterns = [
         # leading
-        r'^\s*(?:do\s+a\s+)?(?:google\s+)?search(?:\s*,?\s+web\s+scrape)?(?:\s*,?\s+whatever\s+you\s+need\s+to\s+do)?(?:\s+for)?\s*',
-        r'^\s*(?:search|google)\s+(?:for\s+|me\s+(?:for\s+)?|on\s+)?\s*',
-        r'^\s*(?:look\s*up|find(?:\s+me)?|query)\s+(?:for\s+|on\s+google\s+)?\s*',
-        r'^\s*(?:can\s+you|could\s+you|will\s+you|please|i\s+(?:want|need|would\s+like)\s+(?:you\s+to\s+)?)\s*',
-        r'^\s*(?:do\s+a|let\'s|let\s+us)\s+',
+        r"^\s*(?:do\s+a\s+)?(?:google\s+)?search(?:\s*,?\s+web\s+scrape)?(?:\s*,?\s+whatever\s+you\s+need\s+to\s+do)?(?:\s+for)?\s*",
+        r"^\s*(?:search|google)\s+(?:for\s+|me\s+(?:for\s+)?|on\s+)?\s*",
+        r"^\s*(?:look\s*up|find(?:\s+me)?|query)\s+(?:for\s+|on\s+google\s+)?\s*",
+        r"^\s*(?:can\s+you|could\s+you|will\s+you|please|i\s+(?:want|need|would\s+like)\s+(?:you\s+to\s+)?)\s*",
+        r"^\s*(?:do\s+a|let\'s|let\s+us)\s+",
         # trailing
-        r'\s*(?:on\s+google|via\s+google|using\s+google|web\s+scrape|whatever\s+you\s+need\s+to\s+do)\s*$',
-        r'[,;:]?\s*[\U0001F300-\U0001FAFF]+\s*$',  # trailing emojis
+        r"\s*(?:on\s+google|via\s+google|using\s+google|web\s+scrape|whatever\s+you\s+need\s+to\s+do)\s*$",
+        r"[,;:]?\s*[\U0001F300-\U0001FAFF]+\s*$",  # trailing emojis
     ]
     query = g
     for pat in strip_patterns:
-        new_query = re.sub(pat, '', query, flags=re.IGNORECASE).strip()
+        new_query = re.sub(pat, "", query, flags=re.IGNORECASE).strip()
         if new_query:
             query = new_query
     if not query:
@@ -1887,7 +2231,9 @@ def _queue_actions(session_id: str, actions: list[dict]) -> None:
 def serve() -> int:
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     sys.stderr.write(f"[bridge] listening on http://{HOST}:{PORT}\n")
-    sys.stderr.write(f"[bridge] default_model={DEFAULT_MODEL} vision_model={VISION_MODEL}\n")
+    sys.stderr.write(
+        f"[bridge] default_model={DEFAULT_MODEL} vision_model={VISION_MODEL}\n"
+    )
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

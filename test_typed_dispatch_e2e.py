@@ -15,6 +15,7 @@ run_in_terminal mocks subprocess.Popen so no GUI terminal actually spawns.
 Run: python3 ~/scripts/test_typed_dispatch_e2e.py
 Exit: 0 = all green, non-zero = at least one live-dispatch typed-record failure.
 """
+
 import json
 import os
 import subprocess
@@ -49,7 +50,8 @@ class RunCommandTypedLifecycle(unittest.TestCase):
 
     def test_timeout_records_failed_action_with_timeout_marker(self):
         with mock.patch.object(
-            master_ai.subprocess, "run",
+            master_ai.subprocess,
+            "run",
             side_effect=subprocess.TimeoutExpired(cmd="sleep 600", timeout=300),
         ):
             result = master_ai.run_command("sleep 600")
@@ -70,7 +72,8 @@ class RunCommandTypedLifecycle(unittest.TestCase):
     def test_audit_jsonl_gets_full_lifecycle_record(self):
         before_size = (
             master_ai.AUDIT_LOG_JSONL.stat().st_size
-            if master_ai.AUDIT_LOG_JSONL.exists() else 0
+            if master_ai.AUDIT_LOG_JSONL.exists()
+            else 0
         )
         master_ai.run_command("true")
         with master_ai.AUDIT_LOG_JSONL.open() as f:
@@ -94,13 +97,19 @@ class RunInTerminalTypedLifecycle(unittest.TestCase):
         action = master_ai._LAST_LIVE_TYPED_ACTIONS[-1]
         self.assertEqual(action["kind"], "RUNTERM")
         self.assertEqual(action["status"], "completed")
-        self.assertIn(action["extras"].get("spawned_via"), (
-            "x-terminal-emulator", "gnome-terminal", "xterm",
-        ))
+        self.assertIn(
+            action["extras"].get("spawned_via"),
+            (
+                "x-terminal-emulator",
+                "gnome-terminal",
+                "xterm",
+            ),
+        )
 
     def test_no_terminal_available_records_failed_runterm_action(self):
-        with mock.patch.object(master_ai.subprocess, "Popen",
-                               side_effect=FileNotFoundError):
+        with mock.patch.object(
+            master_ai.subprocess, "Popen", side_effect=FileNotFoundError
+        ):
             master_ai.run_in_terminal("htop")
         action = master_ai._LAST_LIVE_TYPED_ACTIONS[-1]
         self.assertEqual(action["kind"], "RUNTERM")
@@ -114,15 +123,13 @@ class StandardsCheckReflectsLiveDispatch(unittest.TestCase):
         self.assertEqual(row[0], "PASS")
 
 
-
-
 class DirectiveBacktickParity(unittest.TestCase):
     """2026-09-09: cross-line backtick spans used to false-positive directives.
 
-    A directive wrapped inside a multi-line code span (`` `RUN:
-ls -la` ``)
-    must be treated as prose and ignored. A real directive outside any
-    backtick span must still be extracted and dispatched.
+        A directive wrapped inside a multi-line code span (`` `RUN:
+    ls -la` ``)
+        must be treated as prose and ignored. A real directive outside any
+        backtick span must still be extracted and dispatched.
     """
 
     def setUp(self):
@@ -143,8 +150,10 @@ ls -la` ``)
         reply = "PLAN ONLY: RUN: echo parity-ok"
         master_ai.process_reply(reply, [], streamed=False, continue_after_tools=False)
         self.assertTrue(
-            any(a.get("kind") == "RUN" and "parity-ok" in str(a.get("target", ""))
-                for a in master_ai._LAST_LIVE_TYPED_ACTIONS),
+            any(
+                a.get("kind") == "RUN" and "parity-ok" in str(a.get("target", ""))
+                for a in master_ai._LAST_LIVE_TYPED_ACTIONS
+            ),
             "real RUN: outside backticks must dispatch",
         )
 
@@ -163,12 +172,13 @@ class PreRunSyntaxGate(unittest.TestCase):
     def test_pre_run_blocks_unclosed_backtick(self):
         fr = master_ai._fire_hook_or_block("pre_run", "echo hi `")
         self.assertTrue(fr)
-        self.assertIn("syntax", str(master_ai._LAST_HOOK_BLOCK.get("reason", "")).lower())
+        self.assertIn(
+            "syntax", str(master_ai._LAST_HOOK_BLOCK.get("reason", "")).lower()
+        )
 
     def test_pre_run_passes_valid_command(self):
         fr = master_ai._fire_hook_or_block("pre_run", "echo hi")
         self.assertFalse(fr)
-
 
 
 class TestXmlToolCallDirectives(unittest.TestCase):
@@ -181,14 +191,15 @@ class TestXmlToolCallDirectives(unittest.TestCase):
 
     def _conv(self, reply):
         return master_ai._xml_tool_calls_to_directives(
-            master_ai._TOOL_CALL_TAG_RE.sub("", reply))
+            master_ai._TOOL_CALL_TAG_RE.sub("", reply)
+        )
 
     def test_live_invoke_run_block(self):
         reply = (
-            'Freedom work, not free tool.\n\n'
+            "Freedom work, not free tool.\n\n"
             '<invoke name="RUN">\n'
             '<parameter name="command" string="true">ls ~/scripts/ ; echo done</parameter>\n'
-            '</invoke>'
+            "</invoke>"
         )
         conv = self._conv(reply)
         self.assertNotIn("<invoke", conv)
@@ -199,15 +210,17 @@ class TestXmlToolCallDirectives(unittest.TestCase):
 
     def test_tool_calls_wrapper_and_multiline_payload(self):
         reply = (
-            "<tool_calls>\n<invoke name=\"RUN\">\n"
-            "<parameter name=\"command\">echo one\necho two</parameter>\n"
+            '<tool_calls>\n<invoke name="RUN">\n'
+            '<parameter name="command">echo one\necho two</parameter>\n'
             "</invoke>\n</tool_calls>"
         )
         conv = self._conv(reply)
         self.assertIn("RUN: echo one echo two", conv)
 
     def test_read_with_path_param(self):
-        reply = '<invoke name="READ"><parameter name="path">/tmp/x.md</parameter></invoke>'
+        reply = (
+            '<invoke name="READ"><parameter name="path">/tmp/x.md</parameter></invoke>'
+        )
         self.assertEqual(self._conv(reply).strip(), "READ: /tmp/x.md")
 
     def test_plain_reply_passthrough(self):

@@ -6,19 +6,18 @@ _load_domain_classes) against an in-memory class dict so the tests don't
 depend on the on-disk ~/.master_ai_domain_classes.json. The HTTP handler is
 covered separately by integration tests.
 """
+
 import json
 import os
 import sys
 import tempfile
 import time
 import unittest
-from pathlib import Path
 
 os.environ["SENSEI_TUI"] = "0"
 sys.path.insert(0, os.path.expanduser("~/scripts"))
 
 import stt_server as srv  # noqa: E402
-
 
 _CLASSES_FIXTURE = {
     "category_1": {
@@ -40,13 +39,17 @@ class ExtractHostTests(unittest.TestCase):
         self.assertEqual(srv._extract_host("Example.COM"), "example.com")
 
     def test_url_with_scheme(self):
-        self.assertEqual(srv._extract_host("https://example.com/path?x=1"), "example.com")
+        self.assertEqual(
+            srv._extract_host("https://example.com/path?x=1"), "example.com"
+        )
 
     def test_url_with_port(self):
         self.assertEqual(srv._extract_host("http://example.com:8080/x"), "example.com")
 
     def test_url_with_userinfo(self):
-        self.assertEqual(srv._extract_host("https://user:pw@example.com/a"), "example.com")
+        self.assertEqual(
+            srv._extract_host("https://user:pw@example.com/a"), "example.com"
+        )
 
     def test_bare_domain_with_port(self):
         self.assertEqual(srv._extract_host("example.com:8080"), "example.com")
@@ -101,12 +104,16 @@ class ClassifyDomainTests(unittest.TestCase):
         self.assertIn("test", result["reason"].lower())
 
     def test_category_1_subdomain(self):
-        result = srv._classify_domain("login.phishing-example.test", classes=_CLASSES_FIXTURE)
+        result = srv._classify_domain(
+            "login.phishing-example.test", classes=_CLASSES_FIXTURE
+        )
         self.assertEqual(result["category"], 1)
         self.assertEqual(result["matched"], "phishing-example.test")
 
     def test_category_2_hit(self):
-        result = srv._classify_domain("https://examplebank.com/login", classes=_CLASSES_FIXTURE)
+        result = srv._classify_domain(
+            "https://examplebank.com/login", classes=_CLASSES_FIXTURE
+        )
         self.assertEqual(result["category"], 2)
         self.assertEqual(result["host"], "examplebank.com")
 
@@ -143,7 +150,11 @@ class LoadDomainClassesTests(unittest.TestCase):
         self._orig_path = srv._DOMAIN_CLASSES_PATH
         self._orig_cache = dict(srv._DOMAIN_CLASSES_CACHE)
         self._tmp = tempfile.NamedTemporaryFile(
-            prefix="domain_classes_", suffix=".json", delete=False, mode='w', encoding='utf-8'
+            prefix="domain_classes_",
+            suffix=".json",
+            delete=False,
+            mode="w",
+            encoding="utf-8",
         )
         json.dump(_CLASSES_FIXTURE, self._tmp)
         self._tmp.flush()
@@ -171,7 +182,9 @@ class LoadDomainClassesTests(unittest.TestCase):
 
     def test_missing_file_returns_empty_shape(self):
         # Point at a non-existent path; loader should fail-open with empty buckets.
-        srv._DOMAIN_CLASSES_PATH = "/tmp/__definitely_missing_master_ai_domain_classes.json"
+        srv._DOMAIN_CLASSES_PATH = (
+            "/tmp/__definitely_missing_master_ai_domain_classes.json"
+        )
         srv._DOMAIN_CLASSES_CACHE["data"] = None
         srv._DOMAIN_CLASSES_CACHE["mtime"] = 0.0
         srv._DOMAIN_CLASSES_CACHE["ts"] = 0.0
@@ -182,7 +195,7 @@ class LoadDomainClassesTests(unittest.TestCase):
 
     def test_unreadable_json_returns_empty_shape(self):
         # Write garbage to the file and confirm the loader still returns empties.
-        with open(self._tmp.name, 'w', encoding='utf-8') as f:
+        with open(self._tmp.name, "w", encoding="utf-8") as f:
             f.write("{not valid json")
         # Touch mtime so cache invalidates.
         new_mtime = time.time() + 10
@@ -204,7 +217,7 @@ class LoadDomainClassesTests(unittest.TestCase):
             "category_3": {},
             "_meta": {},
         }
-        with open(self._tmp.name, 'w', encoding='utf-8') as f:
+        with open(self._tmp.name, "w", encoding="utf-8") as f:
             json.dump(new_payload, f)
         new_mtime = time.time() + 100
         os.utime(self._tmp.name, (new_mtime, new_mtime))

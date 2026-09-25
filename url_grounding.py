@@ -10,7 +10,6 @@ from __future__ import annotations
 import re
 from urllib.parse import urlparse
 
-
 _OPEN_PREFIX_RE = re.compile(
     r"^\s*(?:open|go\s+to|navigate\s+to|visit|launch)\s+(.+?)\s*$",
     re.IGNORECASE,
@@ -87,4 +86,3 @@ def resolve_open_target_url(user_text: str) -> str | None:
         return "https://" + target
 
     return None
-

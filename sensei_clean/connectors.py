@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import os
 import platform
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 
 @dataclass(frozen=True)
@@ -43,23 +43,43 @@ def _home_folder_connectors(home: Path) -> list[SourceConnector]:
     specs = [
         ("downloads", "Downloads", "DOWNLOAD", "local", "most common cleanup target"),
         ("desktop", "Desktop", "DESKTOP", "local", "customer-visible files"),
-        ("documents", "Documents", "DOCUMENTS", "local", "sensitive: asks for approval"),
-        ("pictures", "Photos / Pictures", "PICTURES", "photo_library", "regular photos on this computer"),
-        ("videos", "Videos", "VIDEOS", "media_library", "regular videos on this computer"),
+        (
+            "documents",
+            "Documents",
+            "DOCUMENTS",
+            "local",
+            "sensitive: asks for approval",
+        ),
+        (
+            "pictures",
+            "Photos / Pictures",
+            "PICTURES",
+            "photo_library",
+            "regular photos on this computer",
+        ),
+        (
+            "videos",
+            "Videos",
+            "VIDEOS",
+            "media_library",
+            "regular videos on this computer",
+        ),
         ("music", "Music", "MUSIC", "local", "media"),
     ]
     out: list[SourceConnector] = []
     for cid, label, xdg, kind, note in specs:
         default = home / label
         path = _xdg_dir(xdg, default, home=home)
-        out.append(SourceConnector(
-            connector_id=cid,
-            label=label,
-            path=str(path),
-            kind=kind,
-            available=path.exists() and path.is_dir(),
-            notes=(note,),
-        ))
+        out.append(
+            SourceConnector(
+                connector_id=cid,
+                label=label,
+                path=str(path),
+                kind=kind,
+                available=path.exists() and path.is_dir(),
+                notes=(note,),
+            )
+        )
     out.extend(_photo_folder_connectors(home))
     return out
 
@@ -73,39 +93,78 @@ def _photo_folder_connectors(home: Path) -> list[SourceConnector]:
     system = platform.system().lower()
     names = [
         ("camera_uploads", "Camera Uploads", ["Camera Uploads", "CameraUploads"]),
-        ("phone_imports", "Phone Imports", ["Phone Imports", "Imported Photos", "Photo Imports"]),
+        (
+            "phone_imports",
+            "Phone Imports",
+            ["Phone Imports", "Imported Photos", "Photo Imports"],
+        ),
         ("dcim_home", "Camera Roll / DCIM", ["DCIM", "Camera Roll"]),
-        ("google_photos_folder", "Google Photos folder", ["Google Photos", "GooglePhotos"]),
-        ("icloud_photos_folder", "iCloud Photos folder", ["iCloud Photos", "Photos Library.photoslibrary"]),
+        (
+            "google_photos_folder",
+            "Google Photos folder",
+            ["Google Photos", "GooglePhotos"],
+        ),
+        (
+            "icloud_photos_folder",
+            "iCloud Photos folder",
+            ["iCloud Photos", "Photos Library.photoslibrary"],
+        ),
     ]
     if system == "darwin":
-        names.append(("mac_photos", "Mac Photos library", ["Pictures/Photos Library.photoslibrary"]))
+        names.append(
+            (
+                "mac_photos",
+                "Mac Photos library",
+                ["Pictures/Photos Library.photoslibrary"],
+            )
+        )
     elif system == "windows":
-        names.extend([
-            ("windows_camera_roll", "Windows Camera Roll", ["Pictures/Camera Roll"]),
-            ("windows_saved_pictures", "Saved Pictures", ["Pictures/Saved Pictures"]),
-        ])
+        names.extend(
+            [
+                (
+                    "windows_camera_roll",
+                    "Windows Camera Roll",
+                    ["Pictures/Camera Roll"],
+                ),
+                (
+                    "windows_saved_pictures",
+                    "Saved Pictures",
+                    ["Pictures/Saved Pictures"],
+                ),
+            ]
+        )
 
     out: list[SourceConnector] = []
     for cid, label, rels in names:
         for rel in rels:
             path = home / rel
             if path.exists() and path.is_dir():
-                out.append(SourceConnector(
-                    connector_id=cid,
-                    label=label,
-                    path=str(path),
-                    kind="photo_library",
-                    available=True,
-                    notes=("photos", "safe scan first"),
-                ))
+                out.append(
+                    SourceConnector(
+                        connector_id=cid,
+                        label=label,
+                        path=str(path),
+                        kind="photo_library",
+                        available=True,
+                        notes=("photos", "safe scan first"),
+                    )
+                )
     return _dedupe(out)
 
 
 def _synced_folder_connectors(home: Path) -> list[SourceConnector]:
     candidates = [
         ("google_drive", "Google Drive", ["Google Drive", "GoogleDrive", "Drive"]),
-        ("onedrive", "OneDrive", ["OneDrive", "OneDrive - Personal", "OneDrive - Business", "OneDrive - Work"]),
+        (
+            "onedrive",
+            "OneDrive",
+            [
+                "OneDrive",
+                "OneDrive - Personal",
+                "OneDrive - Business",
+                "OneDrive - Work",
+            ],
+        ),
         ("dropbox", "Dropbox", ["Dropbox"]),
         ("nextcloud", "Nextcloud", ["Nextcloud"]),
         ("icloud", "iCloud Drive", ["iCloud Drive", "iCloudDrive"]),
@@ -119,25 +178,29 @@ def _synced_folder_connectors(home: Path) -> list[SourceConnector]:
         for name in names:
             path = home / name
             if path.exists() and path.is_dir():
-                out.append(SourceConnector(
-                    connector_id=cid,
-                    label=label,
-                    path=str(path),
-                    kind="synced_cloud_folder",
-                    available=True,
-                    notes=("local sync folder", "not OAuth/API"),
-                ))
+                out.append(
+                    SourceConnector(
+                        connector_id=cid,
+                        label=label,
+                        path=str(path),
+                        kind="synced_cloud_folder",
+                        available=True,
+                        notes=("local sync folder", "not OAuth/API"),
+                    )
+                )
     try:
         for child in home.iterdir():
             if child.is_dir() and child.name.startswith("OneDrive"):
-                out.append(SourceConnector(
-                    connector_id="onedrive",
-                    label="OneDrive",
-                    path=str(child),
-                    kind="synced_cloud_folder",
-                    available=True,
-                    notes=("local sync folder", "not OAuth/API"),
-                ))
+                out.append(
+                    SourceConnector(
+                        connector_id="onedrive",
+                        label="OneDrive",
+                        path=str(child),
+                        kind="synced_cloud_folder",
+                        available=True,
+                        notes=("local sync folder", "not OAuth/API"),
+                    )
+                )
     except Exception:
         pass
     return _dedupe(out)
@@ -159,19 +222,21 @@ def _rclone_connectors() -> list[SourceConnector]:
     out: list[SourceConnector] = []
     for r in remotes:
         provider_label, provider_kind, provider_notes = _rclone_remote_label(r)
-        out.append(SourceConnector(
-            connector_id=f"rclone_{r}",
-            label=provider_label,
-            path=f"rclone:{r}:",
-            kind=provider_kind,
-            available=True,  # listed; live auth is a separate probe
-            notes=(
-                "real cloud API connector via rclone",
-                "file listing is optional",
-                "moves go to cloud quarantine and need extra approval",
-                *provider_notes,
-            ),
-        ))
+        out.append(
+            SourceConnector(
+                connector_id=f"rclone_{r}",
+                label=provider_label,
+                path=f"rclone:{r}:",
+                kind=provider_kind,
+                available=True,  # listed; live auth is a separate probe
+                notes=(
+                    "real cloud API connector via rclone",
+                    "file listing is optional",
+                    "moves go to cloud quarantine and need extra approval",
+                    *provider_notes,
+                ),
+            )
+        )
     return out
 
 
@@ -199,14 +264,19 @@ def _android_connectors(*, gvfs_root: Path, media_root: Path) -> list[SourceConn
             for child in gvfs_root.iterdir():
                 name = child.name.lower()
                 if "mtp" in name or "android" in name:
-                    out.append(SourceConnector(
-                        connector_id="android_mtp",
-                        label="Android device",
-                        path=str(child),
-                        kind="android_mounted_storage",
-                        available=True,
-                        notes=("phone storage", "photos usually live in DCIM/Camera"),
-                    ))
+                    out.append(
+                        SourceConnector(
+                            connector_id="android_mtp",
+                            label="Android device",
+                            path=str(child),
+                            kind="android_mounted_storage",
+                            available=True,
+                            notes=(
+                                "phone storage",
+                                "photos usually live in DCIM/Camera",
+                            ),
+                        )
+                    )
                     out.extend(_mounted_photo_children(child, prefix="android_photos"))
         except Exception:
             pass
@@ -214,15 +284,19 @@ def _android_connectors(*, gvfs_root: Path, media_root: Path) -> list[SourceConn
         try:
             for child in media_root.iterdir():
                 if child.is_dir():
-                    out.append(SourceConnector(
-                        connector_id="removable_media",
-                        label="Removable/media storage",
-                        path=str(child),
-                        kind="removable_storage",
-                        available=True,
-                        notes=("mounted local storage",),
-                    ))
-                    out.extend(_mounted_photo_children(child, prefix="removable_photos"))
+                    out.append(
+                        SourceConnector(
+                            connector_id="removable_media",
+                            label="Removable/media storage",
+                            path=str(child),
+                            kind="removable_storage",
+                            available=True,
+                            notes=("mounted local storage",),
+                        )
+                    )
+                    out.extend(
+                        _mounted_photo_children(child, prefix="removable_photos")
+                    )
         except Exception:
             pass
     return _dedupe(out)
@@ -241,14 +315,16 @@ def _mounted_photo_children(root: Path, *, prefix: str) -> list[SourceConnector]
     out: list[SourceConnector] = []
     for path in candidates:
         if path.exists() and path.is_dir():
-            out.append(SourceConnector(
-                connector_id=f"{prefix}_{path.name.lower().replace(' ', '_')}",
-                label=f"Phone photos: {path.name}",
-                path=str(path),
-                kind="photo_library",
-                available=True,
-                notes=("photos from phone/camera",),
-            ))
+            out.append(
+                SourceConnector(
+                    connector_id=f"{prefix}_{path.name.lower().replace(' ', '_')}",
+                    label=f"Phone photos: {path.name}",
+                    path=str(path),
+                    kind="photo_library",
+                    available=True,
+                    notes=("photos from phone/camera",),
+                )
+            )
     return out
 
 
@@ -259,13 +335,41 @@ def supported_connector_catalog() -> list[dict[str, str]]:
     broader consumer target across OSes and providers.
     """
     return [
-        {"group": "This computer", "name": "Downloads/Desktop/Documents", "status": "scan local folders"},
-        {"group": "Photos", "name": "Pictures, Camera Uploads, DCIM, phone photos", "status": "scan when folder/device is present"},
-        {"group": "Cloud drive", "name": "Google Drive, OneDrive, Dropbox, Box, pCloud, Nextcloud/WebDAV", "status": "connect through rclone or local sync folder"},
-        {"group": "Photo cloud", "name": "Google Photos, iCloud Photos, Amazon Photos", "status": "connect separately; Google Photos can use rclone"},
-        {"group": "Phones", "name": "Android MTP, removable SD cards, USB drives", "status": "scan when mounted"},
-        {"group": "Email", "name": "Gmail, Outlook, Yahoo/IMAP", "status": "separate mail connector; not rclone"},
-        {"group": "Operating systems", "name": "Linux, Windows, macOS", "status": "same connector model; OS-specific folders detected"},
+        {
+            "group": "This computer",
+            "name": "Downloads/Desktop/Documents",
+            "status": "scan local folders",
+        },
+        {
+            "group": "Photos",
+            "name": "Pictures, Camera Uploads, DCIM, phone photos",
+            "status": "scan when folder/device is present",
+        },
+        {
+            "group": "Cloud drive",
+            "name": "Google Drive, OneDrive, Dropbox, Box, pCloud, Nextcloud/WebDAV",
+            "status": "connect through rclone or local sync folder",
+        },
+        {
+            "group": "Photo cloud",
+            "name": "Google Photos, iCloud Photos, Amazon Photos",
+            "status": "connect separately; Google Photos can use rclone",
+        },
+        {
+            "group": "Phones",
+            "name": "Android MTP, removable SD cards, USB drives",
+            "status": "scan when mounted",
+        },
+        {
+            "group": "Email",
+            "name": "Gmail, Outlook, Yahoo/IMAP",
+            "status": "separate mail connector; not rclone",
+        },
+        {
+            "group": "Operating systems",
+            "name": "Linux, Windows, macOS",
+            "status": "same connector model; OS-specific folders detected",
+        },
     ]
 
 
