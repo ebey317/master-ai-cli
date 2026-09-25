@@ -21,7 +21,9 @@ Programmatic use:
   out = run_reasoning_loop("your query", mode="standard")
   print(out["answer"])
 """
+
 from __future__ import annotations
+
 import json
 import os
 import re
@@ -30,8 +32,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-STAGE_TIMEOUT = 240        # seconds per stage
-STAGE_NUM_PREDICT = 900    # max tokens per stage
+STAGE_TIMEOUT = 240  # seconds per stage
+STAGE_NUM_PREDICT = 900  # max tokens per stage
 
 # ── Prompt templates ──────────────────────────────────────────
 # Each stage has a system prompt (role) and a user prompt (task).
@@ -132,24 +134,32 @@ CRITIC OUTPUT:
 Produce the final clean answer now."""
 
 
-def _model_chat(model: str, system: str, user: str,
-                timeout: int = STAGE_TIMEOUT,
-                num_predict: int = STAGE_NUM_PREDICT) -> tuple[str, float]:
+def _model_chat(
+    model: str,
+    system: str,
+    user: str,
+    timeout: int = STAGE_TIMEOUT,
+    num_predict: int = STAGE_NUM_PREDICT,
+) -> tuple[str, float]:
     """Model-agnostic chat call.
 
     If master_ai.py is available in the same repo, route through its
     ask_model_router(). Otherwise fall back to a direct Ollama /api/chat call
     for local models only."""
     t0 = time.time()
-    messages = [{"role": "system", "content": system},
-                {"role": "user",   "content": user}]
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
 
     # Try master_ai's router first (preferred — gives cloud + aliases)
     try:
         import master_ai
+
         if hasattr(master_ai, "ask_model_router"):
-            text, elapsed = master_ai.ask_model_router(messages, model=model,
-                                                       max_tokens=num_predict)
+            text, elapsed = master_ai.ask_model_router(
+                messages, model=model, max_tokens=num_predict
+            )
             if text:
                 return text, elapsed
     except Exception:
@@ -157,17 +167,21 @@ def _model_chat(model: str, system: str, user: str,
 
     # Fallback: direct Ollama call for local models
     try:
-        import urllib.request
         import urllib.error
-        body = json.dumps({
-            "model": model,
-            "messages": messages,
-            "stream": False,
-            "options": {"num_predict": num_predict, "temperature": 0.2},
-            "keep_alive": "30m",
-        }).encode()
+        import urllib.request
+
+        body = json.dumps(
+            {
+                "model": model,
+                "messages": messages,
+                "stream": False,
+                "options": {"num_predict": num_predict, "temperature": 0.2},
+                "keep_alive": "30m",
+            }
+        ).encode()
         req = urllib.request.Request(
-            "http://localhost:11434/api/chat", data=body,
+            "http://localhost:11434/api/chat",
+            data=body,
             headers={"Content-Type": "application/json"},
         )
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -212,26 +226,34 @@ def _parse_json_lenient(text: str) -> tuple[dict | None, str]:
 # ── Stage functions ───────────────────────────────────────────
 def plan_stage(query: str, model: str) -> dict:
     """PLANNER: decompose, don't solve. Returns the full stage record."""
-    content, elapsed = _model_chat(model, PROMPT_PLANNER_SYS,
-                                 PROMPT_PLANNER_USER.format(query=query))
+    content, elapsed = _model_chat(
+        model, PROMPT_PLANNER_SYS, PROMPT_PLANNER_USER.format(query=query)
+    )
     parsed, raw = _parse_json_lenient(content)
     return {
-        "model": model, "elapsed_s": elapsed, "raw": raw,
+        "model": model,
+        "elapsed_s": elapsed,
+        "raw": raw,
         "parsed": parsed is not None,
-        "json": parsed or {"assumptions": [], "constraints": [],
-                            "steps": [raw] if raw else []},
+        "json": parsed
+        or {"assumptions": [], "constraints": [], "steps": [raw] if raw else []},
     }
 
 
 def solve_stage(query: str, plan: dict, model: str) -> dict:
     """SOLVER: execute the plan, show work, produce raw solution."""
     prior = json.dumps(plan["json"], indent=2)
-    content, elapsed = _model_chat(model, PROMPT_SOLVER_SYS,
-                                 PROMPT_SOLVER_USER.format(query=query, prior=prior),
-                                 num_predict=1400)  # more room for solving
+    content, elapsed = _model_chat(
+        model,
+        PROMPT_SOLVER_SYS,
+        PROMPT_SOLVER_USER.format(query=query, prior=prior),
+        num_predict=1400,
+    )  # more room for solving
     parsed, raw = _parse_json_lenient(content)
     return {
-        "model": model, "elapsed_s": elapsed, "raw": raw,
+        "model": model,
+        "elapsed_s": elapsed,
+        "raw": raw,
         "parsed": parsed is not None,
         "json": parsed or {"reasoning": raw, "raw_solution": raw},
     }
@@ -240,7 +262,8 @@ def solve_stage(query: str, plan: dict, model: str) -> dict:
 def critique_stage(query: str, plan: dict, solver: dict, model: str) -> dict:
     """CRITIC: find issues + corrections. May return empty lists if clean."""
     content, elapsed = _model_chat(
-        model, PROMPT_CRITIC_SYS,
+        model,
+        PROMPT_CRITIC_SYS,
         PROMPT_CRITIC_USER.format(
             query=query,
             plan_json=json.dumps(plan["json"], indent=2),
@@ -249,7 +272,9 @@ def critique_stage(query: str, plan: dict, solver: dict, model: str) -> dict:
     )
     parsed, raw = _parse_json_lenient(content)
     return {
-        "model": model, "elapsed_s": elapsed, "raw": raw,
+        "model": model,
+        "elapsed_s": elapsed,
+        "raw": raw,
         "parsed": parsed is not None,
         "json": parsed or {"issues": [], "corrections": []},
     }
@@ -258,12 +283,14 @@ def critique_stage(query: str, plan: dict, solver: dict, model: str) -> dict:
 def finalize_stage(query: str, solver: dict, critic: dict | None, model: str) -> dict:
     """FINALIZER: clean user-facing answer. Applies critic's corrections.
     If the answer appears truncated, runs a continuation pass."""
-    critic_json = json.dumps(critic["json"] if critic else
-                              {"issues": [], "corrections": []}, indent=2)
+    critic_json = json.dumps(
+        critic["json"] if critic else {"issues": [], "corrections": []}, indent=2
+    )
 
     def _run_finalizer(user_content: str) -> tuple[str, float]:
         return _model_chat(
-            model, PROMPT_FINALIZER_SYS,
+            model,
+            PROMPT_FINALIZER_SYS,
             user_content,
             num_predict=2400,
         )
@@ -286,9 +313,9 @@ def finalize_stage(query: str, solver: dict, critic: dict | None, model: str) ->
                 f"PREVIOUS ANSWER (truncated):\n{answer}\n\n"
                 "Continue now."
             )
-            cont, cont_elapsed = _model_chat(model, PROMPT_FINALIZER_SYS,
-                                             continuation_prompt,
-                                             num_predict=2400)
+            cont, cont_elapsed = _model_chat(
+                model, PROMPT_FINALIZER_SYS, continuation_prompt, num_predict=2400
+            )
             elapsed += cont_elapsed
             if cont:
                 # Try to extract just the answer text; if it comes back as JSON, use that
@@ -298,7 +325,9 @@ def finalize_stage(query: str, solver: dict, critic: dict | None, model: str) ->
                 answer = _merge_continuation(answer, cont_text)
 
     return {
-        "model": model, "elapsed_s": elapsed, "raw": raw,
+        "model": model,
+        "elapsed_s": elapsed,
+        "raw": raw,
         "parsed": parsed is not None,
         "json": {"answer": answer},
         "answer": answer,
@@ -333,16 +362,19 @@ def _merge_continuation(original: str, continuation: str) -> str:
     cont_head = continuation[:200].lstrip()
     # If continuation starts with same text, skip the duplicate prefix
     if orig_tail and cont_head.startswith(orig_tail):
-        return original + continuation[len(orig_tail):]
+        return original + continuation[len(orig_tail) :]
     return original + "\n\n" + continuation
 
 
 # ── Orchestrator ──────────────────────────────────────────────
-def run_reasoning_loop(query: str, *,
-                       mode: str = "standard",
-                       models: dict | None = None,
-                       memory_file: str | None = None,
-                       progress: bool = True) -> dict:
+def run_reasoning_loop(
+    query: str,
+    *,
+    mode: str = "standard",
+    models: dict | None = None,
+    memory_file: str | None = None,
+    progress: bool = True,
+) -> dict:
     """Run the full pipeline.
 
     mode:
@@ -376,16 +408,17 @@ def run_reasoning_loop(query: str, *,
     default_model = None
     try:
         import master_ai
-        default_model = (master_ai.PINNED_MODEL
-                         or master_ai.MODELS.get("master")
-                         or "master-ai")
+
+        default_model = (
+            master_ai.PINNED_MODEL or master_ai.MODELS.get("master") or "master-ai"
+        )
     except Exception:
         default_model = "master-ai"
 
     mdl = {
-        "planner":   default_model,
-        "solver":    default_model,
-        "critic":    default_model,
+        "planner": default_model,
+        "solver": default_model,
+        "critic": default_model,
         "finalizer": default_model,
     }
     if models:
@@ -417,8 +450,11 @@ def run_reasoning_loop(query: str, *,
             pass
 
     result: dict[str, Any] = {
-        "query": query, "mode": mode, "stages": {},
-        "stages_completed": [], "total_elapsed_s": 0.0,
+        "query": query,
+        "mode": mode,
+        "stages": {},
+        "stages_completed": [],
+        "total_elapsed_s": 0.0,
         "answer": "",
     }
     t0 = time.time()
@@ -429,8 +465,10 @@ def run_reasoning_loop(query: str, *,
         plan = plan_stage(full_query, mdl["planner"])
         result["stages"]["planner"] = plan
         result["stages_completed"].append("planner")
-        _say(f"    {plan['elapsed_s']}s · parsed={plan['parsed']} · "
-             f"{len(plan['json'].get('steps', []))} steps")
+        _say(
+            f"    {plan['elapsed_s']}s · parsed={plan['parsed']} · "
+            f"{len(plan['json'].get('steps', []))} steps"
+        )
 
         # Stage 2: solve
         _say(f"🧠 [2/4] SOLVER ({mdl['solver']})...")
@@ -447,8 +485,10 @@ def run_reasoning_loop(query: str, *,
             result["stages"]["critic"] = critic
             result["stages_completed"].append("critic")
             issues_n = len(critic["json"].get("issues", []))
-            _say(f"    {critic['elapsed_s']}s · parsed={critic['parsed']} · "
-                 f"{issues_n} issue{'s' if issues_n != 1 else ''} raised")
+            _say(
+                f"    {critic['elapsed_s']}s · parsed={critic['parsed']} · "
+                f"{issues_n} issue{'s' if issues_n != 1 else ''} raised"
+            )
 
             # Deep/max mode: run a second solver pass informed by the critic,
             # then a second critique, then finalize. Deep only spends the
@@ -493,13 +533,18 @@ def run_reasoning_loop(query: str, *,
         try:
             Path(memory_file).parent.mkdir(parents=True, exist_ok=True)
             with open(memory_file, "a") as f:
-                f.write(json.dumps({
-                    "ts": int(time.time()),
-                    "query": query,
-                    "mode": mode,
-                    "answer": result["answer"],
-                    "elapsed_s": result["total_elapsed_s"],
-                }) + "\n")
+                f.write(
+                    json.dumps(
+                        {
+                            "ts": int(time.time()),
+                            "query": query,
+                            "mode": mode,
+                            "answer": result["answer"],
+                            "elapsed_s": result["total_elapsed_s"],
+                        }
+                    )
+                    + "\n"
+                )
         except Exception:
             pass
 
@@ -542,14 +587,17 @@ def _plan_debate_verdict(text: str) -> str:
     return "unknown"
 
 
-def run_plan_debate(query: str, *,
-                    planner_a: str | None = None,
-                    planner_b: str | None = None,
-                    merger: str | None = None,
-                    fallback: str | None = None,
-                    max_rounds: int = 8,
-                    live_pin_merger_round: int = 0,
-                    progress: bool = True) -> dict:
+def run_plan_debate(
+    query: str,
+    *,
+    planner_a: str | None = None,
+    planner_b: str | None = None,
+    merger: str | None = None,
+    fallback: str | None = None,
+    max_rounds: int = 8,
+    live_pin_merger_round: int = 0,
+    progress: bool = True,
+) -> dict:
     """Run the merge-to-consensus planning loop.
 
     live_pin_merger_round: at this critique/revise round (1-based), the
@@ -572,9 +620,10 @@ def run_plan_debate(query: str, *,
     default_model = None
     try:
         import master_ai
-        default_model = (master_ai.PINNED_MODEL
-                         or master_ai.MODELS.get("master")
-                         or "master-ai")
+
+        default_model = (
+            master_ai.PINNED_MODEL or master_ai.MODELS.get("master") or "master-ai"
+        )
     except Exception:
         default_model = "master-ai"
 
@@ -596,6 +645,7 @@ def run_plan_debate(query: str, *,
     def _live_pin_model() -> str | None:
         try:
             import master_ai
+
             return getattr(master_ai, "PINNED_MODEL", None) or None
         except Exception:
             return None
@@ -613,15 +663,20 @@ def run_plan_debate(query: str, *,
         return out
 
     result: dict[str, Any] = {
-        "query": query, "plan": "", "rounds": 0, "converged": False,
+        "query": query,
+        "plan": "",
+        "rounds": 0,
+        "converged": False,
         "pin_handed_off": False,
         "stages": {},
     }
 
     # 1. Simultaneous seed — two parallel plans.
     _say(f"🧠 [plan_debate] SEED A ({a}) + SEED B ({b})...")
-    seed = (f"Here is a task. Draft a concise, concrete step-by-step plan for it.\n\n"
-            f"Task: {query}")
+    seed = (
+        f"Here is a task. Draft a concise, concrete step-by-step plan for it.\n\n"
+        f"Task: {query}"
+    )
     plan_a = _model_chat(a, "", seed, num_predict=2000)[0]
     plan_b = _model_chat(b, "", seed, num_predict=2000)[0]
     result["stages"]["seed_a"] = plan_a
@@ -629,12 +684,16 @@ def run_plan_debate(query: str, *,
 
     # 2. MERGE — one model receives BOTH plans, produces ONE unified plan.
     _say(f"🧠 [plan_debate] MERGE ({m})...")
-    merged = _chat_merge(m, (
-        f"Here are TWO plans for the same task. Merge them into ONE unified, "
-        f"complete plan that combines the best of both and fills any gaps. "
-        f"Output only the single merged plan.\n\n"
-        f"Task: {query}\n\nPLAN A:\n{plan_a}\n\nPLAN B:\n{plan_b}"
-    ), 2000)
+    merged = _chat_merge(
+        m,
+        (
+            f"Here are TWO plans for the same task. Merge them into ONE unified, "
+            f"complete plan that combines the best of both and fills any gaps. "
+            f"Output only the single merged plan.\n\n"
+            f"Task: {query}\n\nPLAN A:\n{plan_a}\n\nPLAN B:\n{plan_b}"
+        ),
+        2000,
+    )
     result["stages"]["merge"] = merged
 
     # 3. Critique/revise loop with the keep-agree rule + verdict gate.
@@ -646,17 +705,47 @@ def run_plan_debate(query: str, *,
     plan = merged
     rounds = []
     for rnd in range(1, max_rounds + 1):
+        # 2026-09-24: Ctrl+C during plan mode did nothing (Elijah: "control c
+        # doesn't work in plan mode"). Root cause: this loop was only ever
+        # wrapped in `except KeyboardInterrupt` by its caller, but the TUI's
+        # actual Ctrl+C handler doesn't raise KeyboardInterrupt at all — it
+        # sets master_ai._INTERRUPT_EVENT (see sensei_tui.py's _sigint,
+        # which calls on_interrupt() while a turn is in flight). This loop
+        # never checked that event, so setting it changed nothing until the
+        # whole multi-round debate finished on its own. Same fix shape as
+        # the CONTEXT_WATERMARK check added earlier tonight to handle()'s
+        # continuation loop: check once per iteration, bail with whatever's
+        # converged so far rather than trusting an exception that never
+        # actually arrives from this trigger.
+        try:
+            import master_ai as _master_ai_interrupt_check
+
+            if _master_ai_interrupt_check._INTERRUPT_EVENT.is_set():
+                _say(
+                    f"    round {rnd}: interrupted — stopping debate, returning current plan"
+                )
+                result["plan"] = plan
+                result["rounds"] = rnd - 1
+                result["converged"] = False
+                return result
+        except Exception:
+            pass
         # Sneak-attack handoff (Elijah, 2026-09-24): on the configured round,
         # the verdict/merge slot switches to the operator's live pinned model
         # — "the man who was actually in there" — for the REST of the debate.
         # Odd round by design (default 5): with 6 max rounds, the live pin
         # closes rounds 5 and 6 — two rounds of the guy who's really there.
-        if (live_pin_merger_round and rnd >= live_pin_merger_round
-                and not pin_handed_off):
+        if (
+            live_pin_merger_round
+            and rnd >= live_pin_merger_round
+            and not pin_handed_off
+        ):
             _pin = _live_pin_model()
             if _pin and _pin != m:
-                _say(f"    round {rnd}: 🥷 sneak-attack — verdict handoff to "
-                     f"live pin '{_pin}'")
+                _say(
+                    f"    round {rnd}: 🥷 sneak-attack — verdict handoff to "
+                    f"live pin '{_pin}'"
+                )
                 m = _pin
                 pin_handed_off = True
                 result["pin_handed_off"] = True
@@ -665,22 +754,30 @@ def run_plan_debate(query: str, *,
                 # no pin, or pin IS the merger already — nothing to hand to
                 pin_handed_off = True  # don't retry every round
 
-        crit = _chat_merge(m, (
-            f"Critique this plan for the task. {PLAN_DEBATE_KEEP_RULE} List only "
-            f"the concrete flaws, gaps, or disagreements that still need fixing. "
-            f"Do NOT write a new plan.\n\nTask: {query}\n\nPlan:\n{plan}"
-        ), 1200)
+        crit = _chat_merge(
+            m,
+            (
+                f"Critique this plan for the task. {PLAN_DEBATE_KEEP_RULE} List only "
+                f"the concrete flaws, gaps, or disagreements that still need fixing. "
+                f"Do NOT write a new plan.\n\nTask: {query}\n\nPlan:\n{plan}"
+            ),
+            1200,
+        )
 
         # Revise + verdict: use the MERGER (instruction-follower) so the
         # "build it" verdict lands cleanly.
-        plan = _chat_merge(m, (
-            f"Here is a plan and a critique of it. {PLAN_DEBATE_KEEP_RULE} Revise "
-            f"the plan to address ONLY the critique points, then output the full "
-            f"revised plan. On the FIRST line, write exactly one of: 'critique it' "
-            f"(if it still needs another review) or 'build it' (if it is now "
-            f"complete and correct). Then output the plan below that line.\n\n"
-            f"Task: {query}\n\nPlan:\n{plan}\n\nCritique:\n{crit}"
-        ), 2000)
+        plan = _chat_merge(
+            m,
+            (
+                f"Here is a plan and a critique of it. {PLAN_DEBATE_KEEP_RULE} Revise "
+                f"the plan to address ONLY the critique points, then output the full "
+                f"revised plan. On the FIRST line, write exactly one of: 'critique it' "
+                f"(if it still needs another review) or 'build it' (if it is now "
+                f"complete and correct). Then output the plan below that line.\n\n"
+                f"Task: {query}\n\nPlan:\n{plan}\n\nCritique:\n{crit}"
+            ),
+            2000,
+        )
 
         v = _plan_debate_verdict(plan)
         rounds.append({"round": rnd, "verdict": v, "critique": crit, "plan": plan})
@@ -699,27 +796,42 @@ def run_plan_debate(query: str, *,
 # ── CLI ───────────────────────────────────────────────────────
 def _main() -> int:
     import argparse
+
     ap = argparse.ArgumentParser(
         description="Sensei Reasoning Loop — Planner/Solver/Critic/Finalizer + plan_debate"
     )
     ap.add_argument("query", nargs="+", help="the user question")
-    ap.add_argument("--mode", choices=("fast", "standard", "deep", "max", "plan_debate"),
-                    default="standard")
-    ap.add_argument("--planner",   default=None)
-    ap.add_argument("--solver",    default=None)
-    ap.add_argument("--critic",    default=None)
+    ap.add_argument(
+        "--mode",
+        choices=("fast", "standard", "deep", "max", "plan_debate"),
+        default="standard",
+    )
+    ap.add_argument("--planner", default=None)
+    ap.add_argument("--solver", default=None)
+    ap.add_argument("--critic", default=None)
     ap.add_argument("--finalizer", default=None)
-    ap.add_argument("--planner-a", default=None, help="plan_debate: proposer/reviser model")
+    ap.add_argument(
+        "--planner-a", default=None, help="plan_debate: proposer/reviser model"
+    )
     ap.add_argument("--planner-b", default=None, help="plan_debate: critic model")
-    ap.add_argument("--merger",    default=None, help="plan_debate: merge model")
-    ap.add_argument("--fallback",  default=None, help="plan_debate: fallback for merge/verdict slot")
+    ap.add_argument("--merger", default=None, help="plan_debate: merge model")
+    ap.add_argument(
+        "--fallback", default=None, help="plan_debate: fallback for merge/verdict slot"
+    )
     ap.add_argument("--max-rounds", type=int, default=8, help="plan_debate: safety cap")
-    ap.add_argument("--memory", default=None,
-                    help="optional .jsonl file to persist loops across runs")
-    ap.add_argument("--json", action="store_true",
-                    help="emit the full result dict as JSON (for piping)")
-    ap.add_argument("--quiet", action="store_true",
-                    help="suppress per-stage progress lines")
+    ap.add_argument(
+        "--memory",
+        default=None,
+        help="optional .jsonl file to persist loops across runs",
+    )
+    ap.add_argument(
+        "--json",
+        action="store_true",
+        help="emit the full result dict as JSON (for piping)",
+    )
+    ap.add_argument(
+        "--quiet", action="store_true", help="suppress per-stage progress lines"
+    )
     args = ap.parse_args()
 
     query = " ".join(args.query).strip()
@@ -747,14 +859,21 @@ def _main() -> int:
         return 0 if out["converged"] else 1
 
     models = {
-        "planner": args.planner, "solver": args.solver,
-        "critic": args.critic,  "finalizer": args.finalizer,
+        "planner": args.planner,
+        "solver": args.solver,
+        "critic": args.critic,
+        "finalizer": args.finalizer,
     }
     # Drop None values so orchestrator uses its own default
     models = {k: v for k, v in models.items() if v}
 
-    out = run_reasoning_loop(query, mode=args.mode, models=models,
-                              memory_file=args.memory, progress=not args.quiet)
+    out = run_reasoning_loop(
+        query,
+        mode=args.mode,
+        models=models,
+        memory_file=args.memory,
+        progress=not args.quiet,
+    )
 
     if args.json:
         print(json.dumps(out, indent=2))
@@ -765,7 +884,9 @@ def _main() -> int:
         print("─" * 60)
         print(out["answer"] or "(no answer — pipeline produced no final output)")
         print()
-        print(f"  total: {out['total_elapsed_s']}s  stages: {', '.join(out['stages_completed'])}")
+        print(
+            f"  total: {out['total_elapsed_s']}s  stages: {', '.join(out['stages_completed'])}"
+        )
     return 0 if out["answer"] else 1
 
 

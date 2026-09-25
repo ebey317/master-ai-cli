@@ -99,6 +99,8 @@ try:
         readline.read_history_file(_HIST)
     except FileNotFoundError:
         pass
+    except OSError as _hist_err:  # corrupt/predates _HiStOrY_V2_ header: skip
+        print(f"  [history] could not load {_HIST}: {_hist_err}", flush=True)
     readline.set_history_length(500)
     atexit.register(readline.write_history_file, _HIST)
 
@@ -895,13 +897,31 @@ def _auto_label_bg(history_snapshot):
             # derive locally from the first real user message so a title
             # ALWAYS exists. Empty label = aoe smart-rename improvises
             # names like "Chinese"/"Lithuanians" from stray pane words.
-            first = next(
-                (m for m in history_snapshot if m.get("role") == "user"), None
-            )
+            first = next((m for m in history_snapshot if m.get("role") == "user"), None)
             if first:
-                words = re.sub(r"[^a-z0-9]+", " ", first.get("content", "").lower()).split()
-                stop = {"the", "a", "an", "to", "for", "and", "or", "of", "in",
-                        "on", "me", "my", "i", "is", "it", "this", "that", "please"}
+                words = re.sub(
+                    r"[^a-z0-9]+", " ", first.get("content", "").lower()
+                ).split()
+                stop = {
+                    "the",
+                    "a",
+                    "an",
+                    "to",
+                    "for",
+                    "and",
+                    "or",
+                    "of",
+                    "in",
+                    "on",
+                    "me",
+                    "my",
+                    "i",
+                    "is",
+                    "it",
+                    "this",
+                    "that",
+                    "please",
+                }
                 words = [w for w in words if w not in stop][:3]
                 if words:
                     suggested = "-".join(words)
@@ -1316,6 +1336,7 @@ def _resolve_default_local_model():
         return DEFAULT_LOCAL_MODEL
     try:
         import hardware_model
+
         try:
             DEFAULT_LOCAL_MODEL = hardware_model.pick_local_model(log=log)
         except TypeError:  # standalone copy without log kwarg
@@ -18379,9 +18400,7 @@ def draw_status_bar(history=None):
     ctx_pct = None
     if history:
         try:
-            total_chars = sum(
-                len(m.get("content", "") or "") for m in history
-            )
+            total_chars = sum(len(m.get("content", "") or "") for m in history)
             ctx_pct = round(100 * total_chars / CONTEXT_WATERMARK)
         except Exception:
             ctx_pct = None
@@ -20785,7 +20804,9 @@ def handle(user_text, history, image_path=None, context_policy=None):
         # exists so far, and let the normal save/refresh path (which the
         # user gets prompted for on the NEXT top-level turn) catch up.
         _mid_loop_chars = sum(
-            len(m.get("content", "") or "") for m in history if m.get("role") != "system"
+            len(m.get("content", "") or "")
+            for m in history
+            if m.get("role") != "system"
         )
         if _mid_loop_chars >= CONTEXT_WATERMARK:
             print(
@@ -21317,7 +21338,9 @@ def _sync_aoe_session_title():
             return  # human-run in a plain terminal: nothing to retitle
         subprocess.run(
             ["aoe", "session", "rename", inst, "-t", "master-ai"],
-            capture_output=True, timeout=10, check=False,
+            capture_output=True,
+            timeout=10,
+            check=False,
         )
     except Exception:
         pass
@@ -21581,7 +21604,7 @@ def main():
                             last_you = candidate
                     if last_you:
                         preview = last_you[:140] + ("…" if len(last_you) > 140 else "")
-                        recap = f"🔄 Picked back up after an update — last thing you said: \"{preview}\""
+                        recap = f'🔄 Picked back up after an update — last thing you said: "{preview}"'
                         print(f"\n  {C}{recap}{X}\n")
                         try:
                             threading.Thread(
@@ -24552,7 +24575,8 @@ def main():
 
                 if str(Path.home() / "scripts") not in _sys.path:
                     _sys.path.insert(0, str(Path.home() / "scripts"))
-                from sensei_reasoning_loop import run_plan_debate
+                from sensei_reasoning_loop import _model_chat, run_plan_debate
+
                 try:
                     from plan_slots import resolve_debate_slots
                 except ImportError:
@@ -24564,7 +24588,10 @@ def main():
                 # are substituted with the best currently-free pick instead
                 # of silently starving the convergence gate.
                 (
-                    _pa, _pb, _mg, _fb,
+                    _pa,
+                    _pb,
+                    _mg,
+                    _fb,
                 ) = resolve_debate_slots(
                     PLAN_DEBATE_PLANNER_A,
                     PLAN_DEBATE_PLANNER_B,
@@ -24586,6 +24613,28 @@ def main():
                 )
                 plan_reply = _debate.get("plan", "") or ""
                 _converged = _debate.get("converged", False)
+
+                # ── Jev end-gate (Elijah's design, 2026-09-24) ──────────
+                # The debate models vote on their own homework; Jev
+                # (typesafe/jev) is an independent typed second opinion on
+                # the FINAL plan before it's shown for approval. Fail-open:
+                # any gate failure flows the plan exactly as before.
+                try:
+                    from plan_jev_gate import run_jev_gate
+
+                    _jev_revise = lambda prompt, _mg_now=_mg: _model_chat(  # noqa: B023
+                        _mg_now, "", prompt, num_predict=2000
+                    )[0]
+                    _jev = run_jev_gate(user_text, plan_reply, revise_fn=_jev_revise)
+                    for _jline in _jev.get("progress", []):
+                        print(f"  {C}{_jline}{X}")
+                    plan_reply = _jev.get("annotated_plan") or plan_reply
+                    # Note: a flagged plan still flows to the approve menu —
+                    # fail-open by design — but the ⚠ banner is prepended to
+                    # the plan text so it's visible where Elijah approves.
+                except Exception as _jev_err:
+                    log(f"JEV_GATE_ERROR: {_jev_err}")
+                # ── end Jev end-gate ─────────────────────────────────────
             except KeyboardInterrupt:
                 print(f"\n  {Y}plan debate interrupted{X}")
                 continue

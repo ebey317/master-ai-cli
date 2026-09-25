@@ -48,7 +48,6 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import Layout
-from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.containers import (
     ConditionalContainer,
     Float,
@@ -411,7 +410,17 @@ def _menu_command_matches(text: str) -> list[str]:
     if not prefix:
         return []
     query = text[1:].strip().lower()
-    commands = COMMAND_MENU_GROUPS.get(prefix, [])
+    # 2026-09-24: COMPLETER_WORDS below was already built specifically to be
+    # alphabetized (2026-09-14 note: "I need my slash command to be
+    # alphabetically aesthetic") -- but this function, which actually feeds
+    # the live '/' completion popup, was reading straight from
+    # COMMAND_MENU_GROUPS in its raw category-curated order and never used
+    # it. The sorted list existed the whole time; nothing pointed at it.
+    # Elijah caught this live: "my slash commands are still not
+    # alphabetized" after two other, different lists had already been
+    # fixed. Sort here at the point of use instead of trusting a second,
+    # disconnected list to stay in sync with this one.
+    commands = sorted(COMMAND_MENU_GROUPS.get(prefix, []), key=str.lower)
     query = (query or "").strip().lower()
     if not query:
         return list(commands)
@@ -480,7 +489,7 @@ LEGEND_WORDS = [
     "e=edit label",
 ]
 
-IDLE_TIPS = [
+_IDLE_TIPS_RAW = [
     "type '/' for the command palette",
     "'/help' for quick reference",
     "'/mode plan' brainstorms + drafts plans (default — no execution)",
@@ -509,6 +518,24 @@ IDLE_TIPS = [
     "'/remember: <fact>' saves a fact across all sessions",
     "'/' alone opens the slash palette — one prefix for everything",
 ]
+
+
+def _idle_tip_sort_key(tip: str) -> tuple[str, str]:
+    """Alphabetize by the command name the tip is actually about, not the
+    raw sentence. Most tips quote the command ('/help', 'fast: ...'); pull
+    the first word out of that quoted segment and use it as the primary
+    key, falling back to the segment itself to break ties (e.g. the four
+    'mode ...' tips) and keep the order stable if a new tip is added later
+    without hand-resorting the whole list -- same self-maintaining pattern
+    as show_help()'s _alphabetize_rows().
+    """
+    quoted = re.search(r"'(.*?)'", tip)
+    segment = (quoted.group(1) if quoted else tip).lstrip("/").strip().lower()
+    word = re.match(r"[a-z0-9]+", segment)
+    return (word.group(0) if word else "", segment)
+
+
+IDLE_TIPS = sorted(_IDLE_TIPS_RAW, key=_idle_tip_sort_key)
 
 
 def _term_size():
