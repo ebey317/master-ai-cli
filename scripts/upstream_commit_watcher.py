@@ -153,7 +153,7 @@ def _iso(dt: datetime) -> str:
     return dt.isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def _github_api(owner: str, repo: str, path: str) -> dict:
+def _github_api(owner: str, repo: str, path: str) -> dict | list:
     """Call the GitHub REST API for a repo, returning parsed JSON."""
     url = f"https://api.github.com/repos/{owner}/{repo}{path}"
     cmd = [
@@ -255,7 +255,7 @@ def _fetch_commits(owner: str, repo: str, since: datetime) -> List[dict]:
 
 def _write_digest(
     run_date: datetime,
-    findings: Dict[str, List[dict]],
+    findings: Dict[Tuple[str, str], List[dict]],
 ) -> Path:
     DIGEST_DIR.mkdir(parents=True, exist_ok=True)
     date_str = run_date.strftime("%Y-%m-%d")
@@ -345,7 +345,7 @@ def main() -> int:
     state = _load_state()
     state.setdefault("repos", {})
 
-    findings: Dict[str, List[dict]] = {}
+    findings: Dict[Tuple[str, str], List[dict]] = {}
 
     for owner, repo in REPOS:
         repo_key = f"{owner}/{repo}"
