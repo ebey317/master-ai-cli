@@ -1,6 +1,6 @@
 # Split Fix Plan — master-ai-cli → 85+/100 Market Ready
 
-**Date:** 2026-08-11  
+**Date:** 2026-08-11
 **Goal:**
 - `agent_standards_score()` ≥ 85/100.
 - `master-ai --help` exits 0 with usage text.

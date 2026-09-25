@@ -65,12 +65,12 @@ def main():
     # being silently swallowed - this is the regression itself. Checked via
     # self._chat_focused directly (no get_app() involved, so it's reliable
     # outside a running event loop).
-    assert global_up.filter() is False, (
-        "global Up must not match while input is focused"
-    )
-    assert global_down.filter() is False, (
-        "global Down must not match while input is focused"
-    )
+    assert (
+        global_up.filter() is False
+    ), "global Up must not match while input is focused"
+    assert (
+        global_down.filter() is False
+    ), "global Down must not match while input is focused"
     # completion_up/completion_down are filtered with has_focus(self._input),
     # which calls get_app() internally - that only resolves correctly inside
     # a real running Application (has_focus() needs the live layout's focus
@@ -87,20 +87,20 @@ def main():
     assert global_up.filter() is True, "global Up must match once chat is focused"
     assert global_down.filter() is True, "global Down must match once chat is focused"
     assert app._chat_focused is True, "focus_chat should set flag"
-    assert app._app.layout.current_window == app._output_window, (
-        "layout focus should be output window"
-    )
+    assert (
+        app._app.layout.current_window == app._output_window
+    ), "layout focus should be output window"
 
     event = type("E", (), {"app": app._app})
     before = app._scroll_offset
     global_up.handler(event)
-    assert app._scroll_offset == before + 1, (
-        f"global Up should scroll chat: {app._scroll_offset}"
-    )
+    assert (
+        app._scroll_offset == before + 1
+    ), f"global Up should scroll chat: {app._scroll_offset}"
     global_down.handler(event)
-    assert app._scroll_offset == before, (
-        f"global Down should un-scroll chat: {app._scroll_offset}"
-    )
+    assert (
+        app._scroll_offset == before
+    ), f"global Down should un-scroll chat: {app._scroll_offset}"
 
     # Focus input; the filter (not the handler body) is what keeps chat-
     # scroll out of the way now, so real key dispatch never invokes these
@@ -109,15 +109,15 @@ def main():
     # itself would consult, so it can't prove real-usage behavior).
     app._focus_input()
     assert app._chat_focused is False, "focus_input should clear flag"
-    assert app._app.layout.current_window == app._input.window, (
-        "layout focus should be input"
-    )
-    assert global_up.filter() is False, (
-        "global Up must not match once input is refocused"
-    )
-    assert global_down.filter() is False, (
-        "global Down must not match once input is refocused"
-    )
+    assert (
+        app._app.layout.current_window == app._input.window
+    ), "layout focus should be input"
+    assert (
+        global_up.filter() is False
+    ), "global Up must not match once input is refocused"
+    assert (
+        global_down.filter() is False
+    ), "global Down must not match once input is refocused"
 
     # Scroll public API still works
     app.scroll("up", n=5)

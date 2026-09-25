@@ -32,7 +32,7 @@ index 76fc800..bedfbac 100755
 @@ -7962,8 +7962,9 @@ def agent_standards_checks():
          "audit trail hook",
          f"audit file: {AUDIT_LOG}")
- 
+
 -    parser_tests = Path.home() / "scripts" / "test_master_ai_parser.py"
 -    selftest = Path.home() / "scripts" / "sensei_selftest.sh"
 +    repo_dir = Path(__file__).resolve().parent
@@ -42,7 +42,7 @@ index 76fc800..bedfbac 100755
          "parser regression tests",
          str(parser_tests))
 @@ -12067,6 +12068,16 @@ def show_last_summary():
- 
+
  # ── MAIN LOOP ─────────────────────────────────────────────────
  def main():
 +    if any(arg in ("-h", "--help") for arg in sys.argv[1:]):

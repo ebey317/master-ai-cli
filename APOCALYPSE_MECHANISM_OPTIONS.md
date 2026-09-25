@@ -83,7 +83,7 @@ Master AI has two product moods: **Local Mode** (default — never needs the int
 
 ## Recommendation
 
-**Option A + a half of Option D.** 
+**Option A + a half of Option D.**
 
 The reasoning loop is already built and IS structured local cognition — that's the spiritual successor to the chunker. Call it what it is ("Deep Think" in user-facing copy, "reasoning loop" in code) and ship it as the Local Mode differentiator. Don't invent a separate MECHANISM name for apocalypse — the mode name is enough.
 

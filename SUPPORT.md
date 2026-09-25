@@ -44,4 +44,3 @@ Do not send passwords, API keys, private documents, or payment information.
 - WSL2 Ubuntu: supported, with systemd caveats
 - macOS: partial support through Homebrew/Ollama
 - Native Windows without WSL: not recommended
-

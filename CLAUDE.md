@@ -42,8 +42,8 @@ Elijah has built "the stick" — the foundational off-grid-first architecture. T
 
 ### TIER-1 BLOCKING: Typed Tool Dispatch (Execution Safety)
 
-**Current:** `process_reply()` regex-parses free model text → dispatches directly. Cloud models hallucinate success when safeguards block.  
-**WARN:** Typed dispatch is shadow-parse audit-only, not live. `typed_actions.parse_reply()` exists but `process_reply` still uses legacy regex buckets.  
+**Current:** `process_reply()` regex-parses free model text → dispatches directly. Cloud models hallucinate success when safeguards block.
+**WARN:** Typed dispatch is shadow-parse audit-only, not live. `typed_actions.parse_reply()` exists but `process_reply` still uses legacy regex buckets.
 **Failure mode:** Model claims "done" when blocked. User loses work.
 
 **To PASS:**
@@ -68,8 +68,8 @@ python3 ~/scripts/test_typed_dispatch_e2e.py
 
 ### TIER-1 BLOCKING: Sandbox Boundary (Isolation Security)
 
-**Current:** Shell commands run directly on user machine. No resource limits, no capability dropping, no filesystem escapes.  
-**WARN:** `shell command` is unconfined. A model-induced loop can fork-bomb, fill disk, steal SSH keys.  
+**Current:** Shell commands run directly on user machine. No resource limits, no capability dropping, no filesystem escapes.
+**WARN:** `shell command` is unconfined. A model-induced loop can fork-bomb, fill disk, steal SSH keys.
 **Failure mode:** `for((;;));do true;done` runs unstopped → disk full → system hang. Runaway subprocess reads `~/.aws/credentials`.
 
 **To PASS:**
@@ -102,8 +102,8 @@ python3 ~/scripts/test_sandbox_escape.py
 
 ### TIER-1 BLOCKING: Read Path Fence + TTL (Secret Leak Prevention)
 
-**Current:** `_read_path_ok` blocks symlink escapes. Approval entries have TTL + cwd. But old approvals can still grant permanent access.  
-**WARN:** Approval expiry is in code; not wired into every read gate. Stale approvals don't auto-revoke.  
+**Current:** `_read_path_ok` blocks symlink escapes. Approval entries have TTL + cwd. But old approvals can still grant permanent access.
+**WARN:** Approval expiry is in code; not wired into every read gate. Stale approvals don't auto-revoke.
 **Failure mode:** User approved `~/.ssh/config` read 2 hours ago. Model reads it again now without re-asking.
 
 **To PASS:**
@@ -134,8 +134,8 @@ python3 ~/scripts/test_secret_fence.py
 
 ### TIER-2: Output Caps (Resource Exhaustion Prevention)
 
-**Current:** Model can emit unlimited tokens. No output size limit.  
-**WARN:** Runaway loop → 10GB output file → disk full → system hangs.  
+**Current:** Model can emit unlimited tokens. No output size limit.
+**WARN:** Runaway loop → 10GB output file → disk full → system hangs.
 **Failure mode:** Model's reasoning loop emits 100GB of text. Disk fills. System becomes unresponsive.
 
 **To PASS:**
@@ -169,8 +169,8 @@ echo "$(python3 -c 'print(\"x\" * 100000000)')" | sensei "read this"
 
 ### TIER-2: Approval Expiry (Time-Scoped Trust)
 
-**Current:** `_read_path_ok` has TTL in code. But `_SELF_MOD_DENYLIST` is forever.  
-**WARN:** Denylist entries never expire. Old block-outs persist indefinitely.  
+**Current:** `_read_path_ok` has TTL in code. But `_SELF_MOD_DENYLIST` is forever.
+**WARN:** Denylist entries never expire. Old block-outs persist indefinitely.
 **Failure mode:** Old denylist entry blocks a future legitimate edit that user now wants to allow.
 
 **To PASS:**
@@ -182,7 +182,7 @@ echo "$(python3 -c 'print(\"x\" * 100000000)')" | sensei "read this"
            self.value = value  # path or command
            self.created_at = time.time()
            self.ttl = ttl_seconds
-       
+
        def is_expired(self):
            return time.time() - self.created_at > self.ttl
    ```

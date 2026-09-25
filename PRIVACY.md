@@ -36,4 +36,3 @@ Master AI writes local diagnostic logs so the buyer can troubleshoot their own i
 ## Support Data
 
 If a buyer asks for help, they may choose to share logs, screenshots, or command output. They should remove secrets before sharing. Master AI never requires API keys, passwords, private documents, or payment information for support.
-

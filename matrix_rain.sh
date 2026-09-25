@@ -42,14 +42,14 @@ end_time=$((start_time + 15))  # Run for 15 seconds
 while (( SECONDS < end_time )); do
     # Clear screen
     echo -ne "\033[H"
-    
+
     # Draw rain columns
     for ((col=1; col<=COLS; col++)); do
         # Randomly start new rain columns
         if (( rain[$col] == 0 && RANDOM % 100 < 3 )); then
             rain[$col]=1
         fi
-        
+
         # Draw active rain columns
         if (( rain[$col] > 0 )); then
             # Head of the rain (bright)
@@ -57,7 +57,7 @@ while (( SECONDS < end_time )); do
                 char=${CHARS:$((RANDOM % ${#CHARS})):1}
                 echo -ne "\033[${rain[$col]};${col}H${BRIGHT_GREEN}${char}${RESET}"
             fi
-            
+
             # Trail of the rain (varying intensity)
             for ((i=1; i<5; i++)); do
                 if (( rain[$col] - i > 0 && rain[$col] - i <= ROWS )); then
@@ -69,22 +69,22 @@ while (( SECONDS < end_time )); do
                     fi
                 fi
             done
-            
+
             # Clear old tail
             if (( rain[$col] - 5 > 0 && rain[$col] - 5 <= ROWS )); then
                 echo -ne "\033[$((rain[$col] - 5));${col}H "
             fi
-            
+
             # Move rain down
             ((rain[$col]++))
-            
+
             # Reset if rain goes off screen
             if (( rain[$col] - 5 > ROWS )); then
                 rain[$col]=0
             fi
         fi
     done
-    
+
     # Control animation speed
     sleep 0.08
 done

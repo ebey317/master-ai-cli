@@ -72,15 +72,15 @@ def test_profile_switch_isolation():
     try:
         master_ai._activate_profile("phase6_a")
         a_mem = str(master_ai._pfile("memory.jsonl"))
-        assert "phase6_a" in a_mem and Path(a_mem).exists(), (
-            "profile A memory path wrong"
-        )
+        assert (
+            "phase6_a" in a_mem and Path(a_mem).exists()
+        ), "profile A memory path wrong"
 
         master_ai._activate_profile("phase6_b")
         b_mem = str(master_ai._pfile("memory.jsonl"))
-        assert "phase6_b" in b_mem and Path(b_mem).exists(), (
-            "profile B memory path wrong"
-        )
+        assert (
+            "phase6_b" in b_mem and Path(b_mem).exists()
+        ), "profile B memory path wrong"
 
         b_text = Path(b_mem).read_text()
         assert "profile A secret" not in b_text, "profile isolation broken"
