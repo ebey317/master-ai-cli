@@ -4991,15 +4991,52 @@ def orchestrate(history, user_text, image_path=None):
     # mushes directives ("master ai endurance" hallucinated folder from voice-to-
     # text garbage; RUNTERM doc parroted instead of emitted). 3B is now reserved
     # for idle tips and vision preprocessing. All user turns get master-ai.
+    # 2026-09-25: this bucket is the true default -- "All user turns get
+    # master-ai" per the comment above -- and it never actually implemented
+    # this function's own documented promise ("PEACETIME — cloud-first
+    # when keys are present"). local's base_score (80) was a flat constant
+    # that beat every cloud candidate here (66, 63) unconditionally,
+    # peacetime or not, and OpenRouter -- the operator's real, live,
+    # working key -- wasn't even offered as a candidate in this bucket at
+    # all. Elijah, live: "i am in mode connected... i'm only using cloud
+    # models... we have a bug then." Confirmed: peacetime mode changed
+    # nothing about this bucket's scoring. Only touches THIS bucket's
+    # numbers, gated on peacetime + a real key — apocalypse/local-first
+    # mode's dominant local score (80) is untouched, as is every other
+    # scoring bucket in this function.
+    # Gap is 50 points, not just enough to beat the old flat 80 — this
+    # still has to survive _rank_route_candidates()'s perf_bonus, a
+    # separate +/-45 adjustment layered on top of base_score afterward.
+    # At 40 vs 90, only the two extremes landing simultaneously (local at
+    # its max +15 bonus AND openrouter at its min -45) can still tip it
+    # back to local (55 vs 45) -- which is the right outcome for that
+    # specific case (openrouter genuinely, severely unreliable across many
+    # real calls), not a reopening of this bug. Any ordinary case,
+    # including "no history yet" (bonus=0 both), cloud wins decisively.
+    _peacetime_cloud_first = run_mode == "peacetime" and have_or
     candidates = [
         {
             "route": "local",
             "model": MODELS["master"],
             "task_type": "default",
-            "base_score": 80,
+            "base_score": 40 if _peacetime_cloud_first else 80,
             "reason": "default → default local VLM",
         }
     ]
+    if have_or:
+        candidates.append(
+            {
+                "route": "cloud",
+                "model": "openrouter",
+                "task_type": "default",
+                "base_score": 90 if _peacetime_cloud_first else 60,
+                "reason": (
+                    "default → OpenRouter (peacetime cloud-first)"
+                    if _peacetime_cloud_first
+                    else "default → OpenRouter fallback"
+                ),
+            }
+        )
     if have_fireworks:
         candidates.append(
             {
