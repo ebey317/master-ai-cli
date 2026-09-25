@@ -13572,7 +13572,7 @@ def _looks_interactive_run(cmd):
 
 
 # ── RUN COMMAND ───────────────────────────────────────────────
-_LAST_LIVE_TYPED_ACTIONS = []
+_LAST_LIVE_TYPED_ACTIONS: list[dict] = []
 _LIVE_TYPED_ACTIONS_CAP = 200
 
 
