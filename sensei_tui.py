@@ -48,6 +48,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import Layout
+from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.containers import (
     ConditionalContainer,
     Float,
@@ -737,6 +738,22 @@ class SenseiApp:
 
         self._output_window = Window(
             content=self._output_control,
+            # 2026-09-24: no height meant this Window asked prompt_toolkit
+            # for its PREFERRED height, which for a FormattedTextControl is
+            # the full content height -- i.e. the entire scrollback, not
+            # "whatever fits above the input box." In a long-running session
+            # (hours of history, exactly what happens over one real work
+            # session) that preferred height keeps growing, and HSplit
+            # squeezes the fixed input Frame below it until the frame's own
+            # bottom border falls past the terminal's actual row count.
+            # Elijah caught this live: "the input box isn't a full box,"
+            # missing bottom border, and typed slash commands silently
+            # failing to register -- the widget was rendering partly off
+            # the visible 50-row pane. weight=1 tells HSplit this window
+            # takes whatever space is LEFT after its fixed-height siblings
+            # (header, status, the input frame) are sized, so it can never
+            # push them out of frame no matter how long history gets.
+            height=Dimension(weight=1),
             wrap_lines=True,
             always_hide_cursor=True,
             # class:chat is defined as `noinherit` in _build_style so the
