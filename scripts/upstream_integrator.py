@@ -4,16 +4,21 @@ Sensei-native upstream integrator.
 
 Reads the ranked queue at memory/upstream-integration-queue.json, takes the
 top N unprocessed commits, fetches each patch, and asks Sensei's own cloud
-lane (OpenCode Go subscription relay, kimi-k2.7-code) to reimplement the
+lane (OpenRouter free tier, nemotron-3-ultra-550b) to reimplement the
 underlying design idea inside master-ai-cli. Generated files are
 py_compile-gated, committed to a review branch, and tested before anything
 merges.
 
-2026-09-25: was on Ollama Cloud, which 429'd every attempt of a live batch
-(items 1-3, three tries each). OpenCode Go is a $10/mo subscription lane
-Elijah already pays for, serves kimi-k2.7-code natively (35-model catalog,
-verified live), and carries no shared-pool rate ceiling. Deliberately NOT
-routed through OpenRouter.
+2026-09-25: moved off the $10/mo OpenCode Go plan (kimi-k2.7-code) onto
+OpenRouter's free tier — Elijah: "let's put it to a free model that's
+capable of doing the same thing as kimi." nvidia/nemotron-3-ultra-550b-a55b
+:free is the pick: this exact slug is already this codebase's proven
+planner-tier model (see PLAN_DEBATE_PLANNER_B, master_ai.py), so it's not
+a downgrade guess. Only batch=3/night, so OpenRouter's shared free-tier
+rate ceiling (the reason OpenCode was chosen last time, for the much
+higher-volume Ollama Cloud path) isn't the same risk here. Hard-gated to
+":free"-suffixed models only, per the 2026-08-27 operator rule enforced at
+master_ai.py's own OpenRouter chokepoint: no silent paid fallback.
 
 This is Elijah's self-update loop: Sensei reads upstream code, learns the
 idea, and adapts it to its own codebase. No external framework involved.
@@ -53,12 +58,9 @@ CORE_ENGINE_FILES = {
 MSG_LIMIT = 1500
 DIFF_LINES = 500
 DIFF_CHARS = 8000
-PLAN_MODEL = "kimi-k2.7-code"
-# OpenCode Go — the $10/mo subscription relay, same Zen API shape as the
-# keyless free lane but authenticated and served from /zen/go/v1. The keyless
-# Zen lane (ling-3.0-flash-fin-free) 403s FreeTierError from outside OpenCode,
-# so it is not an option for an unattended cron job; this lane is.
-OPENCODE_GO_URL = "https://opencode.ai/zen/go/v1/chat/completions"
+# Must end in ":free" -- see the free-only gate in _ask_cloud().
+PLAN_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 BATCH = 3
 
 
@@ -92,33 +94,36 @@ def _clean_key(val):
     return val.split()[0] if val.split() else ""
 
 
-def _opencode_key():
-    """OPENCODE_API_KEY — keychain first (canonical), then process env, then
-    ~/.hermes/.env. Mirrors master_ai._opencode_go_key() so the cron job
+def _openrouter_key():
+    """OPENROUTER_API_KEY — keychain first (canonical: ~/.master_ai_keys is
+    JSON with an "openrouter" field, same file master_ai.py's KEYS dict
+    loads), then legacy KV-line form, then process env, then ~/.hermes/.env.
+    Mirrors master_ai.load_keys()/KEYS["openrouter"] so the cron job
     resolves the same credential the interactive picker does."""
     keychain = Path.home() / ".master_ai_keys"
     if keychain.exists():
-        for ln in keychain.read_text(errors="replace").splitlines():
-            s = ln.strip()
-            if s.startswith("OPENCODE_API_KEY=") or s.startswith(
-                "OPENCODE_GO_API_KEY="
-            ):
-                k = _clean_key(s.split("=", 1)[1])
-                if k:
-                    return k
-    for var in ("OPENCODE_API_KEY", "OPENCODE_GO_API_KEY"):
-        k = _clean_key(os.environ.get(var, ""))
-        if k:
-            return k
+        text = keychain.read_text(errors="replace")
+        try:
+            k = _clean_key(json.loads(text).get("openrouter", ""))
+            if k:
+                return k
+        except Exception:
+            for ln in text.splitlines():
+                s = ln.strip()
+                if s.startswith("OPENROUTER_API_KEY="):
+                    k = _clean_key(s.split("=", 1)[1])
+                    if k:
+                        return k
+    k = _clean_key(os.environ.get("OPENROUTER_API_KEY", ""))
+    if k:
+        return k
     env = Path.home() / ".hermes" / ".env"
     if env.exists():
         for ln in env.read_text(errors="replace").splitlines():
             s = ln.strip()
             if s.startswith("export "):
                 s = s[len("export ") :].strip()
-            if s.startswith("OPENCODE_API_KEY=") or s.startswith(
-                "OPENCODE_GO_API_KEY="
-            ):
+            if s.startswith("OPENROUTER_API_KEY="):
                 k = _clean_key(s.split("=", 1)[1])
                 if k:
                     return k
@@ -126,23 +131,27 @@ def _opencode_key():
 
 
 def _ask_cloud(messages, timeout=300):
-    """OpenCode Go plan call with retry + diagnostics.
+    """OpenRouter free-tier plan call with retry + diagnostics.
 
-    Lane: https://opencode.ai/zen/go/v1 — the $10/mo subscription relay
-    (Bearer OPENCODE_API_KEY), NOT the keyless Zen free lane, which 403s
-    FreeTierError from outside OpenCode and therefore can never work from
-    this cron job.
+    Lane: https://openrouter.ai/api/v1 (Bearer OPENROUTER_API_KEY), model
+    PLAN_MODEL. Hard-gated to ":free"-suffixed models — master_ai.py's own
+    _ask_openrouter() enforces the same rule at its chokepoint (operator,
+    2026-08-27: "we're using only the slash free models, nothing else");
+    this cron job gets no exemption from that.
 
-    Flakiness modes seen in production (2026-09-23, still guarded here):
+    Flakiness modes seen in production on this relay (guarded here):
       - thinking models return everything in `reasoning_content`, `content` empty
       - completion hits max_tokens mid-reasoning -> truncated/empty answer
-      - transient 429/5xx or empty generation
+      - transient 429/5xx or empty generation (free-tier 550B models are slow)
     Strategy: extract from content, fall back to reasoning_content, detect
     max-token cutoff and widen on retry, 3 attempts with backoff.
     """
-    key = _opencode_key()
+    if not PLAN_MODEL.endswith(":free"):
+        print(f"  cloud: refusing non-free model '{PLAN_MODEL}'", flush=True)
+        return None
+    key = _openrouter_key()
     if not key:
-        print("  cloud: no OPENCODE_API_KEY", flush=True)
+        print("  cloud: no OPENROUTER_API_KEY", flush=True)
         return None
     max_tokens = 8192
     last_err = "unknown"
@@ -154,15 +163,14 @@ def _ask_cloud(messages, timeout=300):
             "stream": False,
         }
         req = urllib.request.Request(
-            OPENCODE_GO_URL,
+            OPENROUTER_URL,
             data=json.dumps(payload).encode(),
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {key}",
+                "HTTP-Referer": "http://localhost",
+                "X-Title": "master-ai-upstream-integrator",
                 "User-Agent": "master-ai-upstream-integrator/1.0",
-                # OpenCode's validated-client convention: a stable per-job
-                # session id. Their relay expects it on Go traffic.
-                "x-opencode-session": "upstream-integrator",
             },
             method="POST",
         )
