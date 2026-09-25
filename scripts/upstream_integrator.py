@@ -236,7 +236,7 @@ def _path_allowed(p):
     return root in (rel, "scripts", "tests") or "/" not in rel
 
 
-def integrate_one(item, dry_run=False):
+def integrate_one(item, dry_run=False, base_branch=None):
     owner, repo, sha = item["owner"], item["repo"], item["sha"]
     print(f"\n=== {owner}/{repo}@{sha[:8]} (score {item.get('score')})", flush=True)
     # never entangle the operator's WIP: refuse to branch when TRACKED files
@@ -342,7 +342,7 @@ def integrate_one(item, dry_run=False):
             return branch, "manual-review"
 
         # auto-merge: tests pass, no core engine files touched
-        _git("checkout", "-")
+        _git("checkout", base_branch or "main", cwd=REPO)
         rc, _, merr = _git("merge", "--no-ff", "--no-edit", branch)
         if rc != 0:
             _log_line({"ts": datetime.now().isoformat(), "sha": sha,
@@ -353,7 +353,11 @@ def integrate_one(item, dry_run=False):
                    "status": "merged", "detail": f"auto-merged {branch}: {', '.join(ok_files)}; tests pass"})
         return branch, "merged"
     finally:
-        _git("checkout", "-")
+        # Return to the base branch by NAME. A relative checkout - would
+        # bounce to whatever branch we were on before this item (i.e. the
+        # PREVIOUS upstream-learn/* branch), landing the NEXT item's merge
+        # on that side branch and leaving the repo stranded off-base.
+        _git("checkout", base_branch or "main", cwd=REPO)
 
 
 def touched_core_check(files):
@@ -395,9 +399,20 @@ def main():
                 pass
     todo = [it for it in items if it["sha"] not in done_shas]
     print(f"queue={len(items)} pending={len(todo)} batch={batch}", flush=True)
+    # capture the branch everything should land on BEFORE any checkout dance
+    rc, out, _ = _git("rev-parse", "--abbrev-ref", "HEAD")
+    base = out.strip() if rc == 0 else ""
+    if not base or base.startswith(f"{BRANCH_BASE}/"):
+        print(f"REFUSING: launch from the base branch, not '{base or 'detached HEAD'}'", flush=True)
+        return
     branches = []
     for it in todo[:batch]:
-        b, outcome = integrate_one(it, dry_run=dry)
+        try:
+            b, outcome = integrate_one(it, dry_run=dry, base_branch=base)
+        except Exception as e:
+            _log_line({"ts": datetime.now().isoformat(), "sha": it.get("sha"),
+                       "status": "failed", "detail": f"integrate_one exception: {e}"})
+            continue
         if outcome in ("merged", "branch-ready"):
             branches.append(b)
     # drop TERMINAL items from the queue; retryable ones stay:
