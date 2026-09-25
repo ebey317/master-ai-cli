@@ -4,9 +4,16 @@ Sensei-native upstream integrator.
 
 Reads the ranked queue at memory/upstream-integration-queue.json, takes the
 top N unprocessed commits, fetches each patch, and asks Sensei's own cloud
-lane (Ollama Cloud, kimi-k2.7-code) to reimplement the underlying design idea
-inside master-ai-cli. Generated files are py_compile-gated, committed to a
-review branch, and tested before anything merges.
+lane (OpenCode Go subscription relay, kimi-k2.7-code) to reimplement the
+underlying design idea inside master-ai-cli. Generated files are
+py_compile-gated, committed to a review branch, and tested before anything
+merges.
+
+2026-09-25: was on Ollama Cloud, which 429'd every attempt of a live batch
+(items 1-3, three tries each). OpenCode Go is a $10/mo subscription lane
+Elijah already pays for, serves kimi-k2.7-code natively (35-model catalog,
+verified live), and carries no shared-pool rate ceiling. Deliberately NOT
+routed through OpenRouter.
 
 This is Elijah's self-update loop: Sensei reads upstream code, learns the
 idea, and adapts it to its own codebase. No external framework involved.
@@ -24,7 +31,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -47,6 +54,11 @@ MSG_LIMIT = 1500
 DIFF_LINES = 500
 DIFF_CHARS = 8000
 PLAN_MODEL = "kimi-k2.7-code"
+# OpenCode Go — the $10/mo subscription relay, same Zen API shape as the
+# keyless free lane but authenticated and served from /zen/go/v1. The keyless
+# Zen lane (ling-3.0-flash-fin-free) 403s FreeTierError from outside OpenCode,
+# so it is not an option for an unattended cron job; this lane is.
+OPENCODE_GO_URL = "https://opencode.ai/zen/go/v1/chat/completions"
 BATCH = 3
 
 
@@ -57,41 +69,80 @@ def _log_line(entry):
 
 
 def _git(*args, cwd=REPO):
-    r = subprocess.run(["git", "-C", str(cwd)] + list(args),
-                       capture_output=True, text=True, timeout=90)
+    r = subprocess.run(
+        ["git", "-C", str(cwd)] + list(args), capture_output=True, text=True, timeout=90
+    )
     return r.returncode, r.stdout.strip(), r.stderr.strip()
 
 
-def _ollama_key():
-    key = os.environ.get("OLLAMA_API_KEY", "").strip()
-    if key:
-        return key
+def _clean_key(val):
+    """Strip quotes/export noise and reject non-ASCII placeholder values.
+
+    The keychain had every key overwritten with a redaction placeholder
+    ('«redacted:...»') once before; a non-ASCII value crashes urlopen deep
+    inside http.client instead of failing cleanly. Treat those as absent.
+    """
+    val = (val or "").strip().strip('"').strip("'")
+    if val.startswith("export "):
+        val = val[len("export ") :].strip()
+    if not val or any(ord(c) > 127 for c in val):
+        return ""
+    if val.startswith(("<", "[", "«", "REDACTED", "redacted")):
+        return ""
+    return val.split()[0] if val.split() else ""
+
+
+def _opencode_key():
+    """OPENCODE_API_KEY — keychain first (canonical), then process env, then
+    ~/.hermes/.env. Mirrors master_ai._opencode_go_key() so the cron job
+    resolves the same credential the interactive picker does."""
+    keychain = Path.home() / ".master_ai_keys"
+    if keychain.exists():
+        for ln in keychain.read_text(errors="replace").splitlines():
+            s = ln.strip()
+            if s.startswith("OPENCODE_API_KEY=") or s.startswith(
+                "OPENCODE_GO_API_KEY="
+            ):
+                k = _clean_key(s.split("=", 1)[1])
+                if k:
+                    return k
+    for var in ("OPENCODE_API_KEY", "OPENCODE_GO_API_KEY"):
+        k = _clean_key(os.environ.get(var, ""))
+        if k:
+            return k
     env = Path.home() / ".hermes" / ".env"
     if env.exists():
-        for ln in env.read_text().splitlines():
+        for ln in env.read_text(errors="replace").splitlines():
             s = ln.strip()
-            # match both `export OLLAMA_API_KEY=...` and bare form,
-            # same as master_ai.py's parser
-            if s.startswith("export OLLAMA_API_KEY="):
-                s = s[len("export "):]
-            if s.startswith("OLLAMA_API_KEY="):
-                return s.split("=", 1)[1].strip()
+            if s.startswith("export "):
+                s = s[len("export ") :].strip()
+            if s.startswith("OPENCODE_API_KEY=") or s.startswith(
+                "OPENCODE_GO_API_KEY="
+            ):
+                k = _clean_key(s.split("=", 1)[1])
+                if k:
+                    return k
     return ""
 
 
 def _ask_cloud(messages, timeout=300):
-    """Ollama Cloud plan call with retry + diagnostics.
+    """OpenCode Go plan call with retry + diagnostics.
 
-    Flakiness modes seen in production (2026-09-23):
+    Lane: https://opencode.ai/zen/go/v1 — the $10/mo subscription relay
+    (Bearer OPENCODE_API_KEY), NOT the keyless Zen free lane, which 403s
+    FreeTierError from outside OpenCode and therefore can never work from
+    this cron job.
+
+    Flakiness modes seen in production (2026-09-23, still guarded here):
       - thinking models return everything in `reasoning_content`, `content` empty
       - completion hits max_tokens mid-reasoning -> truncated/empty answer
       - transient 429/5xx or empty generation
     Strategy: extract from content, fall back to reasoning_content, detect
     max-token cutoff and widen on retry, 3 attempts with backoff.
     """
-    key = _ollama_key()
+    key = _opencode_key()
     if not key:
-        print("  cloud: no OLLAMA_API_KEY", flush=True)
+        print("  cloud: no OPENCODE_API_KEY", flush=True)
         return None
     max_tokens = 8192
     last_err = "unknown"
@@ -103,12 +154,15 @@ def _ask_cloud(messages, timeout=300):
             "stream": False,
         }
         req = urllib.request.Request(
-            "https://ollama.com/v1/chat/completions",
+            OPENCODE_GO_URL,
             data=json.dumps(payload).encode(),
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {key}",
                 "User-Agent": "master-ai-upstream-integrator/1.0",
+                # OpenCode's validated-client convention: a stable per-job
+                # session id. Their relay expects it on Go traffic.
+                "x-opencode-session": "upstream-integrator",
             },
             method="POST",
         )
@@ -120,14 +174,18 @@ def _ask_cloud(messages, timeout=300):
             if not content:
                 content = (msg.get("reasoning_content") or "").strip()
                 if content:
-                    print(f"  cloud: content empty, using reasoning_content "
-                          f"({len(content)} chars)", flush=True)
+                    print(
+                        f"  cloud: content empty, using reasoning_content "
+                        f"({len(content)} chars)",
+                        flush=True,
+                    )
             if content:
                 ct = (d.get("usage") or {}).get("completion_tokens") or 0
                 if ct >= int(max_tokens * 0.98):
                     # generation was cut off; widen and retry once more
-                    print(f"  cloud: hit max_tokens ({ct}); widening to 16384",
-                          flush=True)
+                    print(
+                        f"  cloud: hit max_tokens ({ct}); widening to 16384", flush=True
+                    )
                     max_tokens = 16384
                     last_err = f"max_tokens cutoff at {ct}"
                     time.sleep(10)
@@ -217,9 +275,7 @@ Rules:
 
 def _parse_blocks(text):
     blocks = []
-    for m in re.finditer(
-        r"```python\s*\n#\s*([^\n]+)\n(.*?)```", text, re.DOTALL
-    ):
+    for m in re.finditer(r"```python\s*\n#\s*([^\n]+)\n(.*?)```", text, re.DOTALL):
         path = m.group(1).strip().strip("`").strip()
         body = m.group(2)
         blocks.append((path, body))
@@ -244,33 +300,66 @@ def integrate_one(item, dry_run=False, base_branch=None):
     rc, dirty, _ = _git("status", "--porcelain", "--untracked-files=no")
     if dirty:
         n = len(dirty.splitlines())
-        _log_line({"ts": datetime.now().isoformat(), "sha": sha,
-                   "status": "deferred", "detail": f"dirty working tree ({n} files) — commit or stash first"})
+        _log_line(
+            {
+                "ts": datetime.now().isoformat(),
+                "sha": sha,
+                "status": "deferred",
+                "detail": f"dirty working tree ({n} files) — commit or stash first",
+            }
+        )
         print(f"  deferred: dirty working tree ({n} files) — not branching", flush=True)
         return "", "deferred"
     patch = _fetch_patch(owner, repo, sha)
     if not patch:
-        _log_line({"ts": datetime.now().isoformat(), "sha": sha,
-                   "status": "failed", "detail": "patch fetch failed"})
+        _log_line(
+            {
+                "ts": datetime.now().isoformat(),
+                "sha": sha,
+                "status": "failed",
+                "detail": "patch fetch failed",
+            }
+        )
         return "", "failed"
 
     msg = item.get("message", "")[:MSG_LIMIT]
     prompt = PLAN_PROMPT.format(
-        owner=owner, repo=repo, url=item.get("url", ""), message=msg,
-        diff=_truncate(patch), core=", ".join(sorted(CORE_ENGINE_FILES)),
+        owner=owner,
+        repo=repo,
+        url=item.get("url", ""),
+        message=msg,
+        diff=_truncate(patch),
+        core=", ".join(sorted(CORE_ENGINE_FILES)),
     )
-    plan = _ask_cloud([
-        {"role": "system", "content": "You reimplement portable agent-design ideas. Output format compliance matters."},
-        {"role": "user", "content": prompt},
-    ])
+    plan = _ask_cloud(
+        [
+            {
+                "role": "system",
+                "content": "You reimplement portable agent-design ideas. Output format compliance matters.",
+            },
+            {"role": "user", "content": prompt},
+        ]
+    )
     if not plan or len(plan.strip()) < 40:
-        _log_line({"ts": datetime.now().isoformat(), "sha": sha,
-                   "status": "failed", "detail": "empty plan response"})
+        _log_line(
+            {
+                "ts": datetime.now().isoformat(),
+                "sha": sha,
+                "status": "failed",
+                "detail": "empty plan response",
+            }
+        )
         return "", "failed"
 
     if re.search(r"APPLICABLE:\s*NO\b", plan[:400]) or "NOT_APPLICABLE" in plan[:200]:
-        _log_line({"ts": datetime.now().isoformat(), "sha": sha,
-                   "status": "skipped", "detail": "NOT_APPLICABLE"})
+        _log_line(
+            {
+                "ts": datetime.now().isoformat(),
+                "sha": sha,
+                "status": "skipped",
+                "detail": "NOT_APPLICABLE",
+            }
+        )
         return "", "skipped"
 
     PLANS.mkdir(parents=True, exist_ok=True)
@@ -278,16 +367,28 @@ def integrate_one(item, dry_run=False, base_branch=None):
 
     blocks = _parse_blocks(plan)
     if not blocks:
-        _log_line({"ts": datetime.now().isoformat(), "sha": sha,
-                   "status": "manual-review", "detail": "plan-only, no code blocks"})
+        _log_line(
+            {
+                "ts": datetime.now().isoformat(),
+                "sha": sha,
+                "status": "manual-review",
+                "detail": "plan-only, no code blocks",
+            }
+        )
         return "", "manual-review"
 
     # gate: only safe paths, then py_compile every .py
     staged = []
     for path, body in blocks:
         if not _path_allowed(path):
-            _log_line({"ts": datetime.now().isoformat(), "sha": sha,
-                       "status": "blocked", "detail": f"unsafe path {path}"})
+            _log_line(
+                {
+                    "ts": datetime.now().isoformat(),
+                    "sha": sha,
+                    "status": "blocked",
+                    "detail": f"unsafe path {path}",
+                }
+            )
             return "", "blocked"
         staged.append((path, body))
 
@@ -298,7 +399,9 @@ def integrate_one(item, dry_run=False, base_branch=None):
     # branch
     branch = f"{BRANCH_BASE}/{sha[:8]}"
     _git("stash", "list", "-0")  # touch no state; just fail fast if git broken
-    _git("checkout", "-b", branch) if _git("rev-parse", "--verify", branch)[0] != 0 else _git("checkout", branch)
+    _git("checkout", "-b", branch) if _git("rev-parse", "--verify", branch)[
+        0
+    ] != 0 else _git("checkout", branch)
 
     ok_files = []
     try:
@@ -312,8 +415,14 @@ def integrate_one(item, dry_run=False, base_branch=None):
                     py_compile.compile(str(tmp), doraise=True)
                 except py_compile.PyCompileError as e:
                     tmp.unlink(missing_ok=True)
-                    _log_line({"ts": datetime.now().isoformat(), "sha": sha,
-                               "status": "failed", "detail": f"py_compile {path}: {e}"})
+                    _log_line(
+                        {
+                            "ts": datetime.now().isoformat(),
+                            "sha": sha,
+                            "status": "failed",
+                            "detail": f"py_compile {path}: {e}",
+                        }
+                    )
                     _git("checkout", "-", cwd=REPO)
                     return "", "failed"
                 tmp.rename(fpath)
@@ -323,34 +432,70 @@ def integrate_one(item, dry_run=False, base_branch=None):
             ok_files.append(path)
 
         _git("add", "--", *ok_files)
-        rc, _, err = _git("commit", "--no-verify", "-m",
-                          f"upstream-learn: port idea from {owner}/{repo}@{sha[:8]}")
+        rc, _, err = _git(
+            "commit",
+            "--no-verify",
+            "-m",
+            f"upstream-learn: port idea from {owner}/{repo}@{sha[:8]}",
+        )
         if rc != 0:
-            _log_line({"ts": datetime.now().isoformat(), "sha": sha,
-                       "status": "failed", "detail": f"commit: {err[:200]}"})
+            _log_line(
+                {
+                    "ts": datetime.now().isoformat(),
+                    "sha": sha,
+                    "status": "failed",
+                    "detail": f"commit: {err[:200]}",
+                }
+            )
             return "", "failed"
 
         # test gate
         test_ok, test_out = run_tests()
         if not test_ok:
-            _log_line({"ts": datetime.now().isoformat(), "sha": sha,
-                       "status": "manual-review", "detail": f"tests failed on {branch}; branch kept"})
+            _log_line(
+                {
+                    "ts": datetime.now().isoformat(),
+                    "sha": sha,
+                    "status": "manual-review",
+                    "detail": f"tests failed on {branch}; branch kept",
+                }
+            )
             return branch, "manual-review"
         if touched_core_check(ok_files):
-            _log_line({"ts": datetime.now().isoformat(), "sha": sha,
-                       "status": "manual-review", "detail": f"core engine files {ok_files}; branch {branch} left for review"})
+            _log_line(
+                {
+                    "ts": datetime.now().isoformat(),
+                    "sha": sha,
+                    "status": "manual-review",
+                    "detail": f"core engine files {ok_files}; branch {branch} left for review",
+                }
+            )
             return branch, "manual-review"
 
         # auto-merge: tests pass, no core engine files touched
         _git("checkout", base_branch or "main", cwd=REPO)
         rc, _, merr = _git("merge", "--no-ff", "--no-edit", branch)
         if rc != 0:
-            _log_line({"ts": datetime.now().isoformat(), "sha": sha,
-                       "status": "manual-review", "detail": f"merge conflict on {branch}; left unmerged"})
-            _git("merge", "--abort") if _git("rev-parse", "-q", "--verify", "MERGE_HEAD")[0] == 0 else None
+            _log_line(
+                {
+                    "ts": datetime.now().isoformat(),
+                    "sha": sha,
+                    "status": "manual-review",
+                    "detail": f"merge conflict on {branch}; left unmerged",
+                }
+            )
+            _git("merge", "--abort") if _git(
+                "rev-parse", "-q", "--verify", "MERGE_HEAD"
+            )[0] == 0 else None
             return branch, "manual-review"
-        _log_line({"ts": datetime.now().isoformat(), "sha": sha,
-                   "status": "merged", "detail": f"auto-merged {branch}: {', '.join(ok_files)}; tests pass"})
+        _log_line(
+            {
+                "ts": datetime.now().isoformat(),
+                "sha": sha,
+                "status": "merged",
+                "detail": f"auto-merged {branch}: {', '.join(ok_files)}; tests pass",
+            }
+        )
         return branch, "merged"
     finally:
         # Return to the base branch by NAME. A relative checkout - would
@@ -368,16 +513,27 @@ def run_tests():
     # fast gate: compile everything, then run the focused parser test
     rc, _, _ = _git("stash", "list")
     try:
-        c = subprocess.run([sys.executable, "-m", "py_compile",
-                            str(REPO / "master_ai.py"), str(REPO / "hooks.py")],
-                           capture_output=True, text=True, timeout=60)
+        c = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "py_compile",
+                str(REPO / "master_ai.py"),
+                str(REPO / "hooks.py"),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
         if c.returncode != 0:
             return False, c.stderr[:300]
     except Exception:
         pass
     t = REPO / "tests" / "test_master_ai_parser.py"
     if t.exists():
-        c = subprocess.run([sys.executable, str(t)], capture_output=True, text=True, timeout=180)
+        c = subprocess.run(
+            [sys.executable, str(t)], capture_output=True, text=True, timeout=180
+        )
         return c.returncode == 0, (c.stdout + c.stderr)[-500:]
     return True, "no test file"
 
@@ -403,15 +559,24 @@ def main():
     rc, out, _ = _git("rev-parse", "--abbrev-ref", "HEAD")
     base = out.strip() if rc == 0 else ""
     if not base or base.startswith(f"{BRANCH_BASE}/"):
-        print(f"REFUSING: launch from the base branch, not '{base or 'detached HEAD'}'", flush=True)
+        print(
+            f"REFUSING: launch from the base branch, not '{base or 'detached HEAD'}'",
+            flush=True,
+        )
         return
     branches = []
     for it in todo[:batch]:
         try:
             b, outcome = integrate_one(it, dry_run=dry, base_branch=base)
         except Exception as e:
-            _log_line({"ts": datetime.now().isoformat(), "sha": it.get("sha"),
-                       "status": "failed", "detail": f"integrate_one exception: {e}"})
+            _log_line(
+                {
+                    "ts": datetime.now().isoformat(),
+                    "sha": it.get("sha"),
+                    "status": "failed",
+                    "detail": f"integrate_one exception: {e}",
+                }
+            )
             continue
         if outcome in ("merged", "branch-ready"):
             branches.append(b)
