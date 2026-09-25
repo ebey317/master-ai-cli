@@ -671,7 +671,7 @@ class SenseiApp:
         # running chain short instead of silently waiting in line.
         self._on_interrupt = on_interrupt
         self._label = ""
-        self._status = ""
+        self._status: list = []
         self._chat_id = ""
         self._output_chunks: list[str] = []
         self._output_lock = threading.Lock()
@@ -1005,6 +1005,40 @@ class SenseiApp:
         return Style.from_dict(
             {
                 "status": f"{accent} bold",
+                # 2026-09-24: per-field status colors, fixed regardless of
+                # mode — the mode accent (used everywhere else: frame,
+                # header, legend, below) is a stoplight (Plan=muted red,
+                # Review=amber, Auto=green), which meant the WHOLE status
+                # bar quietly turned red in Plan mode along with the chrome.
+                # Elijah: "I don't want red up there" + "all of them to have
+                # different colors" — these are independent of the accent
+                # and of each other, and none of them are red.
+                # 2026-09-24: first pass had two near-duplicate pairs (tts
+                # and model_pinned were both cyan-ish; mode and proj were
+                # both blue) — technically different hex values but not
+                # actually distinguishable at a glance. Elijah: "they need
+                # to all be different colors, not the same color at all.
+                # nothing on the line, the same color." Redone as 10
+                # deliberately spaced hues around the color wheel instead
+                # of picked ad hoc, so every field is genuinely tellable
+                # apart from every other, not just numerically different.
+                "status.sep": "#999999",
+                "status.mode": "#29b6f6 bold",
+                "status.tts": "#26a69a bold",
+                # MODEL is label + value as two separate colors (2026-09-24,
+                # Elijah: "model can be a different color from the active
+                # model selection, pinned model") — label stays its own
+                # color; the value's color signals whether it's locked in
+                # (explicit pin, won't drift) or just auto-routed (could
+                # change next turn), so that state reads at a glance.
+                "status.model_label": "#ab47bc bold",
+                "status.model_pinned": "#66bb6a bold",
+                "status.model_auto": "#7e57c2 bold",
+                "status.ctx": "#ffa726 bold",
+                "status.mem": "#c0ca33 bold",
+                "status.tasks": "#fdd835 bold",
+                "status.proj": "#5c6bc0 bold",
+                "status.task": "#8d6e63 bold",
                 "frame": f"{accent} bold",
                 "frame.label": f"{accent} bold",
                 "legend": f"{accent}",
@@ -1115,16 +1149,45 @@ class SenseiApp:
         return Point(x=0, y=y)
 
     def _render_status(self):
+        # 2026-09-24: every field gets its OWN color instead of the whole
+        # bar sharing one mode-accent color (see _build_style — Plan mode's
+        # accent is literally a shade of red, so the entire status line,
+        # not just one field, silently went reddish in Plan mode. Elijah:
+        # "I don't want red up there" / "all of them to have different
+        # colors." Each tag below maps to its own fixed "status.<tag>"
+        # style, independent of mode.
         width = max(10, _term_size().columns - 2)
-        status = self._status or ""
-        if width < 82:
-            # Narrow form keeps the word "and" (no symbols) — Elijah
-            # 2026-04-29: "the punctuation needs words not symbols".
-            # Just collapse the double-space padding so it fits.
-            status = status.replace("  and  ", " and ")
-            # Keep the actual selected model visible on narrow terminals.
-            status = status.replace("MODEL:AUTO+CLOUD", "MODEL:AUTO")
-        return FormattedText([("class:status", f" {_fit_text(status, width - 2)} ")])
+        fields = self._status or []
+        narrow = width < 82
+        sep_text = " and " if narrow else "  and  "
+
+        clean_fields = []
+        for field in fields:
+            field_text = "".join(text for _tag, text in field)
+            if narrow and field_text == "MODEL:AUTO+CLOUD":
+                # Keep the actual selected model visible on narrow terminals.
+                field = [("model_label", "MODEL:"), ("model_auto", "AUTO")]
+            clean_fields.append(field)
+
+        plain = sep_text.join(
+            "".join(text for _tag, text in field) for field in clean_fields
+        )
+        fitted = _fit_text(plain, width - 2)
+        if fitted != plain or not clean_fields:
+            # Doesn't fit at full length, or nothing to show — fall back to
+            # one plain segment rather than try to clip colors mid-field.
+            return FormattedText([("class:status", f" {fitted} ")])
+
+        fragments = [("class:status.sep", " ")]
+        for i, field in enumerate(clean_fields):
+            if i > 0:
+                fragments.append(("class:status.sep", sep_text))
+            # Sub-segments of the SAME field render back-to-back, no gap
+            # (e.g. MODEL's ["MODEL:" label, value] pair).
+            for tag, text in field:
+                fragments.append((f"class:status.{tag}", text))
+        fragments.append(("class:status.sep", " "))
+        return FormattedText(fragments)
 
     def _render_header(self):
         width = max(10, _term_size().columns)
@@ -1673,8 +1736,17 @@ class SenseiApp:
         except Exception:
             pass
 
-    def set_status(self, text: str) -> None:
-        self._status = text or ""
+    def set_status(self, fields) -> None:
+        """Accepts the new [[(tag, text), ...], ...] form — a list of
+        FIELDS, each field a list of one-or-more (tag, text) sub-segments
+        rendered back-to-back with no gap (e.g. MODEL's ["MODEL:" label,
+        value] pair, each its own color); the "  and  " separator goes
+        only BETWEEN fields, never inside one — see _render_status. Also
+        accepts a plain string for backward compatibility (one uniform
+        color, the old behavior)."""
+        if isinstance(fields, str):
+            fields = [[("status", fields)]] if fields else []
+        self._status = fields or []
         try:
             self._app.invalidate()
         except Exception:

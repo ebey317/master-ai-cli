@@ -542,9 +542,25 @@ TTS_ENABLED = "TTS_OFF" not in (_SETTINGS.read_text() if _SETTINGS.exists() else
 # Default local model — HARDWARE-BASED (2026-09-24, Elijah's rule):
 # never hardcode a model name. The right local model is a function of the
 # machine it runs on (RAM tier) and what the user actually pulled. See
-# hardware_model.py and _resolve_default_local_model() (runs after log()
-# is defined). MASTER_AI_LOCAL_MODEL env still wins outright.
+# hardware_model.py and _resolve_default_local_model() (runs again after
+# log() is defined, but that's 800+ lines below — too late for MODEL_MENU
+# and MODELS just below, which capture this value into an immutable tuple
+# and a dict at CONSTRUCTION time, not by reference. Elijah caught this
+# live: "i can't change models... it's kicking every time" — every model
+# pick crashed on `.lower()` because MODEL_MENU[0] was permanently frozen
+# as (None, "...None..."). Resolve for real right here, before anything
+# below can capture the stale None; skip log() (not defined yet) rather
+# than crash on a NameError — the later call at line ~1351 still runs and
+# just no-ops via its own `if DEFAULT_LOCAL_MODEL: return` once this has
+# already set it.
 DEFAULT_LOCAL_MODEL = os.environ.get("MASTER_AI_LOCAL_MODEL", "") or None
+if not DEFAULT_LOCAL_MODEL:
+    try:
+        import hardware_model as _hardware_model_early
+
+        DEFAULT_LOCAL_MODEL = _hardware_model_early.pick_local_model()
+    except Exception:
+        DEFAULT_LOCAL_MODEL = "qwen2.5vl:3b"
 
 MODELS = {
     # SINGLE-MODEL STACK (2026-09-06): consolidated to one VLM.
@@ -6000,6 +6016,45 @@ def _check_run_output_for_privacy(kind, cmd, output):
     return ""
 
 
+# ── LOCAL "THINK" CAPABILITY (2026-09-24) ─────────────────────────
+# Ollama returns an INSTANT HTTP 400 ("X does not support thinking") when
+# think=medium is sent to a non-thinking model. Cache which models reject
+# it so both ask_local and ask_local_stream skip the field up front.
+_THINK_REJECT_CACHE: dict[str, bool] = {}
+
+
+def _model_rejects_think(model) -> bool:
+    m = (model or "").strip()
+    if not m:
+        return False
+    if m in _THINK_REJECT_CACHE:
+        return _THINK_REJECT_CACHE[m]
+    # Cheap authoritative check: ask the model's capability from Ollama's
+    # own catalog. No catalog entry (e.g. never pulled) = assume it supports
+    # think and let the HTTPError retry handle it.
+    rejects = False
+    try:
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                f"{OLLAMA_URL}/api/show",
+                data=json.dumps({"model": m}).encode(),
+                headers={"Content-Type": "application/json"},
+            ),
+            timeout=8,
+        ) as resp:
+            info = json.loads(resp.read())
+        caps = info.get("capabilities") or []
+        rejects = bool(caps) and "thinking" not in caps
+    except Exception:
+        rejects = False
+    _THINK_REJECT_CACHE[m] = rejects
+    if rejects:
+        log(
+            f"LOCAL_THINK_SKIP [{m}]: model has no thinking capability — omitting think"
+        )
+    return rejects
+
+
 def ask_local(messages, model=None, image_path=None):
     model = model or MODELS["master"]
     log(f"LOCAL [{model}]")
@@ -6016,6 +6071,15 @@ def ask_local(messages, model=None, image_path=None):
         "think": "medium",
         "options": {"num_ctx": 4096},
     }
+    # 2026-09-24: "think": "medium" is hardcoded above, but not every pulled
+    # model supports thinking — Ollama answers "X does not support thinking"
+    # with an INSTANT HTTP 400. Elijah's live case: qwen2.5vl:3b, the only
+    # pulled local model, 400'd on every single local turn and the banner
+    # misreported it as "local model timed out". Detect that exact error and
+    # retry once without the think field (result cached per model so later
+    # calls skip it up front).
+    if _model_rejects_think(model):
+        payload.pop("think", None)
     if image_path:
         try:
             with open(image_path, "rb") as f:
@@ -6275,6 +6339,11 @@ def ask_local_stream(messages, model=None, image_path=None):
         "think": "medium",
         "options": {"num_ctx": 4096},
     }
+    # 2026-09-24: same instant-400 guard as ask_local above — qwen2.5vl:3b
+    # (the only pulled local model) has no thinking capability, so think=medium
+    # 400'd on EVERY local turn and the caller bannered it as "timed out".
+    if _model_rejects_think(model):
+        payload.pop("think", None)
     if image_path:
         try:
             with open(image_path, "rb") as f:
@@ -6422,6 +6491,10 @@ def ask_local_stream(messages, model=None, image_path=None):
         except Exception:
             pass
         log(f"STREAM_ERROR: {e}")
+        # 2026-09-24: give the caller the REAL failure mode. An instant HTTP 400
+        # (e.g. think-param rejection) is not a timeout — the "timed out" banner
+        # below was mislabeling it and sending Elijah hunting for slowness.
+        globals()["_LAST_LOCAL_STREAM_ERROR"] = str(e)
         _router_metric(
             "model_call",
             model=model,
@@ -6961,6 +7034,14 @@ def _ask_opencode_zen(messages, model, label, timeout=60):
         log(f"OPENCODE_FREE_ERROR [{label}]: HTTP {e.code} — {body}")
         if e.code == 429:
             _cloud_trip(provider_key, "rate limit", 30)
+        # 2026-09-24: FreeTierError 403 ("free tier can only be used from
+        # within OpenCode") is PERMANENT for us, not transient — every retry
+        # burns the same 2-10s and delays the next lane in the fallback chain.
+        # Trip the circuit so later fallback turns skip this lane instantly.
+        if e.code == 403 and "FreeTierError" in body:
+            _cloud_trip(
+                provider_key, "free tier blocked (403) — outside OpenCode", 3600
+            )
         return None
     except Exception as e:
         log(f"OPENCODE_FREE_ERROR [{label}]: {e}")
@@ -16136,6 +16217,39 @@ def _normalize_directive_lines(reply):
     return "".join(out)
 
 
+def _reply_claims_unexecuted_action(reply_text: str) -> bool:
+    """True if reply_text talks like it's taking/about to take an action
+    (e.g. "executing now", "let me check", "running the scan") while the
+    caller has already confirmed zero directives (RUN:/READ:/SEARCH:/etc.)
+    were parsed out of it. False means treat it as a genuinely complete
+    answer with nothing left to do.
+
+    2026-09-24: root-caused live — a model replied "Ok, executing the
+    service health checks now." with no directive attached. process_reply()
+    only has failure-feedback paths for a directive that was found and then
+    failed; a reply with NO directive at all just falls through to
+    `return reply` and gets accepted as the final answer, even though
+    nothing ran. This is the check that closes that gap.
+
+    Get it wrong toward True and a legitimately finished answer that
+    happens to use action-ish phrasing ("I ran the check and it passed")
+    gets bounced into an unnecessary repair turn — annoying but recoverable
+    (the model just restates itself). Get it wrong toward False and the
+    exact bug above slips through again — the user sees a promise with no
+    result and no error, silently.
+
+    TODO(human): implement the actual heuristic. reply_text is the
+    rendered reply BEFORE the caller's directive-fallthrough return —
+    already known to contain zero parsed directives. Some signals worth
+    weighing: present/future-tense action verbs aimed at an unfinished
+    step ("executing", "running", "let me", "I'll", "now checking") vs.
+    past-tense/result language ("ran", "found", "done", "here's the
+    result"); whether it ends mid-thought vs. with an actual answer/value;
+    length (a one-line stall vs. a real synthesized answer).
+    """
+    raise NotImplementedError
+
+
 def process_reply(reply, history, streamed=False, continue_after_tools=False):
     """Parse RUN: / READ: / CREATE: directives from AI reply and execute."""
     globals()["_CHAIN_SUDO_ACKS"] = 0
@@ -16541,6 +16655,29 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         for l in lines
         if re.match(r"^\s*EDIT:", l, re.IGNORECASE) and _directive_payload(l, "EDIT")
     ]
+
+    # 2026-09-24: snapshot of "did this reply contain ANY directive at
+    # all" — taken here, right after the raw per-directive extraction and
+    # before any of these lists get consumed/reassigned below (run_cmds in
+    # particular gets normalized further down), so the fallthrough check
+    # near the end of this function reflects what the model actually
+    # emitted rather than post-processing state. See
+    # _reply_claims_unexecuted_action() for why this exists.
+    _any_directive_found = bool(
+        read_paths
+        or run_cmds
+        or runterm_cmds
+        or subagent_goals
+        or search_queries
+        or task_add_texts
+        or task_done_targets
+        or send_email_specs
+        or send_telegram_specs
+        or remember_facts
+        or create_directive_paths
+        or edit_directive_paths
+        or browser_actions
+    )
 
     # Parse CREATE: ... <<<CONTENT ... >>>CONTENT blocks
     create_files = []
@@ -17939,6 +18076,48 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             log(f"CHAIN_SUBAGENT_FEEDBACK: {len(sub_feedback)} subagent result(s)")
             return None
 
+    # 2026-09-24: root-caused live — a reply can claim it's taking an
+    # action ("Ok, executing the service health checks now.") while
+    # emitting zero parseable directives. Every branch above only fires
+    # when a directive WAS found and then failed; a reply with no
+    # directive at all used to fall straight through to `return reply`
+    # below and get accepted as a complete, final answer — nothing had
+    # actually run, and there was no error to explain why. Mirrors the
+    # sibling repair branches above (e.g. the missing-execution-target
+    # repair): append a repair prompt and let the existing chain-level
+    # backstops (repetition truncation, MAX_CONTINUATION_TURNS) bound it —
+    # no separate counter needed here either.
+    if not _any_directive_found:
+        try:
+            claims_action = _reply_claims_unexecuted_action(reply)
+        except NotImplementedError:
+            claims_action = False
+        if claims_action:
+            print(
+                _pill(
+                    "REPAIR",
+                    f"{D}reply claimed an action but emitted no directive — re-asking{X}",
+                )
+            )
+            log(
+                "CHAIN_UNEXECUTED_ACTION_CLAIM: reply had no directive despite action language"
+            )
+            history.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "[Directive repair]\n"
+                        "Your last reply described taking an action (e.g. "
+                        '"executing now", "let me check") but contained no '
+                        "actual RUN:/READ:/SEARCH:/etc. directive — nothing "
+                        "ran. Either emit the real directive now, or if the "
+                        "work is genuinely already done, say so plainly "
+                        "without claiming an action still in progress."
+                    ),
+                }
+            )
+            return None
+
     return reply
 
 
@@ -18410,6 +18589,7 @@ def draw_status_bar(history=None):
     # is now set by ask_local/ask_local_stream/ask_cloud on every successful
     # call, so AUTO mode shows the real resolved backend (e.g.
     # "AUTO→cloud/openrouter") instead of leaving Elijah guessing.
+    model_pinned = bool(PINNED_MODEL)
     if PINNED_MODEL:
         model_label = PINNED_MODEL
     else:
@@ -18417,28 +18597,51 @@ def draw_status_bar(history=None):
         model_label = f"AUTO→{_last}" if _last else "AUTO"
     tts_on = os.path.exists(Path.home() / ".master_ai_tts_on")
 
-    parts = [f"MODE:{MODE.upper()}"]
+    # 2026-09-24: each field now carries its OWN fixed style key instead of
+    # the whole bar sharing one mode-accent color. Elijah caught the actual
+    # reason that mattered: the shared accent IS red in Plan mode ("Plan=
+    # muted red" in sensei_tui.py's _build_style), so the entire status bar
+    # — MODE, MODEL, CTX, MEM, all of it — silently went reddish any time
+    # he was in Plan mode. "I don't want red up there" isn't a preference
+    # about one color choice, it's that the bar's color was never actually
+    # independent of mode to begin with.
+    #
+    # Each "field" below is a LIST of (tag, text) sub-segments rendered
+    # back-to-back with no gap; the "  and  " separator only goes BETWEEN
+    # fields, never inside one. MODEL is the one field that's actually two
+    # sub-segments — Elijah: "model can be a different color from the
+    # active model selection, pinned model" — the "MODEL:" label stays one
+    # color, and the value after it changes color depending on whether
+    # it's an explicit pin (locked in, won't drift) or auto-routed (can
+    # change turn to turn), so that state is visible at a glance instead
+    # of both looking identical.
+    parts = [[("mode", f"MODE:{MODE.upper()}")]]
     if tts_on:
-        parts.append("TTS:ON")
-    parts.append(f"MODEL:{model_label}")
+        parts.append([("tts", "TTS:ON")])
+    parts.append(
+        [
+            ("model_label", "MODEL:"),
+            ("model_pinned" if model_pinned else "model_auto", model_label),
+        ]
+    )
     if ctx_pct is not None:
-        parts.append(f"CTX:{ctx_pct}%")
+        parts.append([("ctx", f"CTX:{ctx_pct}%")])
     if mem:
-        parts.append(f"MEM:{mem}")
+        parts.append([("mem", f"MEM:{mem}")])
     if tasks:
-        parts.append(f"TASKS:{tasks}")
+        parts.append([("tasks", f"TASKS:{tasks}")])
     # Dojo gate: pinned project + current task from PROJECTS.md board
     if ACTIVE_PROJECT:
         proj_short = ACTIVE_PROJECT[:18]
-        parts.append(f"PROJ:{proj_short}")
+        parts.append([("proj", f"PROJ:{proj_short}")])
     if ACTIVE_TASK:
         task_short = ACTIVE_TASK[:40] + ("…" if len(ACTIVE_TASK) > 40 else "")
-        parts.append(f"TASK:{task_short}")
+        parts.append([("task", f"TASK:{task_short}")])
 
     # Separator is the word "and" — symbols like │ don't read out loud on
     # phone voice-to-text; words do. Elijah 2026-04-29: "the punctuation
     # needs words not symbols".
-    content = "  and  ".join(parts)
+    content = "  and  ".join("".join(text for _tag, text in field) for field in parts)
     # Status line is ninja-free — the header already carries the brand
     # ninja. Two ninjas across the top row reads as clutter (Elijah
     # 2026-04-20: "🥷 MASTER AI — SENSEI … 🥷 MODE:SAFE … too much").
@@ -18446,7 +18649,7 @@ def draw_status_bar(history=None):
 
     # In TUI mode, the status lives in the top-right overlay — not the scrollback.
     if _SENSEI_APP is not None:
-        _SENSEI_APP.set_status(tag)
+        _SENSEI_APP.set_status(parts)
         return
 
     cols = _term_cols()
@@ -20514,9 +20717,21 @@ def handle(user_text, history, image_path=None, context_policy=None):
                 )
                 log("LOCAL_TOOL_TIMEOUT_NO_CLOUD_FALLBACK")
             else:
-                print(
-                    f"\n  {R}⚠ [local model timed out — answering via Groq instead]{X}"
-                )
+                # 2026-09-24: honest banner. Read the real stream failure instead
+                # of blanket-blaming "timed out" — an HTTP 400 (think-param
+                # rejection, malformed request) fails in ~10ms and is NOT a
+                # timeout. Distinguish the two so the operator fixes the right
+                # thing. ("Local model timed out" label kept for genuine
+                # _call_with_hard_timeout expiry.)
+                _ls_err = str(globals().get("_LAST_LOCAL_STREAM_ERROR", "") or "")
+                if "400" in _ls_err or "500" in _ls_err or "HTTP" in _ls_err:
+                    print(
+                        f"\n  {R}⚠ [local model refused the request — {_ls_err[:110]}]{X}"
+                    )
+                else:
+                    print(
+                        f"\n  {R}⚠ [local model timed out — answering via fallback chain]{X}"
+                    )
                 _spin = local_thinking_start()
                 # Same fallback-blindness fix as the vision branch above — inject
                 # CLOUD_SYSTEM so Groq knows it's Master AI, knows the directives,
@@ -20525,9 +20740,16 @@ def handle(user_text, history, image_path=None, context_policy=None):
                 # pattern we're killing.
                 # Same policy as the vision branch: cloud fallback gets only the
                 # current user request + CLOUD_SYSTEM, not the full local backlog.
-                reply = ask_cloud(fallback_user_only, provider="groq") or ask_cloud(
-                    fallback_user_only, provider="hermes-405b"
-                )
+                # 2026-09-24: provider lanes fixed. "groq" has been hard-disabled
+                # since 2026-08-27 (have_groq=False) and is NOT in ask_cloud's
+                # fn_map — it silently hit the else catch-all (keyless Zen lane,
+                # which 403s FreeTierError from outside the OpenCode app), then
+                # burned the nemotron lane before reaching a working one. Route
+                # straight to the OpenRouter free chain + ollama-cloud (live,
+                # validated against the account catalog) instead.
+                reply = ask_cloud(
+                    fallback_user_only, provider="openrouter"
+                ) or ask_cloud(fallback_user_only, provider="ollama-cloud::kimi-k3")
                 local_thinking_stop(_spin)
         else:
             streamed = True
