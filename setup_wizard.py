@@ -106,7 +106,11 @@ PROVIDERS = {
         "url": "https://cloud.cerebras.ai/platform/settings",
     },
     "fireworks": {
-        "label": "Fireworks (BYOK — DeepSeek V3.1)",
+        # 2026-09-26: was "DeepSeek V3.1" — that model is confirmed dead
+        # (Fireworks discontinued serverless support for it; see
+        # master_ai.py's ask_cloud_fireworks_dsv3 for the live-verified
+        # root cause). V4 Pro is the current serverless flagship.
+        "label": "Fireworks (BYOK — DeepSeek V4)",
         "key_name": "fireworks",
         "url": "https://fireworks.ai/account/api-keys",
     },
@@ -176,41 +180,15 @@ def _yes_no(prompt: str, default_no: bool = True) -> bool:
     return raw.startswith("y")
 
 
-# ~/.master_ai_keys is normally a symlink to the canonical keychain
-# (~/Desktop/Projects/keychain/master_ai_keys, see KEYCHAIN.md), which is
-# KEY=VALUE, not JSON — the single source of truth other consumers (CLAF,
-# keychain.sh) also read. ANTHROPIC_API_KEY is deliberately never mapped —
-# only ANTHROPIC_CONSOLE_KEY is, per the Max-OAuth/Console separation rule.
-_KV_KEY_MAP = {
-    "OPENROUTER_API_KEY": "openrouter",
-    "GROQ_API_KEY": "groq",
-    "GEMINI_API_KEY": "gemini",
-    "ANTHROPIC_CONSOLE_KEY": "anthropic",
-    "CEREBRAS_API_KEY": "cerebras",
-    "FIREWORKS_API_KEY": "fireworks",
-    "OPENAI_API_KEY": "openai",
-    "DEEPSEEK_API_KEY": "deepseek",
-    "HUGGINGFACE_TOKEN": "huggingface",
-    "HF_TOKEN": "huggingface",
-    "NVIDIA_API_KEY": "nvidia",
-    "TELEGRAM_BOT_TOKEN": "telegram",
-    "TELEGRAM_CHAT_ID": "telegram_chat_id",
-}
+# 2026-09-26: was a hand-copied duplicate of master_ai.py's _KV_KEY_MAP/
+# _parse_kv_keys, missing 8 mappings master_ai.py's copy had already
+# gained (and vice versa — TELEGRAM_CHAT_ID existed only here, now folded
+# into the shared map so it's not lost). Extracted to keychain_kv.py —
+# see that module's docstring.
+from keychain_kv import _KV_KEY_MAP
+from keychain_kv import parse_kv_keys as _parse_kv_keys
+
 _CANONICAL_NAME = {v: k for k, v in _KV_KEY_MAP.items() if k != "HF_TOKEN"}
-
-
-def _parse_kv_keys(text: str) -> dict:
-    out = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        name, _, val = line.partition("=")
-        name, val = name.strip(), val.strip()
-        short = _KV_KEY_MAP.get(name)
-        if short and val and short not in out:
-            out[short] = val
-    return out
 
 
 def _write_keys(keys: dict) -> None:

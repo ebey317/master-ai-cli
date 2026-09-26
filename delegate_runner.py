@@ -438,7 +438,16 @@ _DELEGATE_LOCAL_WORDS = {"local", "lesser", "cheap", "cheapest"}
 # names. Anything else -- including "Run:", "Note:", "Fix:" and similar
 # ordinary sentence openers -- falls through to tier="default" with the
 # goal left completely untouched.
-_DELEGATE_KNOWN_BARE_PROVIDERS = {
+# 2026-09-26: was a hand-copied duplicate of master_ai.ask_cloud()'s real
+# fn_map keys — already caught drifting when Poolside landed in fn_map
+# tonight but never got added here, so `delegate poolside-s: ...` would
+# have silently fallen through to tier="default" instead of being
+# recognized as a provider override. master_ai.py now exports the real
+# set as ASK_CLOUD_BARE_PROVIDERS; read it lazily (see the existing lazy
+# import a few functions below — master_ai imports this module too, so a
+# module-level import here would be circular) with this literal set kept
+# only as a last-resort fallback if master_ai can't be imported at all.
+_DELEGATE_FALLBACK_BARE_PROVIDERS = {
     "opencode",
     "opencode-go",
     "glm-5.3-flash",
@@ -451,6 +460,15 @@ _DELEGATE_KNOWN_BARE_PROVIDERS = {
     "deepseek-r1",
     "openrouter",
 }
+
+
+def _known_bare_providers():
+    try:
+        import master_ai as _ma
+
+        return _ma.ASK_CLOUD_BARE_PROVIDERS
+    except Exception:
+        return _DELEGATE_FALLBACK_BARE_PROVIDERS
 
 
 def _parse_delegate_goal(goal: str):
@@ -474,9 +492,7 @@ def _parse_delegate_goal(goal: str):
         return "higher", None, rest
     if low in _DELEGATE_LOCAL_WORDS:
         return "local", None, rest
-    looks_like_provider = (
-        "::" in head or "/" in head or low in _DELEGATE_KNOWN_BARE_PROVIDERS
-    )
+    looks_like_provider = "::" in head or "/" in head or low in _known_bare_providers()
     if not looks_like_provider:
         return "default", None, g
     return "explicit", head, rest

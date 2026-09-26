@@ -34,37 +34,13 @@ CLOUD_PROVIDERS = ("groq", "openrouter", "gemini", "fireworks", "cerebras", "nvi
 # Optional extras that enrich routing but are never required to run.
 OPTIONAL_PROVIDERS = ("brave", "serper", "firecrawl")
 
-# ~/.master_ai_keys is normally a symlink to the canonical keychain
-# (~/Desktop/Projects/keychain/master_ai_keys, see KEYCHAIN.md), which is
-# KEY=VALUE, not JSON. ANTHROPIC_API_KEY is deliberately never mapped —
-# only ANTHROPIC_CONSOLE_KEY is, per the Max-OAuth/Console separation rule.
-_KV_KEY_MAP = {
-    "OPENROUTER_API_KEY": "openrouter",
-    "GROQ_API_KEY": "groq",
-    "GEMINI_API_KEY": "gemini",
-    "ANTHROPIC_CONSOLE_KEY": "anthropic",
-    "CEREBRAS_API_KEY": "cerebras",
-    "FIREWORKS_API_KEY": "fireworks",
-    "OPENAI_API_KEY": "openai",
-    "DEEPSEEK_API_KEY": "deepseek",
-    "HUGGINGFACE_TOKEN": "huggingface",
-    "HF_TOKEN": "huggingface",
-    "NVIDIA_API_KEY": "nvidia",
-}
-
-
-def _parse_kv_keys(text: str) -> dict:
-    out = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        name, _, val = line.partition("=")
-        name, val = name.strip(), val.strip()
-        short = _KV_KEY_MAP.get(name)
-        if short and val and short not in out:
-            out[short] = val
-    return out
+# 2026-09-26: was a hand-copied duplicate of master_ai.py's _KV_KEY_MAP/
+# _parse_kv_keys, missing 8 provider mappings it had already gained
+# (Poolside, QwenCloud, Tinyfish, Telegram, OpenCode Go, Firecrawl,
+# NVIDIA's second key) and never filtering placeholder/redacted values at
+# all. Extracted to keychain_kv.py as one shared source — see that
+# module's docstring.
+from keychain_kv import parse_kv_keys as _parse_kv_keys
 
 
 def _find_setup_script() -> Path | None:

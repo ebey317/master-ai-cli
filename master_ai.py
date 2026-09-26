@@ -1106,78 +1106,16 @@ def _awaiting_confirm(fn):
 # routing code above reads via KEYS.get(...). ANTHROPIC_API_KEY is
 # deliberately never mapped here — only ANTHROPIC_CONSOLE_KEY is, per the
 # Max-OAuth/Console key separation documented in KEYCHAIN.md.
-_KV_KEY_MAP = {
-    "OPENROUTER_API_KEY": "openrouter",
-    "GROQ_API_KEY": "groq",
-    "GEMINI_API_KEY": "gemini",
-    "ANTHROPIC_CONSOLE_KEY": "anthropic",
-    "CEREBRAS_API_KEY": "cerebras",
-    "FIREWORKS_API_KEY": "fireworks",
-    "OPENAI_API_KEY": "openai",
-    "DEEPSEEK_API_KEY": "deepseek",
-    "HUGGINGFACE_TOKEN": "huggingface",
-    "HF_TOKEN": "huggingface",
-    "NVIDIA_API_KEY": "nvidia",
-    "NVIDIA_API_KEY_2": "nvidia2",
-    # 2026-09-07: Elijah's QwenCloud Token Plan (paid, $6/mo) — wired into
-    # Hermes already (see project_qwen_token_plan_setup memory), never into
-    # master-ai-cli until now. WS key confirmed dead (401) both back in
-    # August and re-verified live tonight — mapped anyway so it's visible/
-    # trackable rather than silently missing, but never used for dispatch.
-    "QWEN_TOKENPLAN_API_KEY": "qwen",
-    "QWEN_TOKENPLAN_WS_API_KEY": "qwen_ws",
-    "TINYFISH_API_KEY": "tinyfish",
-    # 2026-09-25: Poolside direct inference (OpenAI-compatible), Laguna
-    # agentic-coding models. Verified against docs.poolside.ai before
-    # wiring in (base URL, auth header, model catalog) — see the
-    # equivalent Hermes plugin at
-    # ~/.hermes/hermes-agent/plugins/model-providers/poolside/.
-    "POOLSIDE_API_KEY": "poolside",
-    "TELEGRAM_BOT_TOKEN": "telegram",
-    # 2026-09-12: OpenCode Go ($10/mo subscription, https://opencode.ai/go)
-    # — same Zen API shape as the keyless free relay but requires Bearer
-    # auth and hits /zen/go/v1. Key created in the OpenCode console as
-    # "open code key. 😊". Wired per operator request 2026-09-12.
-    "OPENCODE_API_KEY": "opencode_go",
-    # 2026-09-25: Firecrawl key lives in ~/.hermes/.env for Hermes but the
-    # keychain row had the redaction placeholder, so firecrawl_fetch() was
-    # permanently on the "key not set" path. Real key restored to keychain;
-    # mapped here so the kv parser picks it up.
-    "FIRECRAWL_API_KEY": "firecrawl",
-}
-
-
-def _looks_like_real_key(val):
-    """Reject corrupted/placeholder key values before they ever reach a
-    request. 2026-08-24: every key in the keychain had been overwritten
-    with a redaction placeholder ('«redacted:gsk_…»' style text) instead of
-    the real secret. Real API keys are plain ASCII tokens; a placeholder
-    or any other non-ASCII value crashes urllib/http.client deep inside
-    urlopen() with a raw UnicodeEncodeError instead of failing cleanly,
-    which looks like a hang as the router retries every provider in a
-    loop. Treat non-ASCII or bracketed values as absent so callers take
-    the normal 'key not configured' path instead."""
-    if not val:
-        return False
-    if any(ord(c) > 127 for c in val):
-        return False
-    if val.startswith(("<", "[", "«", "REDACTED", "redacted")):
-        return False
-    return True
-
-
-def _parse_kv_keys(text):
-    out = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        name, _, val = line.partition("=")
-        name, val = name.strip(), val.strip()
-        short = _KV_KEY_MAP.get(name)
-        if short and val and short not in out and _looks_like_real_key(val):
-            out[short] = val
-    return out
+#
+# 2026-09-26: _KV_KEY_MAP/_looks_like_real_key/_parse_kv_keys used to be
+# defined here directly, AND independently hand-copied into gate.py and
+# setup_wizard.py. They'd already drifted — this file's copy had 8 more
+# provider mappings than the other two, and neither of them filtered
+# placeholder values at all. Extracted to keychain_kv.py as the one
+# shared source; all three files import from it now instead of
+# maintaining their own copy that can silently fall out of sync.
+from keychain_kv import _looks_like_real_key
+from keychain_kv import parse_kv_keys as _parse_kv_keys
 
 
 def load_keys():
@@ -8351,6 +8289,35 @@ def _save_fallback_order(names):
     _FALLBACK_ORDER_FILE.write_text(json.dumps(names, indent=2))
 
 
+# 2026-09-26: ask_cloud()'s fn_map (below) is the actual, authoritative
+# set of bare provider names it can dispatch to. delegate_runner.py used
+# to hand-copy this list into its own _DELEGATE_KNOWN_BARE_PROVIDERS —
+# already caught drifting when Poolside landed in fn_map tonight but
+# never got added there, so `delegate poolside-s: ...` silently fell
+# through to tier="default" instead of being recognized as a provider
+# override. Exported here so delegate_runner.py imports the real set
+# instead of maintaining a second copy; ask_cloud() asserts against it
+# below so a FUTURE fn_map addition that's forgotten here fails loud
+# (on the very next call) instead of drifting silently again.
+ASK_CLOUD_BARE_PROVIDERS = frozenset(
+    {
+        "opencode",
+        "opencode-go",
+        "glm-5.3-flash",
+        "nvidia",
+        "nvidia-nano",
+        "hermes-405b",
+        "gpt-oss-120b",
+        "nemotron",
+        "qwen3-coder",
+        "deepseek-r1",
+        "openrouter",
+        "poolside-s",
+        "poolside-xs",
+    }
+)
+
+
 def ask_cloud(messages, provider="opencode"):
     # Privacy guard: if READ injected private content into this turn, ask
     # for one-shot approval right here (TTY present -> interactive y/N,
@@ -8430,6 +8397,16 @@ def ask_cloud(messages, provider="opencode"):
             msgs, "poolside/laguna-xs-2.1", "laguna-xs-2.1"
         ),
     }
+    if set(fn_map) != ASK_CLOUD_BARE_PROVIDERS:
+        # Log, don't crash: this is the primary cloud dispatch function,
+        # called on every turn — a drift here should be loudly visible,
+        # not take down every cloud request the moment someone adds a
+        # provider to one spot and forgets the other.
+        log(
+            "ASK_CLOUD_PROVIDERS_DRIFT: fn_map vs ASK_CLOUD_BARE_PROVIDERS "
+            f"disagree (fn_map only: {set(fn_map) - ASK_CLOUD_BARE_PROVIDERS}, "
+            f"constant only: {ASK_CLOUD_BARE_PROVIDERS - set(fn_map)})"
+        )
 
     def _record(resp_text, used_model):
         if harvest is None or not resp_text:

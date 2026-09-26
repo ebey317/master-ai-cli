@@ -25,8 +25,10 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-GITHUB_MODELS_ENDPOINT = "https://models.inference.ai.azure.com/chat/completions"
-GITHUB_MODELS_DEFAULT_MODEL = "gpt-4o"
+# 2026-09-26: was a hand-copied duplicate of setup_wizard.py's constants
+# for the same GitHub Models one-shot helper — import from there instead
+# so the two can't silently disagree on endpoint or default model.
+from setup_wizard import GITHUB_MODELS_DEFAULT_MODEL, GITHUB_MODELS_ENDPOINT
 
 C = {
     "bold": "\033[1m",

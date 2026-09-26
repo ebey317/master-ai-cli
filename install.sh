@@ -214,7 +214,26 @@ echo ""
 echo -e "  ${BC}━━━ STEP 3/6: AI models ━━━${X}"
 # THE TRIFECTA (locked 2026-04-19): spark + brain + eyes.
 # Total disk ~11 GB. Skip any and install.sh will remind you later.
-MODELS=("qwen2.5:3b" "qwen2.5:7b" "llava:latest")
+#
+# 2026-09-26: this used to offer all 3 to every box unconditionally,
+# including the 7B "brain" model on machines with under 16GB RAM — its
+# own description text here admits it "needs 16 GB+ RAM to run
+# comfortably," so a low-RAM box was being offered something the
+# installer itself knew was a bad fit, decided only by whether the user
+# happened to read that fine print before clicking yes. Now scales with
+# detected RAM the same way hardware_model.py's tier_max_b() does for
+# runtime model selection (2/3/4/14B tiers) — the trifecta is what fits
+# the box, not a fixed list everyone sees regardless of hardware.
+_ram_mb=$(awk '/MemTotal/ {print int($2/1024); exit}' /proc/meminfo 2>/dev/null || echo 16000)
+if [ "${_ram_mb:-0}" -ge 16000 ]; then
+    MODELS=("qwen2.5:3b" "qwen2.5:7b" "llava:latest")
+elif [ "${_ram_mb:-0}" -ge 8000 ]; then
+    MODELS=("qwen2.5:3b" "llava:latest")
+    echo -e "  ${D}  (under 16 GB RAM detected — skipping qwen2.5:7b, it needs more headroom than this box has)${X}"
+else
+    MODELS=("qwen2.5:3b")
+    echo -e "  ${D}  (under 8 GB RAM detected — offering only the smallest model; vision needs more RAM than this box has)${X}"
+fi
 for m in "${MODELS[@]}"; do
     if [ "${SKIP_MODELS:-0}" = "1" ]; then
         echo -e "  ${D}  SKIP_MODELS set — not checking $m${X}"; continue
