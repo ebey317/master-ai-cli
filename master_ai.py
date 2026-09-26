@@ -21740,14 +21740,55 @@ def handle(user_text, history, image_path=None, context_policy=None):
         _pv.stamp(CLOUD_SYSTEM)
     except Exception:
         pass  # versioning is observability; never block prompt assembly
+    # 2026-09-26: root-caused live — Elijah asked to verify that a save+
+    # refresh compact actually resumes coherently. It doesn't: the resume
+    # recap injected into history[0] at startup (the "[Resumed after..."
+    # system message the 2026-09-25 fix added to make continuity real,
+    # not cosmetic) got silently destroyed by THIS code, on the very
+    # first real turn after restart. history[0]["role"] == "system" was
+    # being treated as "this is always OUR CLOUD_SYSTEM slot, safe to
+    # overwrite/pop" — true before the resume-recap feature existed, but
+    # not after. Reproduced live: asked the post-restart session "what
+    # were we just discussing" and it answered "I don't have the name in
+    # the context I retained" — the recap had printed correctly on
+    # screen (that happens before this code runs) but was already gone
+    # by the first real model call. A resume recap is a short, one-time,
+    # STABLE message (never rewritten turn to turn, unlike CLOUD_SYSTEM),
+    # so keeping it doesn't reintroduce the KV-cache churn the local-route
+    # branch below is guarding against — only pop/overwrite a slot that
+    # is verifiably OUR OWN prior CLOUD_SYSTEM content, never an ad-hoc
+    # system message injected for a real reason.
+    _is_resume_recap = bool(
+        history and history[0].get("content", "").startswith("[Resumed after ")
+    )
     # Local routes: omit system message — Modelfile's baked-in SYSTEM is KV-cached by Ollama.
     # Sending a dynamic system message (with memory/os_info) changes the prefix every request,
     # invalidating the KV cache and causing 60-120s prefill on every call on CPU.
     if route in ("local", "vision"):
-        if history and history[0]["role"] == "system":
+        if history and history[0]["role"] == "system" and not _is_resume_recap:
             history.pop(0)
+        # A prior CLOUD turn this session may have left its own managed
+        # CLOUD_SYSTEM slot at index 1 (right after a preserved recap at
+        # index 0) — that one's still a real KV-cache-churn risk for local
+        # and isn't the recap, so it still gets removed, just from its
+        # shifted position instead of assuming it's always index 0.
+        if (
+            _is_resume_recap
+            and len(history) > 1
+            and history[1].get("role") == "system"
+            and history[1].get("content") == CLOUD_SYSTEM
+        ):
+            history.pop(1)
     else:
-        if history and history[0]["role"] == "system":
+        if _is_resume_recap:
+            # Our own CLOUD_SYSTEM slot is index 1 here (index 0 is the
+            # permanent recap) — update in place once it exists, insert
+            # only the first time, or every turn re-inserts a duplicate.
+            if len(history) > 1 and history[1].get("role") == "system":
+                history[1]["content"] = CLOUD_SYSTEM
+            else:
+                history.insert(1, {"role": "system", "content": CLOUD_SYSTEM})
+        elif history and history[0]["role"] == "system":
             history[0]["content"] = CLOUD_SYSTEM
         else:
             history.insert(0, {"role": "system", "content": CLOUD_SYSTEM})
