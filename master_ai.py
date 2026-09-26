@@ -596,6 +596,8 @@ MODEL_MENU = [
     ("openrouter", "☁ FREE · OpenRouter /free — auto (tries 120B, then 550B)"),
     ("opencode-go", "☁ GO   · OpenCode Go $10/mo — kimi-k3 (strongest reasoning)"),
     ("glm-5.3-flash", "☁ GO   · OpenCode Go — GLM-5.3 Flash (fast, cheap)"),
+    ("poolside-s", "☁ KEY  · Poolside — Laguna S 2.1 · code-tuned · reasoning"),
+    ("poolside-xs", "☁ KEY  · Poolside — Laguna XS 2.1 · fast + cheap"),
 ]
 
 CLOUD_MODEL_KEYS = {
@@ -609,6 +611,8 @@ CLOUD_MODEL_KEYS = {
     "kimi-k3": "opencode",
     "opencode-go": "opencode_go",
     "glm-5.3-flash": "opencode_go",
+    "poolside-s": "poolside",
+    "poolside-xs": "poolside",
 }
 CLOUD_MODEL_NAMES = frozenset(CLOUD_MODEL_KEYS)
 MODEL_COMMAND_ALIASES = {
@@ -1084,6 +1088,12 @@ _KV_KEY_MAP = {
     "QWEN_TOKENPLAN_API_KEY": "qwen",
     "QWEN_TOKENPLAN_WS_API_KEY": "qwen_ws",
     "TINYFISH_API_KEY": "tinyfish",
+    # 2026-09-25: Poolside direct inference (OpenAI-compatible), Laguna
+    # agentic-coding models. Verified against docs.poolside.ai before
+    # wiring in (base URL, auth header, model catalog) — see the
+    # equivalent Hermes plugin at
+    # ~/.hermes/hermes-agent/plugins/model-providers/poolside/.
+    "POOLSIDE_API_KEY": "poolside",
     "TELEGRAM_BOT_TOKEN": "telegram",
     # 2026-09-12: OpenCode Go ($10/mo subscription, https://opencode.ai/go)
     # — same Zen API shape as the keyless free relay but requires Bearer
@@ -7677,6 +7687,72 @@ def _ask_openrouter(messages, model, label, timeout=60):
         return None
 
 
+def _ask_poolside(messages, model, label, timeout=90):
+    """Poolside direct (OpenAI-compatible), Laguna agentic-coding models.
+    Verified against docs.poolside.ai (2026-09-25) before wiring in: base
+    URL, Bearer auth, GET /v1/models catalog support, and the
+    chat_template_kwargs.enable_thinking toggle (not reasoning_effort,
+    which is Fireworks/Kimi's field, not Poolside's) — same verification
+    behind the equivalent Hermes provider plugin.
+
+    Laguna is a reasoning model: it can emit reasoning_content alongside
+    (or instead of) content when max_tokens is exhausted by thinking. Only
+    fall back to reasoning_content when content is empty AND there's no
+    tool call, so analysis-channel text never surfaces as the reply."""
+    provider_key = f"poolside/{label}"
+    if not _cloud_allowed(provider_key):
+        return None
+    key = KEYS.get("poolside")
+    if not key:
+        return None
+    messages = _inject_identity(messages)
+    log(f"CLOUD [{provider_key}]")
+    payload = {"model": model, "messages": messages, "max_tokens": 4096}
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        "https://inference.poolside.ai/v1/chat/completions",
+        data=data,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            result = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode()[:300]
+        except Exception:
+            pass
+        if e.code in (401, 403):
+            log(f"CLOUD_AUTH_FAIL [poolside]: {e.code} {body}")
+            return None
+        if e.code == 429:
+            _cloud_trip(provider_key, "rate limit", 30)
+            return None
+        if _network_error(e):
+            _cloud_trip_network(e, 60)
+            return None
+        log(f"POOLSIDE_ERROR [{label}]: {e.code} {body}")
+        return None
+    except Exception as e:
+        if _network_error(e):
+            _cloud_trip_network(e, 60)
+            return None
+        log(f"POOLSIDE_ERROR [{label}]: {e}")
+        return None
+    try:
+        message = result["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    text = message.get("content") or ""
+    if not text and not message.get("tool_calls"):
+        text = message.get("reasoning_content") or message.get("reasoning") or ""
+    return text or None
+
+
 def _ask_cerebras(messages, model, label, timeout=60):
     """Generic Cerebras caller with token tracking."""
     provider_key = f"cerebras/{label}"
@@ -8202,6 +8278,12 @@ def ask_cloud(messages, provider="opencode"):
         "qwen3-coder": ask_cloud_openrouter_qwen3coder,
         "deepseek-r1": ask_cloud_openrouter_r1,
         "openrouter": ask_cloud_openrouter,
+        "poolside-s": lambda msgs: _ask_poolside(
+            msgs, "poolside/laguna-s-2.1", "laguna-s-2.1"
+        ),
+        "poolside-xs": lambda msgs: _ask_poolside(
+            msgs, "poolside/laguna-xs-2.1", "laguna-xs-2.1"
+        ),
     }
 
     def _record(resp_text, used_model):
@@ -8250,6 +8332,16 @@ def ask_cloud(messages, provider="opencode"):
         # not the keyless Zen free relay.
         _m = provider[len("opencode-go::") :]
         _asker = lambda msgs, _m=_m: _ask_opencode_go(msgs, _m, _m)
+    elif (provider or "").startswith("poolside::"):
+        # 2026-09-25: pinned Poolside pick from the live picker (model IDs
+        # from Poolside's own catalog are self-namespaced, e.g.
+        # "poolside/laguna-xs-2.1" — so this tag MUST be checked before the
+        # generic "/" fallthrough below, or a pinned "poolside::poolside/…"
+        # id falls into _ask_openrouter's hard free-only gate and gets
+        # rejected every single turn (found live: this was the actual
+        # cause of a real stall loop on a pinned Poolside model).
+        _m = provider[len("poolside::") :]
+        _asker = lambda msgs, _m=_m: _ask_poolside(msgs, _m, _m)
     elif "/" in (provider or ""):
         # Arbitrary OpenRouter catalog id (e.g. "anthropic/claude-3.5-sonnet")
         # picked via `model or search ...` — not one of the curated named
