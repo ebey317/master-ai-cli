@@ -84,6 +84,38 @@ _NON_TEXT_OUTPUT_MODALITIES = {"audio", "image", "video"}
 
 _PARAM_RE = re.compile(r"(\d+(?:\.\d+)?)\s*b\b", re.IGNORECASE)
 
+# 2026-09-26 (Elijah): "nvidia is only 40 requests per minute rpm. it's
+# not going to be able to handle that." Real, documented per-provider
+# ceilings — NVIDIA's own 40 rpm/key is straight from nv_proxy.py's own
+# docstring (this codebase's existing rate-limiting relay for that exact
+# upstream); OpenRouter free is 20 rpm, account-wide across every :free
+# model combined, per OpenRouter's own docs (verified earlier tonight,
+# not guessed). Neither number is close to safe for OCR's default
+# --concurrency 8: the actual failure mode observed twice tonight was a
+# BURST of near-simultaneous 429s when several subtasks' tool-calling
+# round-trips landed in the same few seconds, not a slow sustained
+# overage across a full minute. Recommended concurrency below treats
+# the rpm ceiling as a worst-case same-instant burst budget (divide by
+# 10, not by 60) rather than a smooth per-second rate — deliberately
+# conservative, since "picked a model that answers" and "can actually
+# sustain a real multi-subtask review" turned out to be two different
+# questions tonight.
+KNOWN_RATE_LIMITS_RPM = {
+    "openrouter-free": 20,
+    "nvidia-gptoss": 40,
+    "nvidia-proxy": 40,  # single key through the relay; 80 if a real
+    # second key (NVIDIA_API_KEY_2) is actually configured and rotating
+    # — not assumed here, since the relay itself is independently known
+    # broken right now (see the 404 finding elsewhere in this repo).
+}
+
+
+def recommended_concurrency(provider: str, default: int = 8) -> int:
+    rpm = KNOWN_RATE_LIMITS_RPM.get(provider)
+    if not rpm:
+        return default
+    return max(1, min(default, rpm // 10))
+
 
 def _openrouter_key(explicit: str | None = None) -> str:
     if explicit:
@@ -483,7 +515,9 @@ def refresh_ollama_local_config(config_path: Path = OCR_CONFIG_PATH) -> str:
     return model
 
 
-def _print_attempts(label: str, result: dict[str, Any]) -> None:
+def _print_attempts(
+    label: str, result: dict[str, Any], provider_key: str | None = None
+) -> None:
     print(f"{label}:")
     for a in result["attempts"]:
         status = "OK" if a["ok"] else "FAILED"
@@ -493,6 +527,13 @@ def _print_attempts(label: str, result: dict[str, Any]) -> None:
         print(f"  [{status:6s}] {a['model']:55s} {pb:>6s} {ctx_s} -> {a['detail']}")
     if result["model"]:
         print(f"  -> picked: {result['model']}")
+        if provider_key and provider_key in KNOWN_RATE_LIMITS_RPM:
+            rpm = KNOWN_RATE_LIMITS_RPM[provider_key]
+            rec = recommended_concurrency(provider_key)
+            print(
+                f"  -> known ceiling: {rpm} req/min — pass --concurrency {rec} "
+                f"to `ocr review` (default 8 WILL burst past this)"
+            )
     else:
         print("  -> no working candidate found")
     print()
@@ -557,12 +598,17 @@ def main() -> int:
         print(json.dumps(results, indent=2))
     else:
         if "openrouter" in results:
-            _print_attempts("OpenRouter (genuinely free tier)", results["openrouter"])
+            _print_attempts(
+                "OpenRouter (genuinely free tier)",
+                results["openrouter"],
+                provider_key="openrouter-free",
+            )
         if "nvidia" in results:
             _print_attempts(
                 "NVIDIA direct (trial-credit metered — no free tier as such, "
                 "ranked by size only, live-tested)",
                 results["nvidia"],
+                provider_key="nvidia-gptoss",
             )
         if "ollama" in results:
             print(
