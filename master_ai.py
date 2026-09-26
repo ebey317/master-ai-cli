@@ -4476,10 +4476,20 @@ def orchestrate(history, user_text, image_path=None):
 
     run_mode = _read_run_mode()
     keys_now = load_keys()
-    # 2026-08-27: Groq disabled — API key invalid.
-    have_groq = False  # bool((keys_now.get('groq') or '').strip())
-    # 2026-08-27: Fireworks disabled — deepseek-v3p1 model ID returns 404.
-    have_fireworks = False  # bool((keys_now.get('fireworks') or '').strip())
+    # 2026-09-26: both used to be hardcoded False regardless of whether a
+    # real key was configured — "we're wiring providers into the code that
+    # don't need to be there... work with the API keys and what we have in
+    # the system" (Elijah). Both now read the real key like every other
+    # provider here, so either one self-heals the moment its underlying
+    # blocker is actually fixed instead of needing another code change.
+    # Groq: no key currently configured, so this is presently equivalent
+    # to before — but it's no longer LYING about why. Fireworks: key IS
+    # present, but the account itself is suspended for billing (see
+    # ask_cloud_fireworks_dsv3's 412 handling) — the routing candidate
+    # will now be genuinely offered and will genuinely fail fast with a
+    # real 30-minute cooldown (not a busy loop) until that's resolved.
+    have_groq = bool((keys_now.get("groq") or "").strip())
+    have_fireworks = bool((keys_now.get("fireworks") or "").strip())
     have_cerebras = bool((keys_now.get("cerebras") or "").strip())
     have_or = bool((keys_now.get("openrouter") or "").strip())
     have_gemini = bool((keys_now.get("gemini") or "").strip())
@@ -4967,14 +4977,15 @@ def orchestrate(history, user_text, image_path=None):
                 "reason": f"code → {MODELS['coder']} (Sensei primary VLM, local)",
             }
         ]
-        if _have_14b():
+        _big_brain = _local_big_brain_model()
+        if _big_brain:
             candidates.append(
                 {
                     "route": "local",
-                    "model": "qwen2.5:14b",
+                    "model": _big_brain,
                     "task_type": "code",
                     "base_score": 82,
-                    "reason": "code → qwen2.5:14b local",
+                    "reason": f"code → {_big_brain} local",
                 }
             )
         return _choose_route(candidates, reason_prefix="local scored")
@@ -5018,15 +5029,16 @@ def orchestrate(history, user_text, image_path=None):
                     "reason": "deep → DeepSeek-R1 fallback",
                 }
             )
-        if _have_14b():
+        _big_brain = _local_big_brain_model()
+        if _big_brain:
             candidates.insert(
                 0,
                 {
                     "route": "local",
-                    "model": "qwen2.5:14b",
+                    "model": _big_brain,
                     "task_type": "deep",
                     "base_score": 88,
-                    "reason": "deep → 14b big brain (local)",
+                    "reason": f"deep → {_big_brain} big brain (local)",
                 },
             )
         return _choose_route(candidates, reason_prefix="local scored")
@@ -5060,15 +5072,16 @@ def orchestrate(history, user_text, image_path=None):
                     "reason": f"long ({len(words)} words) → Gemini fallback",
                 }
             )
-        if _have_14b():
+        _big_brain = _local_big_brain_model()
+        if _big_brain:
             candidates.insert(
                 0,
                 {
                     "route": "local",
-                    "model": "qwen2.5:14b",
+                    "model": _big_brain,
                     "task_type": "long",
                     "base_score": 88,
-                    "reason": f"long ({len(words)} words) → 14b local",
+                    "reason": f"long ({len(words)} words) → {_big_brain} local",
                 },
             )
         return _choose_route(candidates, reason_prefix="local scored")
@@ -5290,29 +5303,43 @@ def _filter_placeholder_links(text):
     return cleaned
 
 
-def _have_14b():
-    """Cheap check — is the 14B big-brain model pulled on this box?
-    Cached for one minute so repeated orchestrator calls don't hammer Ollama."""
+def _local_big_brain_model():
+    """Name of the biggest pulled local model, if any is >= 14B params —
+    a "big brain" bonus route for code/deep/long tasks. Returns None when
+    nothing that size is pulled. Cached for one minute so repeated
+    orchestrator calls don't hammer Ollama.
+
+    2026-09-26: was `_have_14b()`, a bare boolean hardcoded to the literal
+    string "qwen2.5:14b" — any OTHER 14B+ model (a newer release, a
+    different quant) never triggered this bonus at all, silently, no
+    error. Worse: the 3 call sites then hardcoded that same literal model
+    NAME into the routing candidate they built, so even fixing the check
+    alone would have left them trying to invoke a specific model that
+    might not actually be the one pulled. Reuses hardware_model.py's own
+    pulled_models()/params_b(), the same machinery DEFAULT_LOCAL_MODEL
+    already resolves through — this was the one place that didn't."""
     import time as _t
 
-    global _HAVE_14B_CACHE, _HAVE_14B_TS
+    global _BIG_BRAIN_CACHE, _BIG_BRAIN_TS
     now = _t.time()
     try:
-        if (now - globals().get("_HAVE_14B_TS", 0)) < 60:
-            return globals().get("_HAVE_14B_CACHE", False)
+        if (now - globals().get("_BIG_BRAIN_TS", 0)) < 60:
+            return globals().get("_BIG_BRAIN_CACHE")
     except Exception:
         pass
+    best = None
     try:
-        import urllib.request
+        import hardware_model as _hw
 
-        with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2) as r:
-            body = r.read().decode()
-        present = '"qwen2.5:14b"' in body
+        candidates = [(n, _hw.params_b(n)) for n in _hw.pulled_models(timeout=2.0)]
+        big = [(n, b) for n, b in candidates if b is not None and b >= 14]
+        if big:
+            best = max(big, key=lambda nb: nb[1])[0]
     except Exception:
-        present = False
-    globals()["_HAVE_14B_CACHE"] = present
-    globals()["_HAVE_14B_TS"] = now
-    return present
+        best = None
+    globals()["_BIG_BRAIN_CACHE"] = best
+    globals()["_BIG_BRAIN_TS"] = now
+    return best
 
 
 # ── WEB SEARCH ───────────────────────────────────────────────
@@ -7572,9 +7599,20 @@ def ask_cloud_fireworks_dsv3(messages):
     if not key:
         return None
     messages = _inject_identity(messages)
-    log("CLOUD [fireworks/deepseek-v3p1]")
+    log("CLOUD [fireworks/deepseek-v4-pro]")
     payload = {
-        "model": "accounts/fireworks/models/deepseek-v3p1",
+        # 2026-09-26: deepseek-v3p1 confirmed dead — Fireworks' own model
+        # page lists it "Serverless: Not supported" (dedicated-deployment
+        # only now), which is why it always 404'd here. deepseek-v4-pro is
+        # the current serverless flagship per Fireworks' own announcement,
+        # but could not be live-verified against this account: Fireworks
+        # returned "Account ... is suspended ... monthly spending limit or
+        # failure to pay past invoices" (HTTP 412) on every model tried,
+        # masking whether the ID itself is right. Re-verify with a real
+        # call once the account is unsuspended — see the 412 handling
+        # below, which now fails this fast with a real cooldown either way
+        # instead of hammering a dead account every turn.
+        "model": "accounts/fireworks/models/deepseek-v4-pro",
         "messages": messages,
         "max_tokens": 8192,
         "top_p": 1,
@@ -7606,10 +7644,31 @@ def ask_cloud_fireworks_dsv3(messages):
             403: "AUTH FAIL — check API key",
             429: "RATE LIMIT hit",
             402: "OUT OF CREDITS",
+            412: "ACCOUNT SUSPENDED — billing (spending limit or unpaid invoice)",
+            # 2026-09-26: confirmed live — Fireworks' chat-completions
+            # endpoint returns the SAME generic 404 "Model not found,
+            # inaccessible, and/or not deployed" both for a genuinely wrong
+            # model id AND for a suspended account (confirmed separately
+            # via GET /v1/models, which surfaces the real 412 on the same
+            # key). No way to tell the two apart from this endpoint alone.
+            404: "MODEL NOT FOUND (or account suspended — ambiguous here)",
         }.get(code, f"HTTP {code}")
         log(f"FIREWORKS_ERROR: {label}")
         if code == 429:
             _cloud_trip("fireworks", "rate limit", 30)
+        elif code in (402, 412):
+            # 2026-09-26: neither tripped a circuit before -- an out-of-
+            # credits or suspended account just returned None every turn,
+            # a real HTTP round-trip each time, with zero backoff. Both are
+            # billing-side facts that won't change turn to turn; a long
+            # cooldown (30 min) means one wasted attempt per half hour
+            # instead of one per turn until Elijah actually fixes billing.
+            _cloud_trip("fireworks", label, 1800)
+        elif code == 404:
+            # Shorter cooldown than the confirmed-billing cases above: this
+            # could also genuinely mean the model id itself needs fixing
+            # again, which is worth re-surfacing sooner than 30 minutes.
+            _cloud_trip("fireworks", label, 600)
         return None
     except Exception as e:
         log(f"FIREWORKS_ERROR: {e}")
