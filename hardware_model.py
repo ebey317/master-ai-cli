@@ -24,6 +24,7 @@ Hardware tiers (RAM = total system GB -> max params):
 """
 
 import json
+import math
 import os
 import re
 import urllib.request
@@ -34,13 +35,26 @@ def system_ram_gb() -> int:
     sticks report a few hundred MB under their nominal size (reserved/
     kernel memory), so an actual 16GB stick (confirmed: MemTotal
     16,248,800 kB here) floored to 15 and landed one whole tier below
-    what it should. Round to nearest instead, so a machine with a real
-    16GB stick lands at the 16GB tier, not the 8GB one."""
+    what it should. Round to nearest, so a real 16GB stick lands at the
+    16GB tier, not the 8GB one.
+
+    2026-09-26, caught by Open Code Review on the fix above: Python's
+    round() is banker's rounding (ties to even) — round(31.5) is 32, not
+    31, so a machine reporting exactly 31.5GB would round UP across the
+    32GB tier boundary into the 14B model tier it can't actually run.
+    That's the opposite failure direction from the original bug (over-
+    promising instead of under-promising) and a worse one for a RAM
+    tier specifically. Round half DOWN instead — ties go to the safer,
+    lower tier, exact .5 boundaries are astronomically unlikely from a
+    real MemTotal anyway (always a whole KB integer), but there's no
+    reason to leave a real edge case sitting in a hardware-safety
+    function when the fix is one line."""
     try:
         with open("/proc/meminfo") as f:
             for line in f:
                 if line.startswith("MemTotal:"):
-                    return max(1, round(int(line.split()[1]) / 1048576))
+                    gb = int(line.split()[1]) / 1048576
+                    return max(1, math.ceil(gb - 0.5))
     except Exception:
         pass
     return 16  # sane assumption tier

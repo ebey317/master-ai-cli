@@ -5,30 +5,35 @@ skill registry is tagged by (platform, home, project_root) so that concurrent
 sessions in different repositories each see their own project-local skills
 without cross-contamination or stale cache hits.
 """
+
 from __future__ import annotations
 
 import threading
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
-from .session_cwd import get_session_cwd, resolve_effective_cwd
+from .session_cwd import resolve_effective_cwd
 
-_SKILL_COMMANDS: Dict[str, Dict[str, Any]] = {}
-_SKILL_COMMANDS_PLATFORM: Optional[str] = None
-_SKILL_COMMANDS_HOME: Optional[str] = None
-_SKILL_COMMANDS_PROJECT: Optional[str] = None
+_SKILL_COMMANDS: dict[str, dict[str, Any]] = {}
+_SKILL_COMMANDS_PLATFORM: str | None = None
+_SKILL_COMMANDS_HOME: str | None = None
+_SKILL_COMMANDS_PROJECT: str | None = None
 _PUBLISH_LOCK = threading.Lock()
+
 
 def _resolve_platform_tag() -> str:
     """Platform identifier (e.g., 'tui', 'api', 'test'). Override in embedding."""
     import platform
+
     return platform.system().lower()
+
 
 def _resolve_home_tag() -> str:
     """Active profile/home directory tag. Override in embedding for multi-profile."""
     return str(Path.home())
 
-def _resolve_project_tag() -> Optional[str]:
+
+def _resolve_project_tag() -> str | None:
     """Project root for the current session (None if not in a git repo)."""
     cwd = resolve_effective_cwd()
     try:
@@ -40,24 +45,30 @@ def _resolve_project_tag() -> Optional[str]:
         pass
     return None
 
-def _current_cache_key() -> Tuple[str, str, Optional[str]]:
+
+def _current_cache_key() -> tuple[str, str, str | None]:
     """Composite key for cache invalidation."""
     return (_resolve_platform_tag(), _resolve_home_tag(), _resolve_project_tag())
 
-def scan_skills() -> Dict[str, Dict[str, Any]]:
+
+def scan_skills() -> dict[str, dict[str, Any]]:
     """Discover skills from all sources and publish atomically.
 
     Scans: built-in, user home (~/.sensei/skills), project (.sensei/skills).
     Project skills are only included when a project root is detected.
     """
-    global _SKILL_COMMANDS, _SKILL_COMMANDS_PLATFORM, _SKILL_COMMANDS_HOME, _SKILL_COMMANDS_PROJECT
+    global \
+        _SKILL_COMMANDS, \
+        _SKILL_COMMANDS_PLATFORM, \
+        _SKILL_COMMANDS_HOME, \
+        _SKILL_COMMANDS_PROJECT
 
     platform = _resolve_platform_tag()
     home = _resolve_home_tag()
     project = _resolve_project_tag()
 
     # Build into a local map to avoid partial publication races
-    commands: Dict[str, Dict[str, Any]] = {}
+    commands: dict[str, dict[str, Any]] = {}
     seen_names: set[str] = set()
 
     # 1. Built-in skills (placeholder — embedder provides)
@@ -87,9 +98,10 @@ def scan_skills() -> Dict[str, Dict[str, Any]]:
 
     return commands
 
+
 def _try_load_skill(
     skill_dir: Path,
-    commands: Dict[str, Dict[str, Any]],
+    commands: dict[str, dict[str, Any]],
     seen_names: set[str],
     source: str,
 ) -> None:
@@ -97,6 +109,7 @@ def _try_load_skill(
     try:
         # Expect skill.json or skill.yaml with at least {"name": "...", "entry": "..."}
         import json
+
         manifest_path = skill_dir / "skill.json"
         if not manifest_path.exists():
             manifest_path = skill_dir / "skill.yaml"
@@ -106,7 +119,24 @@ def _try_load_skill(
         if manifest_path.suffix == ".json":
             manifest = json.loads(manifest_path.read_text())
         else:
-            import yaml
+            try:
+                import yaml
+            except ImportError:
+                # 2026-09-26, caught by Open Code Review: the bare
+                # `except Exception: pass` below is intentional for a
+                # genuinely malformed skill.yaml, but a MISSING pyyaml
+                # dependency isn't the skill's fault — it's an
+                # environment gap that silently hid every single yaml
+                # skill with no signal at all. Surface it once per skill
+                # dir rather than let it look identical to "corrupt file".
+                import warnings
+
+                warnings.warn(
+                    f"skill_registry: pyyaml not installed — skipping "
+                    f"{skill_dir} (skill.yaml requires it; skill.json does not)",
+                    stacklevel=2,
+                )
+                return
             manifest = yaml.safe_load(manifest_path.read_text())
 
         name = manifest.get("name") or skill_dir.name
@@ -126,22 +156,32 @@ def _try_load_skill(
     except Exception:
         pass  # invalid skill — ignore
 
-def get_skills() -> Dict[str, Dict[str, Any]]:
+
+def get_skills() -> dict[str, dict[str, Any]]:
     """Return current skill map; rescan if platform/home/project context changed."""
     current_key = _current_cache_key()
     with _PUBLISH_LOCK:
         commands = _SKILL_COMMANDS
-        cached_key = (_SKILL_COMMANDS_PLATFORM, _SKILL_COMMANDS_HOME, _SKILL_COMMANDS_PROJECT)
+        cached_key = (
+            _SKILL_COMMANDS_PLATFORM,
+            _SKILL_COMMANDS_HOME,
+            _SKILL_COMMANDS_PROJECT,
+        )
         is_fresh = bool(commands) and cached_key == current_key
 
     if is_fresh:
         return commands
     return scan_skills()
 
+
 def invalidate_cache() -> None:
     """Force rescan on next get_skills() call (e.g., after profile switch)."""
     with _PUBLISH_LOCK:
-        global _SKILL_COMMANDS, _SKILL_COMMANDS_PLATFORM, _SKILL_COMMANDS_HOME, _SKILL_COMMANDS_PROJECT
+        global \
+            _SKILL_COMMANDS, \
+            _SKILL_COMMANDS_PLATFORM, \
+            _SKILL_COMMANDS_HOME, \
+            _SKILL_COMMANDS_PROJECT
         _SKILL_COMMANDS = {}
         _SKILL_COMMANDS_PLATFORM = None
         _SKILL_COMMANDS_HOME = None

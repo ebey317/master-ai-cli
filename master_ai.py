@@ -10797,11 +10797,24 @@ def _real_ctx_tokens_for_active_model():
         except Exception:
             active = ""
     active_probe = active.split("::")[-1].strip().lstrip("/")
-    # Loose match: either side containing the other covers tag prefixes
-    # ("poolside::poolside/laguna-xs-2.1" vs "laguna-xs-2.1") and bare
-    # local model names (exact) without needing a full alias table.
+    # 2026-09-26, caught by Open Code Review: "either side CONTAINS the
+    # other" is unbounded — a short active model name could match
+    # somewhere in the MIDDLE of an unrelated longer one. Anchoring to a
+    # real string edge (prefix OR suffix, either direction) keeps both
+    # intended cases — a tag prefix stripped down to the bare id
+    # ("poolside::poolside/laguna-xs-2.1" -> active_probe
+    # "poolside/laguna-xs-2.1" ENDS WITH measured "laguna-xs-2.1"; a
+    # prefix-only check breaks this, verified live before landing this
+    # exact fix) and a base name vs. its own "-instruct"/"-free" suffixed
+    # variant (active "qwen2.5:3b" is a PREFIX of measured
+    # "qwen2.5:3b-instruct") — while ruling out an arbitrary interior
+    # substring match that touches neither edge. Still no full alias
+    # table, just bounded to an actual edge instead of anywhere.
     if active_probe and (
-        active_probe in measured_model or measured_model in active_probe
+        measured_model.startswith(active_probe)
+        or active_probe.startswith(measured_model)
+        or measured_model.endswith(active_probe)
+        or active_probe.endswith(measured_model)
     ):
         return tokens
     if not active_probe and measured_model == str(DEFAULT_LOCAL_MODEL):

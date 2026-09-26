@@ -6,6 +6,7 @@ re-checks it after reading, and only caches on match. Open/read failures return 
 caching and evict any warm entry. A generation counter under the lock prevents a slow reader
 from repopulating an entry that a concurrent writer invalidated.
 """
+
 import codecs
 import os
 import threading
@@ -44,7 +45,7 @@ def invalidate_env_file_cache(env_path: Optional[Path] = None) -> None:
 def _decode_env_bytes(raw: bytes) -> str:
     """BOM stripped; invalid UTF-8 falls back to latin-1 exactly like dotenv does."""
     if raw.startswith(codecs.BOM_UTF8):
-        raw = raw[len(codecs.BOM_UTF8):]
+        raw = raw[len(codecs.BOM_UTF8) :]
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError:
@@ -59,15 +60,16 @@ def _parse_env_text(text: str) -> Dict[str, str]:
         if not line or line.startswith("#"):
             continue
         if line.startswith("export "):
-            line = line[len("export "):]
+            line = line[len("export ") :]
         if "=" not in line:
             continue
         key, _, value = line.partition("=")
         key = key.strip()
         value = value.strip()
         # Strip matching quotes
-        if (value.startswith('"') and value.endswith('"')) or \
-           (value.startswith("'") and value.endswith("'")):
+        if (value.startswith('"') and value.endswith('"')) or (
+            value.startswith("'") and value.endswith("'")
+        ):
             value = value[1:-1]
         # Unescape common sequences
         value = value.replace('\\"', '"').replace("\\'", "'").replace("\\\\", "\\")
@@ -104,15 +106,28 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
                 return _parse_env_text(_decode_env_bytes(raw))
 
             # Check if cached entry matches current fingerprint and generation
-            if cached_fingerprint == pre_read_fingerprint and cached_generation == _ENV_FILE_CACHE_GENERATION:
+            #
+            # 2026-09-26, caught by Open Code Review: all 3 return points in
+            # this function used to hand back the CACHED dict object
+            # directly. A caller doing secrets["NEW_KEY"] = ... on what it
+            # thinks is its own copy would silently corrupt the memoized
+            # entry for every other caller. .copy() is a shallow copy of a
+            # str->str dict — cheap, and enough since values are immutable.
+            if (
+                cached_fingerprint == pre_read_fingerprint
+                and cached_generation == _ENV_FILE_CACHE_GENERATION
+            ):
                 with _ENV_FILE_CACHE_LOCK:
                     # Re-verify under lock (generation could have changed)
                     entry = _ENV_FILE_CACHE.get(path_str)
                     if entry is not None:
                         fp, secrets, gen = entry
-                        if fp == pre_read_fingerprint and gen == _ENV_FILE_CACHE_GENERATION:
+                        if (
+                            fp == pre_read_fingerprint
+                            and gen == _ENV_FILE_CACHE_GENERATION
+                        ):
                             _ENV_FILE_CACHE.move_to_end(path_str)  # LRU touch
-                            return secrets
+                            return secrets.copy()
 
             # Cache miss or stale: parse fresh
             text = _decode_env_bytes(raw)
@@ -126,14 +141,18 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
                     fp, existing_secrets, gen = entry
                     if fp == pre_read_fingerprint and gen == _ENV_FILE_CACHE_GENERATION:
                         _ENV_FILE_CACHE.move_to_end(path_str)
-                        return existing_secrets
+                        return existing_secrets.copy()
 
                 # Evict LRU if at capacity
                 if len(_ENV_FILE_CACHE) >= _ENV_FILE_CACHE_MAX:
                     _ENV_FILE_CACHE.popitem(last=False)
 
-                _ENV_FILE_CACHE[path_str] = (pre_read_fingerprint, secrets, _ENV_FILE_CACHE_GENERATION)
-                return secrets
+                _ENV_FILE_CACHE[path_str] = (
+                    pre_read_fingerprint,
+                    secrets,
+                    _ENV_FILE_CACHE_GENERATION,
+                )
+                return secrets.copy()
 
     except OSError:
         # Open/read failed: evict any warm entry, return empty, DO NOT cache failure
