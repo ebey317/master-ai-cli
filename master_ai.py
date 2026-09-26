@@ -7191,6 +7191,9 @@ def _ask_opencode_zen(messages, model, label, timeout=60):
             content = msg.get("content") or ""
             if not content.strip():
                 content = msg.get("reasoning") or ""
+            _record_real_ctx_tokens(
+                model, (result.get("usage") or {}).get("total_tokens")
+            )
             return content
     except urllib.error.HTTPError as e:
         body = ""
@@ -7437,6 +7440,9 @@ def _ask_opencode_go(messages, model, label, timeout=120):
             content = msg.get("content") or ""
             if not content.strip():
                 content = msg.get("reasoning") or ""
+            _record_real_ctx_tokens(
+                model, (result.get("usage") or {}).get("total_tokens")
+            )
             return content
     except urllib.error.HTTPError as e:
         body = ""
@@ -10683,6 +10689,23 @@ def _active_model_context_tokens():
         except Exception:
             pass
 
+    # 2026-09-26: found live — a tagged pin like "opencode-go::space-
+    # bunny-free" had its "opencode-go" prefix discarded back at the top
+    # (probe = everything after "::"), so by the time this table lookup
+    # ran, the bare curated model name ("space-bunny-free") had to
+    # substring-match a PROVIDER_CONTEXT_TOKENS key on its own — which it
+    # never will, since OpenCode Go's own curated model names don't embed
+    # "opencode" anywhere. The tag itself IS the provider identifier and
+    # is a direct, exact key in the table; check it first.
+    tag = model.split("::")[0].strip().lower() if "::" in model else ""
+    if tag:
+        # Dispatch tags are hyphenated ("opencode-go::"); PROVIDER_CONTEXT_
+        # TOKENS has at least one entry that wasn't ("opencode_go") — check
+        # both spellings rather than relying on every future table entry
+        # matching the wire-format tag exactly.
+        for _cand in (tag, tag.replace("-", "_")):
+            if _cand in PROVIDER_CONTEXT_TOKENS:
+                return PROVIDER_CONTEXT_TOKENS[_cand], f"table:{_cand}(tag)"
     key = probe.split("/")[0].split(":")[0].lower() if probe else ""
     for prov, toks in PROVIDER_CONTEXT_TOKENS.items():
         if prov in key or key in prov:
