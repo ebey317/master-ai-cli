@@ -10884,30 +10884,32 @@ def _openrouter_model_catalog():
 
 # 2026-09-07: free-only, catalog-aware OpenRouter model selection. The
 # hardcoded slug era (nvidia/nemotron-3.5-lightning:free, etc.) drifts too
-# fast — providers rotate free cohorts weekly. This helper reads the live
-# catalog and returns only models OpenRouter marks as free (pricing.prompt==0).
-_OPENROUTER_FREE_PRIORITY = [
-    # Prefer fast instruction-followers for general chat/tool turns.
-    "nvidia/nemotron-3.5-lightning:free",
-    "minimax/minimax-m3:free",
-    "mimo-ai/mimo-v2.5-free",
-    # Reasoning/heavy free models when the above are unavailable.
-    "nvidia/nemotron-3-super-120b-a12b:free",
-    "deepseek/deepseek-chat-v3:free",
-    "qwen/qwen-2.5-coder-32b:free",
-    "google/gemma-3-27b-it:free",
-]
-
-
+# fast — providers rotate free cohorts weekly.
+#
+# 2026-09-26: the fix above replaced ONE hardcoded slug with a hardcoded
+# PRIORITY LIST -- same disease, different dose. Checked live the night
+# this was caught: 5 of the 7 entries below (minimax-m3, mimo-v2.5,
+# deepseek-chat-v3, qwen-2.5-coder-32b, gemma-3-27b) are no longer even
+# in OpenRouter's free catalog at all. Elijah: "we need an automated
+# model that goes through and sees what's free and what's the most
+# capable... not the most popular." Replaced with free_model_picker.py's
+# live ranking (real structural signals from OpenRouter's own API --
+# tool-calling support, parameter count parsed from the model id, context
+# window -- cached 1h so this hot per-turn path doesn't hit the network
+# every call, but never hardcoded and never more than an hour stale).
 def _openrouter_free_models():
-    """Return currently free OpenRouter slugs from the live catalog, sorted
-    with known-good models first. Empty list if the catalog can't be fetched."""
-    catalog = _openrouter_model_catalog()
-    free_ids = {mid for mid, _, is_free in catalog if is_free}
-    ordered = [m for m in _OPENROUTER_FREE_PRIORITY if m in free_ids]
-    # Append any other free models not in the priority list.
-    ordered.extend(sorted(free_ids - set(ordered)))
-    return ordered
+    """Return currently free OpenRouter slugs from the live catalog,
+    ranked by free_model_picker's real capability signals. Empty list if
+    the catalog can't be fetched."""
+    try:
+        import free_model_picker as _fmp
+
+        models = _fmp.fetch_openrouter_models()
+        ranked = _fmp.rank_free_models(_fmp.list_free_models(models=models))
+        return [m["id"] for m in ranked]
+    except Exception as e:
+        log(f"OPENROUTER_FREE_MODELS_ERROR: {e}")
+        return []
 
 
 def _openrouter_best_free_model():
