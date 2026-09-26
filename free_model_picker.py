@@ -208,34 +208,54 @@ def rank_free_models(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return ranked
 
 
-def test_model_live(key: str, model_id: str, timeout: int = 20) -> tuple[bool, str]:
+def test_model_live(
+    key: str,
+    model_id: str,
+    timeout: int = 20,
+    url: str = OPENROUTER_CHAT_URL,
+    max_tokens: int = 150,
+    extra_headers: dict[str, str] | None = None,
+) -> tuple[bool, str]:
     """Real, cheap completion call — the only way to know a model is
     actually answering right now, not just theoretically the best pick.
     Catches exactly what a static config can't: rate limits, upstream
-    outages, exhausted trial credits, deprecated ids."""
+    outages, exhausted trial credits, deprecated/end-of-life ids.
+
+    2026-09-26: max_tokens defaulted to 10 originally and produced a
+    false NEGATIVE on a real, working model — openai/gpt-oss-20b (via
+    NVIDIA direct) is reasoning-mandatory and spent its entire 10-token
+    budget on reasoning content, returning content=None with
+    finish_reason="length" before ever emitting the actual answer. That
+    looks identical to a broken model unless you give it room to finish
+    reasoning first. 150 is enough headroom for a short reasoning
+    preamble plus "pong" on every free/trial model tested so far."""
     payload = {
         "model": model_id,
         "messages": [{"role": "user", "content": "Reply with exactly: pong"}],
-        "max_tokens": 10,
+        "max_tokens": max_tokens,
     }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {key}",
+    }
+    if extra_headers:
+        headers.update(extra_headers)
     req = urllib.request.Request(
-        OPENROUTER_CHAT_URL,
-        data=json.dumps(payload).encode(),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}",
-            "HTTP-Referer": "http://localhost",
-            "X-Title": "master-ai-free-model-picker",
-        },
+        url, data=json.dumps(payload).encode(), headers=headers
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             result = json.loads(r.read())
-        content = (
-            (result.get("choices") or [{}])[0].get("message", {}).get("content", "")
-        )
+        message = (result.get("choices") or [{}])[0].get("message", {})
+        content = message.get("content") or ""
         if content:
             return True, content.strip()[:60]
+        finish_reason = (result.get("choices") or [{}])[0].get("finish_reason")
+        if finish_reason == "length":
+            return (
+                False,
+                "hit max_tokens before producing content (reasoning-heavy model, or genuinely stuck)",
+            )
         return False, "empty response"
     except urllib.error.HTTPError as e:
         body = ""
@@ -271,7 +291,14 @@ def pick_best_working_free_model(
     attempts = []
     for m in ranked[:max_tries]:
         model_id = m["id"]
-        ok, detail = test_model_live(key, model_id)
+        ok, detail = test_model_live(
+            key,
+            model_id,
+            extra_headers={
+                "HTTP-Referer": "http://localhost",
+                "X-Title": "master-ai-free-model-picker",
+            },
+        )
         attempts.append(
             {
                 "model": model_id,
@@ -294,70 +321,286 @@ def pick_best_working_free_model(
     }
 
 
-def write_ocr_config(model_id: str, config_path: Path = OCR_CONFIG_PATH) -> None:
-    """Point Open Code Review's config at the live pick, via its already-
-    keyed openrouter-free custom provider — never touches the key."""
+# ── NVIDIA direct hosting (integrate.api.nvidia.com) ─────────────────
+#
+# 2026-09-26: OCR's config has 2 more provider slots pointed at NVIDIA's
+# own hosting (nvidia-gptoss direct, nvidia-proxy via a local rate-
+# limiting relay in front of the same upstream) plus a local Ollama
+# slot — "wire it into OCR's other model configs too." NVIDIA's own
+# /v1/models is real and live but MUCH thinner than OpenRouter's: no
+# pricing field (nothing here is "free" the way OpenRouter's :free tier
+# is — it's all metered against the same trial-credit key), no
+# context_length, no supported_parameters. The only real signal
+# available is the model id itself (same param-count regex) plus a live
+# test — so ranking here is coarser by necessity, not by choice.
+NVIDIA_MODELS_URL = "https://integrate.api.nvidia.com/v1/models"
+NVIDIA_CHAT_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+_NVIDIA_CATALOG_CACHE_PATH = (
+    Path.home() / ".master_ai_free_model_picker_nvidia_cache.json"
+)
+
+
+def _nvidia_key(explicit: str | None = None) -> str:
+    if explicit:
+        return explicit
+    try:
+        keys = parse_kv_keys(KEYCHAIN_PATH.read_text())
+    except Exception:
+        keys = {}
+    key = keys.get("nvidia")
+    if not key:
+        raise RuntimeError(f"no NVIDIA_API_KEY found in {KEYCHAIN_PATH}")
+    return key
+
+
+def fetch_nvidia_models(
+    key: str | None = None, force_fresh: bool = False
+) -> list[dict[str, Any]]:
+    """NVIDIA's real, current model list for this key — same 1h cache
+    pattern as fetch_openrouter_models, same reason (a hot caller
+    shouldn't refetch every turn; correctness matters more than one
+    saved round-trip when actually picking something to use right now)."""
+    if not force_fresh:
+        try:
+            cached = json.loads(_NVIDIA_CATALOG_CACHE_PATH.read_text())
+            import time as _time
+
+            if _time.time() - cached.get("ts", 0) < _CATALOG_CACHE_TTL:
+                return cached.get("models", [])
+        except Exception:
+            pass
+    key = _nvidia_key(key)
+    req = urllib.request.Request(
+        NVIDIA_MODELS_URL, headers={"Authorization": f"Bearer {key}"}
+    )
+    with urllib.request.urlopen(req, timeout=20) as r:
+        data = json.loads(r.read())
+    models = data.get("data", [])
+    try:
+        import time as _time
+
+        _NVIDIA_CATALOG_CACHE_PATH.write_text(
+            json.dumps({"ts": _time.time(), "models": models})
+        )
+    except Exception:
+        pass
+    return models
+
+
+def rank_nvidia_models(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rank by parameter count parsed from the id — the only structural
+    capability signal NVIDIA's /v1/models actually returns. Models with
+    no parseable size (embedders, safety-guard, parse/OCR-specialist
+    models — real categories seen in this catalog, not general chat
+    models regardless of size) sort last rather than winning by default."""
+    ranked = []
+    for m in models:
+        params_b = _param_count_b(m.get("id", ""))
+        m = dict(m)
+        m["_rank_info"] = {"params_b": params_b, "context_length": None}
+        ranked.append(m)
+    ranked.sort(
+        key=lambda m: (
+            m["_rank_info"]["params_b"]
+            if m["_rank_info"]["params_b"] is not None
+            else -1
+        ),
+        reverse=True,
+    )
+    return ranked
+
+
+def pick_best_working_nvidia_model(
+    key: str | None = None, max_tries: int = 6, force_fresh: bool = True
+) -> dict[str, Any]:
+    """Same pattern as pick_best_working_free_model, for the NVIDIA-
+    direct lane. No free-tier filter (nothing here reports as free) and
+    no tool-calling filter (the field doesn't exist in this catalog) —
+    rank by size, then live-test in order with real headroom for
+    reasoning-mandatory models (see test_model_live's 2026-09-26 note)."""
+    key = _nvidia_key(key)
+    all_models = fetch_nvidia_models(key, force_fresh=force_fresh)
+    ranked = rank_nvidia_models(all_models)
+
+    attempts = []
+    for m in ranked[:max_tries]:
+        model_id = m["id"]
+        ok, detail = test_model_live(key, model_id, url=NVIDIA_CHAT_URL, timeout=30)
+        attempts.append(
+            {
+                "model": model_id,
+                "params_b": m["_rank_info"]["params_b"],
+                "ok": ok,
+                "detail": detail,
+            }
+        )
+        if ok:
+            return {
+                "model": model_id,
+                "attempts": attempts,
+                "candidates": [c["id"] for c in ranked],
+            }
+    return {
+        "model": None,
+        "attempts": attempts,
+        "candidates": [c["id"] for c in ranked],
+    }
+
+
+def write_ocr_config(
+    model_id: str,
+    config_path: Path = OCR_CONFIG_PATH,
+    provider: str = "openrouter-free",
+    make_active: bool = False,
+) -> None:
+    """Point one of Open Code Review's custom providers at a live pick —
+    never touches the key already sitting in that provider's config.
+    make_active also sets this provider as OCR's top-level default
+    (only meaningful for one provider at a time; the others still get
+    their own model kept current even when not active)."""
     with open(config_path) as f:
         cfg = json.load(f)
-    cfg["provider"] = "openrouter-free"
-    cfg.setdefault("custom_providers", {}).setdefault("openrouter-free", {})
-    cfg["custom_providers"]["openrouter-free"]["model"] = model_id
+    cfg.setdefault("custom_providers", {}).setdefault(provider, {})
+    cfg["custom_providers"][provider]["model"] = model_id
+    if make_active:
+        cfg["provider"] = provider
     with open(config_path, "w") as f:
         json.dump(cfg, f, indent=2)
+
+
+def refresh_ollama_local_config(config_path: Path = OCR_CONFIG_PATH) -> str:
+    """OCR's ollama-local provider needs the opposite fix from the cloud
+    ones: nothing here is a billing/rate-limit concern, but a hardcoded
+    model name ("qwen3-vl:8b") still silently breaks the moment that
+    exact tag isn't pulled on whatever box runs this. Reuses
+    hardware_model.pick_local_model() — the same RAM-tier + actually-
+    pulled-models logic master_ai.py's own local routing already uses —
+    instead of a second, independent hardcoded guess."""
+    import hardware_model
+
+    model = hardware_model.pick_local_model()
+    write_ocr_config(model, config_path=config_path, provider="ollama-local")
+    return model
+
+
+def _print_attempts(label: str, result: dict[str, Any]) -> None:
+    print(f"{label}:")
+    for a in result["attempts"]:
+        status = "OK" if a["ok"] else "FAILED"
+        pb = f"{a['params_b']:.0f}B" if a["params_b"] is not None else "?B"
+        ctx = a.get("context_length")
+        ctx_s = f"ctx={ctx:>8}" if ctx is not None else ""
+        print(f"  [{status:6s}] {a['model']:55s} {pb:>6s} {ctx_s} -> {a['detail']}")
+    if result["model"]:
+        print(f"  -> picked: {result['model']}")
+    else:
+        print("  -> no working candidate found")
+    print()
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     ap.add_argument(
+        "--provider",
+        choices=["openrouter", "nvidia", "ollama", "all"],
+        default="openrouter",
+        help="which lane to pick for (default: openrouter — the genuinely free one). "
+        "'all' covers every OCR provider slot in one run: openrouter-free, "
+        "nvidia-gptoss + nvidia-proxy (same NVIDIA-direct pick, mirrored — nvidia-proxy "
+        "is a local rate-limiting relay in front of the identical upstream/key, so the "
+        "same model choice applies to both), and ollama-local.",
+    )
+    ap.add_argument(
         "--write-ocr-config",
         action="store_true",
-        help=f"also update {OCR_CONFIG_PATH} with the pick",
+        help=f"also update {OCR_CONFIG_PATH} with the pick(s)",
     )
     ap.add_argument("--max-tries", type=int, default=5)
     ap.add_argument(
         "--allow-no-tools",
         action="store_true",
-        help="don't require tool-calling support (default: require it)",
+        help="OpenRouter only: don't require tool-calling support (default: require it)",
     )
     args = ap.parse_args()
 
-    try:
-        result = pick_best_working_free_model(
-            max_tries=args.max_tries, require_tools=not args.allow_no_tools
-        )
-    except RuntimeError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        return 1
+    results: dict[str, dict[str, Any]] = {}
+    errors: list[str] = []
+
+    if args.provider in ("openrouter", "all"):
+        try:
+            results["openrouter"] = pick_best_working_free_model(
+                max_tries=args.max_tries, require_tools=not args.allow_no_tools
+            )
+        except RuntimeError as e:
+            errors.append(f"openrouter: {e}")
+
+    if args.provider in ("nvidia", "all"):
+        try:
+            results["nvidia"] = pick_best_working_nvidia_model(max_tries=args.max_tries)
+        except RuntimeError as e:
+            errors.append(f"nvidia: {e}")
+
+    if args.provider in ("ollama", "all"):
+        try:
+            import hardware_model
+
+            results["ollama"] = {
+                "model": hardware_model.pick_local_model(),
+                "attempts": [],
+                "candidates": [],
+            }
+        except Exception as e:
+            errors.append(f"ollama: {e}")
 
     if args.json:
-        print(json.dumps(result, indent=2))
+        print(json.dumps(results, indent=2))
     else:
-        print("Attempts (ranked by params_b, then context_length):")
-        for a in result["attempts"]:
-            status = "OK" if a["ok"] else "FAILED"
-            pb = f"{a['params_b']:.0f}B" if a["params_b"] is not None else "?B"
-            print(
-                f"  [{status:6s}] {a['model']:50s} {pb:>6s} ctx={a['context_length']:>8} -> {a['detail']}"
+        if "openrouter" in results:
+            _print_attempts("OpenRouter (genuinely free tier)", results["openrouter"])
+        if "nvidia" in results:
+            _print_attempts(
+                "NVIDIA direct (trial-credit metered — no free tier as such, "
+                "ranked by size only, live-tested)",
+                results["nvidia"],
             )
-        if result["model"]:
-            print(f"\nPicked: {result['model']}")
-        else:
+        if "ollama" in results:
             print(
-                f"\nNo working free model found among the top {args.max_tries} candidates."
+                f"Ollama local (RAM-tier + actually pulled): {results['ollama']['model']}\n"
             )
+        for err in errors:
+            print(f"ERROR: {err}", file=sys.stderr)
 
     if args.write_ocr_config:
-        if not result["model"]:
+        wrote_any = False
+        if "openrouter" in results and results["openrouter"]["model"]:
+            write_ocr_config(
+                results["openrouter"]["model"],
+                provider="openrouter-free",
+                make_active=True,
+            )
             print(
-                "Skipping --write-ocr-config: no working model to write.",
+                f"Wrote {results['openrouter']['model']} to openrouter-free (made active)"
+            )
+            wrote_any = True
+        if "nvidia" in results and results["nvidia"]["model"]:
+            m = results["nvidia"]["model"]
+            write_ocr_config(m, provider="nvidia-gptoss")
+            write_ocr_config(m, provider="nvidia-proxy")
+            print(f"Wrote {m} to nvidia-gptoss and nvidia-proxy")
+            wrote_any = True
+        if "ollama" in results and results["ollama"]["model"]:
+            write_ocr_config(results["ollama"]["model"], provider="ollama-local")
+            print(f"Wrote {results['ollama']['model']} to ollama-local")
+            wrote_any = True
+        if not wrote_any:
+            print(
+                "Nothing written — no working pick for any requested provider.",
                 file=sys.stderr,
             )
             return 1
-        write_ocr_config(result["model"])
-        print(f"Wrote {result['model']} to {OCR_CONFIG_PATH}")
 
-    return 0 if result["model"] else 1
+    return 0 if any(r.get("model") for r in results.values()) else 1
 
 
 if __name__ == "__main__":
