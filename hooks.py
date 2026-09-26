@@ -287,7 +287,32 @@ import threading as _threading
 _EXTRACT_LOCK = _threading.Lock()
 _EXTRACT_COUNT_SESSION = 0
 _EXTRACT_MAX_PER_SESSION = 10
-_EXTRACT_LESSON_MODEL = "qwen2.5:3b"  # fast small model; falls back below
+
+
+# 2026-09-26: was a bare hardcoded "qwen2.5:3b" with a comment claiming a
+# fallback existed — there wasn't one. Combined with the swallow-everything
+# except-block below (deliberate — "failure is invisible by design," this
+# is a nice-to-have background feature, not something worth surfacing
+# errors for), a box that never pulled qwen2.5:3b had this entire feature
+# permanently, silently dead. Resolved lazily via hardware_model's own
+# RAM-tier + actually-pulled-models logic (env override > tier match > any
+# small pulled model), the same source of truth DEFAULT_LOCAL_MODEL uses,
+# instead of a second, independent hardcoded guess.
+def _extract_lesson_model() -> str:
+    try:
+        import os as _os
+        import sys as _sys
+
+        _scripts = _os.path.expanduser("~/scripts")
+        if _scripts not in _sys.path:
+            _sys.path.insert(0, _scripts)
+        import hardware_model as _hw
+
+        return _hw.pick_local_model()
+    except Exception:
+        return "qwen2.5:3b"  # last-resort literal only if hardware_model itself is unreachable
+
+
 _EXTRACT_LESSON_TIMEOUT_S = 12
 _EXTRACT_OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 
@@ -313,7 +338,7 @@ def _extract_lesson_worker(kind: str, target: str, reason: str) -> None:
 
         body = _json.dumps(
             {
-                "model": _EXTRACT_LESSON_MODEL,
+                "model": _extract_lesson_model(),
                 "prompt": prompt,
                 "stream": False,
                 "options": {"num_predict": 80, "temperature": 0.2},

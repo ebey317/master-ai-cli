@@ -30,11 +30,17 @@ import urllib.request
 
 
 def system_ram_gb() -> int:
+    """2026-09-26: was a bare floor division (KB // 1048576) — real RAM
+    sticks report a few hundred MB under their nominal size (reserved/
+    kernel memory), so an actual 16GB stick (confirmed: MemTotal
+    16,248,800 kB here) floored to 15 and landed one whole tier below
+    what it should. Round to nearest instead, so a machine with a real
+    16GB stick lands at the 16GB tier, not the 8GB one."""
     try:
         with open("/proc/meminfo") as f:
             for line in f:
                 if line.startswith("MemTotal:"):
-                    return max(1, int(int(line.split()[1]) // 1048576))
+                    return max(1, round(int(line.split()[1]) / 1048576))
     except Exception:
         pass
     return 16  # sane assumption tier

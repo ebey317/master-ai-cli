@@ -441,6 +441,17 @@ LAST_ACTION_FILE = _pfile("last_action.json")
 HINTS_FILE = _pfile("hints_off")
 TUTORIAL_FILE = _pfile("tutorial_done")
 OLLAMA_URL = "http://localhost:11434"
+# 2026-09-26: was a bare hardcoded 4096 in 3 separate payload dicts below.
+# Real, documented reason to cap it at all (see ask_local_stream's own
+# docstring): a CPU box takes minutes to first-token on long history at
+# the model's real default window (often 32k+). But "capped for CPU
+# speed" and "hardcoded forever with no way to change it" are different
+# things -- this box's actual RAM tier is what justifies 4096 today, not
+# a law of nature, and a future RAM upgrade shouldn't need another code
+# edit to lift it (same self-heals-once-the-real-blocker-is-fixed pattern
+# as tonight's Fireworks fix). Env override, same shape as
+# MASTER_AI_LOCAL_MODEL.
+LOCAL_NUM_CTX = int(os.environ.get("MASTER_AI_LOCAL_NUM_CTX", "4096"))
 # Per-request Ollama urlopen budget. Defaults to 600s for TUI Plan-mode runs.
 # stt_server.api_handle clamps this to ~110s (under _API_HANDLE_LOCK_TIMEOUT_S)
 # via the patch() mechanism so a wedged /chat inference cannot outlast the
@@ -4503,7 +4514,23 @@ def orchestrate(history, user_text, image_path=None):
     # not one hardcoded constant. Cached per-session so a mid-turn model
     # switch can't change the budget out from under an in-flight check.
     _wm, _wm_tokens, _wm_src = _context_watermark()
-    if total_chars >= _wm:
+    # 2026-09-26: _wm above is still a CHAR estimate (chars-per-token times
+    # a fixed English-average constant) compared against total_chars, a
+    # raw character count — neither side is actually native to the model.
+    # When the most recent real call already told us the exact token count
+    # for the model that's active right now (Ollama's prompt_eval_count/
+    # eval_count, or usage.total_tokens from any cloud provider — both
+    # genuine native-tokenizer counts, not estimates), compare tokens to
+    # tokens directly instead, and only fall back to the char guess when no
+    # real measurement exists yet (first turn, or just switched models).
+    _real_tokens = _real_ctx_tokens_for_active_model()
+    if _real_tokens is not None and _wm_tokens:
+        _over_budget = _real_tokens >= int(_wm_tokens * CONTEXT_FILL_RATIO)
+        _pressure_desc = f"{_real_tokens:,} real tokens (limit {int(_wm_tokens * CONTEXT_FILL_RATIO):,} = 95% of {_wm_tokens:,} ctx, native count from {_wm_src})"
+    else:
+        _over_budget = total_chars >= _wm
+        _pressure_desc = f"{total_chars:,} chars (limit {_wm:,} = 95% of {(_wm_tokens or 0):,} ctx, char estimate — no real measurement yet)"
+    if _over_budget:
         # 2026-09-25: root-caused live — Elijah hit this at a genuine 100%
         # in AUTO mode and still had to press a button: "i shouldn't have
         # to trigger it with a button press. it should automatically do it
@@ -4517,17 +4544,14 @@ def orchestrate(history, user_text, image_path=None):
         # every other mode keeps the interactive choice.
         if globals().get("MODE", "plan") == "auto":
             print(
-                f"\n  {BO}⚠ Context pressure — history is {total_chars:,} chars (limit {_wm:,}"
-                f" = 95% of {(_wm_tokens or 0):,} ctx). "
+                f"\n  {BO}⚠ Context pressure — history is {_pressure_desc}. "
                 f"AUTO mode — saving + refreshing now, no prompt.{X}"
             )
             return {
                 "route": "save_refresh",
-                "reason": f"history {total_chars} chars >= watermark {_wm} (95% of {_wm_tokens} ctx, {_wm_src}) (auto)",
+                "reason": f"history {_pressure_desc} (auto)",
             }
-        print(
-            f"\n  {BO}⚠ Context pressure — history is {total_chars:,} chars (limit {_wm:,} = 95% of {(_wm_tokens or 0):,} ctx).{X}"
-        )
+        print(f"\n  {BO}⚠ Context pressure — history is {_pressure_desc}.{X}")
         print(
             f"  {BO}  Sensei will save the conversation, restart, and reload it compacted.{X}"
         )
@@ -4551,7 +4575,7 @@ def orchestrate(history, user_text, image_path=None):
         else:
             return {
                 "route": "save_refresh",
-                "reason": f"history {total_chars} chars >= watermark {_wm} (95% of {_wm_tokens} ctx, {_wm_src})",
+                "reason": f"history {_pressure_desc}",
             }
 
     # 2. Explicit prefixes — user intent overrides mode. Matched against
@@ -6248,7 +6272,7 @@ def ask_local(messages, model=None, image_path=None):
         "stream": False,
         "keep_alive": "60s" if model == MODELS.get("vision") else "30m",
         "think": "medium",
-        "options": {"num_ctx": 4096},
+        "options": {"num_ctx": LOCAL_NUM_CTX},
     }
     # 2026-09-24: "think": "medium" is hardcoded above, but not every pulled
     # model supports thinking — Ollama answers "X does not support thinking"
@@ -6286,6 +6310,11 @@ def ask_local(messages, model=None, image_path=None):
         with urllib.request.urlopen(req, timeout=_local_request_timeout(600)) as resp:
             result = json.loads(resp.read())
             response_text = result["message"]["content"]
+            _record_real_ctx_tokens(
+                model,
+                (result.get("prompt_eval_count") or 0)
+                + (result.get("eval_count") or 0),
+            )
             # Harvest this call so future identical questions don't re-run it
             if harvest is not None and response_text and not image_path:
                 try:
@@ -6500,11 +6529,12 @@ def ask_local_stream(messages, model=None, image_path=None):
     """Stream tokens from Ollama directly to terminal. Returns full text.
     Shows a rotating 'thinking' animation until the first token lands.
 
-    num_ctx capped at 4096 — the local model's default is 32k, which on a
-    CPU box with long history makes prompt-processing take minutes
+    num_ctx capped at LOCAL_NUM_CTX (default 4096, env-overridable via
+    MASTER_AI_LOCAL_NUM_CTX) — the local model's default is 32k, which on
+    a CPU box with long history makes prompt-processing take minutes
     before the first token emerges. 4096 matches Pupil (2026-04-19
-    patch) and keeps first-token latency reasonable. Raise only when
-    the 32 GB RAM upgrade lands."""
+    patch) and keeps first-token latency reasonable. Raise via the env
+    var once the 32 GB RAM upgrade lands — no code edit needed."""
     model = model or MODELS["master"]
     log(f"LOCAL_STREAM [{model}]")
     _t0 = time.time()
@@ -6516,7 +6546,7 @@ def ask_local_stream(messages, model=None, image_path=None):
         "stream": True,
         "keep_alive": "60s" if model == MODELS.get("vision") else "30m",
         "think": "medium",
-        "options": {"num_ctx": 4096},
+        "options": {"num_ctx": LOCAL_NUM_CTX},
     }
     # 2026-09-24: same instant-400 guard as ask_local above — qwen2.5vl:3b
     # (the only pulled local model) has no thinking capability, so think=medium
@@ -6611,6 +6641,14 @@ def ask_local_stream(messages, model=None, image_path=None):
                         if "\n" in token:
                             _flush_line()
                     if chunk.get("done"):
+                        # Real per-request token counts arrive only on the
+                        # final chunk of a stream (Ollama docs) — same
+                        # fields as the non-streaming sibling.
+                        _record_real_ctx_tokens(
+                            model,
+                            (chunk.get("prompt_eval_count") or 0)
+                            + (chunk.get("eval_count") or 0),
+                        )
                         _flush_line(final=True)
                         break
                 except Exception:
@@ -6837,14 +6875,24 @@ def _inject_identity(messages):
 # via a global the same way _LAST_MODEL already is, rather than changing
 # every _ask_*'s return signature (6+ call sites, all currently return a
 # bare string that other code already depends on).
-def _extract_cloud_reply(resp_json):
+def _extract_cloud_reply(resp_json, model=None):
     """(content, finish_reason) from a standard OpenAI-shaped chat completion
     response. Also stamps globals()['_LAST_FINISH_REASON'] for callers that
-    can't easily thread a second return value through (ask_cloud's fn_map)."""
+    can't easily thread a second return value through (ask_cloud's fn_map).
+
+    2026-09-26: also records the response's real usage.total_tokens (the
+    model's own native tokenizer count — confirmed real, not estimated,
+    across OpenRouter/Fireworks/every OpenAI-compatible provider) against
+    `model` when the caller passes one, so context-usage tracking has a
+    real number instead of only ever guessing from characters."""
     choice = (resp_json.get("choices") or [{}])[0]
     content = (choice.get("message") or {}).get("content", "")
     finish_reason = choice.get("finish_reason", "")
     globals()["_LAST_FINISH_REASON"] = finish_reason
+    if model:
+        _record_real_ctx_tokens(
+            model, (resp_json.get("usage") or {}).get("total_tokens")
+        )
     return content, finish_reason
 
 
@@ -6942,7 +6990,9 @@ def ask_cloud_groq(messages):
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            content, _ = _extract_cloud_reply(json.loads(resp.read()))
+            content, _ = _extract_cloud_reply(
+                json.loads(resp.read()), model="llama-3.3-70b-versatile"
+            )
             return content
     except urllib.error.HTTPError as e:
         code = e.code
@@ -6994,7 +7044,7 @@ def _ask_groq(messages, model, label, timeout=60):
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            content, _ = _extract_cloud_reply(json.loads(resp.read()))
+            content, _ = _extract_cloud_reply(json.loads(resp.read()), model=model)
             return content
     except urllib.error.HTTPError as e:
         code = e.code
@@ -7050,7 +7100,7 @@ def _ask_nvidia(messages, model, label, timeout=90):
         )
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                content, _ = _extract_cloud_reply(json.loads(resp.read()))
+                content, _ = _extract_cloud_reply(json.loads(resp.read()), model=model)
             return content
         except urllib.error.HTTPError as e:
             code = e.code
@@ -7108,7 +7158,7 @@ def _ask_qwen(messages, model, label, timeout=90):
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            content, _ = _extract_cloud_reply(json.loads(resp.read()))
+            content, _ = _extract_cloud_reply(json.loads(resp.read()), model=model)
             return content
     except urllib.error.HTTPError as e:
         code = e.code
@@ -7577,7 +7627,9 @@ def ask_cloud_deepseek(messages):
     )
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
-            content, _ = _extract_cloud_reply(json.loads(resp.read()))
+            content, _ = _extract_cloud_reply(
+                json.loads(resp.read()), model="deepseek-reasoner"
+            )
             return content
     except Exception as e:
         log(f"DEEPSEEK_ERROR: {e}")
@@ -7635,7 +7687,10 @@ def ask_cloud_fireworks_dsv3(messages):
     )
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
-            content, _ = _extract_cloud_reply(json.loads(resp.read()))
+            content, _ = _extract_cloud_reply(
+                json.loads(resp.read()),
+                model="accounts/fireworks/models/deepseek-v4-pro",
+            )
             return content
     except urllib.error.HTTPError as e:
         code = e.code
@@ -7720,6 +7775,7 @@ def _ask_openrouter(messages, model, label, timeout=60):
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             result = json.loads(resp.read())
             tokens = result.get("usage", {}).get("total_tokens", 0)
+            _record_real_ctx_tokens(model, tokens)
             if tokens:
                 try:
                     kf = str(Path.home() / ".master_ai_keys")
@@ -7834,6 +7890,7 @@ def _ask_poolside(messages, model, label, timeout=90):
         message = result["choices"][0]["message"]
     except (KeyError, IndexError, TypeError):
         return None
+    _record_real_ctx_tokens(model, (result.get("usage") or {}).get("total_tokens"))
     text = message.get("content") or ""
     if not text and not message.get("tool_calls"):
         text = message.get("reasoning_content") or message.get("reasoning") or ""
@@ -7865,6 +7922,7 @@ def _ask_cerebras(messages, model, label, timeout=60):
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             result = json.loads(resp.read())
             tokens = result.get("usage", {}).get("total_tokens", 0)
+            _record_real_ctx_tokens(model, tokens)
             if tokens:
                 try:
                     kf = str(Path.home() / ".master_ai_keys")
@@ -8589,7 +8647,7 @@ def ask_model_router(messages, model=None, max_tokens=None):
                 "stream": False,
                 "keep_alive": "30m",
                 "think": "medium",
-                "options": {"num_ctx": 4096, "num_predict": max_tokens},
+                "options": {"num_ctx": LOCAL_NUM_CTX, "num_predict": max_tokens},
             }
             try:
                 data = json.dumps(payload).encode()
@@ -8603,6 +8661,11 @@ def ask_model_router(messages, model=None, max_tokens=None):
                 ) as resp:
                     result = json.loads(resp.read())
                 text = result["message"]["content"]
+                _record_real_ctx_tokens(
+                    model,
+                    (result.get("prompt_eval_count") or 0)
+                    + (result.get("eval_count") or 0),
+                )
             except Exception as e:
                 log(f"ROUTER_LOCAL_ERROR: {e}")
         else:
@@ -10669,6 +10732,81 @@ def _context_watermark():
     if chars < CONTEXT_WATERMARK_FLOOR:
         return CONTEXT_WATERMARK_FLOOR, tokens, f"{source} (raised to floor)"
     return chars, tokens, source
+
+
+# 2026-09-26 (Elijah): "i'm almost certain we didn't fix the context to be
+# native to the model and not characters... i had hermes do it, i'm not
+# sure if it's done right." Checked: it wasn't. _context_watermark() above
+# made the WINDOW SIZE model-real (95% of the model's own context_length),
+# but the USAGE measurement compared against that window was still
+# `sum(len(m["content"]) for m in history)` — raw characters times a fixed
+# CHARS_PER_TOKEN=3.6 constant applied to every model regardless of its
+# actual tokenizer. That's a universal English-average guess, not native
+# to anything.
+#
+# Real fix: every local Ollama response already reports prompt_eval_count
+# + eval_count — the ACTUAL token count from that model's own tokenizer
+# for that exact request (verified against Ollama's own docs before
+# relying on it). Every OpenAI-compatible cloud response already reports
+# usage.total_tokens the same way (verified against OpenRouter's and
+# Fireworks' own docs — "calculated using the model's native tokenizer",
+# not estimated). Both were sitting right there in every response, unused.
+# Since the full history is resent every turn, the LATEST call's own
+# prompt_eval_count/prompt_tokens already IS the current total history
+# size in that model's real tokens — no accumulation needed, just capture
+# the freshest one and use it directly instead of the char estimate,
+# whenever it matches the model actually active right now.
+_LAST_REAL_CTX: dict = {"model": None, "tokens": None, "ts": 0.0}
+
+
+def _record_real_ctx_tokens(model, tokens):
+    """Stash the most recent REAL (model-native) total token count for
+    `model`. Called from every place that already gets prompt_eval_count/
+    eval_count (local) or usage.total_tokens (cloud) back from a real
+    response — free data, previously discarded."""
+    if not model or not tokens:
+        return
+    try:
+        tokens = int(tokens)
+    except (TypeError, ValueError):
+        return
+    if tokens <= 0:
+        return
+    globals()["_LAST_REAL_CTX"] = {
+        "model": str(model),
+        "tokens": tokens,
+        "ts": time.time(),
+    }
+
+
+def _real_ctx_tokens_for_active_model():
+    """The most recent real token count, IF it was measured against the
+    model that's actually active right now — a stale measurement from a
+    model just switched away from would be actively misleading, so this
+    returns None rather than a number that looks precise but isn't
+    comparable to the NEW model's real window."""
+    rec = globals().get("_LAST_REAL_CTX") or {}
+    tokens = rec.get("tokens")
+    measured_model = rec.get("model")
+    if not tokens or not measured_model:
+        return None
+    active = str(PINNED_MODEL or "").strip()
+    if not active:
+        try:
+            active = ACTIVE_MODEL_FILE.read_text().strip()
+        except Exception:
+            active = ""
+    active_probe = active.split("::")[-1].strip().lstrip("/")
+    # Loose match: either side containing the other covers tag prefixes
+    # ("poolside::poolside/laguna-xs-2.1" vs "laguna-xs-2.1") and bare
+    # local model names (exact) without needing a full alias table.
+    if active_probe and (
+        active_probe in measured_model or measured_model in active_probe
+    ):
+        return tokens
+    if not active_probe and measured_model == str(DEFAULT_LOCAL_MODEL):
+        return tokens
+    return None
 
 
 def _openrouter_model_catalog():
@@ -19676,12 +19814,17 @@ def draw_status_bar(history=None):
     ctx_pct = 0
     if history:
         try:
-            total_chars = sum(len(m.get("content", "") or "") for m in history)
-            # 2026-09-25: measure against the ACTIVE model's real window
-            # (95%), not the retired 120k constant — otherwise the bar lied
-            # for every model with a window above ~35k tokens.
             _wm, _wm_tok, _ = _context_watermark()
-            ctx_pct = round(100 * total_chars / _wm) if _wm else 0
+            # 2026-09-26: prefer the real native token count for the
+            # active model over the char estimate, same as the main
+            # context-pressure check above — see _real_ctx_tokens_for_
+            # active_model()'s docstring for why this matters.
+            _real_tok = _real_ctx_tokens_for_active_model()
+            if _real_tok is not None and _wm_tok:
+                ctx_pct = round(100 * _real_tok / (_wm_tok * CONTEXT_FILL_RATIO))
+            else:
+                total_chars = sum(len(m.get("content", "") or "") for m in history)
+                ctx_pct = round(100 * total_chars / _wm) if _wm else 0
         except Exception:
             ctx_pct = 0
     # 2026-08-24: PINNED_MODEL only reflects an explicit `model <name>` pin —
@@ -21614,7 +21757,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
     # instead of describing changes in prose. Plus active project context when set.
     # master-ai has the Modelfile-baked SYSTEM that already knows the directive
     # rules — prepending the ~230-token HINT on top is redundant + dirties the
-    # KV-cache prefix + eats the num_ctx=4096 budget. On the Skylake CPU this
+    # KV-cache prefix + eats the LOCAL_NUM_CTX budget. On the Skylake CPU this
     # pushed first-token latency past the 300s timeout after ~10 turns, making
     # Groq fallback the default path (2026-04-22 fix). Vanilla qwen2.5:7b
     # callers still need the hint so they keep getting it.
@@ -22131,18 +22274,28 @@ def handle(user_text, history, image_path=None, context_policy=None):
             for m in history
             if m.get("role") != "system"
         )
-        _mid_wm = _context_watermark()[0]
-        if _mid_loop_chars >= _mid_wm:
+        _mid_wm, _mid_wm_tok, _ = _context_watermark()
+        # 2026-09-26: same real-token preference as the top-of-turn check —
+        # a mid-chain repair loop is exactly the case most likely to have a
+        # fresh real measurement (it's mid-conversation, not turn one).
+        _mid_real_tok = _real_ctx_tokens_for_active_model()
+        if _mid_real_tok is not None and _mid_wm_tok:
+            _mid_over = _mid_real_tok >= int(_mid_wm_tok * CONTEXT_FILL_RATIO)
+            _mid_desc = f"{_mid_real_tok:,}/{int(_mid_wm_tok * CONTEXT_FILL_RATIO):,} real tokens"
+        else:
+            _mid_over = _mid_loop_chars >= _mid_wm
+            _mid_desc = f"{_mid_loop_chars:,}/{_mid_wm:,} chars"
+        if _mid_over:
             print(
                 _pill(
                     "STOPPED",
-                    f"{D}context watermark hit mid-chain ({_mid_loop_chars:,}/{_mid_wm:,} chars) — "
+                    f"{D}context watermark hit mid-chain ({_mid_desc}) — "
                     f"{continuation_turns} step(s) already ran{X}",
                 )
             )
             log(
-                f"CHAIN_CONTEXT_WATERMARK_STOP: turns={continuation_turns} chars={_mid_loop_chars} "
-                f"watermark={_mid_wm} route={route} model={model}"
+                f"CHAIN_CONTEXT_WATERMARK_STOP: turns={continuation_turns} {_mid_desc} "
+                f"route={route} model={model}"
             )
             result = reply  # whatever text exists so far still gets shown/kept
             break

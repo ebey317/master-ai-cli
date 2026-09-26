@@ -1389,19 +1389,27 @@ class Handler(BaseHTTPRequestHandler):
                         model_used = model
                     except urllib.error.HTTPError as cloud_err:
                         if getattr(cloud_err, "code", None) in (503, 502, 504, 429):
+                            # 2026-09-26: was hardcoded to "qwen2.5vl:3b" —
+                            # bypassing this file's OWN DEFAULT_MODEL (itself
+                            # already env-overridable via SENSEI_MODEL). An
+                            # operator who overrode SENSEI_MODEL, or simply
+                            # never pulled qwen2.5vl:3b, hit a fallback that
+                            # silently failed against a model that isn't
+                            # there — same shape as every other finding
+                            # tonight. Falls back to DEFAULT_MODEL instead.
                             _audit(
                                 {
                                     "event": "cloud_relay_unavailable",
                                     "code": cloud_err.code,
-                                    "fallback": "qwen2.5vl:3b",
+                                    "fallback": DEFAULT_MODEL,
                                 }
                             )
-                            resp = _ollama_chat("qwen2.5vl:3b", msgs, timeout=120.0)
+                            resp = _ollama_chat(DEFAULT_MODEL, msgs, timeout=120.0)
                             reply_text = (resp.get("message") or {}).get(
                                 "content"
                             ) or ""
                             actions, cleaned = parse_directives(reply_text)
-                            model_used = "qwen2.5vl:3b"
+                            model_used = DEFAULT_MODEL
                         else:
                             raise
                 else:
