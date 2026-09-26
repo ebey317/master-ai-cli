@@ -500,32 +500,76 @@ else
     record_warn "ollama daemon unreachable — AI layer skipped"
 fi
 
-# Model inventory — we need qwen2.5:3b at minimum. 7b and llava are bonuses.
-have_3b=0; have_7b=0; have_llava=0
+# Model inventory — HARDWARE-AWARE (2026-09-24, Elijah's rule): the local
+# model follows the machine's RAM tier, never a hardcoded name. PASS if the
+# operator has pulled ANY local model; WARN only when Ollama is reachable
+# but empty. The old qwen2.5/llava trifecta check assumed one specific box.
+RAM_GB=$(awk '/MemTotal/ {print int($2/1048576)}' /proc/meminfo 2>/dev/null || echo 16)
 if [ -s "$SANDBOX/logs/ollama_tags.json" ]; then
-    grep -q '"qwen2.5:3b"'  "$SANDBOX/logs/ollama_tags.json" && have_3b=1
-    grep -q '"qwen2.5:7b"'  "$SANDBOX/logs/ollama_tags.json" && have_7b=1
-    grep -q '"llava:latest"' "$SANDBOX/logs/ollama_tags.json" && have_llava=1
-    [ "$have_3b"    = "1" ] && record_pass "trifecta: qwen2.5:3b present" || record_warn "qwen2.5:3b not pulled (spark missing)"
-    [ "$have_7b"    = "1" ] && record_pass "trifecta: qwen2.5:7b present" || record_warn "qwen2.5:7b not pulled (brain missing)"
-    [ "$have_llava" = "1" ] && record_pass "trifecta: llava present"      || record_warn "llava not pulled (eyes missing)"
+    PULLED_COUNT=$(python3 -c "
+import json
+try:
+    d = json.load(open('$SANDBOX/logs/ollama_tags.json'))
+    names = [m.get('name','') for m in d.get('models',[]) if m.get('name')]
+    # embedder-only installs don't make a chat model
+    chat = [n for n in names if not any(x in n for x in ('embed','bge-','minilm'))]
+    print(len(chat))
+except Exception:
+    print(0)
+")
+    if [ "${PULLED_COUNT:-0}" -gt 0 ]; then
+        FIRST_MODEL=$(python3 -c "
+import json
+d = json.load(open('$SANDBOX/logs/ollama_tags.json'))
+chat = [m['name'] for m in d.get('models',[]) if m.get('name') and not any(x in m['name'] for x in ('embed','bge-','minilm'))]
+print(chat[0] if chat else '')
+")
+        record_pass "hardware tier: RAM ${RAM_GB}GB — local model '${FIRST_MODEL}' present (1+ chat models pulled)"
+    else
+        record_warn "no local chat models pulled — pull any model sized for this machine's RAM (${RAM_GB}GB)"
+    fi
 fi
 
-# Preserve the warm model state. The product goal is that master-ai and
-# llava stay ready through the prewarm timer. Forcing an unload here turns
+# Preserve the warm model state. The product goal is that the local chat
+# model stays ready through the prewarm timer. Forcing an unload here turns
 # the acceptance gate into an artificial cold-start benchmark and defeats
-# the environment check it is supposed to validate.
-if [ "$have_3b" = "1" ] || [ "$have_llava" = "1" ]; then
+# the environment check it is supposed to validate. Hardware-aware: any
+# pulled chat model counts (Elijah 2026-09-24 — no hardcoded model names).
+HAVE_CHAT_MODEL=0
+if [ -s "$SANDBOX/logs/ollama_tags.json" ]; then
+    HAVE_CHAT_MODEL=$(python3 -c "
+import json
+try:
+    d = json.load(open('$SANDBOX/logs/ollama_tags.json'))
+    chat = [m.get('name','') for m in d.get('models',[]) if m.get('name')
+            and not any(x in m['name'] for x in ('embed','bge-','minilm'))]
+    print(1 if chat else 0)
+except Exception:
+    print(0)
+")
+fi
+if [ "$HAVE_CHAT_MODEL" = "1" ]; then
     record_info "ollama warm-state preserved before inference checks"
 fi
 
-# Inference round-trip — ask 3b a tiny deterministic question.
+# Inference round-trip — ask the LOCAL DEFAULT (hardware-resolved by the
+# engine, mirrors hardware_model.pick_local_model) a tiny question.
 # Timing matters: <15s warm = fine; 15-45s = warn (probably cold); >45s = fail.
-if [ "$have_3b" = "1" ]; then
+LOCAL_MODEL=$(python3 -c "
+import json
+try:
+    d = json.load(open('$SANDBOX/logs/ollama_tags.json'))
+    chat = [m['name'] for m in d.get('models',[]) if m.get('name')
+            and not any(x in m['name'] for x in ('embed','bge-','minilm'))]
+    print(chat[0] if chat else '')
+except Exception:
+    print('')
+")
+if [ -n "$LOCAL_MODEL" ]; then
     t0=$(date +%s)
     curl -sf -m 60 http://localhost:11434/api/generate \
         -H 'Content-Type: application/json' \
-        -d '{"model":"qwen2.5:3b","prompt":"Reply with only the word READY.","stream":false,"options":{"num_predict":8,"temperature":0}}' \
+        -d "{\"model\":\"$LOCAL_MODEL\",\"prompt\":\"Reply with only the word READY.\",\"stream\":false,\"options\":{\"num_predict\":8,\"temperature\":0}}" \
         -o "$SANDBOX/logs/inference.json" 2>/dev/null
     rc=$?
     t1=$(date +%s)
@@ -534,7 +578,7 @@ if [ "$have_3b" = "1" ]; then
         response=$(python3 -c "import json; print(json.load(open('$SANDBOX/logs/inference.json')).get('response',''))" 2>/dev/null)
         record_info "inference: ${elapsed}s · response='${response:0:60}'"
         if [ -n "$response" ]; then
-            record_pass "qwen2.5:3b produced a response"
+            record_pass "$LOCAL_MODEL produced a response"
             if [ "$elapsed" -le 15 ]; then
                 record_pass "inference latency ${elapsed}s (warm, under 15s)"
             elif [ "$elapsed" -le 45 ]; then
@@ -548,20 +592,20 @@ if [ "$have_3b" = "1" ]; then
                 record_warn "model replied but didn't say READY — semantic drift"
             fi
         else
-            record_fail "qwen2.5:3b returned empty response"
+            record_fail "$LOCAL_MODEL returned empty response"
         fi
     else
-        record_fail "qwen2.5:3b inference call failed"
+        record_fail "$LOCAL_MODEL inference call failed"
     fi
 else
-    record_warn "skipping inference — qwen2.5:3b not present"
+    record_warn "skipping inference — no local chat model pulled"
 fi
 
 # Streaming endpoint sanity — one chunk back should be enough.
-if [ "$have_3b" = "1" ]; then
+if [ -n "$LOCAL_MODEL" ]; then
     if curl -sf -m 20 -N http://localhost:11434/api/generate \
         -H 'Content-Type: application/json' \
-        -d '{"model":"qwen2.5:3b","prompt":"hi","stream":true,"options":{"num_predict":4}}' \
+        -d "{\"model\":\"$LOCAL_MODEL\",\"prompt\":\"hi\",\"stream\":true,\"options\":{\"num_predict\":4}}" \
         2>/dev/null | head -1 | grep -q '"response"'; then
         record_pass "ollama streaming endpoint delivered at least one chunk"
     else
@@ -570,12 +614,25 @@ if [ "$have_3b" = "1" ]; then
 fi
 
 # ================================================================
-# Phase 10 — Vision (llava) round-trip. Feeds it a tiny generated image.
+# Phase 10 — Vision round-trip. Feeds a tiny generated image to whatever
+# vision-capable model the operator has pulled (hardware/env-based — no
+# hardcoded llava). Skips cleanly when none is present.
 # ================================================================
 CUR_PHASE=10
-phase 10 "vision (llava) round-trip"
+phase 10 "vision round-trip"
 
-if [ "$have_llava" = "1" ]; then
+VISION_MODEL=$(python3 -c "
+import json
+try:
+    d = json.load(open('$SANDBOX/logs/ollama_tags.json'))
+    vis = [m['name'] for m in d.get('models',[]) if m.get('name')
+           and any(x in m['name'].lower() for x in ('vl','vision','llava'))]
+    print(vis[0] if vis else '')
+except Exception:
+    print('')
+")
+
+if [ -n "$VISION_MODEL" ]; then
     # Use a 336x336 RGB gradient — matches CLIP ViT-L/14's native input size
     # used by llava. A solid 64x64 fixture has been triggering a malformed-shape
     # path in llava's runner (Ollama journal: image_tokens->nx=576, ny=1 → HTTP 500).
@@ -604,11 +661,11 @@ PY
 
         # Build the /api/chat payload as a file — base64 of a 336x336 PNG is
         # ~178 KB, too large for an argv-embedded curl -d.
-        python3 - "$SANDBOX/input/probe.png" "$SANDBOX/logs/vision_payload.json" <<'PY' 2>/dev/null
+        python3 - "$SANDBOX/input/probe.png" "$SANDBOX/logs/vision_payload.json" "$VISION_MODEL" <<'PY' 2>/dev/null
 import base64, json, sys
 b64 = base64.b64encode(open(sys.argv[1], "rb").read()).decode()
 payload = {
-    "model": "llava",
+    "model": sys.argv[3] if len(sys.argv) > 3 else "llava",
     "stream": False,
     "messages": [{
         "role": "user",
@@ -653,9 +710,9 @@ except Exception:
 
         if [ "$rc" = "28" ]; then
             # curl exited from timeout — slow CPU, not a broken API. WARN.
-            record_warn "llava vision timed out after ${vis_el}s (CPU-only inference is slow; API path is fine)"
+            record_warn "vision model timed out after ${vis_el}s (CPU-only inference is slow; API path is fine)"
         elif [ "$http" = "200" ] && [ -n "$vresp" ]; then
-            record_pass "llava answered vision prompt via /api/chat"
+            record_pass "vision model answered prompt via /api/chat"
             if [ "$vis_el" -le 120 ]; then
                 record_pass "vision latency ${vis_el}s (under 120s)"
             else
