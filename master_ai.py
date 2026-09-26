@@ -1036,6 +1036,34 @@ _TMUX_LAST_CLIENT_DIMS = ""
 # normal _iq otherwise. _tui_input pulls from whichever queue matches the
 # flag. Confirm prompts wrap themselves via @_awaiting_confirm.
 _CONFIRM_IQ: queue.Queue[Any] = queue.Queue()
+
+
+def _CHOICE_IQ_PUT(key):
+    """Resolve a single key press against the armed choice and post the result
+    to the confirm queue, reading the state dict exactly once. No-ops when the
+    key is not a live answer, so a press can never inject an unvalidated value
+    into a prompt that authorises shell commands, file writes or browser
+    control."""
+    st = _CHOICE_STATE
+    k = str(key).lower()
+    resolved = st["aliases"].get(k) or st["codes"].get(k)
+    if resolved is None:
+        return
+    _CONFIRM_IQ.put(str(resolved) + "\n")
+
+
+# Single-key choice state (2026-09-25). _AWAITING_CONFIRM marks a whole
+# confirm FUNCTION, which is too coarse: several confirms have more than one
+# input() (confirm_run has 3, confirm_create 2), so a flag scoped to the
+# function would let a digit/letter be swallowed by a follow-up prompt that
+# legitimately needs typed text. _AWAITING_CHOICE describes the CHOICE
+# currently being read and is only set for its duration.
+#
+# One dict, assigned in a SINGLE statement, so a reader either sees the whole
+# armed choice or none of it. The previous three separate globals could be
+# read torn across the two threads (worker arms/disarms, UI thread filters).
+_CHOICE_STATE: dict = {"codes": {}, "aliases": {}}
+_AWAITING_CHOICE = threading.Event()
 _AWAITING_CONFIRM = threading.Event()
 
 
@@ -8324,6 +8352,9 @@ def ask_cloud(messages, provider="opencode"):
     elif (provider or "").startswith("ollama-cloud::"):
         _m = provider[len("ollama-cloud::") :]
         _asker = lambda msgs, _m=_m: _ask_ollama_cloud(msgs, _m, _m)
+    elif (provider or "").startswith("poolside::"):
+        _m = provider[len("poolside::") :]
+        _asker = lambda msgs, _m=_m: _ask_poolside(msgs, _m, _m)
     elif (provider or "").startswith("opencode::"):
         _m = provider[len("opencode::") :]
         _asker = lambda msgs, _m=_m: _ask_opencode_zen(msgs, _m, _m)
@@ -8332,16 +8363,6 @@ def ask_cloud(messages, provider="opencode"):
         # not the keyless Zen free relay.
         _m = provider[len("opencode-go::") :]
         _asker = lambda msgs, _m=_m: _ask_opencode_go(msgs, _m, _m)
-    elif (provider or "").startswith("poolside::"):
-        # 2026-09-25: pinned Poolside pick from the live picker (model IDs
-        # from Poolside's own catalog are self-namespaced, e.g.
-        # "poolside/laguna-xs-2.1" — so this tag MUST be checked before the
-        # generic "/" fallthrough below, or a pinned "poolside::poolside/…"
-        # id falls into _ask_openrouter's hard free-only gate and gets
-        # rejected every single turn (found live: this was the actual
-        # cause of a real stall loop on a pinned Poolside model).
-        _m = provider[len("poolside::") :]
-        _asker = lambda msgs, _m=_m: _ask_poolside(msgs, _m, _m)
     elif "/" in (provider or ""):
         # Arbitrary OpenRouter catalog id (e.g. "anthropic/claude-3.5-sonnet")
         # picked via `model or search ...` — not one of the curated named
@@ -10902,6 +10923,20 @@ def _cerebras_model_catalog():
     )
 
 
+_POOLSIDE_MODELS_CACHE = Path.home() / ".master_ai_poolside_models_cache.json"
+
+
+def _poolside_model_catalog():
+    """Poolside direct inference catalog. Ids come back already
+    poolside/-prefixed (e.g. "poolside/laguna-s-2.1"), which is exactly the
+    form ask_cloud's "poolside::" branch passes through unchanged."""
+    return _provider_model_catalog(
+        _POOLSIDE_MODELS_CACHE,
+        "https://inference.poolside.ai/v1/models",
+        KEYS.get("poolside"),
+    )
+
+
 _QWEN_MODELS_CACHE = Path.home() / ".master_ai_qwen_models_cache.json"
 
 
@@ -10993,6 +11028,7 @@ def _invalidate_provider_caches():
         _OPENROUTER_MODELS_CACHE,
         _NVIDIA_MODELS_CACHE,
         _CEREBRAS_MODELS_CACHE,
+        _POOLSIDE_MODELS_CACHE,
         _QWEN_MODELS_CACHE,
         _GROQ_MODELS_CACHE,
         _OLLAMA_CLOUD_MODELS_CACHE,
@@ -11067,6 +11103,11 @@ def live_provider_completions(query="", mode=None):
     _refresh_opencode_go_key()
     if KEYS.get("opencode_go"):
         rows.append(("opencode-go", "OpenCode Go", "sub — $10/mo"))
+    # 2026-09-25: Poolside direct. Same class of omission as OpenCode Zen
+    # above — a wired provider that never reached the picker's step-1 list,
+    # so it was selectable by typed command but invisible in the UI.
+    if KEYS.get("poolside"):
+        rows.append(("poolside", "Poolside", "paid — code + reasoning"))
     return rows
 
 
@@ -11153,6 +11194,10 @@ def live_model_completions(provider):
         return [(f"cerebras::{m}", m, "💰") for m in _cerebras_model_catalog()]
     if provider == "groq":
         return [(f"groq::{m}", m, "💰") for m in _groq_model_catalog()]
+    if provider == "poolside":
+        return [
+            (f"poolside::{m}", m, "💰 reasoning") for m in _poolside_model_catalog()
+        ]
     if provider == "qwen":
         return [(f"qwen::{m}", m, "💰") for m in _qwen_model_catalog()]
     if provider == "opencode-go":
@@ -13143,6 +13188,94 @@ def _record_blocked_action(kind, command="", reason="", audit_kind="POLICY-CMD-B
 # forever for the user's answer — that is the intended behavior. Reason:
 # 2026-04-19 freeze where input() hung in a stdin-less pane with no way
 # out. Claude is NOT permitted to auto-answer; only the user consents.
+def _opt_lines(options, prefix="║   "):
+    """Format choice option rows. `options` is a sequence of
+    (code, btn_style, description) where `code` is any single character."""
+    return [f"{prefix}{style} {code}) {desc}{X}" for code, style, desc in options]
+
+
+def _safe_text(prompt):
+    """Read FREE TEXT inside a confirm (the Edit / Ask follow-ups). Two
+    deliberate differences from _safe_choice: no keys are armed, so a
+    keystroke can never be swallowed as an answer, and stale queue entries
+    are drained first so an earlier prompt's leftover cannot be replayed as
+    the text. Falls back to the original input() semantics when stdin is not
+    a TTY."""
+    _drain_queue(_CONFIRM_IQ)
+    if not sys.stdin.isatty():
+        return None
+    try:
+        return input(prompt).strip()
+    except (EOFError, KeyboardInterrupt):
+        return None
+
+
+def _drain_queue(q):
+    """Discard everything currently queued. Used before a choice prompt
+    blocks, so a value left over from an earlier prompt cannot be returned
+    instantly and silently answer the new one."""
+    try:
+        while True:
+            q.get_nowait()
+    except queue.Empty:
+        pass
+    except Exception:
+        pass
+
+
+def _safe_choice(prompt, keys=None, options=None, aliases=None, audit_cmd=None):
+    """Read a single-key choice.
+
+    Pass `options` (the same list whose labels were printed) and the live keys
+    are derived from it, which is the preferred form — the code cannot drift
+    from what is on screen. `keys` remains for callers that genuinely need to
+    pass the set directly.
+
+    `aliases` maps extra single keys onto an option's code ({"y": "1",
+    "n": "3"}), so yes/no prompts answer to y/n as well as 1/2. A pressed
+    alias is translated to the option's own code before the answer reaches
+    the confirm, so branch logic is unchanged.
+
+    Only the CHOICE is single-key. A prompt that asks the user to type
+    something keeps using _safe_input/input and still requires Enter — there
+    is no single key that can answer it."""
+    global _CHOICE_STATE
+    if options is not None:
+        codes = {str(c).lower(): str(c) for c, _s, _d in options if len(str(c)) == 1}
+    else:
+        codes = {str(k).lower(): str(k) for k in (keys or ())}
+    # Aliases resolve to the ORIGINAL code of their target option, so a
+    # prompt labelled "Y) Yes" submits "Y", not "y".
+    al = {}
+    for k, v in (aliases or {}).items():
+        al[str(k).lower()] = codes.get(str(v).lower(), str(v))
+
+    # A stale value left in the queue by a previous prompt (an extra keypress,
+    # or a typed-then-Enter double submit) would otherwise be returned
+    # instantly by the next prompt, auto-answering it. Every choice starts
+    # from an empty queue. A keypress landing microseconds before we get
+    # here is discarded — benign, and the safe direction to be wrong in.
+    _drain_queue(_CONFIRM_IQ)
+
+    # _AWAITING_CONFIRM is what the stdin pump (_tui_input) and _on_submit
+    # actually route on. Arming it here means a choice prompt routes
+    # correctly even when its enclosing function carries no
+    # @_awaiting_confirm decorator — which is what silently broke
+    # permissions_wizard and confirm_create. Restored, not cleared, on exit,
+    # so an enclosing decorated confirm keeps its flag.
+    had_confirm = _AWAITING_CONFIRM.is_set()
+    try:
+        _AWAITING_CONFIRM.set()
+        _AWAITING_CHOICE.set()
+        _CHOICE_STATE = {"codes": codes, "aliases": al}
+        return _safe_input(prompt, audit_cmd=audit_cmd)
+    finally:
+        _CHOICE_STATE = {"codes": {}, "aliases": {}}
+        _AWAITING_CHOICE.clear()
+        if not had_confirm:
+            _AWAITING_CONFIRM.clear()
+
+
 def _safe_input(prompt, audit_cmd=None):
     """input() with one guardrail: refuse if stdin isn't a TTY.
 
@@ -13150,6 +13283,12 @@ def _safe_input(prompt, audit_cmd=None):
     Otherwise behaves exactly like input().strip() — waits for the user
     as long as needed. An absent user is NOT a consenting user, and Claude
     never gets to answer on their behalf."""
+    # Drain before blocking. A number+Enter double submit, or a value left by an
+    # earlier prompt, would otherwise be returned instantly by this read — and
+    # inside an @_awaiting_confirm scope that means a stale value consumed as
+    # this prompt's answer. _safe_choice and _safe_text already drain; doing it
+    # here too closes the readers that bypass both.
+    _drain_queue(_CONFIRM_IQ)
     if not sys.stdin.isatty():
         if audit_cmd is not None:
             _audit("DENY-NO-TTY", audit_cmd)
@@ -15123,10 +15262,19 @@ def confirm_browser_action(kind, target, value):
     print(f"{D}║  🥷 {BOLD}AI wants to control the browser:{X}")
     print(f"{D}║  {Y}  {label}{X}")
     print(f"{D}╠══════════════════════════════════════════════════════╣{X}")
-    print(f"{D}║  {BTN_G} 1) Yes     — do it once                   {X}")
-    print(f"{D}║  {BTN_R} 2) No      — skip                          {X}")
+    _opts = [
+        ("1", BTN_G, "Yes     — do it once                   "),
+        ("2", BTN_R, "No      — skip                          "),
+    ]
+    for _l in _opt_lines(_opts):
+        print(f"{D}{_l}")
     print(f"{D}╚══════════════════════════════════════════════════════╝{X}")
-    choice = _safe_input(f"  {BOLD}Choose (1/2): {X}", audit_cmd=label)
+    choice = _safe_choice(
+        f"  {BOLD}Choose ({'/'.join(c for c, _s, _d in _opts)}) — or y/n: {X}",
+        options=_opts,
+        aliases={"y": "1", "n": "2"},
+        audit_cmd=label,
+    )
     if choice is None:
         _record_blocked_action(
             "browser",
@@ -15298,17 +15446,26 @@ def confirm_run(cmd):
     print(f"{D}║  🥷 {BOLD}AI wants to run:{X}")
     print(f"{D}║  {Y}  {cmd}{X}")
     print(f"{D}╠══════════════════════════════════════════════════════╣{X}")
-    print(f"{D}║  {BTN_G} 1) Yes     — run once                      {X}")
-    print(f"{D}║  {BTN_C} 2) Always  — never ask again              {X}")
-    print(f"{D}║  {BTN_R} 3) No      — skip                          {X}")
-    print(f"{D}║  {BTN_Y} 4) Edit    — tweak the shell command      {X}")
-    print(f"{D}║  {BTN_C} 5) Ask     — send new instructions to AI  {X}")
+    _opts = [
+        ("1", BTN_G, "Yes     — run once                      "),
+        ("2", BTN_C, "Always  — never ask again              "),
+        ("3", BTN_R, "No      — skip                          "),
+        ("4", BTN_Y, "Edit    — tweak the shell command      "),
+        ("5", BTN_C, "Ask     — send new instructions to AI  "),
+    ]
+    for _l in _opt_lines(_opts):
+        print(f"{D}{_l}")
     print(f"{D}╚══════════════════════════════════════════════════════╝{X}")
     # Safeguard: if this pane has no live TTY, refuse rather than deadlock.
     # See feedback_safeguards_never_deadlock.md — born from the 2026-04-19
     # freeze. We do NOT timeout-to-No: if the user IS present, the prompt
     # waits as long as it takes. Only a stdin-less caller is refused.
-    choice = _safe_input(f"  {BOLD}Choose (1/2/3/4/5): {X}", audit_cmd=cmd)
+    choice = _safe_choice(
+        f"  {BOLD}Choose ({'/'.join(c for c, _s, _d in _opts)}) — or y/n: {X}",
+        options=_opts,
+        aliases={"y": "1", "n": "3"},
+        audit_cmd=cmd,
+    )
     if choice is None:
         _record_blocked_action(
             "run", cmd, "no live terminal for confirmation", "RUN-BLOCK-NO-TTY"
@@ -15347,7 +15504,7 @@ def confirm_run(cmd):
         return run_command(cmd)
     if choice == "4":
         try:
-            edited = input(f"{C}  Edit command (shell): {X}").strip() or cmd
+            edited = _safe_text(f"{C}  Edit command (shell): {X}") or cmd
         except Exception:
             edited = cmd
         # Heuristic: if the edit clearly isn't a shell command (spaces + no
@@ -15380,7 +15537,7 @@ def confirm_run(cmd):
         return run_command(edited)
     if choice == "5":
         try:
-            note = input(f"{C}  Tell the AI what to do instead: {X}").strip()
+            note = _safe_text(f"{C}  Tell the AI what to do instead: {X}")
         except Exception:
             note = ""
         if note:
@@ -15515,10 +15672,23 @@ def confirm_runterm(cmd):
     print(f"{D}║  🥷 {BOLD}AI wants to run in a NEW terminal:{X}")
     print(f"{D}║  {Y}  {cmd}{X}")
     print(f"{D}╠══════════════════════════════════════════════════════╣{X}")
-    print(f"{D}║  {BTN_G} 1) Yes     — spawn in new terminal       {X}")
-    print(f"{D}║  {BTN_R} 3) No      — skip                          {X}")
+    _opts = [
+        ("1", BTN_G, "Yes     — spawn in new terminal       "),
+        # Was labelled 3 with no option 2 anywhere. The branch below is
+        # `if choice == "1": ... else: skip`, so 2 and 3 have always taken
+        # the identical path — relabelling to 2 changes no behaviour, it just
+        # matches every other gate and makes "2" a real answer.
+        ("2", BTN_R, "No      — skip                          "),
+    ]
+    for _l in _opt_lines(_opts):
+        print(f"{D}{_l}")
     print(f"{D}╚══════════════════════════════════════════════════════╝{X}")
-    choice = _safe_input(f"  {BOLD}Choose (1/3): {X}", audit_cmd=cmd)
+    choice = _safe_choice(
+        f"  {BOLD}Choose ({'/'.join(c for c, _s, _d in _opts)}) — or y/n: {X}",
+        options=_opts,
+        aliases={"y": "1", "n": "2"},
+        audit_cmd=cmd,
+    )
     if choice is None:
         _record_blocked_action(
             "runterm", cmd, "no live terminal for confirmation", "RUNTERM-BLOCK-NO-TTY"
@@ -15646,6 +15816,7 @@ def _fire_hook_or_block(kind, target, content=None):
     return True
 
 
+@_awaiting_confirm
 def confirm_create(filepath, content):
     filepath = os.path.expanduser(filepath)
     # Auto-mode CWD fence
@@ -15704,12 +15875,24 @@ def confirm_create(filepath, content):
         except Exception as e:
             print(_pill("ERROR", f"create failed: {e}"))
             return False
-    print(f"{D}║  {BTN_G} 1) Create   — write file         {X}")
+    _opts = [
+        ("1", BTN_G, "Create   — write file         "),
+    ]
     if line_count > preview_n:
-        print(f"{D}║  {BTN_C} 2) Review   — see all {line_count} lines   {X}")
-    print(f"{D}║  {BTN_R} 3) No       — skip               {X}")
+        # "Review" is conditional, so it is APPENDED, not listed. The live
+        # keys come from _opts via _safe_choice(options=...), which is the
+        # point: "2" is only armed when this row is actually on screen.
+        _opts.append(("2", BTN_C, f"Review   — see all {line_count} lines   "))
+    _opts.append(("3", BTN_R, "No       — skip               "))
+    for _l in _opt_lines(_opts):
+        print(f"{D}{_l}")
     print(f"{D}╚══════════════════════════════════════════════════════╝{X}")
-    choice = _safe_input(f"  {BOLD}Choose (1/2/3): {X}", audit_cmd=f"CREATE:{filepath}")
+    choice = _safe_choice(
+        f"  {BOLD}Choose ({'/'.join(c for c, _s, _d in _opts)}) — or y/n: {X}",
+        options=_opts,
+        aliases={"y": "1", "n": "3"},
+        audit_cmd=f"CREATE:{filepath}",
+    )
     if choice is None:
         _queue_for_approval(
             "file_create",
@@ -15923,10 +16106,19 @@ def confirm_edit(filepath, find_text, replace_text):
         except Exception as e:
             print(_pill("ERROR", f"edit failed: {e}"))
             return False
-    print(f"{D}║  {BTN_G} 1) Apply     — make the edit          {X}")
-    print(f"{D}║  {BTN_R} 2) No        — skip                   {X}")
+    _opts = [
+        ("1", BTN_G, "Apply     — make the edit          "),
+        ("2", BTN_R, "No        — skip                   "),
+    ]
+    for _l in _opt_lines(_opts):
+        print(f"{D}{_l}")
     print(f"{D}╚══════════════════════════════════════════════════════╝{X}")
-    choice = _safe_input(f"  {BOLD}Choose (1/2): {X}", audit_cmd=f"EDIT:{filepath}")
+    choice = _safe_choice(
+        f"  {BOLD}Choose ({'/'.join(c for c, _s, _d in _opts)}) — or y/n: {X}",
+        options=_opts,
+        aliases={"y": "1", "n": "2"},
+        audit_cmd=f"EDIT:{filepath}",
+    )
     if choice is None:
         _queue_for_approval(
             "file_edit",
@@ -18807,6 +18999,7 @@ def execute_approved_plan(original_request, approved_plan, history):
 
 
 # ── PERMISSIONS WIZARD ────────────────────────────────────────
+@_awaiting_confirm
 def permissions_wizard():
     PERMISSIONS = [
         (
@@ -18877,17 +19070,45 @@ def permissions_wizard():
             time.sleep(0.25)
             continue
 
-        print(f"  {BTN_G} 1) Yes          — grant this permission {X}")
-        print(f"  {BTN_C} 2) Yes to All   — grant this and all remaining {X}")
-        print(f"  {BTN_R} 3) No           — deny this permission {X}\n")
+        # Boxed to match the confirm_* gates (2026-09-25). This was the one
+        # numbered prompt still printing bare lines, so it read as loose text
+        # rather than a bounded choice — and the number keys now commit any
+        # numbered prompt, box or not. Loop unpacks as (name, why, required);
+        # the header block above already printed name/why, so the box leads
+        # with the position + required marker instead of repeating them.
+        print(f"\n{D}╔══════════════════════════════════════════════════════╗{X}")
+        print(f"{D}║  🥷 {BOLD}Permission {i + 1} of {total}{X}   {req_label}")
+        print(f"{D}╠══════════════════════════════════════════════════════╣{X}")
+        _opts = [
+            ("1", BTN_G, "Yes          — grant this permission        "),
+            ("2", BTN_C, "Yes to All   — grant this and all remaining "),
+            ("3", BTN_R, "No           — deny this permission         "),
+        ]
+        for _l in _opt_lines(_opts):
+            print(f"{D}{_l}")
+        print(f"{D}╚══════════════════════════════════════════════════════╝{X}\n")
 
-        choice = input(f"  {BOLD}Choose (1/2/3): {X}").strip()
+        choice = _safe_choice(
+            f"  {BOLD}Choose ({'/'.join(c for c, _s, _d in _opts)}) — or y/n: {X}",
+            options=_opts,
+            aliases={"y": "1", "n": "3"},
+        )
         _check_kick_escape(choice)
 
+        # Fail CLOSED. This was a bare `else: Granted`, so choice=None (EOF /
+        # no TTY — _safe_input returns None rather than raising, unlike the raw
+        # input() it replaced) AND any unrecognised answer both GRANTED a
+        # permission. Every sibling confirm already fails closed on None; this
+        # one was the outlier, and moving it to _safe_choice is what turned the
+        # no-TTY case from a crash into a silent grant. Only an explicit
+        # 1/2/3 — or the y/n aliases mapping onto them — grants.
         if choice == "2":
             grant_all = True
             print(f"\n  {G}✅ Granted — all remaining permissions also granted.{X}")
-        elif choice == "3":
+        elif choice == "1":
+            print(f"\n  {G}✅ Granted.{X}")
+        else:
+            # 3, None, or anything unrecognised -> deny.
             if required:
                 print(
                     f"\n  {R}⚠  This permission is required. Some features may not work.{X}"
@@ -18895,8 +19116,6 @@ def permissions_wizard():
                 denied_required += 1
             else:
                 print(f"\n  {Y}⏭  Skipped — optional feature disabled.{X}")
-        else:
-            print(f"\n  {G}✅ Granted.{X}")
 
     print(f"\n{D}  ────────────────────────────────────────────────────────────{X}")
     print(f"  {C}Permission Review Complete{X}\n")
@@ -18904,7 +19123,7 @@ def permissions_wizard():
     if denied_required > 0:
         print(f"  {R}⚠  {denied_required} required permission(s) denied.{X}")
         print(f"  {Y}  Some features may not function correctly.{X}\n")
-        if input(f"  {Y}Continue anyway? (y/N): {X}").strip().lower() != "y":
+        if (_safe_text(f"  {Y}Continue anyway? (y/N): {X}") or "").lower() != "y":
             print(f"{R}  Exiting.{X}")
             sys.exit(0)
     else:
@@ -18999,7 +19218,7 @@ def startup_check():
     print()
     if errors > 0:
         print(f"  {R}⚠  Fix the issues above before using Master AI.{X}")
-        if input(f"  {Y}  Continue anyway? (y/N): {X}").strip().lower() != "y":
+        if (_safe_text(f"  {Y}  Continue anyway? (y/N): {X}") or "").lower() != "y":
             print(f"{R}  Exiting.{X}")
             sys.exit(0)
     else:
@@ -21853,17 +22072,18 @@ def handle(user_text, history, image_path=None, context_policy=None):
             for m in history
             if m.get("role") != "system"
         )
-        if _mid_loop_chars >= _context_watermark()[0]:
+        _mid_wm = _context_watermark()[0]
+        if _mid_loop_chars >= _mid_wm:
             print(
                 _pill(
                     "STOPPED",
-                    f"{D}context watermark hit mid-chain ({_mid_loop_chars:,}/{CONTEXT_WATERMARK:,} chars) — "
+                    f"{D}context watermark hit mid-chain ({_mid_loop_chars:,}/{_mid_wm:,} chars) — "
                     f"{continuation_turns} step(s) already ran{X}",
                 )
             )
             log(
                 f"CHAIN_CONTEXT_WATERMARK_STOP: turns={continuation_turns} chars={_mid_loop_chars} "
-                f"watermark={CONTEXT_WATERMARK} route={route} model={model}"
+                f"watermark={_mid_wm} route={route} model={model}"
             )
             result = reply  # whatever text exists so far still gets shown/kept
             break
@@ -25966,6 +26186,35 @@ def _run_with_tui():
     sys.stdout = TUIStdout(_SENSEI_APP, _orig_stdout)
     sys.stderr = TUIStdout(_SENSEI_APP, _orig_stderr)
 
+    # Single-keystroke numbered confirms. Registered HERE, once, rather than
+    # from _on_submit on every keystroke-submit (which stacked a fresh set of
+    # handlers each time, so one press fired N times and left N-1 stale digits
+    # queued to be consumed by the NEXT confirm). enable_number_confirm is
+    # idempotent, so the later call in _on_submit is now a no-op safety net.
+    try:
+        _SENSEI_APP.enable_number_confirm(
+            check_fn=lambda d: (
+                _AWAITING_CHOICE.is_set()
+                and (
+                    d.lower() in _CHOICE_STATE["codes"]
+                    or d.lower() in _CHOICE_STATE["aliases"]
+                )
+            ),
+            # The state dict is read once and an unrecognised key is DROPPED
+            # rather than forwarded raw: if the choice was disarmed between
+            # the filter and here, sending the bare key would post a value no
+            # branch matches, which some confirms read as "declined".
+            submit_fn=lambda d: _CHOICE_IQ_PUT(d),
+        )
+    except Exception as _nc_exc:
+        # Was a bare `pass` — a failure here is indistinguishable from the
+        # feature simply not firing, which is exactly how this stayed
+        # undiagnosed from 2026-04-21 to 2026-09-25.
+        try:
+            _SENSEI_APP.write(f"\n  {R}⚠ number-confirm unavailable: {_nc_exc}{X}\n")
+        except Exception:
+            pass
+
     _RESTART_COMMANDS = {
         "kick",
         "force restart",
@@ -26019,17 +26268,11 @@ def _run_with_tui():
         else:
             _iq.put(text)
 
-    # Single-keystroke confirms (2026-04-21) — when a confirm prompt is open
-    # AND the input field is empty, pressing 1-5 fires that option immediately
-    # without needing Enter. Outside of confirms, numbers type normally.
-    try:
-        _SENSEI_APP.enable_number_confirm(
-            check_fn=lambda: _AWAITING_CONFIRM.is_set(),
-            submit_fn=lambda d: _CONFIRM_IQ.put(d),
-        )
-    except Exception:
-        # Older sensei_tui.py without enable_number_confirm — silently skip.
-        pass
+    # NOTE: enable_number_confirm is registered ONCE, at startup above.
+    # It used to be re-registered here on every submit, stacking a fresh set
+    # of handlers each time — one press fired N times and left N-1 stale
+    # values queued to be consumed by the NEXT confirm. Keep the startup
+    # call the only one.
 
     worker_err = []
 

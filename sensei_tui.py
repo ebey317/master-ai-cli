@@ -1955,43 +1955,79 @@ class SenseiApp:
             pass
 
     def enable_number_confirm(
-        self, check_fn: Callable[[], bool], submit_fn: Callable[[str], None]
+        self, check_fn: Callable[[str], bool], submit_fn: Callable[[str], None]
     ) -> None:
-        """Make number keys (1-5) auto-submit during confirm prompts.
+        """Single-key commits for numbered / yes-no prompts.
 
-        check_fn() — return True when a confirm prompt is awaiting input.
-        submit_fn(digit_str) — called with "1" / "2" / "3" / "4" / "5"
-            when the user presses that key while a confirm is awaiting.
-
-        Registered with a Condition filter so number keys ONLY auto-submit
-        when (a) a confirm is awaiting AND (b) the input field is empty
-        (so the user can still type "type 1 2 3" as a normal message).
+        check_fn(key) — return True when `key` is a valid answer to the choice
+            currently on screen. Called with the raw key ("3", "y"), so the
+            CALLER owns which keys are live. When no choice is active it must
+            return False, which is what keeps ordinary typing untouched.
+        submit_fn(key) — called with the accepted key. The value sent already
+            carries its own trailing newline, so the blocked input() returns
+            immediately. No Enter needed.
 
         Elijah 2026-04-21: "if I press the number, make sure it automatically
         enters. I don't wanna press one enter." Numbers without Enter is the
         target UX on his phone keyboard — Enter is a two-tap motion.
+        2026-09-25: y/n added as aliases for the yes/no option of a prompt,
+        translated to the prompt's own digit by the caller.
+
+        Every letter and digit is bound, but the filter is strict, so a key
+        only fires when the caller has declared it valid for the choice on
+        screen. Outside a choice, nothing is bound in effect.
+
+        Defects fixed here, all of which made this silently never fire:
+        1. the filter also required an empty input field, so type-ahead
+           residue made the key type instead of choose (user pressed the
+           number AND Enter and concluded it was broken). The field is now
+           cleared on commit rather than gating on it.
+        2. registration was repeated per submit, stacking duplicate handlers
+           that fired N times per press and left stale keys queued for the
+           NEXT prompt. Now idempotent.
+        3. the filter swallowed every exception and returned False, making a
+           broken filter look identical to "no choice pending". Now logged.
         """
+        if getattr(self, "_number_confirm_installed", False):
+            return
+        self._number_confirm_installed = True
+
         kb = self._app.key_bindings
 
-        def _filter():
-            try:
-                return bool(check_fn()) and not self._input.text
-            except Exception:
-                return False
+        def _filter_for(key: str):
+            def _f():
+                try:
+                    return bool(check_fn(key))
+                except Exception as exc:  # was: silently False
+                    try:
+                        self.write(f"  [single-key filter error on {key!r}: {exc}]")
+                    except Exception:
+                        pass
+                    return False
 
-        cond = Condition(_filter)
+            return _f
 
-        def _make_handler(digit: str):
+        def _make_handler(key: str):
             def _h(event):
                 try:
-                    submit_fn(digit)
+                    # Drop type-ahead so it can't ride along as the answer.
+                    self._input.text = ""
                 except Exception:
                     pass
+                try:
+                    submit_fn(key)
+                except Exception as exc:
+                    try:
+                        self.write(f"  [single-key submit error on {key!r}: {exc}]")
+                    except Exception:
+                        pass
 
             return _h
 
-        for d in ("1", "2", "3", "4", "5"):
-            kb.add(d, filter=cond)(_make_handler(d))
+        import string as _string
+
+        for d in _string.digits + _string.ascii_lowercase + _string.ascii_uppercase:
+            kb.add(d, filter=Condition(_filter_for(d)))(_make_handler(d))
 
 
 __all__ = [
