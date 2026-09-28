@@ -10,15 +10,20 @@ def test_stop_halts_before_remaining_entries():
         ("connectors__notion__APPEND_BLOCK", {"page_id": "123", "text": "note"}),
     ]
     executed: list[tuple[str, dict]] = []
+    interrupted = {"value": False}
 
     def execute(name: str, args: dict) -> str:
         executed.append((name, args))
+        # Flip to True only once the first call has actually run, so the
+        # first entry is seen as un-interrupted. Starting the flag at True
+        # (as this test used to) contradicted its own assertions: run_batch
+        # checks is_interrupted() BEFORE each entry, so entry 0 would be
+        # marked INTERRUPTED rather than the OK the test then expected.
+        interrupted["value"] = True
         return "ok"
 
-    interrupted_after = {1: True}  # flip after first call
-
     def is_interrupted() -> bool:
-        return interrupted_after[1]
+        return interrupted["value"]
 
     results = run_batch(calls, execute, is_interrupted)
 

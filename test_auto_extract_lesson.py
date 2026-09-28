@@ -318,22 +318,39 @@ class CodexFindingsRegressionGuard(unittest.TestCase):
     def test_exec_fail_fires_on_blocked(self):
         """Finding 2: fetchmail exit-127 case (real exec failure, not
         safeguard refusal) must fire on_blocked so the auto-extract hook
-        can learn from it. Source-pin the wiring."""
-        import inspect
+        can learn from it.
 
-        src = inspect.getsource(master_ai.process_reply)
-        self.assertIn(
-            '"audit_kind": "RUN-EXEC-FAIL"',
-            src,
-            "RUN chain-fail path must fire on_blocked with "
-            "audit_kind=RUN-EXEC-FAIL so auto-extract sees command-not-"
-            "found / exit-127 hallucinations",
-        )
-        self.assertIn(
-            '"audit_kind": "RUNTERM-EXEC-FAIL"',
-            src,
-            "RUNTERM chain-fail path must fire on_blocked too",
-        )
+        Previously a source pin over process_reply's text. Now observed:
+        a real registered on_blocked handler receives the exec-fail events
+        with the audit_kind the auto-extract worker filters on.
+        """
+        import hooks
+
+        registry = hooks._REGISTRY
+        saved = list(registry._hooks)
+        registry._hooks = []
+        seen: list[dict] = []
+        try:
+            registry.register(
+                hooks.Hook(
+                    id="rec",
+                    kind="on_blocked",
+                    fn=lambda t, action=None: seen.append(action),
+                )
+            )
+            master_ai._fire_on_blocked(
+                "fetchmail -q", "RUN", "command failed (exit 127)", "RUN-EXEC-FAIL"
+            )
+            master_ai._fire_on_blocked(
+                "npm run dev", "RUNTERM", "runterm failed (exit 1)", "RUNTERM-EXEC-FAIL"
+            )
+        finally:
+            registry._hooks = saved
+
+        kinds = {a["audit_kind"] for a in seen}
+        self.assertEqual(kinds, {"RUN-EXEC-FAIL", "RUNTERM-EXEC-FAIL"}, seen)
+        for action in seen:
+            self.assertIn("exit", action["reason"], action)
 
     def test_hooks_repl_command_exists(self):
         """Finding 3: there must be a REPL command surface for hooks
@@ -354,32 +371,97 @@ class CodexFindingsRegressionGuard(unittest.TestCase):
 
 
 class MasterAiFiresHook(unittest.TestCase):
-    """The _append_tool_blocked_feedback path should fire on_blocked.
-    Source-inspect pin — actually-running the feedback requires a real
-    blocked chain which is heavy to set up. Same pattern as the RUNTERM
-    blocked-feedback test in test_router_golden."""
+    """The blocked-action paths must fire the on_blocked hook.
 
-    def test_tool_blocked_path_fires_on_blocked(self):
-        import inspect
+    These used to be source-inspection pins -- `assertIn('hooks.fire("on_blocked"',
+    inspect.getsource(master_ai.process_reply))` -- with a docstring
+    admitting that "actually-running the feedback requires a real blocked
+    chain which is heavy to set up". That approach proved the wrong thing:
+    it passed whenever a literal string survived in the source, and broke
+    the moment the repo's own formatter split that call across lines, with
+    no behaviour change at all.
 
-        src = inspect.getsource(master_ai.process_reply)
-        self.assertIn(
-            'hooks.fire("on_blocked"',
-            src,
-            "TOOL BLOCKED path must fire on_blocked hook so the "
-            "auto-extract-lesson worker can run",
+    The four fire sites in process_reply() now delegate to
+    _fire_on_blocked(), so the seam is directly callable and the hook can
+    be observed for real.
+    """
+
+    def setUp(self):
+        import hooks
+
+        self._hooks = hooks
+        self._registry = hooks._REGISTRY
+        self._saved = list(self._registry._hooks)
+        self._registry._hooks = []
+        self.calls: list[tuple] = []
+
+        def _record(target, action=None):
+            self.calls.append((target, action))
+            return hooks.FireResult(hook_id="test-recorder")
+
+        self._registry.register(
+            hooks.Hook(id="test-recorder", kind="on_blocked", fn=_record)
         )
 
-    def test_hook_blocked_path_fires_on_blocked(self):
-        import inspect
+    def tearDown(self):
+        self._registry._hooks = self._saved
 
-        src = inspect.getsource(master_ai.process_reply)
-        # Two fire sites (TOOL + HOOK) — count them
-        self.assertGreaterEqual(
-            src.count('"on_blocked"'),
-            2,
-            "Both [TOOL BLOCKED] and [HOOK BLOCKED] paths should fire on_blocked",
+    def test_blocked_action_fires_on_blocked_hook(self):
+        """A refused action reaches a registered on_blocked handler."""
+        master_ai._fire_on_blocked(
+            "/etc/shadow", "READ", "read fence: secret path", "TOOL-BLOCKED"
         )
+
+        self.assertEqual(len(self.calls), 1, "hook did not fire")
+        target, action = self.calls[0]
+        self.assertEqual(target, "/etc/shadow")
+        self.assertEqual(
+            action,
+            {
+                "kind": "READ",
+                "target": "/etc/shadow",
+                "reason": "read fence: secret path",
+                "audit_kind": "TOOL-BLOCKED",
+            },
+        )
+
+    def test_hook_block_uses_its_own_audit_kind(self):
+        """The HOOK-BLOCK path tags itself so the lesson worker can filter."""
+        master_ai._fire_on_blocked(
+            "some/file.py", "EDIT", "hook 3: syntax check failed", "HOOK-BLOCK-EDIT"
+        )
+
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0][1]["audit_kind"], "HOOK-BLOCK-EDIT")
+
+    def test_exec_failure_is_tagged_distinctly_from_a_policy_block(self):
+        """RUN-EXEC-FAIL is not a POLICY/FENCE block and must stay distinct."""
+        master_ai._fire_on_blocked(
+            "fetchmail -q", "RUN", "command failed (exit 127)", "RUN-EXEC-FAIL"
+        )
+        self.assertEqual(self.calls[0][1]["audit_kind"], "RUN-EXEC-FAIL")
+
+        self.calls.clear()
+        master_ai._fire_on_blocked(
+            "rm -rf /", "RUN", "safeguard refused", "TOOL-BLOCKED"
+        )
+        self.assertEqual(self.calls[0][1]["audit_kind"], "TOOL-BLOCKED")
+
+    def test_firing_never_raises_even_if_the_hook_explodes(self):
+        """A broken hook must not take down the dispatch path."""
+
+        def _boom(target, action=None):
+            raise RuntimeError("hook exploded")
+
+        self._registry._hooks = [
+            self._hooks.Hook(id="boom", kind="on_blocked", fn=_boom)
+        ]
+        # Must not raise.
+        master_ai._fire_on_blocked("/x", "READ", "why", "TOOL-BLOCKED")
+
+    def test_on_blocked_is_a_registered_hook_kind(self):
+        """The kind name the dispatch path sends must be one hooks knows."""
+        self.assertIn("on_blocked", self._hooks.KINDS)
 
 
 if __name__ == "__main__":

@@ -15244,6 +15244,36 @@ def _track_leading_cd(cmd, ok):
         set_session_cwd(base)
 
 
+def _fire_on_blocked(target, kind, action_reason, audit_kind):
+    """Fire the `on_blocked` hook for one blocked or failed action.
+
+    Extracted 2026-09-28. Four call sites in process_reply() each carried an
+    identical `try: import hooks; hooks.fire("on_blocked", ...)` / `except:
+    log` block. They are now one function, which is both less duplication
+    and testable: the previous test for this only did
+    `assertIn('hooks.fire("on_blocked"', inspect.getsource(process_reply))`,
+    so the repo's own formatter splitting that call across lines broke the
+    test while the behaviour was unchanged and correct.
+
+    Never raises -- a failing hook must not take down the dispatch path.
+    """
+    try:
+        import hooks as _hooks
+
+        _hooks.fire(
+            "on_blocked",
+            target,
+            action={
+                "kind": kind,
+                "target": target,
+                "reason": action_reason,
+                "audit_kind": audit_kind,
+            },
+        )
+    except Exception as e:
+        log(f"ON_BLOCKED_HOOK_ERROR ({audit_kind}): {e}")
+
+
 def run_command(cmd):
     print(f"\n🥷  {BOLD}Running:{X} {Y}{cmd}{X}")
     _t0 = time.time()
@@ -19446,21 +19476,12 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             history.append({"role": "user", "content": msg})
             # 2026-05-11: fire on_blocked hook for the [HOOK BLOCKED]
             # path too. Same async lesson-extract pipeline.
-            try:
-                import hooks as _hooks
-
-                _hooks.fire(
-                    "on_blocked",
-                    hpath,
-                    action={
-                        "kind": hkind.upper(),
-                        "target": hpath,
-                        "reason": f"{hid}: {hreason}",
-                        "audit_kind": f"HOOK-BLOCK-{hkind.upper()}",
-                    },
-                )
-            except Exception as e:
-                log(f"ON_BLOCKED_HOOK_ERROR: {e}")
+            _fire_on_blocked(
+                hpath,
+                hkind.upper(),
+                f"{hid}: {hreason}",
+                f"HOOK-BLOCK-{hkind.upper()}",
+            )
             globals()["_LAST_HOOK_BLOCK"] = {}
             log(
                 f"CHAIN_HOOK_BLOCK_FEEDBACK: appended [HOOK BLOCKED] for {hkind} {hpath}"
@@ -19673,17 +19694,11 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         # user. Rate-limited inside the hook itself (max 10/session).
         # Capture the blocked context BEFORE clearing the global.
         try:
-            import hooks as _hooks
-
-            _hooks.fire(
-                "on_blocked",
-                cmd,
-                action={
-                    "kind": (blocked.get("kind") or kind).upper(),
-                    "target": blocked.get("command") or cmd,
-                    "reason": blocked.get("reason", "safeguard refused"),
-                    "audit_kind": blocked.get("audit_kind", "TOOL-BLOCKED"),
-                },
+            _fire_on_blocked(
+                blocked.get("command") or cmd,
+                (blocked.get("kind") or kind).upper(),
+                blocked.get("reason", "safeguard refused"),
+                blocked.get("audit_kind", "TOOL-BLOCKED"),
             )
         except Exception as e:
             log(f"ON_BLOCKED_HOOK_ERROR: {e}")
@@ -19745,18 +19760,12 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             # source so the hook can filter (this is RUN-EXEC-FAIL, not a
             # POLICY/FENCE block).
             try:
-                import hooks as _hooks
-
                 _exit = getattr(result, "exit_code", "?")
-                _hooks.fire(
-                    "on_blocked",
+                _fire_on_blocked(
                     cmd,
-                    action={
-                        "kind": "RUN",
-                        "target": cmd,
-                        "reason": f"command failed (exit {_exit})",
-                        "audit_kind": "RUN-EXEC-FAIL",
-                    },
+                    "RUN",
+                    f"command failed (exit {_exit})",
+                    "RUN-EXEC-FAIL",
                 )
             except Exception as e:
                 log(f"ON_BLOCKED_HOOK_ERROR (exec-fail): {e}")
@@ -19783,21 +19792,15 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                 return None
             # 2026-05-11: same exec-fail on_blocked fire for RUNTERM.
             try:
-                import hooks as _hooks
-
                 _exit = getattr(result, "exit_code", "?")
-                _hooks.fire(
-                    "on_blocked",
+                _fire_on_blocked(
                     cmd,
-                    action={
-                        "kind": "RUNTERM",
-                        "target": cmd,
-                        "reason": f"runterm failed (exit {_exit})",
-                        "audit_kind": "RUNTERM-EXEC-FAIL",
-                    },
+                    "RUNTERM",
+                    f"runterm failed (exit {_exit})",
+                    "RUNTERM-EXEC-FAIL",
                 )
             except Exception as e:
-                log(f"ON_BLOCKED_HOOK_ERROR (runterm-exec-fail): {e}")
+                log(f"ON_BLOCKED_EXEC_HOOK_ERROR (runterm): {e}")
             print(
                 _pill(
                     "BLOCKED",
