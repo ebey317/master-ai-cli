@@ -2940,48 +2940,6 @@ COMPLEX_WORDS = {
     "essay",
     "deep dive",
 }
-# Elijah 2026-09-26: "if it's gonna be a thousand lines of code or more, it
-# should automatically" plan first instead of diving straight into
-# CREATE/EDIT/RUN. Real line count is unknowable before anything's written,
-# so this is a proxy from the REQUEST's own language -- from-scratch,
-# whole-system, multi-file build language -- checked once, right before the
-# turn would otherwise dispatch. His own number was an admitted guesstimate;
-# tune this set, not a line-count check that can't exist yet.
-BUILD_SCALE_WORDS = (
-    "build a",
-    "build me a",
-    "build an",
-    "create a full",
-    "create a complete",
-    "implement a full",
-    "implement a complete",
-    "set up a full",
-    "wire up a full",
-    "from scratch",
-    "entire system",
-    "full pipeline",
-    "end to end",
-    "end-to-end",
-    "rewrite the",
-    "refactor the whole",
-    "new feature",
-    "full dashboard",
-    "complete rewrite",
-    "from the ground up",
-    "whole app",
-    "entire app",
-    "entire codebase",
-)
-
-
-def _looks_build_scale(text):
-    """Cheap request-language proxy for "this is going to be a big,
-    multi-file build" -- see BUILD_SCALE_WORDS above for why this can't be
-    a real size check."""
-    low = text.lower()
-    return any(w in low for w in BUILD_SCALE_WORDS)
-
-
 # Phrases that signal a multi-step request even when it doesn't look like a
 # big build. The agent loop's plan/execute/critique cycle is the right home for
 # anything that spans more than a single round-trip; routing it there gives
@@ -15202,6 +15160,90 @@ def _verify_on_stop_nudge():
     )
 
 
+# ── Session-scoped CWD (2026-09-28) ──────────────────────────────────────
+# 2026-09-27, root-caused live: a model emitted `cd /some/project/dir` as
+# one RUN: directive and `python3 main.py` as a SEPARATE one. The second
+# failed looking for main.py. Every RUN: is its own subprocess.run() with
+# no cwd= override, and nothing in this file calls os.chdir(), so a `cd`
+# only ever affected the single throwaway bash it ran in, then vanished --
+# exactly as it would in any tool-per-call architecture.
+#
+# Fixed by tracking the directory in scripts/session_cwd.py's contextvar.
+# That module is already contextvars-based and covered by
+# tests/test_session_cwd.py, but master_ai.py never imported it; a prior
+# attempt here reimplemented it as a module global plus regex, which was
+# neither contextvars nor tested. Wiring the real module makes a `cd` in
+# one RUN: still in effect for the next, the way an interactive shell does.
+#
+# The repo root has to be on sys.path explicitly before that import.
+# In production this file runs as ~/scripts/master_ai.py, a SYMLINK into
+# the repo, so sys.path[0] is ~/scripts -- which has no nested scripts/
+# package. The editable install (master_ai_cli) does not help either: its
+# finder maps top-level module names one by one and `scripts` is not among
+# them. So without this, the import raises ModuleNotFoundError in the real
+# agent while succeeding under pytest (whose rootdir puts the repo on the
+# path) -- a fix that is green in tests and dead in production. Verified by
+# test_session_cwd_run.py::test_import_works_from_production_invocation.
+_MASTER_AI_DIR = os.path.dirname(os.path.realpath(__file__))
+if _MASTER_AI_DIR and _MASTER_AI_DIR not in sys.path:
+    sys.path.insert(0, _MASTER_AI_DIR)
+
+# Deliberately NOT wrapped in try/except: if this cannot be imported, cd
+# tracking would silently stop working, which is a worse failure than a
+# loud one. The dependency is pure stdlib, so the only failure is the path,
+# and the path is fixed above.
+from scripts.session_cwd import get_session_cwd, set_session_cwd
+
+# A LEADING `cd <path>`, optionally chained: `cd a && cd b`. Parsed with
+# shlex rather than a regex so quoted paths containing spaces resolve.
+_CD_SEPARATORS = ("&&", "||", ";", "&", "|")
+
+
+def _run_cwd():
+    """cwd= to hand subprocess.run: the session CWD, or None to inherit."""
+    return get_session_cwd() or None
+
+
+def _track_leading_cd(cmd, ok):
+    """Persist a successful leading `cd` so the NEXT RUN: inherits it.
+
+    Only a LEADING cd moves the next command: in `foo && cd bar`, cd was
+    not the first thing that ran, so the following command still starts
+    where it already was. Chained leading cds (`cd a && cd b`) resolve in
+    order against each other. A target that isn't an existing directory is
+    ignored, so a failed or bogus `cd` can't strand every later command.
+    """
+    if not ok or not cmd:
+        return
+    try:
+        tokens = shlex.split(cmd)
+    except Exception:
+        return
+    base = get_session_cwd() or os.getcwd()
+    i = 0
+    moved = False
+    while i < len(tokens) and tokens[i] == "cd":
+        if i + 1 >= len(tokens):
+            # Bare `cd` with no target means the home directory.
+            target = os.path.expanduser("~")
+        else:
+            nxt = tokens[i + 1]
+            if nxt in _CD_SEPARATORS:
+                break
+            target = nxt
+            i += 1
+        candidate = os.path.normpath(os.path.join(base, os.path.expanduser(target)))
+        if not os.path.isdir(candidate):
+            return
+        base = candidate
+        moved = True
+        i += 1
+        while i < len(tokens) and tokens[i] in _CD_SEPARATORS:
+            i += 1
+    if moved:
+        set_session_cwd(base)
+
+
 def run_command(cmd):
     print(f"\n🥷  {BOLD}Running:{X} {Y}{cmd}{X}")
     _t0 = time.time()
@@ -15247,10 +15289,14 @@ def run_command(cmd):
             capture_output=True,
             text=True,
             timeout=300,
+            cwd=_run_cwd(),
         )
         output = (result.stdout + result.stderr).strip()
         informational = _is_informational_cmd(shell_cmd, result.returncode)
         chain_ok = result.returncode == 0 or result.returncode == 141 or informational
+        # A leading `cd` has already done its job inside the throwaway
+        # shell; record it so the NEXT RUN: starts there.
+        _track_leading_cd(cmd, result.returncode == 0)
         if output:
             print(f"{G}{output}{X}")
         if result.returncode == 0:
@@ -27607,31 +27653,15 @@ def main():
                 print(f"  {R}reasoning loop error: {e}{X}")
             continue
 
-        # ── Auto-plan gate for build-scale requests ────────────────────
-        # Elijah 2026-09-26: "when it gets something that needs to be
-        # planned, i don't want it to just start coding... if it's gonna
-        # be a thousand lines of code or more, it should automatically"
-        # switch to plan mode. Same in-memory MODE flip a manual
-        # `mode plan` does (same banner, same repaint), just triggered by
-        # request language instead of a typed command -- and deliberately
-        # NOT persisted via save_mode(): this is a reaction to one
-        # big-looking request, not a permanent default for every future
-        # session. Falls straight through into the existing Plan mode
-        # block below, so it gets the real debate/grounding/approval flow
-        # for free instead of a second, half-built implementation of it.
-        if MODE in ("auto", "review") and _looks_build_scale(user_text):
-            _auto_plan_old_mode = MODE
-            globals()["MODE"] = "plan"
-            print(
-                f"\n{Y}  ▶ auto-plan: this looks like a substantial build — "
-                f"drafting a plan first ({_auto_plan_old_mode} → plan, this request only){X}"
-            )
-            show_mode_status()
-            if _SENSEI_APP is not None:
-                try:
-                    _SENSEI_APP.set_mode("plan")
-                except Exception:
-                    pass
+        # 2026-09-28: the "auto-plan gate" that used to live here (Elijah,
+        # 2026-09-26) auto-flipped MODE to "plan" for any auto/review-mode
+        # request whose language matched a build-scale word list ("build a",
+        # "new feature", "from scratch", etc.). Reverted at Elijah's request
+        # after it kept firing on ordinary phrasing and dragging trivial
+        # requests into the full multi-agent debate: "it's declaring
+        # everything ambiguous and i don't like that." MODE now only
+        # changes via an explicit `mode <name>` command again, same as
+        # before this gate existed.
 
         # ── Plan mode — reason first, then draft a plan ───────────────
         # Plan mode is a reasoning assistant, not a command prompter.
