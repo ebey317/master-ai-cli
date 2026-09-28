@@ -596,7 +596,7 @@ class DirectiveParserTests(unittest.TestCase):
         try:
             calls = []
 
-            def _fake_loop_ai(prompt, max_tokens=600):
+            def _fake_loop_ai(prompt, history=None, max_tokens=600):
                 calls.append((prompt, max_tokens))
                 if "Break this task" in prompt:
                     return "1. Check the route"
@@ -625,7 +625,7 @@ class DirectiveParserTests(unittest.TestCase):
         orig_handle = master_ai.handle
         try:
 
-            def _fake_loop_ai_question(prompt, max_tokens=600):
+            def _fake_loop_ai_question(prompt, history=None, max_tokens=600):
                 return "QUESTION: Which file should I change?"
 
             master_ai._loop_ai = _fake_loop_ai_question
