@@ -9212,6 +9212,13 @@ def ask_model_router(messages, model=None, max_tokens=None):
             _so_far = ""
             _cont_messages = list(messages)
             _rounds = 0
+            # Bound before the loop: a transport error on the first request
+            # breaks out with _finish never assigned, and the `if _finish`
+            # dispatch below would raise UnboundLocalError, breaking this
+            # function's "never raises" contract. _failed keeps the pre-loop
+            # behaviour of returning text=None on error.
+            _finish = ""
+            _failed = False
             while True:
                 try:
                     data = json.dumps({**payload, "messages": _cont_messages}).encode()
@@ -9233,6 +9240,7 @@ def ask_model_router(messages, model=None, max_tokens=None):
                     )
                 except Exception as e:
                     log(f"ROUTER_LOCAL_ERROR: {e}")
+                    _failed = True
                     break
                 if not _so_far:
                     _so_far = _frag
@@ -9253,7 +9261,10 @@ def ask_model_router(messages, model=None, max_tokens=None):
                     },
                 ]
                 log(f"LOCAL_AUTO_CONTINUE: model={model} round={_rounds}")
-            if _finish == "length":
+            if _failed:
+                globals()["PENDING_CONTINUATION"] = None
+                text = None
+            elif _finish == "length":
                 globals()["PENDING_CONTINUATION"] = {
                     "provider": "local",
                     "messages": _cont_messages,
@@ -9567,7 +9578,10 @@ def _reply_needs_operator_input(reply_text: str) -> bool:
         if phrase in lowered:
             return True
 
-    if "ask:" in lowered or "ask :" in lowered:
+    # The ASK: directive marker. Word-boundary anchored so unrelated words
+    # that merely end in "ask" -- task:, mask:, basket:, "asking" -- do not
+    # trip the watchdog and stall auto-continuation.
+    if re.search(r"\bask\s*:", lowered):
         return True
 
     blocked_markers = (
