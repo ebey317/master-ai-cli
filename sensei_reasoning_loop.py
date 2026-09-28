@@ -654,6 +654,22 @@ def run_plan_debate(
         if progress:
             print(msg, flush=True)
 
+    # 2026-09-27: the round-loop-only interrupt check (added 2026-09-24) still
+    # left every individual blocking call uninterruptible -- Ctrl+C during
+    # SEED A/B, MERGE, or mid-round critique/revise did nothing until that
+    # ONE call finished. Elijah, live: "i don't understand why control c
+    # doesn't work." Root cause is the same one already diagnosed below
+    # (_INTERRUPT_EVENT is a flag, not an exception) but the fix needs to be
+    # checked around EVERY blocking sub-call, not once per round. Centralized
+    # here so every call site below stays a one-liner.
+    def _interrupted() -> bool:
+        try:
+            import master_ai as _master_ai_interrupt_check
+
+            return _master_ai_interrupt_check._INTERRUPT_EVENT.is_set()
+        except Exception:
+            return False
+
     def _chat_merge(model: str, prompt: str, num_predict: int) -> str:
         """Call the merge/verdict model, falling back to `fb` on empty output."""
         out = _model_chat(model, "", prompt, num_predict=num_predict)[0]
@@ -667,9 +683,18 @@ def run_plan_debate(
         "plan": "",
         "rounds": 0,
         "converged": False,
+        "interrupted": False,
         "pin_handed_off": False,
         "stages": {},
     }
+
+    def _bail_interrupted(plan_so_far: str, rounds_so_far: int) -> dict:
+        _say("    interrupted — stopping debate, returning current plan")
+        result["plan"] = plan_so_far
+        result["rounds"] = rounds_so_far
+        result["converged"] = False
+        result["interrupted"] = True
+        return result
 
     # 1. Simultaneous seed — two parallel plans.
     _say(f"🧠 [plan_debate] SEED A ({a}) + SEED B ({b})...")
@@ -678,9 +703,13 @@ def run_plan_debate(
         f"Task: {query}"
     )
     plan_a = _model_chat(a, "", seed, num_predict=2000)[0]
+    if _interrupted():
+        return _bail_interrupted(plan_a, 0)
     plan_b = _model_chat(b, "", seed, num_predict=2000)[0]
     result["stages"]["seed_a"] = plan_a
     result["stages"]["seed_b"] = plan_b
+    if _interrupted():
+        return _bail_interrupted(plan_b or plan_a, 0)
 
     # 2. MERGE — one model receives BOTH plans, produces ONE unified plan.
     _say(f"🧠 [plan_debate] MERGE ({m})...")
@@ -695,6 +724,8 @@ def run_plan_debate(
         2000,
     )
     result["stages"]["merge"] = merged
+    if _interrupted():
+        return _bail_interrupted(merged, 0)
 
     # 3. Critique/revise loop with the keep-agree rule + verdict gate.
     # The critique AND verdict both run on the MERGER (instruction-follower).
@@ -711,25 +742,11 @@ def run_plan_debate(
         # actual Ctrl+C handler doesn't raise KeyboardInterrupt at all — it
         # sets master_ai._INTERRUPT_EVENT (see sensei_tui.py's _sigint,
         # which calls on_interrupt() while a turn is in flight). This loop
-        # never checked that event, so setting it changed nothing until the
-        # whole multi-round debate finished on its own. Same fix shape as
-        # the CONTEXT_WATERMARK check added earlier tonight to handle()'s
-        # continuation loop: check once per iteration, bail with whatever's
-        # converged so far rather than trusting an exception that never
-        # actually arrives from this trigger.
-        try:
-            import master_ai as _master_ai_interrupt_check
-
-            if _master_ai_interrupt_check._INTERRUPT_EVENT.is_set():
-                _say(
-                    f"    round {rnd}: interrupted — stopping debate, returning current plan"
-                )
-                result["plan"] = plan
-                result["rounds"] = rnd - 1
-                result["converged"] = False
-                return result
-        except Exception:
-            pass
+        # only checked once per round; 2026-09-27 (Elijah reproduced it
+        # again live) extended checks to every blocking sub-call via
+        # _interrupted()/_bail_interrupted() above and below.
+        if _interrupted():
+            return _bail_interrupted(plan, rnd - 1)
         # Sneak-attack handoff (Elijah, 2026-09-24): on the configured round,
         # the verdict/merge slot switches to the operator's live pinned model
         # — "the man who was actually in there" — for the REST of the debate.
@@ -763,6 +780,8 @@ def run_plan_debate(
             ),
             1200,
         )
+        if _interrupted():
+            return _bail_interrupted(plan, rnd - 1)
 
         # Revise + verdict: use the MERGER (instruction-follower) so the
         # "build it" verdict lands cleanly.

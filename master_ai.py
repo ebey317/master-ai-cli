@@ -271,6 +271,35 @@ except ImportError:
 # and _call_with_hard_timeout() for where it's actually checked.
 _INTERRUPT_EVENT = threading.Event()
 
+
+def _drain_stale_tui_input(reason=""):
+    """Discard anything sitting in the TUI's type-ahead queue.
+
+    2026-09-27: root-caused live — Elijah hit Ctrl+C repeatedly during a
+    stuck plan-mode debate ("mode review", "x", "x" again), and each one
+    got silently swallowed as debate-round input never intended as fresh
+    top-level commands, once the debate was slow to notice the interrupt.
+    Now that the debate checks _INTERRUPT_EVENT around every blocking call
+    (see sensei_reasoning_loop.run_plan_debate), a single Ctrl+C should stop
+    it fast -- but any EXTRA keystrokes typed out of impatience while
+    waiting would still replay as separate turns afterward if left queued.
+    Call this right after detecting an interrupt was honored, before the
+    main loop goes back to prompting, so stale repeats don't resurface.
+    No-op in non-TUI mode (nothing to drain — input() blocks on the real
+    terminal there)."""
+    q = globals().get("_TUI_INPUT_QUEUE")
+    if q is None:
+        return
+    dropped = []
+    try:
+        while True:
+            dropped.append(q.get_nowait())
+    except queue.Empty:
+        pass
+    if dropped:
+        log(f"DRAINED_STALE_TUI_INPUT [{reason}]: {dropped!r}")
+
+
 # 2026-08-31: kick/new/clear/refresh all queue through the same _iq the
 # worker's main() loop reads with a blocking input()/queue.get() — if
 # main() is stuck inside a single non-interruptible cloud call (observed:
@@ -26310,6 +26339,23 @@ def main():
                 plan_reply = _debate.get("plan", "") or ""
                 _converged = _debate.get("converged", False)
 
+                # 2026-09-27: the debate now bails fast on _INTERRUPT_EVENT
+                # (checked around every blocking sub-call, not just once per
+                # round — see run_plan_debate()). Honor that here: skip the
+                # Jev gate (another blocking call, no reason to make the
+                # user wait through it after they already asked to stop),
+                # drain any extra keystrokes typed while waiting so they
+                # don't replay as separate turns, and go straight back to
+                # the prompt instead of showing a half-built plan for
+                # approval.
+                if _debate.get("interrupted"):
+                    print(f"\n  {Y}plan debate interrupted{X}")
+                    _INTERRUPT_EVENT.clear()
+                    _drain_stale_tui_input("plan_debate_interrupted")
+                    while len(history) > _hist_len_before:
+                        history.pop()
+                    continue
+
                 # ── Jev end-gate (Elijah's design, 2026-09-24) ──────────
                 # The debate models vote on their own homework; Jev
                 # (typesafe/jev) is an independent typed second opinion on
@@ -26458,6 +26504,11 @@ def _run_with_tui():
         pass
 
     _iq: queue.Queue[str] = queue.Queue()
+    # Exposed globally so main()'s own loop (a plain function, not a closure
+    # here) can drain stale keystrokes after an interrupt -- see
+    # _drain_stale_tui_input() below. TUI-only; non-TUI mode has no queue to
+    # drain (its input() blocks on the real terminal, nothing piles up).
+    globals()["_TUI_INPUT_QUEUE"] = _iq
     _orig_input = builtins.input
     _orig_stdout, _orig_stderr = sys.stdout, sys.stderr
 

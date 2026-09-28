@@ -268,6 +268,20 @@ def run_jev_gate(task: str, plan: str, revise_fn=None) -> dict:
 
     # One bounded revise round: feed the failing dimensions back as critique,
     # re-judge. Never loops (max 1 retry), never blocks.
+    # 2026-09-27: this call has its own ~45s timeout and no interrupt check —
+    # part of the same "Ctrl+C does nothing in plan mode" gap fixed in
+    # run_plan_debate() (sensei_reasoning_loop.py) the same day. Skip the
+    # optional retry when the user already asked to stop rather than making
+    # them wait through one more blocking call for a gate that's fail-open
+    # anyway.
+    try:
+        import master_ai as _master_ai_interrupt_check
+
+        if _master_ai_interrupt_check._INTERRUPT_EVENT.is_set():
+            progress.append("[jev gate] interrupted — skipping revise round")
+            return report
+    except Exception:
+        pass
     if _env_bool("PLAN_JEV_RETRY", True) and callable(revise_fn):
         try:
             revised = (revise_fn(_revise_prompt(task, plan, failing)) or "").strip()
