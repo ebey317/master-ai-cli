@@ -89,6 +89,8 @@ def create_skill(name: str, transcript_path: str | None = None, auto_approve: bo
         return True, f"skill '{draft.name}' created and saved to ~/.master_ai_skills/{draft.name}/", details
 
     # audit passed but not saved yet — present draft for approval
+    recipe_lines = draft.recipe_py.splitlines()[:12]
+    recipe_preview = "\n".join(recipe_lines)
     preview = f"""draft skill '{draft.name}' is ready for review.
 
 low-risk auto-approve: {'yes' if draft.low_risk else 'no'}
@@ -99,7 +101,7 @@ SKILL.md preview:
 {draft.skill_md[:600]}
 
 recipe.py preview:
-{'\n'.join(draft.recipe_py.splitlines()[:12])}
+{recipe_preview}
 """
     return False, preview, details
 

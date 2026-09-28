@@ -26174,9 +26174,43 @@ def main():
                     else:
                         _tutor.speak(_text)
                         print(f"  {G}sent to TTS.{X}")
+                elif _sub in ("read", "read-aloud"):
+                    _chunk = 0
+                    _all = False
+                    for i, tok in enumerate(_rest):
+                        if tok in ("--chunk", "-c") and i + 1 < len(_rest):
+                            try:
+                                _chunk = int(_rest[i + 1])
+                            except Exception:
+                                pass
+                        if tok in ("--all", "-a"):
+                            _all = True
+                    if _all:
+                        _r = _tutor.current_lesson()
+                        if not _r or _r.get("status") != "lesson":
+                            print(f"  {Y}no current lesson found.{X}")
+                        else:
+                            _chunks = _r.get("tts_chunks", [])
+                            print(f"\n  {C}Reading {_r['title']} ({len(_chunks)} chunks)...{X}")
+                            for i in range(len(_chunks)):
+                                _rr = _tutor.read_aloud(_r, chunk_index=i)
+                                print(
+                                    f"  {G}chunk {i+1}/{len(_chunks)} spoken.{X}"
+                                )
+                    else:
+                        _rr = _tutor.read_aloud(chunk_index=_chunk)
+                        if _rr.get("status") == "spoken":
+                            print(
+                                f"\n  {C}Reading chunk {_rr['chunk_index']+1}/{_rr['total_chunks']} "
+                                f"of {_rr['title']}...{X}"
+                            )
+                            print(f"  {D}{_rr['chunk_text']}{X}")
+                            print(f"  {G}sent to TTS.{X}")
+                        else:
+                            print(f"  {Y}{_rr.get('message', 'read-aloud failed')}{X}")
                 else:
                     print(
-                        f"  {W}usage: tutor [start|next|guide <topic>|quiz <phase>|record <phase> <lesson> <score>|speak <text>]{X}"
+                        f"  {W}usage: tutor [start|next|guide <topic>|quiz <phase>|record <phase> <lesson> <score>|speak <text>|read [--chunk N|--all]]{X}"
                     )
             except Exception as e:
                 print(f"  {W}tutor command error: {e}{X}\n")

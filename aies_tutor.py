@@ -402,6 +402,56 @@ def record_lesson(phase: str, lesson: str, score: str, note: str = "") -> dict[s
     return {"status": "recorded", "phase": phase, "lesson": lesson_dir, "score": score}
 
 
+def current_lesson() -> dict[str, Any] | None:
+    """Return the next uncompleted lesson without advancing progress."""
+    loc = _find_next_lesson()
+    if not loc:
+        return None
+    phase, lesson_dir, title = loc
+    doc = _read_lesson_doc(phase, lesson_dir)
+    quiz = _read_quiz(phase, lesson_dir)
+    return {
+        "status": "lesson",
+        "phase": phase,
+        "lesson": lesson_dir,
+        "title": title,
+        "doc": doc,
+        "quiz": quiz,
+        "tts_chunks": split_for_tts(doc),
+    }
+
+
+def read_aloud(lesson_result: dict[str, Any] | None = None, chunk_index: int = 0) -> dict[str, Any]:
+    """Speak a lesson's TTS chunks starting from chunk_index.
+
+    If no lesson_result is provided, speaks the current next lesson.
+    Returns a status dict the CLI/TUI can act on.
+    """
+    if lesson_result is None:
+        lesson_result = current_lesson()
+    if not lesson_result or lesson_result.get("status") != "lesson":
+        return {"status": "no_lesson", "message": "No next lesson found. Create LEARNING.md or run tutor start."}
+
+    chunks = lesson_result.get("tts_chunks", [])
+    if not chunks:
+        return {"status": "no_chunks", "message": "Lesson has no readable content."}
+
+    if chunk_index < 0 or chunk_index >= len(chunks):
+        return {"status": "bad_index", "message": f"Chunk {chunk_index} out of range (0-{len(chunks)-1})."}
+
+    chunk_text = chunks[chunk_index]
+    speak(chunk_text)
+    return {
+        "status": "spoken",
+        "phase": lesson_result["phase"],
+        "lesson": lesson_result["lesson"],
+        "title": lesson_result["title"],
+        "chunk_index": chunk_index,
+        "total_chunks": len(chunks),
+        "chunk_text": chunk_text,
+    }
+
+
 def course_guide(topic: str) -> dict[str, Any]:
     """Find the lesson whose title/slug best matches the topic."""
     topic_low = topic.lower().replace(" ", "-")
@@ -476,6 +526,9 @@ def _cli() -> None:
     p_quiz.add_argument("phase")
     p_speak = sub.add_parser("speak", help="Speak a text string via TTS")
     p_speak.add_argument("text")
+    p_read = sub.add_parser("read", help="Read the current/next lesson aloud")
+    p_read.add_argument("--chunk", type=int, default=0, help="Chunk index to start from")
+    p_read.add_argument("--all", action="store_true", help="Read all chunks sequentially")
 
     args = parser.parse_args()
     if args.cmd == "start":
@@ -489,6 +542,15 @@ def _cli() -> None:
     elif args.cmd == "speak":
         speak(args.text)
         print(json.dumps({"spoken": True}))
+    elif args.cmd == "read":
+        if args.all:
+            res = current_lesson()
+            chunks = res.get("tts_chunks", []) if res else []
+            for i, _ in enumerate(chunks):
+                r = read_aloud(res, chunk_index=i)
+                print(json.dumps(r, indent=2))
+        else:
+            print(json.dumps(read_aloud(chunk_index=args.chunk), indent=2))
     else:
         parser.print_help()
 
