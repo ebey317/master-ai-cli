@@ -23937,6 +23937,23 @@ def _sessions_list_entries(limit=30):
                     # Single-session cloud + clean local truncation last resort.
                     title = _derive_session_title(chat_path)
                 entry["title"] = title
+                # 2026-09-28: Elijah, live: "i'm still not getting summaries."
+                # Root cause -- a generated title here was never written
+                # anywhere, so every single `sessions list` call re-derived
+                # it from scratch (another cloud call every time) and the
+                # entry still showed "(no summary yet)" forever, no matter
+                # how many times this ran. Persist a minimal summary file
+                # (title only, no bullets -- this path never generated any)
+                # so the title sticks and the next call doesn't redo the work.
+                if title:
+                    try:
+                        summary_path = CHATS_DIR / f"{entry['ts']}.summary"
+                        header_date = entry.get("date") or entry["ts"]
+                        summary_path.write_text(
+                            f"[Session {header_date}]\nTitle: {title}\n"
+                        )
+                    except Exception as e:
+                        log(f"SESSION_TITLE_PERSIST_ERROR: {e}")
             entry.pop("needs_title", None)
 
     return entries
