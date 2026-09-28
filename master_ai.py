@@ -9209,25 +9209,66 @@ def ask_model_router(messages, model=None, max_tokens=None):
                 "think": "medium",
                 "options": {"num_ctx": LOCAL_NUM_CTX, "num_predict": max_tokens},
             }
-            try:
-                data = json.dumps(payload).encode()
-                req = urllib.request.Request(
-                    f"{OLLAMA_URL}/api/chat",
-                    data=data,
-                    headers={"Content-Type": "application/json"},
+            _so_far = ""
+            _cont_messages = list(messages)
+            _rounds = 0
+            while True:
+                try:
+                    data = json.dumps({**payload, "messages": _cont_messages}).encode()
+                    req = urllib.request.Request(
+                        f"{OLLAMA_URL}/api/chat",
+                        data=data,
+                        headers={"Content-Type": "application/json"},
+                    )
+                    with urllib.request.urlopen(
+                        req, timeout=_local_request_timeout(600)
+                    ) as resp:
+                        result = json.loads(resp.read())
+                    _frag = result["message"]["content"]
+                    _finish = result.get("finish_reason", "")
+                    _record_real_ctx_tokens(
+                        model,
+                        (result.get("prompt_eval_count") or 0)
+                        + (result.get("eval_count") or 0),
+                    )
+                except Exception as e:
+                    log(f"ROUTER_LOCAL_ERROR: {e}")
+                    break
+                if not _so_far:
+                    _so_far = _frag
+                else:
+                    _so_far = _so_far + "\n\n" + _frag
+                if _finish != "length" or _rounds >= _MAX_AUTO_CONTINUATIONS:
+                    break
+                _rounds += 1
+                _cont_messages = _cont_messages + [
+                    {"role": "assistant", "content": _so_far},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Continue exactly where you left off — do not repeat or "
+                            "re-summarize anything you already wrote above, just "
+                            "keep going from the precise point you stopped."
+                        ),
+                    },
+                ]
+                log(f"LOCAL_AUTO_CONTINUE: model={model} round={_rounds}")
+            if _finish == "length":
+                globals()["PENDING_CONTINUATION"] = {
+                    "provider": "local",
+                    "messages": _cont_messages,
+                    "so_far": _so_far,
+                }
+                text = (
+                    _so_far
+                    + "\n\n"
+                    + "─" * 40
+                    + f"\n⚠ Still hitting the length limit after {_rounds} "
+                    "continuations — type 'proceed' and I'll keep going from here."
                 )
-                with urllib.request.urlopen(
-                    req, timeout=_local_request_timeout(600)
-                ) as resp:
-                    result = json.loads(resp.read())
-                text = result["message"]["content"]
-                _record_real_ctx_tokens(
-                    model,
-                    (result.get("prompt_eval_count") or 0)
-                    + (result.get("eval_count") or 0),
-                )
-            except Exception as e:
-                log(f"ROUTER_LOCAL_ERROR: {e}")
+            else:
+                globals()["PENDING_CONTINUATION"] = None
+                text = _so_far
         else:
             text = _call_with_hard_timeout(
                 ask_local, messages, model=model, timeout=_LOCAL_HARD_TIMEOUT
@@ -9493,15 +9534,61 @@ def _reply_needs_operator_input(reply_text: str) -> bool:
     talking to itself. When in doubt, favor True — see AUTO_NUDGE_MAX's
     comment for why an over-eager auto-continue is the worse failure mode
     here.
-
-    TODO(human): implement the actual heuristic. reply_text is the
-    rendered assistant reply (directives already stripped from what the
-    operator sees — this is the human-facing text). Some signals worth
-    weighing: does it end in a question mark; does it contain an ASK:
-    directive marker or phrases like "let me know" / "should I" / "which
-    one"; does it report a BLOCKED/failed action that needs a decision.
     """
-    raise NotImplementedError
+    reply = (reply_text or "").strip()
+    if not reply:
+        return False
+
+    if reply.endswith("?"):
+        return True
+
+    lowered = reply.lower()
+    question_phrases = (
+        "let me know",
+        "should i",
+        "would you like",
+        "do you want",
+        "shall i",
+        "which one",
+        "what would you",
+        "how would you",
+        "can you clarify",
+        "could you clarify",
+        "please confirm",
+        "please specify",
+        "awaiting your",
+        "waiting for your",
+        "your call",
+        "up to you",
+        "which do you prefer",
+        "what do you think",
+    )
+    for phrase in question_phrases:
+        if phrase in lowered:
+            return True
+
+    if "ask:" in lowered or "ask :" in lowered:
+        return True
+
+    blocked_markers = (
+        "[tool blocked]",
+        "[blocked]",
+        "blocked by policy",
+        "i can't do that",
+        "i cannot do that",
+        "not allowed to",
+        "permission denied",
+        "requires approval",
+    )
+    for marker in blocked_markers:
+        if marker in lowered:
+            return True
+
+    if "error:" in lowered or "failed:" in lowered or "traceback" in lowered:
+        if "?" in reply or "let me know" in lowered or "should i" in lowered:
+            return True
+
+    return False
 
 
 def _watchdog_maybe_auto_continue(reply_text: str) -> bool:
@@ -24471,10 +24558,18 @@ def main():
         )
     try:
         if _RELOAD_CARRY_FILE.exists():
-            carried = _RELOAD_CARRY_FILE.read_text()
-            _RELOAD_CARRY_FILE.unlink(missing_ok=True)
-            if carried:
-                globals()["PENDING_USER_NOTE"] = carried
+            _carry_age = time.time() - _RELOAD_CARRY_FILE.stat().st_mtime
+            if _carry_age > RESUME_FLAG_MAX_AGE:
+                log(
+                    f"CARRY_EXPIRED: age={_carry_age:.0f}s > "
+                    f"{RESUME_FLAG_MAX_AGE}s, discarding"
+                )
+                _RELOAD_CARRY_FILE.unlink(missing_ok=True)
+            else:
+                carried = _RELOAD_CARRY_FILE.read_text()
+                _RELOAD_CARRY_FILE.unlink(missing_ok=True)
+                if carried:
+                    globals()["PENDING_USER_NOTE"] = carried
     except Exception as e:
         log(f"AUTO_RELOAD_CARRY_RESTORE_ERROR: {e}")
 
@@ -24824,7 +24919,8 @@ def main():
                 print(f"  {C}{i}.{X} {name}")
             print(f"\n  {D}Valid names: {', '.join(sorted(_VALID_FALLBACK_NAMES))}{X}")
             print(
-                f"  {D}'fallback add <name>' · 'fallback remove <name>' · 'fallback reset'{X}\n"
+                f"  {D}'fallback add <name>' · 'fallback remove <name>' · "
+                f"'fallback move <name> <position>' · 'fallback reset'{X}\n"
             )
             continue
 
@@ -24866,6 +24962,35 @@ def main():
             print(
                 f"  {G}reset to default chain: {', '.join(_DEFAULT_FALLBACK_ORDER)}{X}"
             )
+            continue
+
+        # 2026-09-27: add/remove could never actually REORDER the chain —
+        # add refuses if the name is already present, and the only way to
+        # move something was remove-then-add, which just re-appends it to
+        # the end again (same problem, no reordering happened). Elijah,
+        # live, after opencode/nemotron/openrouter all failed twice in a
+        # row: wanted nvidia (currently last on purpose — it spends paid
+        # credits, see _DEFAULT_FALLBACK_ORDER's comment) promoted earlier
+        # so a real key backs up the free tier sooner, trusting NVIDIA's
+        # own key-rotation (see the NVIDIA_API_KEY/_2 swap already running
+        # elsewhere) to ride out its own rate limits before falling on to
+        # nemotron. `fallback add`/`remove` had no way to express that.
+        if lo.startswith("fallback move"):
+            parts = cmd.split()
+            name = parts[2] if len(parts) > 2 else ""
+            pos_arg = parts[3] if len(parts) > 3 else ""
+            order = _load_fallback_order()
+            if name not in order:
+                print(
+                    f"  {Y}{name!r} isn't in the current chain — see 'fallback list'{X}"
+                )
+            elif not pos_arg.isdigit() or not (1 <= int(pos_arg) <= len(order)):
+                print(f"  {Y}usage: fallback move <name> <position 1-{len(order)}>{X}")
+            else:
+                order.remove(name)
+                order.insert(int(pos_arg) - 1, name)
+                _save_fallback_order(order)
+                print(f"  {G}moved {name} → chain is now: {', '.join(order)}{X}")
             continue
 
         # ── MCP servers slash commands (Sensei as MCP client) ──
