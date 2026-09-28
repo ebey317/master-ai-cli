@@ -17955,7 +17955,33 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         # narrative and requires no comma anywhere after the gerund lead;
         # kept outside the shared \b(...)\b group above since anchoring
         # ^...$ inside it wouldn't compose the same way.
-        r"|^\s*(?:checking|verifying|confirming|inspecting|scanning|looking at)\s+[^,\n]*$",
+        r"|^\s*(?:checking|verifying|confirming|inspecting|scanning|looking at)\s+[^,\n]*$"
+        # 2026-09-27: reproduced live — "Let me first examine and fix the
+        # start-learning recipe.py: [now proceeding with the fix]" matched
+        # NEITHER "i'll <verb>" list above ("examine" isn't enumerated) NOR
+        # "let me <verb>" list ("examine" isn't there either), so is_stall
+        # stayed False and the announcement rendered as a finished answer
+        # with nothing dispatched. A closed verb list can never be complete
+        # — the model can always phrase intent with a verb nobody
+        # enumerated yet. Replace enumeration with the open-class shape
+        # already proven safe for the gerund branch above: any verb after
+        # the first-person modal, gated by the same "no comma, no
+        # completed-action marker, to end of narrative" structural check —
+        # a real stall IS the whole remaining narrative. "let me know/
+        # clarify/explain/summarize/add/recap/reiterate/note" are excluded
+        # because they're common discourse-framing openers for a real
+        # answer ("Let me know if...", "Let me clarify: ..."), not a stall
+        # — everything else after "i'll"/"let me" is intentionally open,
+        # accepting the residual false-positive risk (one extra forced
+        # retry turn, bounded by max_continuation_turns) over the worse
+        # failure mode this branch exists to close: silently doing nothing
+        # while looking done. Kept alongside the closed-list alternatives
+        # above rather than replacing them — those already cover comma-
+        # tailed cases this end-anchored branch can't match.
+        r"|\b(?:i\'?ll\s+(?:\w+\s+){0,2}\w+\b|"
+        r"let me(?!\s+(?:know|clarify|explain|summarize|add|recap|reiterate|note)\b)\s+(?:\w+\s+){0,2}\w+\b)"
+        r"(?![^,\n]*\b(?:successfully|complete|completed|done|finished|fixed|ready|clean|passed|confirmed|ok|okay|resolved|sent|good|verified)\b)"
+        r"[^,\n]*$",
         re.IGNORECASE,
     )
     # Second shape seen tonight: the model attempts directives but wraps
