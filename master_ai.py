@@ -24720,6 +24720,329 @@ def _aoe_status(state):
         pass
 
 
+# ── `schedule ...` REPL commands (2026-09-28) ─────────────────────────────
+# Extracted verbatim out of main()'s inline if-chain. Pure move: this block
+# read only `lo`/`cmd` and called module-level helpers, so it had no
+# business being 44 lines deep inside a 3,600-line function — and no way to
+# be called from a test without driving the whole REPL.
+def _handle_schedule_cmd(lo, cmd):
+    """Handle one `schedule`/`scheduler` command. Returns True if consumed."""
+    if not (lo.startswith("schedule") or lo.startswith("scheduler")):
+        return False
+    parts = cmd.split(None, 2)
+    if lo in ("schedules", "schedule list"):
+        _show_schedules()
+        _start_scheduler_daemon()
+        return True
+    if lo.startswith("schedule start") or lo == "scheduler start":
+        _start_scheduler_daemon()
+        return True
+    if lo.startswith("schedule stop") or lo == "scheduler stop":
+        _stop_scheduler_daemon()
+        return True
+    if lo.startswith("schedule remove") or lo.startswith("unschedule"):
+        target = ""
+        if lo.startswith("schedule remove"):
+            target = cmd.split(None, 2)[2] if len(parts) > 2 else ""
+        else:
+            target = cmd.split(None, 1)[1] if len(parts) > 1 else ""
+        n = _remove_schedule(target)
+        print(f"  {G}removed {n} schedule(s){X}")
+        return True
+    # schedule "command" 09:00 daily
+    m = re.match(
+        r'schedule\s+"([^"]+)"\s+(\d{1,2}:\d{2})\s+(hourly|daily|weekly|monthly)',
+        cmd,
+        re.I,
+    )
+    if not m:
+        m = re.match(
+            r"schedule\s+(\S+)\s+(\d{1,2}:\d{2})\s+(hourly|daily|weekly|monthly)",
+            cmd,
+            re.I,
+        )
+    if m:
+        command, when, cadence = m.group(1), m.group(2), m.group(3).lower()
+        sid = _add_schedule(command, when, cadence)
+        print(f"  {G}scheduled {sid}: {command} @ {when} ({cadence}){X}")
+        _start_scheduler_daemon()
+    else:
+        print(f"  {Y}usage: schedule <command> HH:MM <hourly|daily|weekly|monthly>{X}")
+        print(f"  {D}example: schedule doctor 02:00 daily{X}")
+    return True
+
+
+# ── `hooks` REPL command (2026-09-28) ──────────────────────────────────
+# Extracted verbatim out of main()'s inline if-chain. Pure move.
+def _handle_hooks_cmd(lo, cmd):
+    """Handle one `lo == 'hooks' or lo.startswith('hooks ')`. Returns True if it was consumed."""
+    if not (lo == "hooks" or lo.startswith("hooks ")):
+        return False
+    try:
+        import hooks as _hooks
+
+        _args = (cmd[len("hooks") :].strip()).split(None, 1)
+        _sub = (_args[0] if _args else "").lower()
+        _rest = _args[1] if len(_args) > 1 else ""
+        if _sub in ("", "list"):
+            _hs = _hooks.list_hooks()
+            print(f"\n  {C}Registered hooks ({len(_hs)}):{X}")
+            for h in _hs:
+                state = f"{G}enabled{X}" if h.enabled else f"{D}disabled{X}"
+                print(f"    {W}{h.id:<30}{X}  {h.kind:<14}  {state}  ({h.source})")
+            print()
+        elif _sub == "enable":
+            ok = _hooks.enable(_rest.strip())
+            if ok:
+                print(f"  {G}✅ enabled: {_rest.strip()}{X}\n")
+            else:
+                print(f"  {W}unknown hook: {_rest.strip()!r}{X}\n")
+        elif _sub == "disable":
+            ok = _hooks.disable(_rest.strip())
+            if ok:
+                print(f"  {G}✅ disabled: {_rest.strip()}{X}\n")
+            else:
+                print(f"  {W}unknown hook: {_rest.strip()!r}{X}\n")
+        elif _sub == "reload":
+            n = _hooks.reload_user_hooks()
+            print(
+                f"  {G}✅ reloaded {n} user hook(s) from ~/.master_ai_hooks.json{X}\n"
+            )
+        else:
+            print(f"  {W}usage: hooks [list|enable <id>|disable <id>|reload]{X}\n")
+    except Exception as e:
+        print(f"  {W}hooks command error: {e}{X}\n")
+    return True
+
+
+# ── `delegate` REPL command (2026-09-28) ──────────────────────────────────
+# Extracted verbatim out of main()'s inline if-chain. Pure move.
+def _handle_delegate_cmd(lo, cmd):
+    """Handle one `lo == 'delegate' or lo.startswith('delegate ')`. Returns True if it was consumed."""
+    if not (lo == "delegate" or lo.startswith("delegate ")):
+        return False
+    try:
+        import delegate_runner as _dr
+
+        goal = cmd[len("delegate") :].strip()
+        if not goal:
+            print(f"  {W}usage: delegate <goal>{X}\n")
+            return True
+        print(f"\n  {BC}[delegating: {goal[:60]}...]{X}\n")
+        result = _dr.delegate_task(
+            goal=goal,
+            context={"cwd": str(Path.cwd()), "mode": MODE},
+            max_turns=10,
+            timeout_s=300,
+        )
+
+        print(f"  {C}Delegation result:{X}")
+        print(f"    ok:         {G if result['ok'] else R}{result['ok']}{X}")
+        print(f"    summary:    {W}{result.get('summary', '')}{X}")
+        print(f"    workdir:    {result.get('workdir', '')}{X}")
+        if result.get("stderr", "").strip():
+            print(f"  {Y}stderr:{X}\n{result['stderr'][:500]}")
+        print()
+    except Exception as e:
+        import traceback
+
+        print(f"  {R}Delegation error: {e}{X}\n")
+        traceback.print_exc()
+    return True
+
+
+# ── `mesh` REPL command (2026-09-28) ──────────────────────────────────
+# Extracted verbatim out of main()'s inline if-chain. Pure move.
+def _handle_mesh_cmd(lo, cmd):
+    """Handle one `lo == 'mesh' or lo.startswith('mesh ')`. Returns True if it was consumed."""
+    if not (lo == "mesh" or lo.startswith("mesh ")):
+        return False
+    rest = cmd[5:].strip() if lo.startswith("mesh ") else ""
+    mesh_sh = str(Path.home() / "scripts/mesh.sh")
+    try:
+        if rest == "" or rest in ("ls", "list"):
+            subprocess.run(["bash", mesh_sh, "ls"], check=False)
+        elif rest == "ping":
+            subprocess.run(["bash", mesh_sh, "ping"], check=False)
+        elif rest == "add":
+            subprocess.run(["bash", mesh_sh, "add"], check=False)
+        elif rest.startswith("ask "):
+            # Split into: peer, prompt-remainder
+            parts = rest[4:].strip().split(None, 1)
+            if len(parts) < 2:
+                print(f"  {W}usage: mesh ask <peer> <prompt...>{X}")
+            else:
+                peer, prompt = parts[0], parts[1]
+                subprocess.run(["bash", mesh_sh, "ask", peer, prompt], check=False)
+        else:
+            print(f"  {W}🕸  mesh commands:{X} ls | ping | add | ask <peer> <prompt>")
+            print(f"  {W}   full menu:{X} bash ~/scripts/mesh.sh")
+    except Exception as e:
+        print(f"  {R}❌ mesh error: {e}{X}")
+    return True
+
+
+# ── `mcp` REPL command (2026-09-28) ──────────────────────────────────
+# Extracted verbatim out of main()'s inline if-chain. Pure move.
+def _handle_mcp_cmd(lo, cmd):
+    """Handle one `lo == 'mcp' or lo.startswith('mcp ')`. Returns True if it was consumed."""
+    if not (lo == "mcp" or lo.startswith("mcp ")):
+        return False
+    try:
+        import sensei_mcp_client as _mcp
+
+        _parts = cmd.split()
+        _sub = _parts[1].lower() if len(_parts) > 1 else ""
+        _rest = _parts[2:]
+        if _sub in ("", "list"):
+            _mcp_show()
+        elif _sub == "add":
+            _name, _target, _transport = _mcp.parse_add_args(_rest)
+            if not _name or not _target:
+                print(
+                    f"  {W}usage: mcp add <name> <command|url> [--transport stdio|sse]{X}"
+                )
+                print(
+                    f"  {D}example: mcp add sensei 'python3 ~/projects/master-ai/sensei_mcp_server.py'{X}"
+                )
+            else:
+                _r = _mcp.add_server(_name, _target, _transport)
+                print(f"  {G if _r['ok'] else Y}{_r['message']}{X}")
+        elif _sub == "remove":
+            _r = _mcp.remove_server(" ".join(_rest))
+            print(f"  {G if _r['ok'] else W}{_r['message']}{X}")
+        elif _sub in ("enable", "disable"):
+            _r = _mcp.set_enabled(" ".join(_rest), _sub == "enable")
+            print(f"  {G if _r['ok'] else Y}{_r['message']}{X}")
+        elif _sub == "validate":
+            _r = _mcp.revalidate(" ".join(_rest))
+            print(f"  {G if _r['ok'] else R}{_r['message']}{X}")
+        elif _sub == "tools":
+            if not _rest:
+                print(f"  {W}usage: mcp tools <name>{X}")
+            else:
+                print(_mcp.format_tools(" ".join(_rest), G, R, Y, C, W, D, X))
+        else:
+            print(
+                f"  {W}usage: mcp [list|add <name> <cmd|url> [--transport stdio|sse]|remove <name>|enable <name>|disable <name>|validate <name>|tools <name>]{X}"
+            )
+    except Exception as e:
+        print(f"  {W}mcp command error: {e}{X}\n")
+    return True
+
+
+# ── `proposal` REPL command (2026-09-28) ──────────────────────────────────
+# Extracted verbatim out of main()'s inline if-chain. Pure move.
+def _handle_proposal_cmd(lo, cmd):
+    """Handle one `lo in ('proposals', 'pending proposals') or lo.startswith('proposal ')`. Returns True if it was consumed."""
+    if not (lo in ("proposals", "pending proposals") or lo.startswith("proposal ")):
+        return False
+    try:
+        if lo in ("proposals", "pending proposals"):
+            entries = perpetual_review.list_pending()
+            if not entries:
+                print(f"  {D}(no pending proposals){X}\n")
+            else:
+                print(f"\n  {C}{len(entries)} pending proposal(s):{X}")
+                for entry in entries:
+                    print(
+                        f"    [{entry['id']}] {entry['source']:<16} "
+                        f"priority={entry['priority']:<6} {entry['category']}"
+                    )
+                print(
+                    f"\n  {D}proposal <id>  ·  proposal approve <id>  ·  "
+                    f"proposal reject <id>{X}\n"
+                )
+        else:
+            rest = cmd[len("proposal ") :].strip()
+            if rest.lower().startswith("approve "):
+                proposal_id = rest[len("approve ") :].strip()
+                ok, msg = perpetual_review.approve(proposal_id)
+                print(f"  {G if ok else R}{'ok' if ok else 'x'} {msg}{X}\n")
+            elif rest.lower().startswith("reject "):
+                proposal_id = rest[len("reject ") :].strip()
+                ok, msg = perpetual_review.reject(proposal_id)
+                print(f"  {G if ok else R}{'ok' if ok else 'x'} {msg}{X}\n")
+            else:
+                p = perpetual_review.get(rest)
+                if not p:
+                    print(f"  {W}no proposal matching '{rest}'{X}\n")
+                else:
+                    print(f"\n{p['text']}\n")
+    except Exception as e:
+        print(f"  {W}proposal review error: {e}{X}\n")
+    return True
+
+
+# ── `project` REPL command (2026-09-28) ──────────────────────────────────
+# Extracted verbatim out of main()'s inline if-chain. Pure move.
+def _handle_project_cmd(lo, cmd):
+    """Handle one `lo.startswith('project ')`. Returns True if it was consumed."""
+    if not (lo.startswith("project ")):
+        return False
+    proj = os.path.expanduser(cmd[8:].strip())
+    if os.path.isdir(proj):
+        globals()["ACTIVE_PROJECT"] = proj
+        print(f"  {G}✅ Active project: {W}{proj}{X}")
+        show_hint(
+            "Project context active",
+            "File structure is now injected into AI context.\n"
+            "AI will write paths relative to this project.\n"
+            "Git branch + recent commits also auto-injected.",
+        )
+        struct = subprocess.run(
+            f"find {proj} -type f | grep -v -E '(node_modules|\\.git|__pycache__)' | head -50",
+            shell=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        print(f"  {C}Files:{X}")
+        for f in struct.splitlines():
+            print(f"    {W}{f}{X}")
+    else:
+        print(f"  {R}❌ Directory not found: {proj}{X}")
+    return True
+
+
+# ── `profile` REPL command (2026-09-28) ──────────────────────────────────
+# Extracted verbatim out of main()'s inline if-chain. Pure move.
+def _handle_profile_cmd(lo, cmd):
+    """Handle one `lo.startswith('profile ') and lo not in ('profile list',)`. Returns True if it was consumed."""
+    if not (lo.startswith("profile ") and lo not in ("profile list",)):
+        return False
+    target = cmd.split(None, 1)[1].strip()
+    if not target or target == "default":
+        _ACTIVE_PROFILE_FILE.unlink(missing_ok=True)
+        print(f"  {G}switching to default profile — restarting...{X}", flush=True)
+    else:
+        _activate_profile(target)
+        print(
+            f"  {G}switching to profile '{target}' — restarting...{X}",
+            flush=True,
+        )
+    try:
+        save_session(list(history), silent=True)
+    except Exception:
+        pass
+    if _SENSEI_APP is not None:
+        try:
+            _SENSEI_APP.clear_output()
+        except Exception:
+            pass
+    _clear_tmux_scrollback("profile")
+    try:
+        subprocess.run(["stty", "sane"], check=False)
+    except Exception:
+        pass
+    sys.stdout.write("\033c\033[2J\033[H")
+    sys.stdout.flush()
+    os.execvp(
+        sys.executable,
+        [sys.executable, str(Path.home() / "scripts/master_ai.py")],
+    )
+    return True
+
+
 def main():
     if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
         print(
@@ -25401,49 +25724,7 @@ def main():
             continue
 
         # ── Scheduler slash commands ──────────────────────────
-        if lo.startswith("schedule"):
-            parts = cmd.split(None, 2)
-            if lo in ("schedules", "schedule list"):
-                _show_schedules()
-                _start_scheduler_daemon()
-                continue
-            if lo.startswith("schedule start") or lo == "scheduler start":
-                _start_scheduler_daemon()
-                continue
-            if lo.startswith("schedule stop") or lo == "scheduler stop":
-                _stop_scheduler_daemon()
-                continue
-            if lo.startswith("schedule remove") or lo.startswith("unschedule"):
-                target = ""
-                if lo.startswith("schedule remove"):
-                    target = cmd.split(None, 2)[2] if len(parts) > 2 else ""
-                else:
-                    target = cmd.split(None, 1)[1] if len(parts) > 1 else ""
-                n = _remove_schedule(target)
-                print(f"  {G}removed {n} schedule(s){X}")
-                continue
-            # schedule "command" 09:00 daily
-            m = re.match(
-                r'schedule\s+"([^"]+)"\s+(\d{1,2}:\d{2})\s+(hourly|daily|weekly|monthly)',
-                cmd,
-                re.I,
-            )
-            if not m:
-                m = re.match(
-                    r"schedule\s+(\S+)\s+(\d{1,2}:\d{2})\s+(hourly|daily|weekly|monthly)",
-                    cmd,
-                    re.I,
-                )
-            if m:
-                command, when, cadence = m.group(1), m.group(2), m.group(3).lower()
-                sid = _add_schedule(command, when, cadence)
-                print(f"  {G}scheduled {sid}: {command} @ {when} ({cadence}){X}")
-                _start_scheduler_daemon()
-            else:
-                print(
-                    f"  {Y}usage: schedule <command> HH:MM <hourly|daily|weekly|monthly>{X}"
-                )
-                print(f"  {D}example: schedule doctor 02:00 daily{X}")
+        if _handle_schedule_cmd(lo, cmd):
             continue
 
         # ── Cloud fallback chain management (2026-09-03) ────────────────
@@ -25462,47 +25743,7 @@ def main():
         #   mcp validate <name>           — re-probe + revalidate schemas
         #   mcp tools <name>              — show a server's tools
         # Implementation: sensei_mcp_client.py (added 2026-09-01).
-        if lo == "mcp" or lo.startswith("mcp "):
-            try:
-                import sensei_mcp_client as _mcp
-
-                _parts = cmd.split()
-                _sub = _parts[1].lower() if len(_parts) > 1 else ""
-                _rest = _parts[2:]
-                if _sub in ("", "list"):
-                    _mcp_show()
-                elif _sub == "add":
-                    _name, _target, _transport = _mcp.parse_add_args(_rest)
-                    if not _name or not _target:
-                        print(
-                            f"  {W}usage: mcp add <name> <command|url> [--transport stdio|sse]{X}"
-                        )
-                        print(
-                            f"  {D}example: mcp add sensei 'python3 ~/projects/master-ai/sensei_mcp_server.py'{X}"
-                        )
-                    else:
-                        _r = _mcp.add_server(_name, _target, _transport)
-                        print(f"  {G if _r['ok'] else Y}{_r['message']}{X}")
-                elif _sub == "remove":
-                    _r = _mcp.remove_server(" ".join(_rest))
-                    print(f"  {G if _r['ok'] else W}{_r['message']}{X}")
-                elif _sub in ("enable", "disable"):
-                    _r = _mcp.set_enabled(" ".join(_rest), _sub == "enable")
-                    print(f"  {G if _r['ok'] else Y}{_r['message']}{X}")
-                elif _sub == "validate":
-                    _r = _mcp.revalidate(" ".join(_rest))
-                    print(f"  {G if _r['ok'] else R}{_r['message']}{X}")
-                elif _sub == "tools":
-                    if not _rest:
-                        print(f"  {W}usage: mcp tools <name>{X}")
-                    else:
-                        print(_mcp.format_tools(" ".join(_rest), G, R, Y, C, W, D, X))
-                else:
-                    print(
-                        f"  {W}usage: mcp [list|add <name> <cmd|url> [--transport stdio|sse]|remove <name>|enable <name>|disable <name>|validate <name>|tools <name>]{X}"
-                    )
-            except Exception as e:
-                print(f"  {W}mcp command error: {e}{X}\n")
+        if _handle_mcp_cmd(lo, cmd):
             continue
 
         # ── Skill marketplace + learning loop slash commands ──
@@ -26670,40 +26911,8 @@ def main():
                 print(f"  {mark} {p}")
             continue
 
-        if lo.startswith("profile ") and lo not in ("profile list",):
-            target = cmd.split(None, 1)[1].strip()
-            if not target or target == "default":
-                _ACTIVE_PROFILE_FILE.unlink(missing_ok=True)
-                print(
-                    f"  {G}switching to default profile — restarting...{X}", flush=True
-                )
-            else:
-                _activate_profile(target)
-                print(
-                    f"  {G}switching to profile '{target}' — restarting...{X}",
-                    flush=True,
-                )
-            try:
-                save_session(list(history), silent=True)
-            except Exception:
-                pass
-            if _SENSEI_APP is not None:
-                try:
-                    _SENSEI_APP.clear_output()
-                except Exception:
-                    pass
-            _clear_tmux_scrollback("profile")
-            try:
-                subprocess.run(["stty", "sane"], check=False)
-            except Exception:
-                pass
-            sys.stdout.write("\033c\033[2J\033[H")
-            sys.stdout.flush()
-            os.execvp(
-                sys.executable,
-                [sys.executable, str(Path.home() / "scripts/master_ai.py")],
-            )
-            continue  # unreachable
+        if _handle_profile_cmd(lo, cmd):
+            continue
 
         if lo in ("new", "clear"):
             _RESTART_STARTED.set()
@@ -27311,118 +27520,18 @@ def main():
         # block ever saw it, since dispatch is sequential top-to-bottom.
         # This phrasing sidesteps that collision without having to touch or
         # reorder the pre-existing approval_queue block at all.
-        if lo in ("proposals", "pending proposals") or lo.startswith("proposal "):
-            try:
-                if lo in ("proposals", "pending proposals"):
-                    entries = perpetual_review.list_pending()
-                    if not entries:
-                        print(f"  {D}(no pending proposals){X}\n")
-                    else:
-                        print(f"\n  {C}{len(entries)} pending proposal(s):{X}")
-                        for entry in entries:
-                            print(
-                                f"    [{entry['id']}] {entry['source']:<16} "
-                                f"priority={entry['priority']:<6} {entry['category']}"
-                            )
-                        print(
-                            f"\n  {D}proposal <id>  ·  proposal approve <id>  ·  "
-                            f"proposal reject <id>{X}\n"
-                        )
-                else:
-                    rest = cmd[len("proposal ") :].strip()
-                    if rest.lower().startswith("approve "):
-                        proposal_id = rest[len("approve ") :].strip()
-                        ok, msg = perpetual_review.approve(proposal_id)
-                        print(f"  {G if ok else R}{'ok' if ok else 'x'} {msg}{X}\n")
-                    elif rest.lower().startswith("reject "):
-                        proposal_id = rest[len("reject ") :].strip()
-                        ok, msg = perpetual_review.reject(proposal_id)
-                        print(f"  {G if ok else R}{'ok' if ok else 'x'} {msg}{X}\n")
-                    else:
-                        p = perpetual_review.get(rest)
-                        if not p:
-                            print(f"  {W}no proposal matching '{rest}'{X}\n")
-                        else:
-                            print(f"\n{p['text']}\n")
-            except Exception as e:
-                print(f"  {W}proposal review error: {e}{X}\n")
+        if _handle_proposal_cmd(lo, cmd):
             continue
 
         # P1.8 delegation runner — isolated subagent spawn inside Master AI CLI.
         #   delegate <goal...>  — run a bounded delegated task in a temp workdir
-        if lo == "delegate" or lo.startswith("delegate "):
-            try:
-                import delegate_runner as _dr
-
-                goal = cmd[len("delegate") :].strip()
-                if not goal:
-                    print(f"  {W}usage: delegate <goal>{X}\n")
-                    continue
-                print(f"\n  {BC}[delegating: {goal[:60]}...]{X}\n")
-                result = _dr.delegate_task(
-                    goal=goal,
-                    context={"cwd": str(Path.cwd()), "mode": MODE},
-                    max_turns=10,
-                    timeout_s=300,
-                )
-                import json as _json
-
-                print(f"  {C}Delegation result:{X}")
-                print(f"    ok:         {G if result['ok'] else R}{result['ok']}{X}")
-                print(f"    summary:    {W}{result.get('summary', '')}{X}")
-                print(f"    workdir:    {result.get('workdir', '')}{X}")
-                if result.get("stderr", "").strip():
-                    print(f"  {Y}stderr:{X}\n{result['stderr'][:500]}")
-                print()
-            except Exception as e:
-                import traceback
-
-                print(f"  {R}Delegation error: {e}{X}\n")
-                traceback.print_exc()
+        if _handle_delegate_cmd(lo, cmd):
             continue
 
         # P1.4 hooks REPL — Codex flagged 2026-05-11 that the hooks
         # system had public Python API but no user-typed command. Sub-
         # commands match agents': list / enable <id> / disable <id>.
-        if lo == "hooks" or lo.startswith("hooks "):
-            try:
-                import hooks as _hooks
-
-                _args = (cmd[len("hooks") :].strip()).split(None, 1)
-                _sub = (_args[0] if _args else "").lower()
-                _rest = _args[1] if len(_args) > 1 else ""
-                if _sub in ("", "list"):
-                    _hs = _hooks.list_hooks()
-                    print(f"\n  {C}Registered hooks ({len(_hs)}):{X}")
-                    for h in _hs:
-                        state = f"{G}enabled{X}" if h.enabled else f"{D}disabled{X}"
-                        print(
-                            f"    {W}{h.id:<30}{X}  {h.kind:<14}  {state}  ({h.source})"
-                        )
-                    print()
-                elif _sub == "enable":
-                    ok = _hooks.enable(_rest.strip())
-                    if ok:
-                        print(f"  {G}✅ enabled: {_rest.strip()}{X}\n")
-                    else:
-                        print(f"  {W}unknown hook: {_rest.strip()!r}{X}\n")
-                elif _sub == "disable":
-                    ok = _hooks.disable(_rest.strip())
-                    if ok:
-                        print(f"  {G}✅ disabled: {_rest.strip()}{X}\n")
-                    else:
-                        print(f"  {W}unknown hook: {_rest.strip()!r}{X}\n")
-                elif _sub == "reload":
-                    n = _hooks.reload_user_hooks()
-                    print(
-                        f"  {G}✅ reloaded {n} user hook(s) from ~/.master_ai_hooks.json{X}\n"
-                    )
-                else:
-                    print(
-                        f"  {W}usage: hooks [list|enable <id>|disable <id>|reload]{X}\n"
-                    )
-            except Exception as e:
-                print(f"  {W}hooks command error: {e}{X}\n")
+        if _handle_hooks_cmd(lo, cmd):
             continue
 
         # ── Project ───────────────────────────────────────────
@@ -27433,28 +27542,7 @@ def main():
                 print(f"  {W}No active project. Use: project <path>{X}")
             continue
 
-        if lo.startswith("project "):
-            proj = os.path.expanduser(cmd[8:].strip())
-            if os.path.isdir(proj):
-                globals()["ACTIVE_PROJECT"] = proj
-                print(f"  {G}✅ Active project: {W}{proj}{X}")
-                show_hint(
-                    "Project context active",
-                    "File structure is now injected into AI context.\n"
-                    "AI will write paths relative to this project.\n"
-                    "Git branch + recent commits also auto-injected.",
-                )
-                struct = subprocess.run(
-                    f"find {proj} -type f | grep -v -E '(node_modules|\\.git|__pycache__)' | head -50",
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                ).stdout.strip()
-                print(f"  {C}Files:{X}")
-                for f in struct.splitlines():
-                    print(f"    {W}{f}{X}")
-            else:
-                print(f"  {R}❌ Directory not found: {proj}{X}")
+        if _handle_project_cmd(lo, cmd):
             continue
 
         # ── Chunked mode — ARCHIVED 2026-04-19 ───────────────
@@ -27567,33 +27655,7 @@ def main():
         # `mesh add`                → shell out to mesh.sh for interactive add
         # `mesh ask <peer> <q...>`  → POST /ask to a peer, get its Ollama's reply
         # Use `self` as the peer name to loopback-test your own /ask pipe.
-        if lo == "mesh" or lo.startswith("mesh "):
-            rest = cmd[5:].strip() if lo.startswith("mesh ") else ""
-            mesh_sh = str(Path.home() / "scripts/mesh.sh")
-            try:
-                if rest == "" or rest in ("ls", "list"):
-                    subprocess.run(["bash", mesh_sh, "ls"], check=False)
-                elif rest == "ping":
-                    subprocess.run(["bash", mesh_sh, "ping"], check=False)
-                elif rest == "add":
-                    subprocess.run(["bash", mesh_sh, "add"], check=False)
-                elif rest.startswith("ask "):
-                    # Split into: peer, prompt-remainder
-                    parts = rest[4:].strip().split(None, 1)
-                    if len(parts) < 2:
-                        print(f"  {W}usage: mesh ask <peer> <prompt...>{X}")
-                    else:
-                        peer, prompt = parts[0], parts[1]
-                        subprocess.run(
-                            ["bash", mesh_sh, "ask", peer, prompt], check=False
-                        )
-                else:
-                    print(
-                        f"  {W}🕸  mesh commands:{X} ls | ping | add | ask <peer> <prompt>"
-                    )
-                    print(f"  {W}   full menu:{X} bash ~/scripts/mesh.sh")
-            except Exception as e:
-                print(f"  {R}❌ mesh error: {e}{X}")
+        if _handle_mesh_cmd(lo, cmd):
             continue
 
         # Legacy alias retained for compatibility, now dependency-free.

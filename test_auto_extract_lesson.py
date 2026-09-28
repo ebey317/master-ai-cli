@@ -355,19 +355,55 @@ class CodexFindingsRegressionGuard(unittest.TestCase):
     def test_hooks_repl_command_exists(self):
         """Finding 3: there must be a REPL command surface for hooks
         list/enable/disable so the user can disable auto-extract-lesson
-        without editing Python."""
-        # Look for `if lo == "hooks"` in master_ai source.
-        # main() is the REPL loop, so the trigger lives somewhere in
-        # that function (or nearby).
-        with open(master_ai.__file__) as f:
-            src = f.read()
-        self.assertIn(
-            'if lo == "hooks" or lo.startswith("hooks ")',
-            src,
-            "hooks REPL command not wired — Codex caught this on "
-            "2026-05-11; user can't disable auto-extract-lesson "
-            "without it",
-        )
+        without editing Python.
+
+        This used to read master_ai's source and look for the literal
+        `if lo == "hooks" or lo.startswith("hooks ")`. That broke the moment
+        the branch was extracted into _handle_hooks_cmd() and the guard was
+        rewritten as its negation — a pure move that changed no behaviour
+        and no longer had a user-facing command surface, which is what the
+        test exists to protect.
+
+        Driven behaviourally instead: the command must be reachable, must
+        consume a hooks command, must leave anything else alone, and must
+        actually toggle a hook.
+        """
+        handler = master_ai._handle_hooks_cmd
+
+        # Reachable and correctly scoped: consumed when it matches, ignored
+        # when it does not.
+        self.assertTrue(handler("hooks", "hooks"))
+        self.assertTrue(handler("hooks list", "hooks list"))
+        self.assertFalse(handler("doctor", "doctor"))
+        self.assertFalse(handler("help", "help"))
+
+        import hooks
+
+        before = {h.id: h.enabled for h in hooks.list_hooks()}
+
+        # It really drives the hook registry, not just prints something.
+        enabled = [h for h in hooks.list_hooks() if h.enabled]
+        self.assertTrue(before, "expected some registered hooks to toggle")
+        target = enabled[0].id
+
+        try:
+            handler(f"hooks disable {target}", f"hooks disable {target}")
+            still_enabled = [
+                h.id for h in hooks.list_hooks() if h.id == target and h.enabled
+            ]
+            self.assertEqual(
+                still_enabled, [], f"{target} is still enabled after disable"
+            )
+        finally:
+            # Leave the registry exactly as we found it.
+            for hook_id, was_enabled in before.items():
+                if was_enabled:
+                    hooks.enable(hook_id)
+                else:
+                    hooks.disable(hook_id)
+
+        after = {h.id: h.enabled for h in hooks.list_hooks()}
+        self.assertEqual(before, after, "test mutated the hook registry")
 
 
 class MasterAiFiresHook(unittest.TestCase):
