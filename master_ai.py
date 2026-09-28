@@ -5004,52 +5004,35 @@ def orchestrate(history, user_text, image_path=None):
         _over_budget = total_chars >= _wm
         _pressure_desc = f"{total_chars:,} chars (limit {_wm:,} = 95% of {(_wm_tokens or 0):,} ctx, char estimate — no real measurement yet)"
     if _over_budget:
-        # 2026-09-25: root-caused live — Elijah hit this at a genuine 100%
-        # in AUTO mode and still had to press a button: "i shouldn't have
-        # to trigger it with a button press. it should automatically do it
-        # like you do." The EOFError/KeyboardInterrupt fallback below only
-        # covers a non-TTY caller; a real interactive session (exactly
-        # what he was in) genuinely blocks on input() waiting for 1/2 +
-        # Enter. AUTO mode already means "don't ask, just do it" everywhere
-        # else in this codebase (auto-mark-done, the resume auto-continue
-        # nudge, ...) -- this prompt was the one place that still asked.
-        # Skip straight to save_refresh with no prompt when in auto mode;
-        # every other mode keeps the interactive choice.
-        if globals().get("MODE", "plan") == "auto":
-            print(
-                f"\n  {BO}⚠ Context pressure — history is {_pressure_desc}. "
-                f"AUTO mode — saving + refreshing now, no prompt.{X}"
-            )
-            return {
-                "route": "save_refresh",
-                "reason": f"history {_pressure_desc} (auto)",
-            }
+        # 2026-09-28: Elijah: "it needs to compact like all the other
+        # frameworks compact. it doesn't need to restart, it just needs to
+        # compress. and start from where it was. the restart is bad. i
+        # think the compress mechanism is good, but the restart is bad. it
+        # should just stay where it is and start from the compression."
+        #
+        # Was: route to "save_refresh" -> handle_save_refresh() ->
+        # save_session() + write RESUME_FLAG + os.execvp() -- a full
+        # process restart that discarded MODE, PINNED_MODEL, and every
+        # other in-memory setting, papered over by a resume-recap reload
+        # on the NEXT process's first prompt. That's still exactly what
+        # "new" / "clear" / "kick" / "refresh" do (see handle_save_refresh
+        # callers elsewhere) -- those are deliberate fresh-start requests
+        # and are UNCHANGED. This trip is automatic, not requested, so it
+        # should be invisible: compact the older portion in place and keep
+        # running this exact same process, same turn. No restart means no
+        # reason to interrupt with a menu either -- a restart needed
+        # asking because it was destructive; compaction isn't.
         print(f"\n  {BO}⚠ Context pressure — history is {_pressure_desc}.{X}")
         print(
-            f"  {BO}  Sensei will save the conversation, restart, and reload it compacted.{X}"
+            f"  {C}Compacting older context in place — no restart, continuing this turn.{X}"
         )
-        print(
-            f"  {BO}  Your last message is preserved — you'll see it on the other side.{X}"
-        )
-        print(f"  {BY}    1  save + refresh now  (recommended){X}")
-        print(
-            f"  {BY}    2  keep going — adds 20,000 chars of headroom for this session{X}"
-        )
-        try:
-            ans = input(f"  {BY}choice [1]: {X}").strip()
-        except (EOFError, KeyboardInterrupt):
-            ans = "1"
-        if ans == "2":
-            global _WATERMARK_HEADROOM
-            _WATERMARK_HEADROOM = 20000
-            print(
-                f"  {G}✓ ok — watermark raised by 20,000 chars for this session.{X}\n"
-            )
+        if _compact_history_in_place(history):
+            _after_chars = sum(len(m.get("content", "") or "") for m in history)
+            print(f"  {G}✓ compacted — {_after_chars:,} chars now, same session.{X}\n")
         else:
-            return {
-                "route": "save_refresh",
-                "reason": f"history {_pressure_desc}",
-            }
+            print(
+                f"  {Y}⚠ compaction call came back empty — continuing without it this turn.{X}\n"
+            )
 
     # 2. Explicit prefixes — user intent overrides mode. Matched against
     # the user section (after [USER PROMPT]) so API-wrapped prompts honor
@@ -9866,6 +9849,76 @@ def handle_task_cmd(cmd):
         return True
 
     return False
+
+
+# ── CONTEXT-PRESSURE COMPACTION (in-place, no restart) ─────────
+# Elijah, 2026-09-28: "it needs to compact like all the other frameworks
+# compact. it doesn't need to restart, it just needs to compress. and
+# start from where it was. the restart is bad... it should just stay
+# where it is and start from the compression."
+#
+# Replaces the old context-pressure response: save_session() + write
+# RESUME_FLAG + os.execvp() (see handle_save_refresh()) -- a full process
+# restart that discarded MODE, PINNED_MODEL, and every other in-memory
+# session setting, relying on a resume-recap reload on the NEXT process's
+# first prompt to paper over it. handle_save_refresh() itself is
+# UNCHANGED and still used for deliberate user-requested fresh starts
+# ("new" / "clear" / "kick" / "refresh") -- those really do want a blank
+# slate, on purpose. This is only for the AUTOMATIC "history got too big"
+# trip inside orchestrate(): compress the older portion in place and keep
+# running the exact same process, same turn, same everything else.
+_COMPACT_KEEP_RECENT = 12  # most recent raw messages stay verbatim, full detail
+
+
+def _compact_older_messages(older_msgs):
+    """One cloud call: a dense WORKING summary for a model to continue
+    from -- not summarize_session()'s human-readable 4-bullet recap.
+    Preserves concrete facts (paths, commands, decisions, values found)
+    and open threads; drops pleasantries and repeated back-and-forth."""
+    transcript = "\n".join(
+        f"{(m.get('role') or '?').upper()}: {(m.get('content') or '')[:800]}"
+        for m in older_msgs
+    )
+    prompt = (
+        "Compress this conversation history into a dense working summary "
+        "for an AI continuing the SAME task, not a human-readable recap. "
+        "Preserve concrete facts: file paths touched, commands run, "
+        "decisions made, values discovered, and anything still open or "
+        "unresolved. Drop pleasantries and repeated back-and-forth. "
+        "200-400 words, plain prose.\n\n" + transcript
+    )
+    try:
+        result = _ask_cloud_for_label([{"role": "user", "content": prompt}])
+        return (result or "").strip()
+    except Exception as e:
+        log(f"CONTEXT_COMPACT_ERROR: {e}")
+        return ""
+
+
+def _compact_history_in_place(history):
+    """Replace older turns with a dense summary; keep the system
+    message(s) and the most recent _COMPACT_KEEP_RECENT messages verbatim.
+    Mutates `history` in place (same list object the caller holds) and
+    returns True on success. Fails open: returns False and leaves history
+    untouched if the summarization call comes back empty, rather than
+    silently deleting context for nothing."""
+    system = [m for m in history if m.get("role") == "system"]
+    convo = [m for m in history if m.get("role") != "system"]
+    if len(convo) <= _COMPACT_KEEP_RECENT:
+        return False  # not enough history to make compaction worthwhile
+    older, recent = convo[:-_COMPACT_KEEP_RECENT], convo[-_COMPACT_KEEP_RECENT:]
+    summary = _compact_older_messages(older)
+    if not summary:
+        return False
+    note = {
+        "role": "user",
+        "content": (
+            f"[CONTEXT COMPACTED — {len(older)} earlier message(s) condensed "
+            f"to keep this session going without restarting]\n{summary}"
+        ),
+    }
+    history[:] = system + [note] + recent
+    return True
 
 
 # ── HISTORY COMPACT ───────────────────────────────────────────
