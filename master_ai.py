@@ -61,6 +61,7 @@
 import atexit
 import base64
 import concurrent.futures
+import functools
 import hashlib
 import json
 import os
@@ -274,6 +275,89 @@ except ImportError:
 # turn. See handle()'s continuation loop, ask_cloud()'s fallback loop,
 # and _call_with_hard_timeout() for where it's actually checked.
 _INTERRUPT_EVENT = threading.Event()
+
+# ── STALL WATCHDOG (2026-09-28) ───────────────────────────────
+# Elijah: "fix it to where it can have industry standard and production
+# ready framework... there's open code that shows you how to fix this."
+# Ported from Hermes's gateway/session_stall.py (github.com/NousResearch/
+# hermes-agent, checked live in ~/.hermes/hermes-agent): a genuine
+# "seconds since last real activity" watchdog, not a proxy like turn
+# duration -- a legitimately slow-but-working turn looks identical to a
+# stuck one under a naive timer. Everything fixed earlier tonight (plan
+# debate's per-round interrupt check, the activity command) patched ONE
+# specific hang point at a time. This is the general safety net underneath
+# all of them: whatever the current or a FUTURE hang turns out to be, if
+# nothing marks real progress for _STALL_TIMEOUT_S seconds while a turn is
+# in flight, the user gets told plainly instead of staring at a silent
+# screen. Mirrors Hermes's own notify-once-then-latch-until-clear shape.
+_STALL_TIMEOUT_S = float(os.environ.get("MASTER_AI_STALL_TIMEOUT_S", "90"))
+_LAST_ACTIVITY_TS = time.time()
+_ACTIVITY_LOCK = threading.Lock()
+_STALL_NOTIFIED = False
+_TURN_DEPTH = 0  # >0 while a turn is actively running; nests for handle_loop_task
+
+
+def _mark_activity():
+    """Call from anywhere real progress just happened (a token streamed, a
+    RUN finished, a cloud call returned, a debate round completed). Clears
+    any prior stall notice — new progress ends that stall episode."""
+    global _LAST_ACTIVITY_TS, _STALL_NOTIFIED
+    with _ACTIVITY_LOCK:
+        _LAST_ACTIVITY_TS = time.time()
+        _STALL_NOTIFIED = False
+
+
+def _stall_watchdog_loop():
+    """Background daemon, started once. Fires at most one notice per stall
+    episode; a fresh _mark_activity() call re-arms it for the next one."""
+    while True:
+        time.sleep(10)
+        try:
+            if globals().get("_TURN_DEPTH", 0) <= 0:
+                continue
+            with _ACTIVITY_LOCK:
+                idle = time.time() - _LAST_ACTIVITY_TS
+                already = _STALL_NOTIFIED
+            if idle >= _STALL_TIMEOUT_S and not already:
+                mins = max(1, int(idle // 60))
+                try:
+                    print(
+                        f"\n  {Y}⚠  I seem to be stuck (no activity for {mins} min).{X}\n"
+                        f"  {D}Ctrl+C to interrupt what's running, or 'activity cancel' "
+                        f"once the prompt is back.{X}\n"
+                    )
+                except Exception:
+                    pass
+                with _ACTIVITY_LOCK:
+                    globals()["_STALL_NOTIFIED"] = True
+        except Exception:
+            pass
+
+
+def _start_stall_watchdog():
+    if globals().get("_STALL_WATCHDOG_STARTED"):
+        return
+    globals()["_STALL_WATCHDOG_STARTED"] = True
+    threading.Thread(target=_stall_watchdog_loop, daemon=True).start()
+
+
+def _tracks_turn_activity(fn):
+    """Decorator: mark activity on entry and track turn-in-progress depth
+    for the whole call, including every internal return/exception path --
+    without touching a single line inside the wrapped function. Applied to
+    handle() below; nests correctly when handle_loop_task() calls handle()
+    internally."""
+
+    @functools.wraps(fn)
+    def _wrapper(*args, **kwargs):
+        globals()["_TURN_DEPTH"] = globals().get("_TURN_DEPTH", 0) + 1
+        _mark_activity()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            globals()["_TURN_DEPTH"] = max(0, globals().get("_TURN_DEPTH", 0) - 1)
+
+    return _wrapper
 
 
 def _drain_stale_tui_input(reason=""):
@@ -6981,6 +7065,7 @@ def ask_local_stream(messages, model=None, image_path=None):
             sys.stdout.write(s)
             _at_line_start[0] = s.endswith("\n")
             sys.stdout.flush()
+            _mark_activity()
 
         def _flush_line(final=False):
             """Print complete lines in line_buf with the right brand color.
@@ -9178,6 +9263,7 @@ def ask_cloud(messages, provider="opencode"):
         else:
             globals()["PENDING_CONTINUATION"] = None
             r = _so_far
+        _mark_activity()
         return r
     # ── 2026-09-27: visible backup notice ────────────────────────────
     # When the first-choice provider — specifically a model the operator
@@ -9233,6 +9319,7 @@ def ask_cloud(messages, provider="opencode"):
             # the confirmation.
             if _first_choice_failed:
                 _notice_backup_answered(provider, used_model)
+            _mark_activity()
             return r
     if _first_choice_failed:
         _notice_backup_answered(provider, None)
@@ -15317,6 +15404,7 @@ def _fire_on_blocked(target, kind, action_reason, audit_kind):
 
 def run_command(cmd):
     print(f"\n🥷  {BOLD}Running:{X} {Y}{cmd}{X}")
+    _mark_activity()
     _t0 = time.time()
     import typed_actions
 
@@ -15362,6 +15450,7 @@ def run_command(cmd):
             timeout=300,
             cwd=_run_cwd(),
         )
+        _mark_activity()
         output = (result.stdout + result.stderr).strip()
         informational = _is_informational_cmd(shell_cmd, result.returncode)
         chain_ok = result.returncode == 0 or result.returncode == 141 or informational
@@ -18284,6 +18373,84 @@ def _reply_claims_unexecuted_action(reply_text: str) -> bool:
     return sentence_count <= 2 and len(text) < 200
 
 
+# ── Typed dispatch validation gate (CLAUDE.md Tier-1, 2026-09-28) ─────────
+# List-name -> action kind. Explicit because the extraction lists are
+# plural/snake-cased and deriving the kind from the name silently produced
+# RUN_CMDS, which matched no rule and let every payload through.
+_GATE_KIND_BY_LIST = {
+    "read_paths": "READ",
+    "run_cmds": "RUN",
+    "runterm_cmds": "RUNTERM",
+    "send_email_specs": "SEND_EMAIL",
+    "send_telegram_specs": "SEND_TELEGRAM",
+}
+
+
+def _validation_gate(collected):
+    """Run every collected directive through the pre-dispatch validator.
+
+    CLAUDE.md's Tier-1 blocker: nothing validated the shape of an action
+    between "the model emitted a directive" and "we execute it", so a
+    malformed or unparseable action was dispatched anyway and the model went
+    on to report the step as done.
+
+    `collected` is a mapping of list-name -> list of payloads as assembled by
+    process_reply's extraction (plain strings, or (path, content) tuples for
+    CREATE/EDIT). Returns (kept, blocked) where `kept` is a new mapping with
+    the invalid entries removed, preserving order, and `blocked` is a list of
+    (list_name, payload, reason) for feedback into history.
+
+    Legacy extraction still selects WHAT to run — it is the battle-tested
+    path and test_typed_actions_parity.py proves the typed parser agrees with
+    it. What is new here is that the typed parse is LIVE rather than shadow:
+    its verdict now gates dispatch. That is the Tier-1 requirement, and it
+    is deliberately not a wholesale swap of the selector, because a selector
+    swap buys no safety that the gate does not already provide and is far
+    easier to get wrong.
+    """
+    try:
+        import action_validation as _av
+    except Exception as e:  # noqa: BLE001 - a missing module must not stop dispatch
+        log(f"VALIDATION_GATE_UNAVAILABLE: {e}")
+        return collected, []
+
+    kept, blocked = {}, []
+    for name, items in collected.items():
+        survivors = []
+        for payload in items or []:
+            if (
+                name == "create_files"
+                and isinstance(payload, (tuple, list))
+                and payload
+            ):
+                kind, target, content = "CREATE", payload[0], payload[1]
+            elif name == "edit_ops" and isinstance(payload, (tuple, list)) and payload:
+                kind, target, content = (
+                    "EDIT",
+                    payload[0],
+                    (payload[2] if len(payload) > 2 else None),
+                )
+            else:
+                # Explicit map, NOT derived from the list name: these names
+                # are plural and snake-cased ("run_cmds"), so deriving a kind
+                # from them produced RUN_CMDS, matched nothing in the
+                # validator, and silently let every payload through.
+                kind = _GATE_KIND_BY_LIST.get(name, "")
+                target, content = payload, None
+            if not kind:
+                survivors.append(payload)
+                continue
+            res = _av.validate_action(
+                {"kind": kind, "target": target, "create_content": content}
+            )
+            if res.ok:
+                survivors.append(payload)
+            else:
+                blocked.append((name, payload, res.reason))
+        kept[name] = survivors
+    return kept, blocked
+
+
 def process_reply(reply, history, streamed=False, continue_after_tools=False):
     """Parse RUN: / READ: / CREATE: directives from AI reply and execute."""
     globals()["_CHAIN_SUDO_ACKS"] = 0
@@ -18909,6 +19076,78 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         or send_email_specs
         or send_telegram_specs
     )
+
+    # ── Tier-1 pre-dispatch validation gate (2026-09-28) ──────────────
+    # Placed here because every list is final: the per-directive extraction
+    # above and the CREATE/EDIT block builders have all run. Anything that
+    # fails validation is removed BEFORE the first dispatch consumes these
+    # lists, which is the whole point -- the model must not be able to report
+    # a step it never actually performed.
+    _gate_input = {
+        "read_paths": read_paths,
+        "run_cmds": run_cmds,
+        "runterm_cmds": runterm_cmds,
+        "create_files": create_files,
+        "edit_ops": edit_ops,
+        "send_email_specs": send_email_specs,
+        "send_telegram_specs": send_telegram_specs,
+    }
+    _gate_kept, _gate_blocked = _validation_gate(_gate_input)
+    if _gate_blocked:
+        globals()["_LAST_BLOCKED_ACTION"] = {
+            "count": len(_gate_blocked),
+            "reasons": [f"{n}: {r}" for n, _p, r in _gate_blocked[:5]],
+        }
+        for _name, _payload, _reason in _gate_blocked:
+            log(f"TOOL_BLOCKED_VALIDATION: {_name} {_reason}")
+        print(
+            _pill(
+                "BLOCKED",
+                f"{D}{len(_gate_blocked)} action(s) failed validation before "
+                f"dispatch{X}",
+            )
+        )
+        for _name, _payload, _reason in _gate_blocked:
+            print(f"  {Y}{_name}: {_reason}{X}")
+        _detail = "\n".join(
+            f"- {_name}: {_reason}" for _name, _p, _reason in _gate_blocked[:5]
+        )
+        history.append(
+            {
+                "role": "user",
+                "content": (
+                    "[TOOL BLOCKED]\n"
+                    "These actions were rejected by validation and did NOT run:\n"
+                    f"{_detail}\n\n"
+                    "Fix the payloads and re-emit them. Do not report a step as "
+                    "done unless a directive for it actually executed."
+                ),
+            }
+        )
+        # Reassign so downstream dispatch sees only validated actions.
+        read_paths = _gate_kept["read_paths"]
+        run_cmds = _gate_kept["run_cmds"]
+        runterm_cmds = _gate_kept["runterm_cmds"]
+        create_files = _gate_kept["create_files"]
+        edit_ops = _gate_kept["edit_ops"]
+        send_email_specs = _gate_kept["send_email_specs"]
+        send_telegram_specs = _gate_kept["send_telegram_specs"]
+        if not (
+            read_paths
+            or run_cmds
+            or runterm_cmds
+            or create_files
+            or edit_ops
+            or remember_facts
+            or task_add_texts
+            or task_done_targets
+            or send_email_specs
+            or send_telegram_specs
+        ):
+            # Everything this reply proposed was invalid: stop the chain
+            # rather than falling through and returning the narrative text as
+            # if it were a completed answer.
+            return None
     # REMEMBER: <fact> — fire first, before any tool dispatch. Memory
     # writes are inert text appends; no fence, no approval needed, same
     # path as the user `remember:` command. The model may emit multiple
@@ -21439,6 +21678,7 @@ def handle_image_status(user_text, arg, history):
     history.append({"role": "assistant", "content": msg})
 
 
+@_tracks_turn_activity
 def handle(user_text, history, image_path=None, context_policy=None):
     _reset_turn_privacy()
     _reset_turn_verify_state()
@@ -24834,6 +25074,7 @@ def main():
 
     atexit.register(lambda: _bounded_save_session(GLOBAL_HISTORY))
     atexit.register(lambda: RESUME_FLAG.unlink(missing_ok=True))
+    _start_stall_watchdog()
     # signal.signal() only works in the MAIN thread. In TUI mode main() runs
     # in a worker thread, so installing handlers here would raise ValueError
     # and silently exit. atexit still covers normal shutdown; the TUI owner

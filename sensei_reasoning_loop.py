@@ -134,6 +134,20 @@ CRITIC OUTPUT:
 Produce the final clean answer now."""
 
 
+def _mark_master_ai_activity() -> None:
+    """Feed master_ai's stall watchdog: any progress print from a
+    multi-stage loop in this file (reasoning loop, plan debate) counts as
+    real activity, same as a streamed token or a finished RUN command.
+    Lazy-imported and fail-silent, matching this file's existing
+    _interrupted()-style calls into master_ai."""
+    try:
+        import master_ai
+
+        master_ai._mark_activity()
+    except Exception:
+        pass
+
+
 def _model_chat(
     model: str,
     system: str,
@@ -427,6 +441,7 @@ def run_reasoning_loop(
     def _say(msg: str) -> None:
         if progress:
             print(msg, flush=True)
+        _mark_master_ai_activity()
 
     # Prepend memory context to the query if a memory file is configured
     full_query = query
@@ -653,6 +668,7 @@ def run_plan_debate(
     def _say(msg: str) -> None:
         if progress:
             print(msg, flush=True)
+        _mark_master_ai_activity()
 
     # 2026-09-27: the round-loop-only interrupt check (added 2026-09-24) still
     # left every individual blocking call uninterruptible -- Ctrl+C during
