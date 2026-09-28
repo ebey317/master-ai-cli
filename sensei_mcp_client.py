@@ -57,6 +57,9 @@ LOG_PATH = MCP_DIR / "mcp_client.log"
 PROTOCOL_VERSION = "2024-11-05"
 CONNECT_TIMEOUT_S = 15.0
 RPC_TIMEOUT_S = 20.0
+# Tool calls can legitimately take longer than a discovery handshake --
+# a browser click or an inbox fetch is not a tools/list round trip.
+CALL_TIMEOUT_S = float(os.environ.get("MASTER_AI_MCP_CALL_TIMEOUT", "90"))
 TOOLS_CACHE_TTL_S = 300.0
 
 VALID_TRANSPORTS = ("stdio", "sse")
@@ -504,6 +507,137 @@ def make_client(entry: dict):
     return StdioMcpClient(
         entry["command"], entry.get("args", []), env=entry.get("env") or {}
     )
+
+
+# ─── Invoke ───────────────────────────────────────────────────────────
+#
+# Until 2026-09-28 this module could DISCOVER a server's tools
+# (initialize -> tools/list, via probe()) but had no way to CALL one:
+# zero occurrences of tools/call anywhere. Registering a server therefore
+# made its tools visible in `mcp tools` and to nothing else — the agent
+# could read the catalogue and never invoke a single one. call_tool() is
+# that missing half.
+
+
+def call_tool(name: str, tool: str, arguments: dict | None = None) -> dict:
+    """Invoke `tool` on registered server `name`.
+
+    Returns {"ok": bool, "result": Any, "error": str, "server": str,
+             "tool": str}. Never raises.
+
+    The server is spawned fresh per call and shut down afterwards. A
+    long-lived connection would be faster, but the catalogue is a
+    user-editable JSON file and a cached process would keep serving a
+    command that had since been edited or removed. Correctness first; the
+    per-call spawn is a real cost to revisit if latency shows up.
+    """
+    entry = get_server(name)
+    if not entry:
+        return _call_fail(name, tool, f"no such MCP server: {name!r}")
+    if not entry.get("enabled", False):
+        why = "; ".join(entry.get("problems") or []) or "disabled"
+        return _call_fail(name, tool, f"server {name!r} is not enabled ({why})")
+
+    # Only invoke a tool this server was actually validated as exposing.
+    known = entry.get("tool_names") or []
+    if known and tool not in known:
+        return _call_fail(name, tool, f"{name!r} does not expose a tool named {tool!r}")
+
+    client = None
+    try:
+        client = make_client(entry)
+        client.start()
+        # Servers expect the initialized notification before any call.
+        try:
+            init = client._rpc(
+                "initialize",
+                {
+                    "protocolVersion": PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {"name": "sensei", "version": "1.0.0"},
+                },
+                notify=False,
+            )
+        except Exception as e:  # noqa: BLE001
+            return _call_fail(name, tool, f"initialize failed: {e}")
+        if isinstance(init, dict) and init.get("error"):
+            return _call_fail(name, tool, f"initialize rejected: {init['error']}")
+        try:
+            client._rpc("notifications/initialized", {}, notify=True)
+        except Exception:
+            pass  # a notification has no reply to wait for
+
+        resp = client._rpc(
+            "tools/call",
+            {"name": tool, "arguments": arguments or {}},
+            timeout=float(CALL_TIMEOUT_S),
+        )
+        if isinstance(resp, dict) and resp.get("error"):
+            err = resp["error"]
+            msg = err.get("message") if isinstance(err, dict) else str(err)
+            return _call_fail(name, tool, f"{msg}")
+        result = (resp or {}).get("result")
+        # MCP reports tool-level failure in-band (isError), not as a
+        # JSON-RPC error, so it has to be surfaced separately.
+        if isinstance(result, dict) and result.get("isError"):
+            return {
+                "ok": False,
+                "result": _flatten_content(result),
+                "error": "tool reported an error",
+                "server": name,
+                "tool": tool,
+            }
+        return {
+            "ok": True,
+            "result": _flatten_content(result),
+            "error": "",
+            "server": name,
+            "tool": tool,
+        }
+    except Exception as e:  # noqa: BLE001 - never take the agent down
+        return _call_fail(name, tool, f"{type(e).__name__}: {e}")
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+
+def _call_fail(name: str, tool: str, message: str) -> dict:
+    return {
+        "ok": False,
+        "result": None,
+        "error": message,
+        "server": name,
+        "tool": tool,
+    }
+
+
+def _flatten_content(result: Any) -> Any:
+    """Reduce an MCP tool result to something worth putting in history.
+
+    Content blocks are a list of typed dicts; the text in them is what the
+    model can actually use. Non-text blocks are summarised by type so a
+    screenshot or blob does not silently vanish.
+    """
+    if not isinstance(result, dict):
+        return result
+    content = result.get("content")
+    if not isinstance(content, list):
+        return result.get("structuredContent", result)
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            parts.append(str(block))
+            continue
+        if block.get("type") == "text" and block.get("text"):
+            parts.append(str(block["text"]))
+        else:
+            kind = block.get("type", "unknown")
+            parts.append(f"[{kind} content omitted]")
+    text = "\n".join(p for p in parts if p)
+    return text or result
 
 
 # ─── Probe + record ─────────────────────────────────────────────────

@@ -18504,6 +18504,73 @@ def _validation_gate(collected):
     return kept, blocked
 
 
+# ── MCP_CALL dispatch (2026-09-28) ────────────────────────────────────────
+def _run_mcp_call_spec(spec, history):
+    """Invoke one `MCP_CALL: <server> <tool> {json}` and feed back the result.
+
+    The spec has already been through _validation_gate, so the server is
+    registered and enabled and the tool is one it exposes. The result goes
+    back into history either way, success or failure, so the model can react
+    instead of silently reporting a step it never performed -- the same
+    contract as every other tool dispatch here.
+
+    Never raises: a broken MCP call must not take down the turn.
+    """
+    try:
+        import json as _json
+
+        import sensei_mcp_client as _mcp
+
+        parts = (spec or "").split(None, 2)
+        if len(parts) < 2:
+            return
+        server, tool = parts[0], parts[1]
+        args = _json.loads(parts[2].strip() or "{}") if len(parts) > 2 else {}
+
+        print(f"\n🔌 {BOLD}MCP{X} {C}{server}{X} → {tool}")
+        result = _mcp.call_tool(server, tool, args)
+
+        if result.get("ok"):
+            body = result.get("result")
+            text = (
+                body
+                if isinstance(body, str)
+                else _json.dumps(body, indent=2, default=str)
+            )
+            print(f"{D}{text[:2000]}{X}")
+            log(f"MCP_CALL_OK: {server}/{tool}")
+            history.append(
+                {
+                    "role": "user",
+                    "content": f"[MCP RESULT] {server}/{tool}\n{text[:4000]}",
+                }
+            )
+        else:
+            err = result.get("error") or "unknown error"
+            print(f"  {R}MCP call failed: {err}{X}")
+            log(f"MCP_CALL_FAIL: {server}/{tool} {err}")
+            history.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"[MCP BLOCKED] {server}/{tool} did not run: {err}\n"
+                        "Do not report this step as done."
+                    ),
+                }
+            )
+    except Exception as e:  # noqa: BLE001
+        log(f"MCP_CALL_ERROR: {e}")
+        try:
+            history.append(
+                {
+                    "role": "user",
+                    "content": f"[MCP BLOCKED] call could not be made: {e}",
+                }
+            )
+        except Exception:
+            pass
+
+
 def process_reply(reply, history, streamed=False, continue_after_tools=False):
     """Parse RUN: / READ: / CREATE: directives from AI reply and execute."""
     globals()["_CHAIN_SUDO_ACKS"] = 0
@@ -18909,6 +18976,12 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         for l in lines
         if re.match(r"^\s*EDIT:", l, re.IGNORECASE) and _directive_payload(l, "EDIT")
     ]
+    # 2026-09-28: MCP_CALL: <server> <tool> {json args}
+    mcp_call_specs = [
+        _directive_payload(l, "MCP_CALL")
+        for l in lines
+        if _real_directive(l, "MCP_CALL") and _directive_payload(l, "MCP_CALL")
+    ]
 
     # 2026-09-24: snapshot of "did this reply contain ANY directive at
     # all" — taken here, right after the raw per-directive extraction and
@@ -19144,6 +19217,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         "edit_ops": edit_ops,
         "send_email_specs": send_email_specs,
         "send_telegram_specs": send_telegram_specs,
+        "mcp_call_specs": mcp_call_specs,
     }
     _gate_kept, _gate_blocked = _validation_gate(_gate_input)
     if _gate_blocked:
@@ -19189,6 +19263,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         edit_ops = _gate_kept["edit_ops"]
         send_email_specs = _gate_kept["send_email_specs"]
         send_telegram_specs = _gate_kept["send_telegram_specs"]
+        mcp_call_specs = _gate_kept["mcp_call_specs"]
         if not (
             read_paths
             or run_cmds
@@ -19211,6 +19286,13 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
     # REMEMBER lines in one reply; each gets validated + stored.
     for _fact in remember_facts:
         confirm_remember(_fact)
+
+    # ── MCP_CALL: <server> <tool> {json} (2026-09-28) ─────────────────
+    # Runs after the validation gate above has already checked that the
+    # server is registered+enabled and the tool is one it exposes, so this
+    # only has to invoke and report.
+    for _spec in mcp_call_specs:
+        _run_mcp_call_spec(_spec, history)
 
     # Print non-directive narrative text. Backtick-wrapped directive names
     # (e.g. "use `RUN:` for shell commands") are prose and must stay in the

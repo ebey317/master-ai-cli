@@ -165,7 +165,7 @@ def _validate_run(kind: str, target: Any) -> ValidationResult:
     a smuggled second action rather than a command.
     """
     bad = _common_shape_checks(kind, target)
-    if bad:
+    if bad is not None:
         return bad
     if "\n" in target:
         return _fail(
@@ -226,7 +226,7 @@ def _validate_read(target: Any) -> ValidationResult:
     this. This only rejects a payload that is not one path at all.
     """
     bad = _common_shape_checks("READ", target)
-    if bad:
+    if bad is not None:
         return bad
     if "\n" in target:
         return _fail(
@@ -292,7 +292,7 @@ def _validate_write(kind: str, target: Any, content: str | None) -> ValidationRe
     depends on it, and the model reports the whole thing as done.
     """
     bad = _common_shape_checks(kind, target)
-    if bad:
+    if bad is not None:
         return bad
     if content is None:
         return _fail(kind, target, f"{kind} carried no content block to write")
@@ -302,6 +302,69 @@ def _validate_write(kind: str, target: Any, content: str | None) -> ValidationRe
     if err:
         return _fail(kind, target, f"{kind} content would not parse: {err}")
     return _ok(kind, target)
+
+
+def _validate_mcp_call(target: Any) -> ValidationResult:
+    """MCP_CALL: `<server> <tool> {json args}` against a known-enabled server.
+
+    Validated before the call so a typo in a server or tool name is caught
+    as a blocked action with a usable reason, rather than spawning a
+    subprocess to be told the same thing more slowly. The tool must be one
+    the server was actually validated as exposing (sensei_mcp_client records
+    that at probe time), which is also what stops a model from reaching a
+    tool that exists in the file but never made it through validation.
+    """
+    bad = _common_shape_checks("MCP_CALL", target)
+    if bad is not None:
+        return bad
+    if "\n" in target:
+        return _fail("MCP_CALL", target, "MCP_CALL payload is multi-line")
+
+    parts = target.split(None, 2)
+    if len(parts) < 2:
+        return _fail("MCP_CALL", target, "MCP_CALL needs `<server> <tool> {json args}`")
+    server, tool, rest = parts[0], parts[1], (parts[2] if len(parts) > 2 else "{}")
+
+    try:
+        import sensei_mcp_client as _mcp
+    except Exception as e:  # noqa: BLE001
+        return ValidationResult(
+            ok=True,
+            kind="MCP_CALL",
+            target=target,
+            warnings=[f"MCP client unavailable: {e}"],
+        )
+
+    entry = _mcp.get_server(server)
+    if not entry:
+        # list_servers() already returns the servers mapping, not the
+        # whole catalog, so it must not be unwrapped again.
+        known = ", ".join(sorted(_mcp.list_servers())) or "none"
+        return _fail(
+            "MCP_CALL", target, f"no such MCP server {server!r}; have: {known}"
+        )
+    if not entry.get("enabled"):
+        why = "; ".join(entry.get("problems") or []) or "disabled"
+        return _fail(
+            "MCP_CALL", target, f"MCP server {server!r} is not enabled ({why})"
+        )
+    exposed = entry.get("tool_names") or []
+    if exposed and tool not in exposed:
+        return _fail(
+            "MCP_CALL", target, f"server {server!r} has no tool named {tool!r}"
+        )
+
+    rest = rest.strip() or "{}"
+    if not rest.startswith("{"):
+        return _fail(
+            "MCP_CALL", target, f"arguments must be a JSON object, got {rest[:40]!r}"
+        )
+    try:
+        json.loads(rest)
+    except json.JSONDecodeError as e:
+        return _fail("MCP_CALL", target, f"arguments are not valid JSON: {e}")
+
+    return _ok("MCP_CALL", target)
 
 
 # Kinds that carry nothing to execute: narrative/inert. They are always
@@ -379,6 +442,8 @@ def validate_action(action) -> ValidationResult:
             return _validate_read(target)
         if kind in ("CREATE", "EDIT"):
             return _validate_write(kind, target, content)
+        if kind == "MCP_CALL":
+            return _validate_mcp_call(target)
 
         return _ok(kind, target if isinstance(target, str) else "")
     except Exception as e:  # noqa: BLE001 - a validator must never break dispatch
