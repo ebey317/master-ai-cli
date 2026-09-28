@@ -6964,6 +6964,23 @@ def ask_local_stream(messages, model=None, image_path=None):
         # color-classify at newline boundaries so each complete line gets
         # the right Master AI brand color (PLAN/INFO/VOICE/CAUTION/SOURCES).
         line_buf = []
+        # 2026-09-28: Elijah, live: replies "need more structure... margins.
+        # they're just kind of all over." Same root cause as render_reply's
+        # fix, applied here too -- this streaming path prints every line
+        # flush at column 0 with zero relationship to the "  🥋 " prefix
+        # printed once before the first token. `_at_line_start` tracks
+        # whether the NEXT thing printed needs the margin first (true right
+        # after any line ending in \n; false for the very first line, which
+        # continues directly after the prefix already printed).
+        _stream_margin = _reply_margin_for_prefix(f"\n{M}  🥋{X} ")
+        _at_line_start = [False]
+
+        def _emit(s):
+            if _at_line_start[0]:
+                sys.stdout.write(_stream_margin)
+            sys.stdout.write(s)
+            _at_line_start[0] = s.endswith("\n")
+            sys.stdout.flush()
 
         def _flush_line(final=False):
             """Print complete lines in line_buf with the right brand color.
@@ -6980,18 +6997,18 @@ def ask_local_stream(messages, model=None, image_path=None):
                 if break_pos < 30:  # no good space — hard-break at width
                     break_pos = SOFT_WRAP
                 line, joined = joined[:break_pos], joined[break_pos:].lstrip()
-                print(_paint_line(line + "\n"), end="", flush=True)
+                _emit(_paint_line(line + "\n"))
                 if SENSEI_STREAM_DELAY > 0:
                     time.sleep(SENSEI_STREAM_DELAY)
             while "\n" in joined:
                 line, _, rest = joined.partition("\n")
-                print(_paint_line(line + "\n"), end="", flush=True)
+                _emit(_paint_line(line + "\n"))
                 if SENSEI_STREAM_DELAY > 0:
                     time.sleep(SENSEI_STREAM_DELAY)
                 joined = rest
             if final and joined:
                 # Stream ended mid-line — paint what we have
-                print(_paint_line(joined + "\n"), end="", flush=True)
+                _emit(_paint_line(joined + "\n"))
                 if SENSEI_STREAM_DELAY > 0:
                     time.sleep(SENSEI_STREAM_DELAY)
             elif joined:
@@ -10656,6 +10673,19 @@ def _ensure_rich():
     return _RICH_OK
 
 
+_PREFIX_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+
+
+def _reply_margin_for_prefix(prefix):
+    """Visible-width margin matching a printed reply prefix (e.g. "  🥋 "),
+    so wrapped/continuation lines line up under the first instead of
+    landing flush at column 0. Shared by render_reply() and
+    ask_local_stream()'s line painter -- both print the same shape of
+    prefix before streaming/rendering the actual reply."""
+    visible = _PREFIX_ANSI_RE.sub("", prefix or "")
+    return " " * len(visible.rsplit("\n", 1)[-1])
+
+
 def render_reply(text, prefix=None, suffix=None):
     """Render AI reply as markdown via rich when available. Falls back to
     plain colored print.
@@ -10677,10 +10707,20 @@ def render_reply(text, prefix=None, suffix=None):
     if prefix:
         print(prefix, end="", flush=True)
 
+    # 2026-09-28: Elijah, live: replies "need more structure... margins.
+    # they're just kind of all over." Root cause: `prefix` (e.g. "  🥋 ")
+    # only ever lands on the FIRST printed line -- every wrapped line after
+    # it came straight from rich's capture buffer, which has no idea a
+    # prefix was printed before it and always starts each line at column 0.
+    # A real margin means EVERY wrapped line lines up under the first, not
+    # just the one immediately following the prefix.
+    margin = _reply_margin_for_prefix(prefix)
+
     rendered = text or ""
     if _ensure_rich():
         try:
-            cons = _RICH_CONSOLE.__class__(width=SENSEI_REPLY_WRAP, file=sys.stdout)
+            wrap_width = max(20, SENSEI_REPLY_WRAP - len(margin))
+            cons = _RICH_CONSOLE.__class__(width=wrap_width, file=sys.stdout)
             with cons.capture() as cap:
                 cons.print(_RICH_MARKDOWN(rendered, code_theme="monokai"))
             rendered = cap.get()
@@ -10691,11 +10731,12 @@ def render_reply(text, prefix=None, suffix=None):
         lines = rendered.split("\n")
         last = len(lines) - 1
         for i, line in enumerate(lines):
+            out = line.rstrip() if i == 0 else margin + line.rstrip()
             if i < last:
-                print(line.rstrip(), flush=True)  # implicit newline
+                print(out, flush=True)  # implicit newline
                 time.sleep(SENSEI_REPLY_LINE_DELAY)
             else:
-                print(line.rstrip(), end="", flush=True)
+                print(out, end="", flush=True)
     else:
         print(rendered, end="", flush=True)
 
