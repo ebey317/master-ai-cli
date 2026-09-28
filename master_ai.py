@@ -242,6 +242,15 @@ try:
         "skill install ",
         "skill audit ",
         "skill improve ",
+        "skill create ",
+        "skill auto-author",
+        # AI Engineering from Scratch tutor (2026-09-28)
+        "tutor start",
+        "tutor next",
+        "tutor guide ",
+        "tutor quiz ",
+        "tutor record ",
+        "tutor speak ",
         # MCP client catalog (2026-09-01) — Sensei consuming other MCP servers
         "mcp",
         "mcp list",
@@ -9378,6 +9387,10 @@ def auto_inject_context(user_text, enabled=True):
       - 'whole_file_requested': bool
       - 'inject_chars': int (length of returned text)
       - 'sliced': list of (path, symbol, start_line, end_line) — for the print line
+
+    2026-09-28: added intent guard. A bare filename mention in ordinary text
+    (e.g. "requirements.txt has real deps") should NOT trigger injection. Only
+    inject when the user signals they want to read or discuss the file.
     """
     meta = {
         "big_file_no_symbol_match": [],
@@ -9388,17 +9401,48 @@ def auto_inject_context(user_text, enabled=True):
     if not enabled:
         return ("", meta)
 
-    search_dirs = [Path.home() / "scripts", Path(os.getcwd())]
-    user_text_low = user_text.lower()
-    whole_file = _is_whole_file_request(user_text_low)
-    meta["whole_file_requested"] = whole_file
+    # Intent guard: only scan for file context when the user actually wants it.
+    # Ordinary status updates like "requirements.txt has real deps" must pass
+    # through without derailing into [AUTO-CONTEXT].
+    low_text = user_text.lower()
+    read_cues = (
+        "read", "check", "look at", "show me", "explain", "what's in", "what is in",
+        "open", "review", "audit", "walk through", "walk me through", "debug",
+        "inside", "contents of", "content of", "tell me about", "describe",
+        "what does", "how does", "print", "display", "see", "view", "examine",
+        "inspect", "analyze", "analyse", "grep", "find in", "search in",
+        "file has", "the file", "this file", "that file",
+    )
 
     path_re = re.compile(
         r"(?:~/[\w/.\-]+\.[\w]+|\.\/[\w/.\-]+\.[\w]+|/[\w/.\-]+\.[\w]+|"
         r"[\w\-]+\.(?:py|sh|js|ts|html|css|json|txt|md|yaml|yml|conf|cfg|toml))"
     )
-    candidates = path_re.findall(user_text)
-    ignored_symbols = {Path(c).stem.lower() for c in candidates}
+
+    # Explicit symbol mentions also count as intent to inspect, BUT the filename
+    # stem itself (e.g. "requirements" from "requirements.txt") does not count.
+    # Only count symbols that are separate from the matched filename tokens.
+    path_candidates = path_re.findall(user_text)
+    filename_stems = {Path(c).stem.lower() for c in path_candidates}
+    symbols = _extract_target_symbols(user_text, ignored_symbols=filename_stems)
+    has_read_intent = any(cue in low_text for cue in read_cues) or bool(symbols)
+    # Path-shaped tokens with / or ~ are almost always meant to be looked at.
+    has_path_literal = bool(
+        re.search(r"(?:^|\s)(?:~\/|\.\/|\.\.\/|\/[A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,8})\b", user_text)
+    )
+    if not (has_read_intent or has_path_literal or _is_whole_file_request(low_text)):
+        return ("", meta)
+
+    # Repo-aware search dirs. Prefer the project root of the current working
+    # directory (look for .git, pyproject.toml, package.json, etc.) rather than
+    # blindly searching ~/scripts and cwd by bare filename.
+    search_dirs = _auto_context_search_dirs()
+
+    whole_file = _is_whole_file_request(low_text)
+    meta["whole_file_requested"] = whole_file
+
+    candidates = path_candidates
+    ignored_symbols = filename_stems
     symbols = _extract_target_symbols(user_text, ignored_symbols=ignored_symbols)
 
     injected = []
@@ -9510,7 +9554,34 @@ def auto_inject_context(user_text, enabled=True):
     return (text, meta)
 
 
-# ── MEMORY ────────────────────────────────────────────────────
+# 2026-09-28: repo-aware search directories for auto-context. Avoid finding
+# stray files by bare name when the real file lives in a project root.
+def _auto_context_search_dirs():
+    """Return ordered search directories for auto-context file lookup.
+
+    If cwd is inside a git/project root, that root is searched first. Then
+    fall back to ~/scripts and cwd. This prevents e.g. finding a stray
+    1-line requirements.txt somewhere else when the real repo has an 18-line
+    requirements.txt at the project root."""
+    dirs = []
+    cwd = Path.cwd()
+    root_markers = {".git", "pyproject.toml", "setup.py", "setup.cfg", "package.json", "requirements.txt", "README.md", "README", ".claude"}
+    # Walk up from cwd looking for a project root
+    cur = cwd
+    project_root = None
+    while cur != cur.parent:
+        if any((cur / marker).exists() for marker in root_markers):
+            project_root = cur
+            break
+        cur = cur.parent
+    if project_root and project_root not in dirs:
+        dirs.append(project_root)
+    # Common sensei paths
+    if Path.home() / "scripts" not in dirs:
+        dirs.append(Path.home() / "scripts")
+    if cwd not in dirs:
+        dirs.append(cwd)
+    return dirs
 def load_memory():
     try:
         return MEMORY_FILE.read_text().strip()
@@ -12621,6 +12692,14 @@ def show_commands():
         (
             "skill improve <name>",
             "failure-pattern report from real runs; proposed fixes go through the EDIT gate",
+        ),
+        (
+            "skill create <name> [transcript]",
+            "generate SKILL.md + recipe.py from a session; asks before saving",
+        ),
+        (
+            "skill auto-author [on|off|status|now]",
+            "let Sensei draft low-risk skills from recent sessions",
         ),
         ("doctor", "Check services, models, URLs, and warnings"),
         ("update", "Update Master AI safely"),
@@ -23896,12 +23975,194 @@ def main():
                                 f"  {G if _ok else Y}improve edit "
                                 f"{'applied' if _ok else 'not applied'}{X}"
                             )
+                elif _sub == "create":
+                    # 2026-09-28. Supervised skill creation from a session
+                    # transcript. Generates SKILL.md + recipe.py, audits them,
+                    # and either saves (auto-approve / low-risk) or prints a
+                    # preview for explicit confirmation.
+                    if len(_rest) < 1:
+                        print(f"  {W}usage: skill create <name> [transcript-path]{X}")
+                        print(
+                            f"  {D}example: skill create notify-hook ~/.master_ai_chats/1788319009.chat{X}"
+                        )
+                    else:
+                        _skill_name = _normalize_skill_name(_rest[0])
+                        _transcript = _rest[1] if len(_rest) > 1 else None
+                        _saved, _msg, _details = _sk.create_skill(
+                            _skill_name,
+                            transcript_path=_transcript,
+                            auto_approve=False,
+                        )
+                        if _saved:
+                            print(f"  {G}{_msg}{X}")
+                        else:
+                            # audit failed OR draft waiting for approval
+                            print(f"\n{_msg}\n")
+                            if _details.get("approved") is False and _details.get("audit", {}).get("passed"):
+                                print(
+                                    f"  {D}Approve? Type 'yes' to save to "
+                                    f"~/.master_ai_skills/{_details.get('name')}/{X}"
+                                )
+                                _answer = input("  > ").strip().lower()
+                                if _answer in ("yes", "y"):
+                                    _saved2, _msg2, _ = _sk.create_skill(
+                                        _skill_name,
+                                        transcript_path=_transcript,
+                                        auto_approve=True,
+                                    )
+                                    print(
+                                        f"  {G if _saved2 else Y}{_msg2}{X}"
+                                    )
+                                else:
+                                    print(f"  {Y}skill creation cancelled{X}")
+                elif _sub == "auto-author":
+                    # 2026-09-28. Autonomous skill creation toggle.
+                    _arg = _rest[0].lower() if _rest else ""
+                    if _arg == "on":
+                        _sk.set_auto_author_enabled(True)
+                        print(f"  {G}auto-author enabled{X}")
+                    elif _arg == "off":
+                        _sk.set_auto_author_enabled(False)
+                        print(f"  {Y}auto-author disabled{X}")
+                    elif _arg == "status":
+                        _on = _sk.get_auto_author_enabled()
+                        print(
+                            f"  auto-author is {'enabled' if _on else 'disabled'}{X}"
+                        )
+                    elif _arg == "now":
+                        # One-shot manual trigger
+                        _draft = _sk.propose_auto_skill()
+                        if _draft is None:
+                            print(f"  {D}no strong skill candidate found in recent sessions{X}")
+                        else:
+                            _d = _draft
+                            _transcript_for_save = (
+                                str(_d.transcript_path)
+                                if _d.transcript_path
+                                else str(_d.skill_dir.parent / "transcript.chat")
+                            )
+                            print(
+                                f"\n  {C}candidate: {_d.name}"
+                                f" ({'saved' if _d.approved else 'draft'}){X}\n"
+                            )
+                            print(f"  low-risk: {_d.low_risk}")
+                            print(f"  audit: {'PASS' if _d.audit.get('passed') else 'FAIL'}")
+                            for r in _d.audit.get("reasons", []):
+                                print(f"    ✗ {r}")
+                            for w in _d.audit.get("warnings", [])[:3]:
+                                print(f"    ⚠ {w}")
+                            if not _d.approved and _d.audit.get("passed"):
+                                print(
+                                    f"\n  {D}Approve? Type 'yes' to save to "
+                                    f"~/.master_ai_skills/{_d.name}/{X}"
+                                )
+                                _answer = input("  > ").strip().lower()
+                                if _answer in ("yes", "y"):
+                                    _saved3, _msg3, _ = _sk.create_skill(
+                                        _d.name,
+                                        transcript_path=str(_d.skill_dir / ".." / "transcript.chat"),
+                                        auto_approve=True,
+                                    )
+                                    print(
+                                        f"  {G if _saved3 else Y}{_msg3}{X}"
+                                    )
+                    else:
+                        print(
+                            f"  {W}usage: skill auto-author [on|off|status|now]{X}"
+                        )
                 else:
                     print(
-                        f"  {W}usage: skill [browse [source]|install <source> <id>|run <name> [json]|resume <name> <session-id>|audit <name>|improve <name>]{X}"
+                        f"  {W}usage: skill [browse [source]|install <source> <id>|run <name> [json]|resume <name> <session-id>|audit <name>|improve <name>|create <name> [transcript]|auto-author [on|off|status|now]]{X}"
                     )
             except Exception as e:
                 print(f"  {W}skill command error: {e}{X}\n")
+            continue
+
+        # ── AI Engineering from Scratch tutor commands ─────────────────
+        # 2026-09-28. Thin wrapper over aies_tutor.py so Sensei can run
+        # the curriculum's prose-based skills (start-learning, learn,
+        # course-guide, check-understanding) without hand-adapting each
+        # one into the typed STEPS state machine. Also speaks lesson text
+        # via the existing voice_bridge / master-ai TTS stack.
+        if lo == "tutor" or lo.startswith("tutor "):
+            try:
+                import aies_tutor as _tutor
+
+                _parts = cmd.split()
+                _sub = _parts[1].lower() if len(_parts) > 1 else ""
+                _rest = _parts[2:]
+                if _sub in ("", "start"):
+                    _r = _tutor.start_learning()
+                    print(f"  {G if _r['status'] == 'created' else Y}{_r['message']}{X}")
+                elif _sub == "next":
+                    _r = _tutor.next_lesson()
+                    if _r["status"] == "lesson":
+                        print(
+                            f"\n  {C}Next lesson: {_r['title']} ({_r['phase']}/{_r['lesson']}){X}\n"
+                        )
+                        # Show a preview of the lesson doc; full doc can be read in IDE.
+                        _preview = _r["doc"].split("\n")[:12]
+                        print("\n".join(f"  {line}" for line in _preview))
+                        print(
+                            f"\n  {D}TTS chunks ready: {len(_r['tts_chunks'])} — "
+                            f"use `tutor speak <chunk-index-or-text>` to hear them.{X}"
+                        )
+                        # Also print the first chunk as a sample.
+                        if _r["tts_chunks"]:
+                            print(f"\n  {D}Sample chunk:{X}\n  {_r['tts_chunks'][0]}")
+                    else:
+                        print(f"  {Y}{_r['message']}{X}")
+                elif _sub == "guide":
+                    _topic = " ".join(_rest)
+                    if not _topic:
+                        print(f"  {W}usage: tutor guide <topic>{X}")
+                    else:
+                        _r = _tutor.course_guide(_topic)
+                        if _r["status"] == "match":
+                            print(
+                                f"\n  {C}Match: {_r['title']} ({_r['phase']}/{_r['lesson']}){X}\n"
+                            )
+                            _preview = _r["doc"].split("\n")[:12]
+                            print("\n".join(f"  {line}" for line in _preview))
+                        else:
+                            print(f"  {Y}No lesson matched '{_topic}'.{X}")
+                elif _sub == "quiz":
+                    if not _rest:
+                        print(f"  {W}usage: tutor quiz <phase-number-or-slug>{X}")
+                    else:
+                        _r = _tutor.check_understanding(_rest[0])
+                        if _r["status"] == "quiz":
+                            print(
+                                f"\n  {C}Phase quiz: {_r['count']} post-stage questions ready.{X}\n"
+                            )
+                            for i, q in enumerate(_r["questions"][:5], 1):
+                                print(f"\n  {i}. {q['question']}")
+                                for opt_i, opt in enumerate(q.get("options", [])):
+                                    print(f"     {chr(65+opt_i)}. {opt}")
+                        else:
+                            print(f"  {Y}{_r.get('message', 'quiz failed')}{X}")
+                elif _sub == "record":
+                    if len(_rest) < 3:
+                        print(
+                            f"  {W}usage: tutor record <phase> <lesson-dir> <score> [note]{X}"
+                        )
+                    else:
+                        _note = " ".join(_rest[3:]) if len(_rest) > 3 else ""
+                        _r = _tutor.record_lesson(_rest[0], _rest[1], _rest[2], _note)
+                        print(f"  {G}{_r['status']}: {_r['phase']}/{_r['lesson']} = {_r['score']}{X}")
+                elif _sub == "speak":
+                    _text = " ".join(_rest)
+                    if not _text:
+                        print(f"  {W}usage: tutor speak <text>{X}")
+                    else:
+                        _tutor.speak(_text)
+                        print(f"  {G}sent to TTS.{X}")
+                else:
+                    print(
+                        f"  {W}usage: tutor [start|next|guide <topic>|quiz <phase>|record <phase> <lesson> <score>|speak <text>]{X}"
+                    )
+            except Exception as e:
+                print(f"  {W}tutor command error: {e}{X}\n")
             continue
 
         if lo == "help":
