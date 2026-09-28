@@ -8805,6 +8805,106 @@ def _save_fallback_order(names):
     _FALLBACK_ORDER_FILE.write_text(json.dumps(names, indent=2))
 
 
+# ── `fallback ...` REPL commands (2026-09-28) ────────────────────────────
+# Extracted verbatim out of main()'s inline if-chain so the branch is
+# callable and testable without driving the whole REPL (driving main() from
+# a test runs the permission prompt and exits).
+#
+# Management layer on the fallback chain ask_cloud() already runs (see
+# _load_fallback_order docstring) — matches Hermes' own
+# `hermes fallback list/add/remove` naming/shape.
+#
+# Names are lower-cased before every comparison: the allowlist
+# (_VALID_FALLBACK_NAMES) and the stored chain are all lowercase, so
+# `fallback add NVIDIA` resolves like `fallback add nvidia` rather than
+# reporting "unknown provider 'NVIDIA'".
+def _handle_fallback_cmd(lo, cmd):
+    """Handle one `fallback ...` command. Returns True if it was consumed."""
+    if lo in ("fallback", "fallback list"):
+        order = _load_fallback_order()
+        custom = _FALLBACK_ORDER_FILE.exists()
+        print(
+            f"\n  {BOLD}Cloud fallback chain{X} {D}({'custom' if custom else 'default'}){X}:"
+        )
+        for i, name in enumerate(order, 1):
+            print(f"  {C}{i}.{X} {name}")
+        print(f"\n  {D}Valid names: {', '.join(sorted(_VALID_FALLBACK_NAMES))}{X}")
+        print(
+            f"  {D}'fallback add <name>' · 'fallback remove <name>' · "
+            f"'fallback move <name> <position>' · 'fallback reset'{X}\n"
+        )
+        return True
+
+    if lo.startswith("fallback add"):
+        name = (
+            cmd.split(None, 2)[2].strip().lower() if len(cmd.split(None, 2)) > 2 else ""
+        )
+        if name not in _VALID_FALLBACK_NAMES:
+            print(
+                f"  {Y}unknown provider {name!r}. Valid: {', '.join(sorted(_VALID_FALLBACK_NAMES))}{X}"
+            )
+        else:
+            order = _load_fallback_order()
+            if name in order:
+                print(
+                    f"  {Y}{name} is already in the chain (position {order.index(name) + 1}){X}"
+                )
+            else:
+                order.append(name)
+                _save_fallback_order(order)
+                print(f"  {G}added {name} → chain is now: {', '.join(order)}{X}")
+        return True
+
+    if lo.startswith("fallback remove"):
+        name = (
+            cmd.split(None, 2)[2].strip().lower() if len(cmd.split(None, 2)) > 2 else ""
+        )
+        order = _load_fallback_order()
+        if name not in order:
+            print(f"  {Y}{name!r} isn't in the current chain — see 'fallback list'{X}")
+        else:
+            order = [n for n in order if n != name]
+            _save_fallback_order(order)
+            print(
+                f"  {G}removed {name} → chain is now: {', '.join(order) or '(empty)'}{X}"
+            )
+        return True
+
+    if lo == "fallback reset":
+        _FALLBACK_ORDER_FILE.unlink(missing_ok=True)
+        print(f"  {G}reset to default chain: {', '.join(_DEFAULT_FALLBACK_ORDER)}{X}")
+        return True
+
+    # 2026-09-27: add/remove could never actually REORDER the chain —
+    # add refuses if the name is already present, and the only way to
+    # move something was remove-then-add, which just re-appends it to
+    # the end again (same problem, no reordering happened). Elijah,
+    # live, after opencode/nemotron/openrouter all failed twice in a
+    # row: wanted nvidia (currently last on purpose — it spends paid
+    # credits, see _DEFAULT_FALLBACK_ORDER's comment) promoted earlier
+    # so a real key backs up the free tier sooner, trusting NVIDIA's
+    # own key-rotation (see the NVIDIA_API_KEY/_2 swap already running
+    # elsewhere) to ride out its own rate limits before falling on to
+    # nemotron. `fallback add`/`remove` had no way to express that.
+    if lo.startswith("fallback move"):
+        parts = cmd.split()
+        name = parts[2].lower() if len(parts) > 2 else ""
+        pos_arg = parts[3] if len(parts) > 3 else ""
+        order = _load_fallback_order()
+        if name not in order:
+            print(f"  {Y}{name!r} isn't in the current chain — see 'fallback list'{X}")
+        elif not pos_arg.isdigit() or not (1 <= int(pos_arg) <= len(order)):
+            print(f"  {Y}usage: fallback move <name> <position 1-{len(order)}>{X}")
+        else:
+            order.remove(name)
+            order.insert(int(pos_arg) - 1, name)
+            _save_fallback_order(order)
+            print(f"  {G}moved {name} → chain is now: {', '.join(order)}{X}")
+        return True
+
+    return False
+
+
 # 2026-09-26: ask_cloud()'s fn_map (below) is the actual, authoritative
 # set of bare provider names it can dispatch to. delegate_runner.py used
 # to hand-copy this list into its own _DELEGATE_KNOWN_BARE_PROVIDERS —
@@ -9617,10 +9717,9 @@ def _watchdog_maybe_auto_continue(reply_text: str) -> bool:
     if pending == 0:
         AUTO_NUDGE_STREAK = 0
         return False
-    try:
-        needs_input = _reply_needs_operator_input(reply_text)
-    except NotImplementedError:
-        return False
+    # _reply_needs_operator_input is implemented; the old
+    # `except NotImplementedError` guard was stub-era scaffolding.
+    needs_input = _reply_needs_operator_input(reply_text)
     if needs_input:
         AUTO_NUDGE_STREAK = 0
         return False
@@ -19932,10 +20031,9 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
     # backstops (repetition truncation, MAX_CONTINUATION_TURNS) bound it —
     # no separate counter needed here either.
     if not _any_directive_found:
-        try:
-            claims_action = _reply_claims_unexecuted_action(reply)
-        except NotImplementedError:
-            claims_action = False
+        # _reply_claims_unexecuted_action is implemented; the old
+        # `except NotImplementedError` guard was stub-era scaffolding.
+        claims_action = _reply_claims_unexecuted_action(reply)
         if claims_action:
             print(
                 _pill(
@@ -23857,7 +23955,7 @@ def _batch_cloud_titles(chat_paths):
     if not snippets or not any(s[1] for s in snippets):
         return {}
 
-    numbered = "\n".join(f"{i+1}. {s[1]}" for i, s in enumerate(snippets))
+    numbered = "\n".join(f"{i + 1}. {s[1]}" for i, s in enumerate(snippets))
     prompt = (
         "For each conversation opening below, give a short 3-6 word title.\n"
         "Output a numbered list in the same order. No extra prose.\n\n" + numbered
@@ -23874,7 +23972,7 @@ def _batch_cloud_titles(chat_paths):
         )
         titles = {}
         for i, (chat_path, _) in enumerate(snippets):
-            pattern = rf"^\s*{i+1}[.)]\s*(.+)$"
+            pattern = rf"^\s*{i + 1}[.)]\s*(.+)$"
             match = re.search(pattern, result, re.MULTILINE | re.IGNORECASE)
             if match:
                 title = match.group(1).strip().strip('"').strip("'").rstrip(",.;:?!")
@@ -24580,8 +24678,14 @@ def main():
                 )
                 _RELOAD_CARRY_FILE.unlink(missing_ok=True)
             else:
-                carried = _RELOAD_CARRY_FILE.read_text()
-                _RELOAD_CARRY_FILE.unlink(missing_ok=True)
+                try:
+                    carried = _RELOAD_CARRY_FILE.read_text()
+                finally:
+                    # Remove even when the read failed. Otherwise an
+                    # unreadable carry file survives and re-logs
+                    # AUTO_RELOAD_CARRY_RESTORE_ERROR on every startup
+                    # until someone deletes it by hand.
+                    _RELOAD_CARRY_FILE.unlink(missing_ok=True)
                 if carried:
                     globals()["PENDING_USER_NOTE"] = carried
     except Exception as e:
@@ -24920,91 +25024,10 @@ def main():
             continue
 
         # ── Cloud fallback chain management (2026-09-03) ────────────────
-        # Management layer on the fallback chain ask_cloud() already runs
-        # (see _load_fallback_order docstring) — matches Hermes' own
-        # `hermes fallback list/add/remove` naming/shape.
-        if lo in ("fallback", "fallback list"):
-            order = _load_fallback_order()
-            custom = _FALLBACK_ORDER_FILE.exists()
-            print(
-                f"\n  {BOLD}Cloud fallback chain{X} {D}({'custom' if custom else 'default'}){X}:"
-            )
-            for i, name in enumerate(order, 1):
-                print(f"  {C}{i}.{X} {name}")
-            print(f"\n  {D}Valid names: {', '.join(sorted(_VALID_FALLBACK_NAMES))}{X}")
-            print(
-                f"  {D}'fallback add <name>' · 'fallback remove <name>' · "
-                f"'fallback move <name> <position>' · 'fallback reset'{X}\n"
-            )
-            continue
-
-        if lo.startswith("fallback add"):
-            name = cmd.split(None, 2)[2].strip() if len(cmd.split(None, 2)) > 2 else ""
-            if name not in _VALID_FALLBACK_NAMES:
-                print(
-                    f"  {Y}unknown provider {name!r}. Valid: {', '.join(sorted(_VALID_FALLBACK_NAMES))}{X}"
-                )
-            else:
-                order = _load_fallback_order()
-                if name in order:
-                    print(
-                        f"  {Y}{name} is already in the chain (position {order.index(name) + 1}){X}"
-                    )
-                else:
-                    order.append(name)
-                    _save_fallback_order(order)
-                    print(f"  {G}added {name} → chain is now: {', '.join(order)}{X}")
-            continue
-
-        if lo.startswith("fallback remove"):
-            name = cmd.split(None, 2)[2].strip() if len(cmd.split(None, 2)) > 2 else ""
-            order = _load_fallback_order()
-            if name not in order:
-                print(
-                    f"  {Y}{name!r} isn't in the current chain — see 'fallback list'{X}"
-                )
-            else:
-                order = [n for n in order if n != name]
-                _save_fallback_order(order)
-                print(
-                    f"  {G}removed {name} → chain is now: {', '.join(order) or '(empty)'}{X}"
-                )
-            continue
-
-        if lo == "fallback reset":
-            _FALLBACK_ORDER_FILE.unlink(missing_ok=True)
-            print(
-                f"  {G}reset to default chain: {', '.join(_DEFAULT_FALLBACK_ORDER)}{X}"
-            )
-            continue
-
-        # 2026-09-27: add/remove could never actually REORDER the chain —
-        # add refuses if the name is already present, and the only way to
-        # move something was remove-then-add, which just re-appends it to
-        # the end again (same problem, no reordering happened). Elijah,
-        # live, after opencode/nemotron/openrouter all failed twice in a
-        # row: wanted nvidia (currently last on purpose — it spends paid
-        # credits, see _DEFAULT_FALLBACK_ORDER's comment) promoted earlier
-        # so a real key backs up the free tier sooner, trusting NVIDIA's
-        # own key-rotation (see the NVIDIA_API_KEY/_2 swap already running
-        # elsewhere) to ride out its own rate limits before falling on to
-        # nemotron. `fallback add`/`remove` had no way to express that.
-        if lo.startswith("fallback move"):
-            parts = cmd.split()
-            name = parts[2] if len(parts) > 2 else ""
-            pos_arg = parts[3] if len(parts) > 3 else ""
-            order = _load_fallback_order()
-            if name not in order:
-                print(
-                    f"  {Y}{name!r} isn't in the current chain — see 'fallback list'{X}"
-                )
-            elif not pos_arg.isdigit() or not (1 <= int(pos_arg) <= len(order)):
-                print(f"  {Y}usage: fallback move <name> <position 1-{len(order)}>{X}")
-            else:
-                order.remove(name)
-                order.insert(int(pos_arg) - 1, name)
-                _save_fallback_order(order)
-                print(f"  {G}moved {name} → chain is now: {', '.join(order)}{X}")
+        # Extracted to _handle_fallback_cmd() (2026-09-28) so the branch is
+        # callable and testable without driving the whole REPL; this was
+        # inline here and untestable.
+        if _handle_fallback_cmd(lo, cmd):
             continue
 
         # ── MCP servers slash commands (Sensei as MCP client) ──
