@@ -11,7 +11,6 @@ Portable adaptation of Hermes dynamic-workflow skill:
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -19,43 +18,52 @@ import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 # ──────────────────────────────────────────────────────────────────────
 # Data structures
 # ──────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class WorkUnit:
     """A single independent unit of work for fan-out."""
+
     id: str
-    payload: dict[str, Any]          # input data for this unit
+    payload: dict[str, Any]  # input data for this unit
     metadata: dict[str, Any] = field(default_factory=dict)
+
 
 @dataclass
 class WorkResult:
     """Result from processing one work unit."""
+
     unit_id: str
     success: bool
     output: Any = None
     error: str | None = None
     artifacts: dict[str, Path] = field(default_factory=dict)  # files written
 
+
 @dataclass
 class VerificationClaim:
     """A claim produced by an attempt, subject to refutation."""
+
     claim_id: str
     content: str
     source_attempt: str
-    location: str | None = None       # file:line or doc ref for "located" claims
+    location: str | None = None  # file:line or doc ref for "located" claims
     survived_refutation: bool = False
+
 
 @dataclass
 class WorkflowResult:
     """Final verified result of a workflow."""
+
     verified_claims: list[VerificationClaim]
     all_attempts: list[dict[str, Any]]
     convergence_rounds: int
@@ -66,6 +74,7 @@ class WorkflowResult:
 # Layer A: Deterministic fan-out (execute_code equivalent)
 # ──────────────────────────────────────────────────────────────────────
 
+
 class DeterministicWorker(ABC):
     """
     Base class for Layer A workers. Runs in a sandboxed Python subprocess
@@ -75,9 +84,22 @@ class DeterministicWorker(ABC):
 
     # Override in subclass: allowed imports for the sandbox
     ALLOWED_IMPORTS = {
-        "json", "os", "sys", "pathlib", "re", "subprocess",
-        "tempfile", "textwrap", "hashlib", "datetime", "collections",
-        "itertools", "functools", "dataclasses", "typing", "csv",
+        "json",
+        "os",
+        "sys",
+        "pathlib",
+        "re",
+        "subprocess",
+        "tempfile",
+        "textwrap",
+        "hashlib",
+        "datetime",
+        "collections",
+        "itertools",
+        "functools",
+        "dataclasses",
+        "typing",
+        "csv",
     }
 
     @abstractmethod
@@ -85,16 +107,55 @@ class DeterministicWorker(ABC):
         """Process a single work unit. Must be deterministic."""
         pass
 
+    def _base_class_imports(self) -> str:
+        """Import lines for the worker class's non-builtin base classes.
+
+        The generated script inlines only the leaf class, so a worker that
+        subclasses something -- which is the documented pattern, since
+        DeterministicWorker exists to be subclassed -- raised NameError in
+        the subprocess for its own base.
+
+        Bases are imported from their defining module rather than inlined.
+        That is safe for the sandbox guarantee: workflow_orchestrator
+        imports only stdlib at module level, so nothing that could reach an
+        LLM or a delegation tool is pulled in.
+        """
+        wanted: list[tuple[str, str]] = []
+        for base in type(self).__mro__[1:]:
+            if base.__name__ == "object" or base.__module__ in ("builtins", "abc"):
+                continue
+            entry = (base.__module__, base.__name__)
+            if entry not in wanted:
+                wanted.append(entry)
+        if not wanted:
+            return ""
+        # The generated script runs from a temp directory, so the package
+        # these come from is not importable until its root is on sys.path.
+        root = ""
+        try:
+            import scripts.workflow_orchestrator as _self_mod
+
+            pkg_init = Path(_self_mod.__file__).resolve().parent.parent
+            if pkg_init.is_dir():
+                root = f"sys.path.insert(0, {str(pkg_init)!r})\n"
+        except Exception:
+            root = ""
+        lines = "\n".join(f"from {mod} import {name}" for mod, name in wanted)
+        return f"{root}{lines}\n"
+
     def _write_script(self, units: list[WorkUnit], output_dir: Path) -> Path:
         """Generate a standalone Python script that processes all units."""
-        script = f'''#!/usr/bin/env python3
+        script = f"""#!/usr/bin/env python3
 # Auto-generated Layer A worker script
 # Deterministic fan-out — no LLM calls, no delegation
+from __future__ import annotations
 import json
 import sys
 from pathlib import Path
 
-# --- Worker implementation (inlined) ---
+# --- Base classes (imported; stdlib-only module, no LLM/delegation) ---
+{self._base_class_imports()}
+# --- Worker implementation (inlined, dedented) ---
 {self._get_worker_source()}
 # --- End worker ---
 
@@ -106,7 +167,7 @@ def main():
     results = []
     for u in units_data:
         unit = type('WorkUnit', (), u)()
-        worker = WorkerImpl()
+        worker = {type(self).__name__}()
         result = worker.process_unit(unit)
         results.append({{
             "unit_id": result.unit_id,
@@ -120,16 +181,31 @@ def main():
 
 if __name__ == "__main__":
     main()
-'''
+"""
         script_path = output_dir / f"worker_{uuid.uuid4().hex[:8]}.py"
+        # Create the directory when a caller passes one that does not exist
+        # yet -- the generated script mkdir's for itself, but only after this
+        # write, so without this the very first write raised FileNotFoundError.
+        output_dir.mkdir(parents=True, exist_ok=True)
         script_path.write_text(script)
         script_path.chmod(0o755)
         return script_path
 
     def _get_worker_source(self) -> str:
-        """Return the source code of the worker class for inlining."""
+        """Return the source code of the worker class for inlining.
+
+        Dedented: inspect.getsource() preserves the source class's own
+        indentation, and _write_script() splices this text into a template
+        at column 0. A worker class defined inside a function or test method
+        therefore came back indented and the generated script failed to
+        compile with IndentationError, reported as a unit failure rather
+        than as a codegen bug. A module-level class dedents to itself, so
+        this is a no-op in the common case.
+        """
         import inspect
-        return inspect.getsource(self.__class__)
+        import textwrap
+
+        return textwrap.dedent(inspect.getsource(self.__class__))
 
     def execute_batch(
         self,
@@ -149,7 +225,9 @@ if __name__ == "__main__":
                 try:
                     results.append(fut.result())
                 except Exception as e:
-                    results.append(WorkResult(unit_id=u.id, success=False, error=str(e)))
+                    results.append(
+                        WorkResult(unit_id=u.id, success=False, error=str(e))
+                    )
         return results
 
     def execute_batch_sandboxed(
@@ -166,10 +244,9 @@ if __name__ == "__main__":
             output_dir = Path(tempfile.mkdtemp(prefix="sensei_workflow_"))
 
         script_path = self._write_script(units, output_dir)
-        units_json = json.dumps([
-            {"id": u.id, "payload": u.payload, "metadata": u.metadata}
-            for u in units
-        ])
+        units_json = json.dumps(
+            [{"id": u.id, "payload": u.payload, "metadata": u.metadata} for u in units]
+        )
 
         try:
             subprocess.run(
@@ -180,13 +257,23 @@ if __name__ == "__main__":
                 text=True,
             )
         except subprocess.TimeoutExpired as e:
-            return [WorkResult(unit_id=u.id, success=False, error="Timeout") for u in units]
+            return [
+                WorkResult(unit_id=u.id, success=False, error="Timeout") for u in units
+            ]
         except subprocess.CalledProcessError as e:
-            return [WorkResult(unit_id=u.id, success=False, error=e.stderr) for u in units]
+            return [
+                WorkResult(unit_id=u.id, success=False, error=e.stderr) for u in units
+            ]
 
         results_file = output_dir / "results.json"
         if not results_file.exists():
-            return [WorkResult(unit_id=u.id, success=False, error="No results file")]
+            # The `for u in units` here is not decoration: this used to
+            # reference `u` with no iteration at all, so the missing-results
+            # path raised NameError instead of reporting the failure.
+            return [
+                WorkResult(unit_id=u.id, success=False, error="No results file")
+                for u in units
+            ]
 
         raw = json.loads(results_file.read_text())
         return [
@@ -204,6 +291,7 @@ if __name__ == "__main__":
 # ──────────────────────────────────────────────────────────────────────
 # Layer B: LLM-judgment fan-out (delegate_task equivalent)
 # ──────────────────────────────────────────────────────────────────────
+
 
 class JudgmentWorker(ABC):
     """
@@ -256,6 +344,7 @@ class JudgmentWorker(ABC):
 # Adversarial-Convergence Verification
 # ──────────────────────────────────────────────────────────────────────
 
+
 class AdversarialConvergence:
     """
     Verification recipe: N independent attempts with varied framings +
@@ -299,13 +388,16 @@ class AdversarialConvergence:
         """
         all_attempts = []
         surviving_claims: dict[str, VerificationClaim] = {}
+        prev_survivor_contents: set[str] | None = None
 
         for round_num in range(self.max_rounds):
             round_claims: dict[str, VerificationClaim] = {}
 
             # N independent attempts with varied framings
             for attempt_idx in range(self.n_attempts):
-                framing = vary_framing_fn(question, attempt_idx + round_num * self.n_attempts)
+                framing = vary_framing_fn(
+                    question, attempt_idx + round_num * self.n_attempts
+                )
                 claims = attempt_fn(framing, attempt_idx)
 
                 for claim in claims:
@@ -313,12 +405,15 @@ class AdversarialConvergence:
                     claim.claim_id = claim_id
                     round_claims[claim_id] = claim
 
-            all_attempts.append({
-                "round": round_num,
-                "claims": [c.__dict__ for c in round_claims.values()],
-            })
+            all_attempts.append(
+                {
+                    "round": round_num,
+                    "claims": [c.__dict__ for c in round_claims.values()],
+                }
+            )
 
             # M refuters per claim
+            round_survivors: dict[str, VerificationClaim] = {}
             for claim in round_claims.values():
                 survived = True
                 for refuter_idx in range(self.m_refuters):
@@ -332,13 +427,26 @@ class AdversarialConvergence:
 
                 if survived:
                     claim.survived_refutation = True
-                    surviving_claims[claim.claim_id] = claim
+                    round_survivors[claim.claim_id] = claim
 
-            # Convergence check: no new surviving claims this round
-            if round_num > 0 and len(surviving_claims) == len([
-                c for c in round_claims.values() if c.survived_refutation
-            ]):
+            # Each round REPLACES the survivor set rather than adding to it.
+            # It used to accumulate across rounds while the reported result
+            # was meant to be this round's surviving claims, so N attempts
+            # over R rounds reported N*R claims -- every one of them carried
+            # a round-prefixed id, so nothing was ever deduplicated.
+            surviving_claims = round_survivors
+
+            # Convergence: a round that yields the same claims as the one
+            # before it adds nothing. Compared on content, not claim_id --
+            # ids are round-prefixed, so comparing them could never match and
+            # the check was dead code that always ran max_rounds.
+            contents = {c.content for c in round_survivors.values()}
+            if (
+                prev_survivor_contents is not None
+                and contents == prev_survivor_contents
+            ):
                 break
+            prev_survivor_contents = contents
 
         return WorkflowResult(
             verified_claims=list(surviving_claims.values()),
@@ -356,6 +464,7 @@ class AdversarialConvergence:
 # High-level Workflow Builder
 # ──────────────────────────────────────────────────────────────────────
 
+
 class DynamicWorkflow:
     """
     Compose Layer A (deterministic) + Layer B (judgment) + Verification
@@ -370,7 +479,9 @@ class DynamicWorkflow:
         self.layer_b_workers: list[tuple[str, JudgmentWorker, list[WorkUnit]]] = []
         self.verification: AdversarialConvergence | None = None
 
-    def add_layer_a(self, worker: DeterministicWorker, units: list[WorkUnit]) -> "DynamicWorkflow":
+    def add_layer_a(
+        self, worker: DeterministicWorker, units: list[WorkUnit]
+    ) -> DynamicWorkflow:
         """Add a deterministic fan-out stage."""
         self.layer_a_workers.append(worker)
         # Store units as metadata on worker for execution
@@ -382,12 +493,12 @@ class DynamicWorkflow:
         name: str,
         worker: JudgmentWorker,
         units: list[WorkUnit],
-    ) -> "DynamicWorkflow":
+    ) -> DynamicWorkflow:
         """Add an LLM-judgment fan-out stage."""
         self.layer_b_workers.append((name, worker, units))
         return self
 
-    def set_verification(self, verification: AdversarialConvergence) -> "DynamicWorkflow":
+    def set_verification(self, verification: AdversarialConvergence) -> DynamicWorkflow:
         """Set the adversarial-convergence verification for the final output."""
         self.verification = verification
         return self
@@ -403,21 +514,29 @@ class DynamicWorkflow:
         all_results: dict[str, list[WorkResult]] = {}
 
         # Layer A: deterministic pre-pass
-        for worker in self.layer_a_workers:
-            units = getattr(worker, "_workflow_units", [])
-            results = worker.execute_batch_sandboxed(units, self.work_dir / f"layer_a_{worker.__class__.__name__}")
-            all_results[worker.__class__.__name__] = results
+        for layer_a_worker in self.layer_a_workers:
+            units = getattr(layer_a_worker, "_workflow_units", [])
+            results = layer_a_worker.execute_batch_sandboxed(
+                units,
+                self.work_dir / f"layer_a_{layer_a_worker.__class__.__name__}",
+            )
+            all_results[layer_a_worker.__class__.__name__] = results
 
-        # Layer B: LLM-judgment fan-out
+        # Layer B: LLM-judgment fan-out.
+        # Separate loop variables from Layer A: DeterministicWorker and
+        # JudgmentWorker are unrelated types whose execute_batch signatures
+        # differ (units/max_workers/timeout vs units/llm_call/max_concurrent),
+        # so reusing the name made the two calls ambiguous to a type checker.
         if llm_call is None:
             raise ValueError("llm_call required for Layer B execution")
 
-        for name, worker, units in self.layer_b_workers:
-            results = worker.execute_batch(units, llm_call)
-            all_results[name] = results
+        for layer_b_name, layer_b_worker, layer_b_units in self.layer_b_workers:
+            layer_b_results = layer_b_worker.execute_batch(layer_b_units, llm_call)
+            all_results[layer_b_name] = layer_b_results
 
+        verification = self.verification
         # Verification (if configured)
-        if self.verification:
+        if verification:
             # Collect claims from Layer B results
             def attempt_fn(framing: str, idx: int) -> list[VerificationClaim]:
                 # In practice, this would re-run Layer B with varied framing
@@ -426,13 +545,21 @@ class DynamicWorkflow:
                 for rname, results in all_results.items():
                     for r in results:
                         if r.success and r.output:
-                            claims.append(VerificationClaim(
-                                claim_id=f"{rname}_{r.unit_id}",
-                                content=str(r.output),
-                                source_attempt=f"round_0_attempt_{idx}",
-                                location=r.artifacts.get("source") if r.artifacts else None,
-                            ))
-                return claims[:self.verification.n_attempts]
+                            claims.append(
+                                VerificationClaim(
+                                    claim_id=f"{rname}_{r.unit_id}",
+                                    content=str(r.output),
+                                    source_attempt=f"round_0_attempt_{idx}",
+                                    # Artifacts may hold a Path; the claim
+                                    # field is a str location like file:line.
+                                    location=(
+                                        str(r.artifacts["source"])
+                                        if r.artifacts and r.artifacts.get("source")
+                                        else None
+                                    ),
+                                )
+                            )
+                return claims[: verification.n_attempts]
 
             def refuter_fn(claim: VerificationClaim, ref_idx: int) -> bool:
                 # Simple refutation: check if claim is contradicted by other claims
@@ -448,7 +575,7 @@ class DynamicWorkflow:
                 ]
                 return framings[idx % len(framings)]
 
-            return self.verification.run(
+            return verification.run(
                 question=self.name,
                 attempt_fn=attempt_fn,
                 refuter_fn=refuter_fn,
@@ -458,7 +585,13 @@ class DynamicWorkflow:
         # No verification: return raw results
         return WorkflowResult(
             verified_claims=[],
-            all_attempts=[{"results": {k: [r.__dict__ for r in v] for k, v in all_results.items()}}],
+            all_attempts=[
+                {
+                    "results": {
+                        k: [r.__dict__ for r in v] for k, v in all_results.items()
+                    }
+                }
+            ],
             convergence_rounds=0,
             metadata={"work_dir": str(self.work_dir)},
         )
@@ -467,6 +600,7 @@ class DynamicWorkflow:
 # ──────────────────────────────────────────────────────────────────────
 # Example workers (templates for users to extend)
 # ──────────────────────────────────────────────────────────────────────
+
 
 class FileAnalysisWorker(DeterministicWorker):
     """Example Layer A: analyze files in parallel (grep, parse, extract)."""
@@ -480,7 +614,9 @@ class FileAnalysisWorker(DeterministicWorker):
             matches = [line for line in content.splitlines() if pattern in line]
 
             out_file = Path(tempfile.mktemp(suffix=".json", dir="/tmp"))
-            out_file.write_text(json.dumps({"file": str(file_path), "matches": matches}))
+            out_file.write_text(
+                json.dumps({"file": str(file_path), "matches": matches})
+            )
 
             return WorkResult(
                 unit_id=unit.id,
@@ -515,12 +651,15 @@ Return JSON: {{"issues": [...], "severity": "low|medium|high|critical"}}"""
                 output=data,
             )
         except json.JSONDecodeError:
-            return WorkResult(unit_id=unit.id, success=False, error="Invalid JSON response")
+            return WorkResult(
+                unit_id=unit.id, success=False, error="Invalid JSON response"
+            )
 
 
 # ──────────────────────────────────────────────────────────────────────
 # Kanban Swarm integration point (durable workflows)
 # ──────────────────────────────────────────────────────────────────────
+
 
 class KanbanSwarmBridge:
     """
@@ -537,12 +676,16 @@ class KanbanSwarmBridge:
         """Persist workflow as a kanban task graph. Returns task graph ID."""
         # TODO: Implement actual kanban persistence
         task_graph_id = f"wf_{uuid.uuid4().hex[:12]}"
-        (self.db_path.parent / f"{task_graph_id}.json").write_text(json.dumps({
-            "name": workflow.name,
-            "work_dir": str(workflow.work_dir),
-            "status": "pending",
-            "created": time.time(),
-        }))
+        (self.db_path.parent / f"{task_graph_id}.json").write_text(
+            json.dumps(
+                {
+                    "name": workflow.name,
+                    "work_dir": str(workflow.work_dir),
+                    "status": "pending",
+                    "created": time.time(),
+                }
+            )
+        )
         return task_graph_id
 
     def resume_workflow(self, task_graph_id: str) -> DynamicWorkflow | None:
@@ -555,6 +698,7 @@ class KanbanSwarmBridge:
 # Convenience: build a workflow from a simple spec
 # ──────────────────────────────────────────────────────────────────────
 
+
 def build_codebase_sweep_workflow(
     root: Path,
     pattern: str,
@@ -566,9 +710,12 @@ def build_codebase_sweep_workflow(
     verification cross-checks findings.
     """
     # Layer A: find all matching files
-    import glob
     files = list(root.rglob("*"))
-    files = [f for f in files if f.is_file() and f.suffix in {".py", ".js", ".ts", ".go", ".rs"}]
+    files = [
+        f
+        for f in files
+        if f.is_file() and f.suffix in {".py", ".js", ".ts", ".go", ".rs"}
+    ]
 
     units = [
         WorkUnit(id=f"file_{i}", payload={"path": str(f), "pattern": pattern})
@@ -584,10 +731,12 @@ def build_codebase_sweep_workflow(
     wf.add_layer_b("code_review", review_worker, units[:50])  # limit for demo
 
     # Verification
-    wf.set_verification(AdversarialConvergence(
-        n_attempts=n_verification_attempts,
-        m_refuters=2,
-        max_rounds=2,
-    ))
+    wf.set_verification(
+        AdversarialConvergence(
+            n_attempts=n_verification_attempts,
+            m_refuters=2,
+            max_rounds=2,
+        )
+    )
 
     return wf

@@ -2,19 +2,18 @@
 Tests for Dynamic Workflow Orchestration.
 """
 
-import json
+import os
 import tempfile
 from pathlib import Path
 
 from scripts.workflow_orchestrator import (
-    WorkUnit,
-    WorkResult,
-    VerificationClaim,
-    DeterministicWorker,
-    JudgmentWorker,
     AdversarialConvergence,
+    DeterministicWorker,
     DynamicWorkflow,
-    FileAnalysisWorker,
+    JudgmentWorker,
+    VerificationClaim,
+    WorkResult,
+    WorkUnit,
     build_codebase_sweep_workflow,
 )
 
@@ -41,6 +40,7 @@ class TestDeterministicWorker:
         class SlowWorker(DeterministicWorker):
             def process_unit(self, unit: WorkUnit) -> WorkResult:
                 import time
+
                 time.sleep(0.05)
                 return WorkResult(unit_id=unit.id, success=True, output=unit.payload)
 
@@ -48,6 +48,7 @@ class TestDeterministicWorker:
         units = [WorkUnit(id=str(i), payload={"n": i}) for i in range(10)]
 
         import time
+
         start = time.time()
         results = worker.execute_batch(units, max_workers=5)
         elapsed = time.time() - start
@@ -57,13 +58,24 @@ class TestDeterministicWorker:
         assert all(r.success for r in results)
 
     def test_sandboxed_execution(self):
+        # Self-contained on purpose: execute_batch_sandboxed() inlines this
+        # class into a standalone script run by a fresh interpreter, so a
+        # method body may only use names it imports itself. Referencing
+        # WorkResult from this module's enclosing scope cannot work in a
+        # subprocess that never imports the test module. DeterministicWorker
+        # is resolved by the generated script from its defining module, so
+        # subclassing still works.
         class SandboxWorker(DeterministicWorker):
-            def process_unit(self, unit: WorkUnit) -> WorkResult:
+            def process_unit(self, unit):
                 # This runs in a separate process
+                import os
+
+                from scripts.workflow_orchestrator import WorkResult
+
                 return WorkResult(
                     unit_id=unit.id,
                     success=True,
-                    output={"pid": __import__("os").getpid()},
+                    output={"pid": os.getpid()},
                 )
 
         worker = SandboxWorker()
@@ -74,6 +86,8 @@ class TestDeterministicWorker:
 
         assert len(results) == 1
         assert results[0].success
+        # It really did run elsewhere: a different pid than this process.
+        assert results[0].output["pid"] != os.getpid()
 
 
 class TestJudgmentWorker:
@@ -137,7 +151,12 @@ class TestAdversarialConvergence:
                     claim_id=f"c{idx}",
                     content=f"Claim {idx}",
                     source_attempt=f"a{idx}",
-                    location="file.py:1" if idx % 2 == 0 else None,  # Only even have location
+                    # Only claim 0 carries a location. This used to be
+                    # `if idx % 2 == 0`, which handed claim 2 a location too
+                    # and so contradicted both the comment and the assertion
+                    # below it -- the fixture has to actually exercise the
+                    # require_location filter it claims to.
+                    location="file.py:1" if idx == 0 else None,
                 )
             ]
 
@@ -149,9 +168,11 @@ class TestAdversarialConvergence:
 
         result = conv.run("q", attempt_fn, refuter_fn, vary_framing_fn)
 
-        # Claim 1 refuted, claim 0 and 2 survive but claim 2 has no location (require_location=True)
-        # So only claim 0 should survive
-        assert len(result.verified_claims) == 1
+        # Claim 1 refuted, claim 0 and 2 survive refutation but claim 2 has no
+        # location and require_location is on, so only claim 0 survives.
+        assert len(result.verified_claims) == 1, [
+            c.content for c in result.verified_claims
+        ]
         assert result.verified_claims[0].content == "Claim 0"
 
 
@@ -176,7 +197,9 @@ class TestDynamicWorkflow:
             (root / "a.py").write_text("def foo():\n    return 'secret'\n")
             (root / "b.py").write_text("def bar():\n    return 'public'\n")
 
-            wf = build_codebase_sweep_workflow(root, "secret", n_verification_attempts=2)
+            wf = build_codebase_sweep_workflow(
+                root, "secret", n_verification_attempts=2
+            )
 
             assert wf.name.startswith("sweep_")
             assert len(wf.layer_a_workers) == 1
@@ -186,4 +209,31 @@ class TestDynamicWorkflow:
 
 if __name__ == "__main__":
     import pytest
+
     pytest.main([__file__, "-v"])
+
+
+def test_missing_results_file_reports_per_unit(tmp_path):
+    """The "No results file" path must report, not raise NameError.
+
+    It referenced `u` with no `for u in units` around it, so the whole
+    missing-results branch -- which is what you hit when a sandboxed worker
+    dies without writing anything -- died with NameError instead.
+    """
+
+    class QuietWorker(DeterministicWorker):
+        def process_unit(self, unit):
+            raise RuntimeError("never runs")
+
+    worker = QuietWorker()
+    units = [WorkUnit(id="1", payload={}), WorkUnit(id="2", payload={})]
+
+    # Neutralise the subprocess write so results.json is genuinely absent.
+    worker._write_script = lambda u, d: tmp_path / "worker_none.py"  # type: ignore[method-assign]
+    (tmp_path / "worker_none.py").write_text("raise SystemExit(0)")
+
+    results = worker.execute_batch_sandboxed(units, tmp_path)
+
+    assert [r.unit_id for r in results] == ["1", "2"]
+    assert all(r.error == "No results file" for r in results), results
+    assert not any(r.success for r in results)
