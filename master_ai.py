@@ -19120,7 +19120,11 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                     "These actions were rejected by validation and did NOT run:\n"
                     f"{_detail}\n\n"
                     "Fix the payloads and re-emit them. Do not report a step as "
-                    "done unless a directive for it actually executed."
+                    "done unless a directive for it actually executed.\n"
+                    'If there is a one-line lesson here (e.g. "CREATE with a '
+                    'body that does not parse"), emit a single '
+                    "`REMEMBER: <one-line lesson>` directive in your next "
+                    "reply so this doesn't repeat next turn."
                 ),
             }
         )
