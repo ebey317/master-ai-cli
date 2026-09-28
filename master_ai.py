@@ -61,6 +61,7 @@
 import atexit
 import base64
 import concurrent.futures
+import functools
 import hashlib
 import json
 import os
@@ -260,6 +261,10 @@ try:
         "mcp disable ",
         "mcp validate ",
         "mcp tools ",
+        # OpenMuse activity surface (2026-09-27)
+        "activity",
+        "activities",
+        "activity cancel",
     ]
 
     def _completer(text, state):
@@ -279,6 +284,118 @@ except ImportError:
 # turn. See handle()'s continuation loop, ask_cloud()'s fallback loop,
 # and _call_with_hard_timeout() for where it's actually checked.
 _INTERRUPT_EVENT = threading.Event()
+
+# ── STALL WATCHDOG (2026-09-28) ───────────────────────────────
+# Elijah: "fix it to where it can have industry standard and production
+# ready framework... there's open code that shows you how to fix this."
+# Ported from Hermes's gateway/session_stall.py (github.com/NousResearch/
+# hermes-agent, checked live in ~/.hermes/hermes-agent): a genuine
+# "seconds since last real activity" watchdog, not a proxy like turn
+# duration -- a legitimately slow-but-working turn looks identical to a
+# stuck one under a naive timer. Everything fixed earlier tonight (plan
+# debate's per-round interrupt check, the activity command) patched ONE
+# specific hang point at a time. This is the general safety net underneath
+# all of them: whatever the current or a FUTURE hang turns out to be, if
+# nothing marks real progress for _STALL_TIMEOUT_S seconds while a turn is
+# in flight, the user gets told plainly instead of staring at a silent
+# screen. Mirrors Hermes's own notify-once-then-latch-until-clear shape.
+_STALL_TIMEOUT_S = float(os.environ.get("MASTER_AI_STALL_TIMEOUT_S", "90"))
+_LAST_ACTIVITY_TS = time.time()
+_ACTIVITY_LOCK = threading.Lock()
+_STALL_NOTIFIED = False
+_TURN_DEPTH = 0  # >0 while a turn is actively running; nests for handle_loop_task
+
+
+def _mark_activity():
+    """Call from anywhere real progress just happened (a token streamed, a
+    RUN finished, a cloud call returned, a debate round completed). Clears
+    any prior stall notice — new progress ends that stall episode."""
+    global _LAST_ACTIVITY_TS, _STALL_NOTIFIED
+    with _ACTIVITY_LOCK:
+        _LAST_ACTIVITY_TS = time.time()
+        _STALL_NOTIFIED = False
+
+
+def _stall_watchdog_loop():
+    """Background daemon, started once. Fires at most one notice per stall
+    episode; a fresh _mark_activity() call re-arms it for the next one."""
+    while True:
+        time.sleep(10)
+        try:
+            if globals().get("_TURN_DEPTH", 0) <= 0:
+                continue
+            with _ACTIVITY_LOCK:
+                idle = time.time() - _LAST_ACTIVITY_TS
+                already = _STALL_NOTIFIED
+            if idle >= _STALL_TIMEOUT_S and not already:
+                mins = max(1, int(idle // 60))
+                try:
+                    print(
+                        f"\n  {Y}⚠  I seem to be stuck (no activity for {mins} min).{X}\n"
+                        f"  {D}Ctrl+C to interrupt what's running, or 'activity cancel' "
+                        f"once the prompt is back.{X}\n"
+                    )
+                except Exception:
+                    pass
+                with _ACTIVITY_LOCK:
+                    globals()["_STALL_NOTIFIED"] = True
+        except Exception:
+            pass
+
+
+def _start_stall_watchdog():
+    if globals().get("_STALL_WATCHDOG_STARTED"):
+        return
+    globals()["_STALL_WATCHDOG_STARTED"] = True
+    threading.Thread(target=_stall_watchdog_loop, daemon=True).start()
+
+
+def _tracks_turn_activity(fn):
+    """Decorator: mark activity on entry and track turn-in-progress depth
+    for the whole call, including every internal return/exception path --
+    without touching a single line inside the wrapped function. Applied to
+    handle() below; nests correctly when handle_loop_task() calls handle()
+    internally."""
+
+    @functools.wraps(fn)
+    def _wrapper(*args, **kwargs):
+        globals()["_TURN_DEPTH"] = globals().get("_TURN_DEPTH", 0) + 1
+        _mark_activity()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            globals()["_TURN_DEPTH"] = max(0, globals().get("_TURN_DEPTH", 0) - 1)
+
+    return _wrapper
+
+
+def _drain_stale_tui_input(reason=""):
+    """Discard anything sitting in the TUI's type-ahead queue.
+
+    2026-09-27: root-caused live — Elijah hit Ctrl+C repeatedly during a
+    stuck plan-mode debate ("mode review", "x", "x" again), and each one
+    got silently swallowed as debate-round input never intended as fresh
+    top-level commands, once the debate was slow to notice the interrupt.
+    Now that the debate checks _INTERRUPT_EVENT around every blocking call
+    (see sensei_reasoning_loop.run_plan_debate), a single Ctrl+C should stop
+    it fast -- but any EXTRA keystrokes typed out of impatience while
+    waiting would still replay as separate turns afterward if left queued.
+    Call this right after detecting an interrupt was honored, before the
+    main loop goes back to prompting, so stale repeats don't resurface.
+    No-op in non-TUI mode (nothing to drain — input() blocks on the real
+    terminal there)."""
+    q = globals().get("_TUI_INPUT_QUEUE")
+    if q is None:
+        return
+    dropped = []
+    try:
+        while True:
+            dropped.append(q.get_nowait())
+    except queue.Empty:
+        pass
+    if dropped:
+        log(f"DRAINED_STALE_TUI_INPUT [{reason}]: {dropped!r}")
+
 
 # 2026-08-31: kick/new/clear/refresh all queue through the same _iq the
 # worker's main() loop reads with a blocking input()/queue.get() — if
@@ -2533,6 +2650,157 @@ def _try_google_workspace_bare_nav_intent(user_text):
     )
 
 
+def _show_activity(limit=20):
+    """List recent agent loop activities from the audit log.
+
+    Reads LOOP-START / LOOP-END / VERIFY_ON_STOP_NUDGE lines from
+    ~/.master_ai_audit.log, pairs starts with ends, and prints a status
+    table. An unmatched LOOP-START is shown as RUNNING. This is the same
+    source of truth the agent loop already writes to; it is not a second
+    tracker."""
+    import re as _re
+
+    try:
+        raw = AUDIT_LOG.read_text(errors="replace").splitlines()
+    except Exception as e:
+        print(f"  {R}activity log read failed: {e}{X}")
+        return
+
+    starts: list[dict] = []
+    end_records: list[dict] = []
+    for line in raw:
+        parts = line.split("\t")
+        if len(parts) < 6:
+            continue
+        ts, kind, detail = parts[0], parts[4], parts[5]
+        if kind == "LOOP-START":
+            m = _re.match(r"(\d+) steps: (.+)", detail)
+            steps = int(m.group(1)) if m else 0
+            task = m.group(2) if m else detail
+            starts.append({"ts": ts, "task": task, "steps": steps})
+        elif kind == "LOOP-END":
+            m = _re.match(r"(\d+)/(\d+) steps, (\d+) cycles, (\d+)s", detail)
+            if m:
+                end_records.append(
+                    {
+                        "ts": ts,
+                        "completed_steps": int(m.group(1)),
+                        "total_steps": int(m.group(2)),
+                        "cycles": int(m.group(3)),
+                        "elapsed_s": int(m.group(4)),
+                    }
+                )
+
+    # Pair end events to starts: walk both lists in chronological order with
+    # a simple stack — each LOOP-END closes the most recent still-open
+    # LOOP-START at or before it. A LOOP-START left on the stack when both
+    # lists are exhausted has no matching end yet, i.e. it's still running.
+    stack: list[dict] = []
+    pair_map: dict[int, dict] = {}
+    si, ei = 0, 0
+    while si < len(starts) or ei < len(end_records):
+        if si < len(starts) and (
+            ei >= len(end_records) or starts[si]["ts"] <= end_records[ei]["ts"]
+        ):
+            stack.append(starts[si])
+            si += 1
+        else:
+            end_rec = end_records[ei]
+            if stack:
+                pair_map[id(stack.pop())] = end_rec
+            ei += 1
+
+    rows = []
+    for s in reversed(starts):
+        end = pair_map.get(id(s))
+        if end:
+            status = f"{G}done{X}"
+            progress = f"{end['completed_steps']}/{end['total_steps']} steps · {end['cycles']} cycles · {end['elapsed_s']}s"
+        else:
+            status = f"{Y}running{X}"
+            progress = f"{s['steps']} planned steps"
+        rows.append((s["ts"], status, s["task"], progress))
+
+    if not rows:
+        print(f"  {D}No recent agent-loop activity found.{X}")
+        return
+
+    print(f"\n{BC}  ╔{'═' * 78}╗{X}")
+    print(f"{BC}  ║{X}  {BW}Recent activity{X}{' ' * 63}{BC}║{X}")
+    print(f"{BC}  ╠{'═' * 78}╣{X}")
+    for ts, status, task, progress in rows[:limit]:
+        task_fit = task[:52] + ("…" if len(task) > 52 else "")
+        print(f"{BC}  ║{X}  {D}{ts:<18}{X} {status:<14} {C}{task_fit:<54}{X}{BC}║{X}")
+        print(f"{BC}  ║{X}  {'':18} {D}{progress:<68}{X}{BC}║{X}")
+    print(f"{BC}  ╚{'═' * 78}╝{X}")
+    print(f"  {D}Cancel a running activity: 'activity cancel'{X}\n")
+
+
+def _cancel_activity():
+    """Signal the shared interrupt event to stop the current agent loop.
+
+    Only claims success if the audit log shows a LOOP-START without a
+    matching LOOP-END — i.e. an actually running loop. Otherwise reports
+    honestly that nothing is running and leaves _INTERRUPT_EVENT alone."""
+    import re as _re
+
+    running = []
+    try:
+        raw = AUDIT_LOG.read_text(errors="replace").splitlines()
+        starts: list[dict] = []
+        end_records: list[dict] = []
+        for line in raw:
+            parts = line.split("\t")
+            if len(parts) < 6:
+                continue
+            ts, kind, detail = parts[0], parts[4], parts[5]
+            if kind == "LOOP-START":
+                m = _re.match(r"(\d+) steps: (.+)", detail)
+                starts.append(
+                    {
+                        "ts": ts,
+                        "task": m.group(2) if m else detail,
+                        "steps": int(m.group(1)) if m else 0,
+                    }
+                )
+            elif kind == "LOOP-END":
+                m = _re.match(r"(\d+)/(\d+) steps, (\d+) cycles, (\d+)s", detail)
+                if m:
+                    end_records.append({"ts": ts})
+        # Pair each end to the most recent open start at or before it.
+        stack: list[dict] = []
+        si = ei = 0
+        while si < len(starts) or ei < len(end_records):
+            if si < len(starts) and (
+                ei >= len(end_records) or starts[si]["ts"] <= end_records[ei]["ts"]
+            ):
+                stack.append(starts[si])
+                si += 1
+            else:
+                if stack:
+                    stack.pop()
+                ei += 1
+        running = stack
+    except Exception:
+        running = []
+
+    if not running:
+        print(f"  {D}Nothing is currently running.{X}\n")
+        return
+
+    if _INTERRUPT_EVENT.is_set():
+        print(f"  {Y}Cancel signal was already sent — the loop should stop shortly.{X}")
+        return
+
+    task = running[-1]["task"]
+    _INTERRUPT_EVENT.set()
+    print(f"  {G}✅ Sent cancel signal to running activity:{X} {C}{task[:60]}{X}")
+    print(f"  {D}It will stop at the next safe checkpoint.{X}\n")
+
+
+_SHOW_ACTIVITY_LIMIT = 20
+
+
 def _show_recent_log(lines=80):
     try:
         raw = LOG_FILE.read_text(errors="replace").splitlines()
@@ -2570,22 +2838,60 @@ def _cloud_trip(provider, reason, seconds=30):
 
 def _cloud_trip_network(reason, seconds=60):
     global _NETWORK_DOWN_UNTIL
+    # 2026-09-27: this is the GLOBAL circuit -- _cloud_allowed() checks it
+    # before every single provider, so tripping it blocks all of them at
+    # once. All 16 _ask_* call sites route here through _network_error(),
+    # which now also recognizes timeouts (added same day, to fix poolside
+    # never backing off after a read timeout). That exposed this: a single
+    # provider timing out isn't proof the whole network is down, but it
+    # was tripping this same global circuit as a real DNS/connectivity
+    # failure. Confirmed live: poolside timing out repeatedly took down
+    # every other provider (OpenRouter, NVIDIA, Groq, Gemini, all of it)
+    # for 60s at a stretch, while the actual connection was fine (curl to
+    # google.com: 200 OK in 0.4s the whole time). A mere timeout means
+    # that one provider was slow this one time -- ask_cloud's own
+    # fallback chain already moves to the next provider on any failure,
+    # no breaker needed for that. Only trip the shared circuit for a
+    # genuine connectivity failure now; a plain timeout is provider-local
+    # and shouldn't cost every other provider 60 seconds too.
+    if "timed out" in str(reason).lower():
+        log(
+            f"CLOUD_NETWORK_SKIP: timeout treated as provider-local, not tripping the shared circuit ({reason})"
+        )
+        return
     _NETWORK_DOWN_UNTIL = time.time() + seconds
     log(f"CLOUD_NETWORK_DOWN: {reason} for {seconds}s")
 
 
 def _network_error(e):
     text = str(e).lower()
-    return isinstance(e, urllib.error.URLError) and any(
-        needle in text
-        for needle in (
-            "name or service not known",
-            "temporary failure",
-            "nodename",
-            "network is unreachable",
-            "no route to host",
+    # urllib wraps a socket.timeout / TimeoutError as URLError in its
+    # exception chain (e.reason), but the outer exception can also be a
+    # bare TimeoutError/socket.timeout or a plain Exception whose str
+    # contains "timed out". All three must trigger the network cooldown.
+    if isinstance(e, TimeoutError):
+        return True
+    if isinstance(e, socket.timeout):
+        return True
+    if "timed out" in text:
+        return True
+    if isinstance(e, urllib.error.URLError):
+        reason = e.reason
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            return True
+        if isinstance(reason, Exception) and "timed out" in str(reason).lower():
+            return True
+        return any(
+            needle in text
+            for needle in (
+                "name or service not known",
+                "temporary failure",
+                "nodename",
+                "network is unreachable",
+                "no route to host",
+            )
         )
-    )
+    return False
 
 
 def _matches_terms(text, words, terms):
@@ -2727,6 +3033,207 @@ COMPLEX_WORDS = {
     "essay",
     "deep dive",
 }
+# Phrases that signal a multi-step request even when it doesn't look like a
+# big build. The agent loop's plan/execute/critique cycle is the right home for
+# anything that spans more than a single round-trip; routing it there gives
+# the user the "never drops off mid-task" guarantee that plain handle() does
+# not provide.
+_MULTI_STEP_PHRASES = (
+    # 2026-09-27: was only "and then" plus specific "then <verb>" combos
+    # (return/give/summarize/report/list/print/save) -- missed ordinary
+    # multi-step instructions using any other verb, e.g. "build X, then
+    # wire it into Y, then test it" matched nothing at all. A bare " then "
+    # is safe to add now that _looks_multi_step checks _looks_like_question
+    # first -- a genuine question ("what happens then?") is already routed
+    # away before phrase matching runs, so this can't reintroduce the
+    # over-triggering that was just fixed.
+    " then ",
+    " and then ",
+    " after that ",
+    " next, ",
+    " next step",
+    " step by step",
+    "step 1",
+    "step 2",
+    "step 3",
+    "first, ",
+    "first thing",
+    "finally, ",
+    " in order: ",
+    " in sequence",
+    " one by one",
+    "1. ",
+    "2. ",
+    "3. ",
+    "a, b, c,",
+    "a, b, and c",
+    "for each ",
+    "for every ",
+    "for all ",
+    " for each of",
+    " for all of",
+    "all of the ",
+    "all of these ",
+    "all the ",
+    "walk me through",
+    "go through",
+    "make sure to",
+    "make sure all",
+    "verify that",
+    "verify each",
+    "check that",
+    "check each",
+    "confirm that",
+    "then return",
+    "then give me",
+    "then summarize",
+    "then report",
+    "then list",
+    "then print",
+    "then save",
+)
+
+
+# 2026-09-27: the phrase list above never distinguished a QUESTION about a
+# process ("walk me through how X works", "explain step by step") from an
+# INSTRUCTION to actually perform a sequenced task -- "step by step",
+# "walk me through", "make sure to", "verify that" are all completely
+# ordinary question phrasing. Elijah, live: "the question I ask it isn't
+# required to drop into plan mode." A question wants an answer, not a
+# persistent multi-step execution loop -- these markers say "this is a
+# request for information," and win regardless of phrase matches above.
+_QUESTION_MARKERS = ("?",)
+_QUESTION_LEAD_WORDS = (
+    "how ",
+    "what ",
+    "why ",
+    "when ",
+    "where ",
+    "who ",
+    "which ",
+    "can you explain",
+    "could you explain",
+    "do you know",
+    "does it",
+    "is it",
+    "are there",
+    "explain ",
+)
+
+
+def _looks_like_question(text):
+    low = (text or "").strip().lower()
+    if not low:
+        return False
+    if any(m in low for m in _QUESTION_MARKERS):
+        return True
+    return any(low.startswith(w) for w in _QUESTION_LEAD_WORDS)
+
+
+# 2026-09-27: root-caused live -- Elijah asked Sensei to build a voice
+# bridge, it laid out a real 4-step plan, then ended the turn on "Ready
+# for Step 1 -- auditing the learn skill..." and just stopped. His next
+# message was "yes, let's build it out" -- short, no multi-step language
+# in it at all, so _looks_multi_step (below) never routed it through the
+# persistent agent loop. The heuristic only ever looked at the CURRENT
+# message; it had no idea the ASSISTANT'S OWN prior reply had just
+# committed to a numbered plan that a short "yes" was approving. A short
+# affirmation confirming an already-announced plan needs the same
+# persistence guarantee as the original multi-step request did.
+_PLAN_APPROVAL_PHRASES = (
+    "yes",
+    "yep",
+    "yeah",
+    "yup",
+    "go ahead",
+    "go for it",
+    "do it",
+    "proceed",
+    "sounds good",
+    "lets build it",
+    "let us build it",
+    "build it",
+    "lets do it",
+    "let us do it",
+    "confirmed",
+    "approved",
+    "sure",
+    "okay",
+    "ok",
+)
+
+
+def _looks_like_plan_approval(text):
+    """True for a short reply that APPROVES a plan rather than describing
+    one -- "yes", "let's build it out", "go ahead" -- never true for
+    anything long enough to plausibly be its own real instruction."""
+    low = re.sub(r"[^a-z0-9' ]+", " ", (text or "").lower())
+    low = f" {' '.join(low.split())} "
+    if len(low) > 60:
+        return False
+    return any(f" {phrase} " in low for phrase in _PLAN_APPROVAL_PHRASES)
+
+
+def _assistant_just_proposed_a_plan(history):
+    """True when the most recent assistant turn committed to a numbered
+    plan and is waiting on approval before proceeding -- matches this
+    codebase's own plan-mode output shape and the ad-hoc "here's my plan /
+    1 .. / 2 .. / Ready for Step 1" shape a plain reply can also take."""
+    for entry in reversed(history or []):
+        if entry.get("role") != "assistant":
+            continue
+        content = (entry.get("content") or "").lower()
+        if not content:
+            return False
+        if re.search(r"ready for step\s*1\b", content):
+            return True
+        if "here's my plan" in content or "here is my plan" in content:
+            return True
+        # Prose commitments that never take numbered-list shape at all --
+        # "Ready to create X ... say the word and I'll build it" is the
+        # same pending-approval state as a numbered plan, just phrased as
+        # an offer instead of a list. Caught live 2026-09-27: an audit
+        # reply ended exactly this way and "yes" wouldn't have re-engaged
+        # the loop without this.
+        if "say the word" in content:
+            return True
+        if re.search(r"ready to (build|create|write|implement)\b", content):
+            return True
+        numbered_lines = len(re.findall(r"(?m)^\s*[1-9]\d?[.)]?\s+\S", content))
+        return numbered_lines >= 2
+    return False
+
+
+def _looks_multi_step(text, history=None):
+    """Cheap heuristic: does this request span multiple steps?
+
+    Returns True when the request language contains multi-step sequencing
+    signals or numbered-step structure, OR when it's a short approval of a
+    plan the assistant already committed to in its previous turn. False
+    positives (false alarms) route through the agent loop, which is safe —
+    the planner just treats it as a single step. The cost of a false
+    positive is one extra plan/critique call; the cost of a false negative
+    is the model dropping off mid-task, which is exactly the failure we
+    are closing.
+
+    A question always wins first, even if it also matches a phrase below --
+    "walk me through how X works?" is a request for an explanation, not a
+    sequenced task to execute.
+    """
+    if _looks_like_question(text):
+        return False
+    low = (text or "").lower()
+    if any(phrase in low for phrase in _MULTI_STEP_PHRASES):
+        return True
+    if (
+        history
+        and _looks_like_plan_approval(text)
+        and _assistant_just_proposed_a_plan(history)
+    ):
+        return True
+    return False
+
+
 REASONING_WORDS = {
     "think",
     "reason",
@@ -3218,6 +3725,34 @@ def _scrappy_model_present():
     globals()["_SCRAPPY_CACHE"] = tag
     globals()["_SCRAPPY_TS"] = now
     return tag
+
+
+WEATHER_WORDS = {"weather", "forecast", "temperature", "humidity"}
+
+_DEFAULT_LOCATION_CACHE = None
+
+
+def _default_location():
+    """'City, ST' from the operator's on-disk profile (~/.master_ai_profile.json),
+    for location-dependent web queries (weather, etc.) that don't name a place.
+    That file is scoped for job-application ATS forms, but city/state is a
+    general fact about the operator, not application-specific -- reused here
+    rather than duplicated into a second file. Cached for the process
+    lifetime; the profile doesn't change mid-session."""
+    global _DEFAULT_LOCATION_CACHE
+    if _DEFAULT_LOCATION_CACHE is not None:
+        return _DEFAULT_LOCATION_CACHE
+    loc = ""
+    try:
+        with open(os.path.expanduser("~/.master_ai_profile.json")) as f:
+            personal = json.load(f).get("personal", {})
+        city, state = personal.get("city", ""), personal.get("state", "")
+        if city and state:
+            loc = f"{city}, {state}"
+    except Exception:
+        pass
+    _DEFAULT_LOCATION_CACHE = loc
+    return loc
 
 
 def detect_route(text, has_image=False):
@@ -4478,52 +5013,35 @@ def orchestrate(history, user_text, image_path=None):
         _over_budget = total_chars >= _wm
         _pressure_desc = f"{total_chars:,} chars (limit {_wm:,} = 95% of {(_wm_tokens or 0):,} ctx, char estimate — no real measurement yet)"
     if _over_budget:
-        # 2026-09-25: root-caused live — Elijah hit this at a genuine 100%
-        # in AUTO mode and still had to press a button: "i shouldn't have
-        # to trigger it with a button press. it should automatically do it
-        # like you do." The EOFError/KeyboardInterrupt fallback below only
-        # covers a non-TTY caller; a real interactive session (exactly
-        # what he was in) genuinely blocks on input() waiting for 1/2 +
-        # Enter. AUTO mode already means "don't ask, just do it" everywhere
-        # else in this codebase (auto-mark-done, the resume auto-continue
-        # nudge, ...) -- this prompt was the one place that still asked.
-        # Skip straight to save_refresh with no prompt when in auto mode;
-        # every other mode keeps the interactive choice.
-        if globals().get("MODE", "plan") == "auto":
-            print(
-                f"\n  {BO}⚠ Context pressure — history is {_pressure_desc}. "
-                f"AUTO mode — saving + refreshing now, no prompt.{X}"
-            )
-            return {
-                "route": "save_refresh",
-                "reason": f"history {_pressure_desc} (auto)",
-            }
+        # 2026-09-28: Elijah: "it needs to compact like all the other
+        # frameworks compact. it doesn't need to restart, it just needs to
+        # compress. and start from where it was. the restart is bad. i
+        # think the compress mechanism is good, but the restart is bad. it
+        # should just stay where it is and start from the compression."
+        #
+        # Was: route to "save_refresh" -> handle_save_refresh() ->
+        # save_session() + write RESUME_FLAG + os.execvp() -- a full
+        # process restart that discarded MODE, PINNED_MODEL, and every
+        # other in-memory setting, papered over by a resume-recap reload
+        # on the NEXT process's first prompt. That's still exactly what
+        # "new" / "clear" / "kick" / "refresh" do (see handle_save_refresh
+        # callers elsewhere) -- those are deliberate fresh-start requests
+        # and are UNCHANGED. This trip is automatic, not requested, so it
+        # should be invisible: compact the older portion in place and keep
+        # running this exact same process, same turn. No restart means no
+        # reason to interrupt with a menu either -- a restart needed
+        # asking because it was destructive; compaction isn't.
         print(f"\n  {BO}⚠ Context pressure — history is {_pressure_desc}.{X}")
         print(
-            f"  {BO}  Sensei will save the conversation, restart, and reload it compacted.{X}"
+            f"  {C}Compacting older context in place — no restart, continuing this turn.{X}"
         )
-        print(
-            f"  {BO}  Your last message is preserved — you'll see it on the other side.{X}"
-        )
-        print(f"  {BY}    1  save + refresh now  (recommended){X}")
-        print(
-            f"  {BY}    2  keep going — adds 20,000 chars of headroom for this session{X}"
-        )
-        try:
-            ans = input(f"  {BY}choice [1]: {X}").strip()
-        except (EOFError, KeyboardInterrupt):
-            ans = "1"
-        if ans == "2":
-            global _WATERMARK_HEADROOM
-            _WATERMARK_HEADROOM = 20000
-            print(
-                f"  {G}✓ ok — watermark raised by 20,000 chars for this session.{X}\n"
-            )
+        if _compact_history_in_place(history):
+            _after_chars = sum(len(m.get("content", "") or "") for m in history)
+            print(f"  {G}✓ compacted — {_after_chars:,} chars now, same session.{X}\n")
         else:
-            return {
-                "route": "save_refresh",
-                "reason": f"history {_pressure_desc}",
-            }
+            print(
+                f"  {Y}⚠ compaction call came back empty — continuing without it this turn.{X}\n"
+            )
 
     # 2. Explicit prefixes — user intent overrides mode. Matched against
     # the user section (after [USER PROMPT]) so API-wrapped prompts honor
@@ -6522,6 +7040,24 @@ def ask_local_stream(messages, model=None, image_path=None):
         # color-classify at newline boundaries so each complete line gets
         # the right Master AI brand color (PLAN/INFO/VOICE/CAUTION/SOURCES).
         line_buf = []
+        # 2026-09-28: Elijah, live: replies "need more structure... margins.
+        # they're just kind of all over." Same root cause as render_reply's
+        # fix, applied here too -- this streaming path prints every line
+        # flush at column 0 with zero relationship to the "  🥋 " prefix
+        # printed once before the first token. `_at_line_start` tracks
+        # whether the NEXT thing printed needs the margin first (true right
+        # after any line ending in \n; false for the very first line, which
+        # continues directly after the prefix already printed).
+        _stream_margin = _reply_margin_for_prefix(f"\n{M}  🥋{X} ")
+        _at_line_start = [False]
+
+        def _emit(s):
+            if _at_line_start[0]:
+                sys.stdout.write(_stream_margin)
+            sys.stdout.write(s)
+            _at_line_start[0] = s.endswith("\n")
+            sys.stdout.flush()
+            _mark_activity()
 
         def _flush_line(final=False):
             """Print complete lines in line_buf with the right brand color.
@@ -6538,18 +7074,18 @@ def ask_local_stream(messages, model=None, image_path=None):
                 if break_pos < 30:  # no good space — hard-break at width
                     break_pos = SOFT_WRAP
                 line, joined = joined[:break_pos], joined[break_pos:].lstrip()
-                print(_paint_line(line + "\n"), end="", flush=True)
+                _emit(_paint_line(line + "\n"))
                 if SENSEI_STREAM_DELAY > 0:
                     time.sleep(SENSEI_STREAM_DELAY)
             while "\n" in joined:
                 line, _, rest = joined.partition("\n")
-                print(_paint_line(line + "\n"), end="", flush=True)
+                _emit(_paint_line(line + "\n"))
                 if SENSEI_STREAM_DELAY > 0:
                     time.sleep(SENSEI_STREAM_DELAY)
                 joined = rest
             if final and joined:
                 # Stream ended mid-line — paint what we have
-                print(_paint_line(joined + "\n"), end="", flush=True)
+                _emit(_paint_line(joined + "\n"))
                 if SENSEI_STREAM_DELAY > 0:
                     time.sleep(SENSEI_STREAM_DELAY)
             elif joined:
@@ -6804,7 +7340,11 @@ MASTER_AI_IDENTITY_SYSTEM = (
     "included, must be a complete sentence ending in real terminal punctuation "
     "(. ! or ?) — never stop mid-clause, mid-word, or on a dangling conjunction. If you "
     "are running low on room to finish, cut detail from the middle, not the ending — the "
-    "summary and its closing punctuation must always land."
+    "summary and its closing punctuation must always land.\n\n"
+    "2026-09-27 standing rule: follow the rule above silently. Never narrate, quote, or "
+    "reason out loud about these formatting instructions in your reply — no 'I need to "
+    "make sure every sentence ends with punctuation' or 'let me draft this as a numbered "
+    "list to comply' text. Output only the actual answer the user asked for."
 )
 
 
@@ -7803,7 +8343,7 @@ def _ask_poolside(messages, model, label, timeout=90):
         return None
     messages = _inject_identity(messages)
     log(f"CLOUD [{provider_key}]")
-    payload = {"model": model, "messages": messages, "max_tokens": 4096}
+    payload = {"model": model, "messages": messages, "max_tokens": 8192}
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         "https://inference.poolside.ai/v1/chat/completions",
@@ -7840,9 +8380,22 @@ def _ask_poolside(messages, model, label, timeout=90):
         log(f"POOLSIDE_ERROR [{label}]: {e}")
         return None
     try:
-        message = result["choices"][0]["message"]
+        choice = result["choices"][0]
+        message = choice["message"]
     except (KeyError, IndexError, TypeError):
         return None
+    # 2026-09-27: this was the one _ask_* provider that never propagated
+    # finish_reason, so the existing continuation feature (retries when a
+    # cloud reply's finish_reason is "length") could never fire for
+    # poolside -- a truncated reply and a complete one looked identical
+    # downstream. Elijah, live: "master ai cli is not continuing... we
+    # have one every other day." Laguna is a reasoning model that spends
+    # part of max_tokens on thinking before real content, on top of a
+    # 4096 budget (half every other provider's 8192) -- both made
+    # truncation likely AND made it silent. Fixed both: propagate
+    # finish_reason the same way _extract_cloud_reply does for every
+    # other provider, and match the 8192 budget everyone else gets.
+    globals()["_LAST_FINISH_REASON"] = choice.get("finish_reason", "")
     _record_real_ctx_tokens(model, (result.get("usage") or {}).get("total_tokens"))
     text = message.get("content") or ""
     if not text and not message.get("tool_calls"):
@@ -8304,6 +8857,106 @@ def _save_fallback_order(names):
     _FALLBACK_ORDER_FILE.write_text(json.dumps(names, indent=2))
 
 
+# ── `fallback ...` REPL commands (2026-09-28) ────────────────────────────
+# Extracted verbatim out of main()'s inline if-chain so the branch is
+# callable and testable without driving the whole REPL (driving main() from
+# a test runs the permission prompt and exits).
+#
+# Management layer on the fallback chain ask_cloud() already runs (see
+# _load_fallback_order docstring) — matches Hermes' own
+# `hermes fallback list/add/remove` naming/shape.
+#
+# Names are lower-cased before every comparison: the allowlist
+# (_VALID_FALLBACK_NAMES) and the stored chain are all lowercase, so
+# `fallback add NVIDIA` resolves like `fallback add nvidia` rather than
+# reporting "unknown provider 'NVIDIA'".
+def _handle_fallback_cmd(lo, cmd):
+    """Handle one `fallback ...` command. Returns True if it was consumed."""
+    if lo in ("fallback", "fallback list"):
+        order = _load_fallback_order()
+        custom = _FALLBACK_ORDER_FILE.exists()
+        print(
+            f"\n  {BOLD}Cloud fallback chain{X} {D}({'custom' if custom else 'default'}){X}:"
+        )
+        for i, name in enumerate(order, 1):
+            print(f"  {C}{i}.{X} {name}")
+        print(f"\n  {D}Valid names: {', '.join(sorted(_VALID_FALLBACK_NAMES))}{X}")
+        print(
+            f"  {D}'fallback add <name>' · 'fallback remove <name>' · "
+            f"'fallback move <name> <position>' · 'fallback reset'{X}\n"
+        )
+        return True
+
+    if lo.startswith("fallback add"):
+        name = (
+            cmd.split(None, 2)[2].strip().lower() if len(cmd.split(None, 2)) > 2 else ""
+        )
+        if name not in _VALID_FALLBACK_NAMES:
+            print(
+                f"  {Y}unknown provider {name!r}. Valid: {', '.join(sorted(_VALID_FALLBACK_NAMES))}{X}"
+            )
+        else:
+            order = _load_fallback_order()
+            if name in order:
+                print(
+                    f"  {Y}{name} is already in the chain (position {order.index(name) + 1}){X}"
+                )
+            else:
+                order.append(name)
+                _save_fallback_order(order)
+                print(f"  {G}added {name} → chain is now: {', '.join(order)}{X}")
+        return True
+
+    if lo.startswith("fallback remove"):
+        name = (
+            cmd.split(None, 2)[2].strip().lower() if len(cmd.split(None, 2)) > 2 else ""
+        )
+        order = _load_fallback_order()
+        if name not in order:
+            print(f"  {Y}{name!r} isn't in the current chain — see 'fallback list'{X}")
+        else:
+            order = [n for n in order if n != name]
+            _save_fallback_order(order)
+            print(
+                f"  {G}removed {name} → chain is now: {', '.join(order) or '(empty)'}{X}"
+            )
+        return True
+
+    if lo == "fallback reset":
+        _FALLBACK_ORDER_FILE.unlink(missing_ok=True)
+        print(f"  {G}reset to default chain: {', '.join(_DEFAULT_FALLBACK_ORDER)}{X}")
+        return True
+
+    # 2026-09-27: add/remove could never actually REORDER the chain —
+    # add refuses if the name is already present, and the only way to
+    # move something was remove-then-add, which just re-appends it to
+    # the end again (same problem, no reordering happened). Elijah,
+    # live, after opencode/nemotron/openrouter all failed twice in a
+    # row: wanted nvidia (currently last on purpose — it spends paid
+    # credits, see _DEFAULT_FALLBACK_ORDER's comment) promoted earlier
+    # so a real key backs up the free tier sooner, trusting NVIDIA's
+    # own key-rotation (see the NVIDIA_API_KEY/_2 swap already running
+    # elsewhere) to ride out its own rate limits before falling on to
+    # nemotron. `fallback add`/`remove` had no way to express that.
+    if lo.startswith("fallback move"):
+        parts = cmd.split()
+        name = parts[2].lower() if len(parts) > 2 else ""
+        pos_arg = parts[3] if len(parts) > 3 else ""
+        order = _load_fallback_order()
+        if name not in order:
+            print(f"  {Y}{name!r} isn't in the current chain — see 'fallback list'{X}")
+        elif not pos_arg.isdigit() or not (1 <= int(pos_arg) <= len(order)):
+            print(f"  {Y}usage: fallback move <name> <position 1-{len(order)}>{X}")
+        else:
+            order.remove(name)
+            order.insert(int(pos_arg) - 1, name)
+            _save_fallback_order(order)
+            print(f"  {G}moved {name} → chain is now: {', '.join(order)}{X}")
+        return True
+
+    return False
+
+
 # 2026-09-26: ask_cloud()'s fn_map (below) is the actual, authoritative
 # set of bare provider names it can dispatch to. delegate_runner.py used
 # to hand-copy this list into its own _DELEGATE_KNOWN_BARE_PROVIDERS —
@@ -8331,6 +8984,51 @@ ASK_CLOUD_BARE_PROVIDERS = frozenset(
         "poolside-xs",
     }
 )
+
+
+def _pinned_fallback_notice(provider) -> bool:
+    """True when `provider` is the model the operator explicitly pinned, so a
+    fall-through is worth telling them about.
+
+    Pinned-only on purpose. Auto-routing rotates providers constantly, and a
+    notice on every rotation would bury the session in noise — the complaint
+    was about an *invisible* swap, not about seeing routing at all."""
+    try:
+        pin = globals().get("PINNED_MODEL")
+    except Exception:
+        return False
+    if not pin or not provider:
+        return False
+    return str(pin) == str(provider)
+
+
+def _notice_pinned_falling_back(provider, order) -> None:
+    """Session-visible: the pinned model didn't answer; here's the plan."""
+    try:
+        chain = ", ".join(order[:4]) if order else "default chain"
+        more = f" (+{len(order) - 4} more)" if order and len(order) > 4 else ""
+        print(
+            f"\n  {Y}⚠  Pinned model unavailable:{X} {W}{provider}{X}\n"
+            f"     {D}Did not answer (maxed out, rate-limited, or erroring.) "
+            f"Falling back to the backup chain — no action needed.{X}\n"
+            f"     {D}order: {chain}{more}{X}\n"
+            f"     {D}edit with: fallback list / add / remove / reset{X}"
+        )
+    except Exception as e:  # never let a notice break the call
+        log(f"FALLBACK_NOTICE_ERROR: {e}")
+
+
+def _notice_backup_answered(provider, used_model) -> None:
+    """Session-visible: name the model that actually produced the answer."""
+    try:
+        if used_model:
+            print(f"     {G}→ answering with backup:{X} {C}{used_model}{X}\n")
+        else:
+            print(
+                f"     {R}→ no backup model answered either — whole chain failed.{X}\n"
+            )
+    except Exception as e:  # never let a notice break the call
+        log(f"FALLBACK_NOTICE_ERROR: {e}")
 
 
 def ask_cloud(messages, provider="opencode"):
@@ -8557,7 +9255,22 @@ def ask_cloud(messages, provider="opencode"):
         else:
             globals()["PENDING_CONTINUATION"] = None
             r = _so_far
+        _mark_activity()
         return r
+    # ── 2026-09-27: visible backup notice ────────────────────────────
+    # When the first-choice provider — specifically a model the operator
+    # PINNED — comes back empty, control used to drop straight into the
+    # fallback chain below and the swap happened in log() only. The user
+    # got an answer from a different model with no idea which one or why.
+    # Elijah: "not a silent swap he can't see, and not just 'accept what
+    # they made.'" This surfaces the already-existing mechanism rather
+    # than changing it: same chain, same order, same fn_map — just say it
+    # out loud. Pinned-only by design (see _pinned_fallback_notice) so
+    # routine auto-routing doesn't spam the screen on every rotation.
+    _first_choice_failed = not r
+    if _first_choice_failed and _pinned_fallback_notice(provider):
+        _notice_pinned_falling_back(provider, _load_fallback_order())
+    # ── end visible backup notice ─────────────────────────────────────
     # 2026-08-27 default order — OpenCode (keyless/free) → NVIDIA direct
     # (own quota) → OpenRouter free Nemotron (550B/120B) → paid Claude
     # fallback. Dead providers disabled upstream. 2026-09-03: now reads
@@ -8592,7 +9305,16 @@ def ask_cloud(messages, provider="opencode"):
         if r:
             _record(r, used_model)
             globals()["_LAST_MODEL"] = f"cloud/{used_model}"
+            # Name the model that actually answered, when the first choice
+            # was a pinned model the operator expected to be in use. Without
+            # this the "using backup: ..." line above is a promise; this is
+            # the confirmation.
+            if _first_choice_failed:
+                _notice_backup_answered(provider, used_model)
+            _mark_activity()
             return r
+    if _first_choice_failed:
+        _notice_backup_answered(provider, None)
     return None
 
 
@@ -8641,25 +9363,77 @@ def ask_model_router(messages, model=None, max_tokens=None):
                 "think": "medium",
                 "options": {"num_ctx": LOCAL_NUM_CTX, "num_predict": max_tokens},
             }
-            try:
-                data = json.dumps(payload).encode()
-                req = urllib.request.Request(
-                    f"{OLLAMA_URL}/api/chat",
-                    data=data,
-                    headers={"Content-Type": "application/json"},
+            _so_far = ""
+            _cont_messages = list(messages)
+            _rounds = 0
+            # Bound before the loop: a transport error on the first request
+            # breaks out with _finish never assigned, and the `if _finish`
+            # dispatch below would raise UnboundLocalError, breaking this
+            # function's "never raises" contract. _failed keeps the pre-loop
+            # behaviour of returning text=None on error.
+            _finish = ""
+            _failed = False
+            while True:
+                try:
+                    data = json.dumps({**payload, "messages": _cont_messages}).encode()
+                    req = urllib.request.Request(
+                        f"{OLLAMA_URL}/api/chat",
+                        data=data,
+                        headers={"Content-Type": "application/json"},
+                    )
+                    with urllib.request.urlopen(
+                        req, timeout=_local_request_timeout(600)
+                    ) as resp:
+                        result = json.loads(resp.read())
+                    _frag = result["message"]["content"]
+                    _finish = result.get("finish_reason", "")
+                    _record_real_ctx_tokens(
+                        model,
+                        (result.get("prompt_eval_count") or 0)
+                        + (result.get("eval_count") or 0),
+                    )
+                except Exception as e:
+                    log(f"ROUTER_LOCAL_ERROR: {e}")
+                    _failed = True
+                    break
+                if not _so_far:
+                    _so_far = _frag
+                else:
+                    _so_far = _so_far + "\n\n" + _frag
+                if _finish != "length" or _rounds >= _MAX_AUTO_CONTINUATIONS:
+                    break
+                _rounds += 1
+                _cont_messages = _cont_messages + [
+                    {"role": "assistant", "content": _so_far},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Continue exactly where you left off — do not repeat or "
+                            "re-summarize anything you already wrote above, just "
+                            "keep going from the precise point you stopped."
+                        ),
+                    },
+                ]
+                log(f"LOCAL_AUTO_CONTINUE: model={model} round={_rounds}")
+            if _failed:
+                globals()["PENDING_CONTINUATION"] = None
+                text = None
+            elif _finish == "length":
+                globals()["PENDING_CONTINUATION"] = {
+                    "provider": "local",
+                    "messages": _cont_messages,
+                    "so_far": _so_far,
+                }
+                text = (
+                    _so_far
+                    + "\n\n"
+                    + "─" * 40
+                    + f"\n⚠ Still hitting the length limit after {_rounds} "
+                    "continuations — type 'proceed' and I'll keep going from here."
                 )
-                with urllib.request.urlopen(
-                    req, timeout=_local_request_timeout(600)
-                ) as resp:
-                    result = json.loads(resp.read())
-                text = result["message"]["content"]
-                _record_real_ctx_tokens(
-                    model,
-                    (result.get("prompt_eval_count") or 0)
-                    + (result.get("eval_count") or 0),
-                )
-            except Exception as e:
-                log(f"ROUTER_LOCAL_ERROR: {e}")
+            else:
+                globals()["PENDING_CONTINUATION"] = None
+                text = _so_far
         else:
             text = _call_with_hard_timeout(
                 ask_local, messages, model=model, timeout=_LOCAL_HARD_TIMEOUT
@@ -8925,15 +9699,64 @@ def _reply_needs_operator_input(reply_text: str) -> bool:
     talking to itself. When in doubt, favor True — see AUTO_NUDGE_MAX's
     comment for why an over-eager auto-continue is the worse failure mode
     here.
-
-    TODO(human): implement the actual heuristic. reply_text is the
-    rendered assistant reply (directives already stripped from what the
-    operator sees — this is the human-facing text). Some signals worth
-    weighing: does it end in a question mark; does it contain an ASK:
-    directive marker or phrases like "let me know" / "should I" / "which
-    one"; does it report a BLOCKED/failed action that needs a decision.
     """
-    raise NotImplementedError
+    reply = (reply_text or "").strip()
+    if not reply:
+        return False
+
+    if reply.endswith("?"):
+        return True
+
+    lowered = reply.lower()
+    question_phrases = (
+        "let me know",
+        "should i",
+        "would you like",
+        "do you want",
+        "shall i",
+        "which one",
+        "what would you",
+        "how would you",
+        "can you clarify",
+        "could you clarify",
+        "please confirm",
+        "please specify",
+        "awaiting your",
+        "waiting for your",
+        "your call",
+        "up to you",
+        "which do you prefer",
+        "what do you think",
+    )
+    for phrase in question_phrases:
+        if phrase in lowered:
+            return True
+
+    # The ASK: directive marker. Word-boundary anchored so unrelated words
+    # that merely end in "ask" -- task:, mask:, basket:, "asking" -- do not
+    # trip the watchdog and stall auto-continuation.
+    if re.search(r"\bask\s*:", lowered):
+        return True
+
+    blocked_markers = (
+        "[tool blocked]",
+        "[blocked]",
+        "blocked by policy",
+        "i can't do that",
+        "i cannot do that",
+        "not allowed to",
+        "permission denied",
+        "requires approval",
+    )
+    for marker in blocked_markers:
+        if marker in lowered:
+            return True
+
+    if "error:" in lowered or "failed:" in lowered or "traceback" in lowered:
+        if "?" in reply or "let me know" in lowered or "should i" in lowered:
+            return True
+
+    return False
 
 
 def _watchdog_maybe_auto_continue(reply_text: str) -> bool:
@@ -8948,10 +9771,9 @@ def _watchdog_maybe_auto_continue(reply_text: str) -> bool:
     if pending == 0:
         AUTO_NUDGE_STREAK = 0
         return False
-    try:
-        needs_input = _reply_needs_operator_input(reply_text)
-    except NotImplementedError:
-        return False
+    # _reply_needs_operator_input is implemented; the old
+    # `except NotImplementedError` guard was stub-era scaffolding.
+    needs_input = _reply_needs_operator_input(reply_text)
     if needs_input:
         AUTO_NUDGE_STREAK = 0
         return False
@@ -9036,6 +9858,76 @@ def handle_task_cmd(cmd):
         return True
 
     return False
+
+
+# ── CONTEXT-PRESSURE COMPACTION (in-place, no restart) ─────────
+# Elijah, 2026-09-28: "it needs to compact like all the other frameworks
+# compact. it doesn't need to restart, it just needs to compress. and
+# start from where it was. the restart is bad... it should just stay
+# where it is and start from the compression."
+#
+# Replaces the old context-pressure response: save_session() + write
+# RESUME_FLAG + os.execvp() (see handle_save_refresh()) -- a full process
+# restart that discarded MODE, PINNED_MODEL, and every other in-memory
+# session setting, relying on a resume-recap reload on the NEXT process's
+# first prompt to paper over it. handle_save_refresh() itself is
+# UNCHANGED and still used for deliberate user-requested fresh starts
+# ("new" / "clear" / "kick" / "refresh") -- those really do want a blank
+# slate, on purpose. This is only for the AUTOMATIC "history got too big"
+# trip inside orchestrate(): compress the older portion in place and keep
+# running the exact same process, same turn, same everything else.
+_COMPACT_KEEP_RECENT = 12  # most recent raw messages stay verbatim, full detail
+
+
+def _compact_older_messages(older_msgs):
+    """One cloud call: a dense WORKING summary for a model to continue
+    from -- not summarize_session()'s human-readable 4-bullet recap.
+    Preserves concrete facts (paths, commands, decisions, values found)
+    and open threads; drops pleasantries and repeated back-and-forth."""
+    transcript = "\n".join(
+        f"{(m.get('role') or '?').upper()}: {(m.get('content') or '')[:800]}"
+        for m in older_msgs
+    )
+    prompt = (
+        "Compress this conversation history into a dense working summary "
+        "for an AI continuing the SAME task, not a human-readable recap. "
+        "Preserve concrete facts: file paths touched, commands run, "
+        "decisions made, values discovered, and anything still open or "
+        "unresolved. Drop pleasantries and repeated back-and-forth. "
+        "200-400 words, plain prose.\n\n" + transcript
+    )
+    try:
+        result = _ask_cloud_for_label([{"role": "user", "content": prompt}])
+        return (result or "").strip()
+    except Exception as e:
+        log(f"CONTEXT_COMPACT_ERROR: {e}")
+        return ""
+
+
+def _compact_history_in_place(history):
+    """Replace older turns with a dense summary; keep the system
+    message(s) and the most recent _COMPACT_KEEP_RECENT messages verbatim.
+    Mutates `history` in place (same list object the caller holds) and
+    returns True on success. Fails open: returns False and leaves history
+    untouched if the summarization call comes back empty, rather than
+    silently deleting context for nothing."""
+    system = [m for m in history if m.get("role") == "system"]
+    convo = [m for m in history if m.get("role") != "system"]
+    if len(convo) <= _COMPACT_KEEP_RECENT:
+        return False  # not enough history to make compaction worthwhile
+    older, recent = convo[:-_COMPACT_KEEP_RECENT], convo[-_COMPACT_KEEP_RECENT:]
+    summary = _compact_older_messages(older)
+    if not summary:
+        return False
+    note = {
+        "role": "user",
+        "content": (
+            f"[CONTEXT COMPACTED — {len(older)} earlier message(s) condensed "
+            f"to keep this session going without restarting]\n{summary}"
+        ),
+    }
+    history[:] = system + [note] + recent
+    return True
 
 
 # ── HISTORY COMPACT ───────────────────────────────────────────
@@ -9992,6 +10884,19 @@ def _ensure_rich():
     return _RICH_OK
 
 
+_PREFIX_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+
+
+def _reply_margin_for_prefix(prefix):
+    """Visible-width margin matching a printed reply prefix (e.g. "  🥋 "),
+    so wrapped/continuation lines line up under the first instead of
+    landing flush at column 0. Shared by render_reply() and
+    ask_local_stream()'s line painter -- both print the same shape of
+    prefix before streaming/rendering the actual reply."""
+    visible = _PREFIX_ANSI_RE.sub("", prefix or "")
+    return " " * len(visible.rsplit("\n", 1)[-1])
+
+
 def render_reply(text, prefix=None, suffix=None):
     """Render AI reply as markdown via rich when available. Falls back to
     plain colored print.
@@ -10013,10 +10918,20 @@ def render_reply(text, prefix=None, suffix=None):
     if prefix:
         print(prefix, end="", flush=True)
 
+    # 2026-09-28: Elijah, live: replies "need more structure... margins.
+    # they're just kind of all over." Root cause: `prefix` (e.g. "  🥋 ")
+    # only ever lands on the FIRST printed line -- every wrapped line after
+    # it came straight from rich's capture buffer, which has no idea a
+    # prefix was printed before it and always starts each line at column 0.
+    # A real margin means EVERY wrapped line lines up under the first, not
+    # just the one immediately following the prefix.
+    margin = _reply_margin_for_prefix(prefix)
+
     rendered = text or ""
     if _ensure_rich():
         try:
-            cons = _RICH_CONSOLE.__class__(width=SENSEI_REPLY_WRAP, file=sys.stdout)
+            wrap_width = max(20, SENSEI_REPLY_WRAP - len(margin))
+            cons = _RICH_CONSOLE.__class__(width=wrap_width, file=sys.stdout)
             with cons.capture() as cap:
                 cons.print(_RICH_MARKDOWN(rendered, code_theme="monokai"))
             rendered = cap.get()
@@ -10027,11 +10942,12 @@ def render_reply(text, prefix=None, suffix=None):
         lines = rendered.split("\n")
         last = len(lines) - 1
         for i, line in enumerate(lines):
+            out = line.rstrip() if i == 0 else margin + line.rstrip()
             if i < last:
-                print(line.rstrip(), flush=True)  # implicit newline
+                print(out, flush=True)  # implicit newline
                 time.sleep(SENSEI_REPLY_LINE_DELAY)
             else:
-                print(line.rstrip(), end="", flush=True)
+                print(out, end="", flush=True)
     else:
         print(rendered, end="", flush=True)
 
@@ -10827,7 +11743,29 @@ def _context_watermark():
 # size in that model's real tokens — no accumulation needed, just capture
 # the freshest one and use it directly instead of the char estimate,
 # whenever it matches the model actually active right now.
-_LAST_REAL_CTX: dict = {"model": None, "tokens": None, "ts": 0.0}
+#
+# 2026-09-27: this lived in memory only, so every restart (exactly what
+# handle_save_refresh's compact does when context pressure trips) wiped it
+# right when it mattered most -- the fresh process starts back on the char
+# estimate until the next real call completes, which is the one cold-start
+# gap in an otherwise-correct fix. _real_ctx_tokens_for_active_model()
+# already tolerates an arbitrarily old in-memory measurement (no ts-based
+# expiry, model-name match is the only gate), so persisting it to disk
+# across a restart is the same trust level, not a new one.
+_REAL_CTX_FILE = Path.home() / ".master_ai_real_ctx.json"
+
+
+def _load_real_ctx_from_disk():
+    try:
+        rec = json.loads(_REAL_CTX_FILE.read_text())
+        if rec.get("model") and rec.get("tokens"):
+            return rec
+    except Exception:
+        pass
+    return {"model": None, "tokens": None, "ts": 0.0}
+
+
+_LAST_REAL_CTX: dict = _load_real_ctx_from_disk()
 
 
 def _record_real_ctx_tokens(model, tokens):
@@ -10843,11 +11781,16 @@ def _record_real_ctx_tokens(model, tokens):
         return
     if tokens <= 0:
         return
-    globals()["_LAST_REAL_CTX"] = {
+    rec = {
         "model": str(model),
         "tokens": tokens,
         "ts": time.time(),
     }
+    globals()["_LAST_REAL_CTX"] = rec
+    try:
+        _REAL_CTX_FILE.write_text(json.dumps(rec))
+    except Exception:
+        pass  # best-effort -- the in-memory copy is what actually matters this turn
 
 
 def _real_ctx_tokens_for_active_model():
@@ -12377,6 +13320,8 @@ def show_help():
                 ("sessions list", "list saved sessions by date + summary preview"),
                 ("sessions resume <N>", "inject a specific past session by number"),
                 ("clear history", "wipe conversation context"),
+                ("activity", "show recent agent-loop activities and their status"),
+                ("activity cancel", "stop the currently running agent loop"),
                 ("cache", "show response cache stats"),
                 ("clear cache", "wipe cached responses"),
                 ("approved", "show auto-approved command list"),
@@ -14382,9 +15327,216 @@ def _record_live_typed_action(action):
 # _is_sudo_cmd() to _sudo_handoff() before any run_command() call site.
 from sandbox import build_sandbox_argv as _build_sandbox_argv
 
+# ── VERIFY-ON-STOP GATE (2026-09-27) ──────────────────────────
+# Ported from Hermes's agent/turn_stop_gates.py + verification_stop.py
+# (github.com/NousResearch/hermes-agent, checked live in
+# ~/.hermes/hermes-agent): a real, structural "don't let a turn close on
+# an unverified code edit" gate, not another prose instruction hoping the
+# model complies. Elijah: "why are we building this one by one when it
+# can be cloned or copied" -- the completion-contract text in
+# ~/.sensei_behavior.md only ever asked nicely; this actually enforces it.
+#
+# Scope: reset once per handle() call (one logical turn, including its
+# internal continuation chain), not per RUN/EDIT directive -- an edit ten
+# steps into a chain still needs to be verified before the chain's final
+# prose answer is allowed to stand.
+_TURN_EDITED_PATHS: set[str] = set()
+_TURN_VERIFIED_SINCE_EDIT = True  # nothing edited yet -> nothing to prove
+_VERIFY_STOP_ATTEMPTS = 0
+_VERIFY_STOP_MAX_ATTEMPTS = 2  # mirrors Hermes's max_attempts=2
+
+# Prose/data files have no runtime behavior to verify -- editing a
+# SKILL.md or README must never demand a test run.
+_NON_CODE_VERIFY_EXTENSIONS = frozenset(
+    {".md", ".markdown", ".mdx", ".rst", ".txt", ".log", ".csv", ".tsv", ".json"}
+)
+_VERIFY_COMMAND_MARKERS = (
+    "pytest",
+    "py_compile",
+    "unittest",
+    "npm test",
+    "npm run test",
+    "yarn test",
+    "go test",
+    "cargo test",
+    "bash -n",
+    "node --check",
+    "eslint",
+    "flake8",
+    "ruff",
+    "mypy",
+    "shellcheck",
+)
+
+
+def _is_non_code_verify_path(path):
+    try:
+        return (
+            Path(os.path.expanduser(path)).suffix.lower() in _NON_CODE_VERIFY_EXTENSIONS
+        )
+    except Exception:
+        return False
+
+
+def _reset_turn_verify_state():
+    globals()["_TURN_EDITED_PATHS"] = set()
+    globals()["_TURN_VERIFIED_SINCE_EDIT"] = True
+    globals()["_VERIFY_STOP_ATTEMPTS"] = 0
+
+
+def _mark_turn_path_mutated(filepath):
+    """Call from every successful EDIT/CREATE dispatch path."""
+    if _is_non_code_verify_path(filepath):
+        return
+    globals()["_TURN_EDITED_PATHS"].add(filepath)
+    globals()["_TURN_VERIFIED_SINCE_EDIT"] = False
+
+
+def _mark_turn_verified(cmd):
+    """Call from run_command() on a successful (exit-0) RUN."""
+    low = (cmd or "").lower()
+    if any(marker in low for marker in _VERIFY_COMMAND_MARKERS):
+        globals()["_TURN_VERIFIED_SINCE_EDIT"] = True
+
+
+def _verify_on_stop_nudge():
+    """Mirrors Hermes's build_verify_on_stop_nudge(): non-empty only when
+    code was edited this turn with no verification run since, bounded by
+    _VERIFY_STOP_MAX_ATTEMPTS so it can never loop forever."""
+    if _TURN_VERIFIED_SINCE_EDIT or not _TURN_EDITED_PATHS:
+        return None
+    if _VERIFY_STOP_ATTEMPTS >= _VERIFY_STOP_MAX_ATTEMPTS:
+        return None
+    paths = sorted(_TURN_EDITED_PATHS)[:8]
+    listed = "\n".join(f"- {p}" for p in paths)
+    return (
+        "[System: You edited code this turn but haven't run anything to "
+        "prove it works yet.\n\n"
+        f"Changed:\n{listed}\n\n"
+        "Run the relevant verification now (py_compile, the test suite, "
+        "bash -n, or a focused smoke test) via RUN:, read the result, and "
+        "only then give your closing answer. If verification genuinely "
+        "isn't possible here, say so plainly instead of claiming it works.]"
+    )
+
+
+# ── Session-scoped CWD (2026-09-28) ──────────────────────────────────────
+# 2026-09-27, root-caused live: a model emitted `cd /some/project/dir` as
+# one RUN: directive and `python3 main.py` as a SEPARATE one. The second
+# failed looking for main.py. Every RUN: is its own subprocess.run() with
+# no cwd= override, and nothing in this file calls os.chdir(), so a `cd`
+# only ever affected the single throwaway bash it ran in, then vanished --
+# exactly as it would in any tool-per-call architecture.
+#
+# Fixed by tracking the directory in scripts/session_cwd.py's contextvar.
+# That module is already contextvars-based and covered by
+# tests/test_session_cwd.py, but master_ai.py never imported it; a prior
+# attempt here reimplemented it as a module global plus regex, which was
+# neither contextvars nor tested. Wiring the real module makes a `cd` in
+# one RUN: still in effect for the next, the way an interactive shell does.
+#
+# The repo root has to be on sys.path explicitly before that import.
+# In production this file runs as ~/scripts/master_ai.py, a SYMLINK into
+# the repo, so sys.path[0] is ~/scripts -- which has no nested scripts/
+# package. The editable install (master_ai_cli) does not help either: its
+# finder maps top-level module names one by one and `scripts` is not among
+# them. So without this, the import raises ModuleNotFoundError in the real
+# agent while succeeding under pytest (whose rootdir puts the repo on the
+# path) -- a fix that is green in tests and dead in production. Verified by
+# test_session_cwd_run.py::test_import_works_from_production_invocation.
+_MASTER_AI_DIR = os.path.dirname(os.path.realpath(__file__))
+if _MASTER_AI_DIR and _MASTER_AI_DIR not in sys.path:
+    sys.path.insert(0, _MASTER_AI_DIR)
+
+# Deliberately NOT wrapped in try/except: if this cannot be imported, cd
+# tracking would silently stop working, which is a worse failure than a
+# loud one. The dependency is pure stdlib, so the only failure is the path,
+# and the path is fixed above.
+from scripts.session_cwd import get_session_cwd, set_session_cwd
+
+# A LEADING `cd <path>`, optionally chained: `cd a && cd b`. Parsed with
+# shlex rather than a regex so quoted paths containing spaces resolve.
+_CD_SEPARATORS = ("&&", "||", ";", "&", "|")
+
+
+def _run_cwd():
+    """cwd= to hand subprocess.run: the session CWD, or None to inherit."""
+    return get_session_cwd() or None
+
+
+def _track_leading_cd(cmd, ok):
+    """Persist a successful leading `cd` so the NEXT RUN: inherits it.
+
+    Only a LEADING cd moves the next command: in `foo && cd bar`, cd was
+    not the first thing that ran, so the following command still starts
+    where it already was. Chained leading cds (`cd a && cd b`) resolve in
+    order against each other. A target that isn't an existing directory is
+    ignored, so a failed or bogus `cd` can't strand every later command.
+    """
+    if not ok or not cmd:
+        return
+    try:
+        tokens = shlex.split(cmd)
+    except Exception:
+        return
+    base = get_session_cwd() or os.getcwd()
+    i = 0
+    moved = False
+    while i < len(tokens) and tokens[i] == "cd":
+        if i + 1 >= len(tokens):
+            # Bare `cd` with no target means the home directory.
+            target = os.path.expanduser("~")
+        else:
+            nxt = tokens[i + 1]
+            if nxt in _CD_SEPARATORS:
+                break
+            target = nxt
+            i += 1
+        candidate = os.path.normpath(os.path.join(base, os.path.expanduser(target)))
+        if not os.path.isdir(candidate):
+            return
+        base = candidate
+        moved = True
+        i += 1
+        while i < len(tokens) and tokens[i] in _CD_SEPARATORS:
+            i += 1
+    if moved:
+        set_session_cwd(base)
+
+
+def _fire_on_blocked(target, kind, action_reason, audit_kind):
+    """Fire the `on_blocked` hook for one blocked or failed action.
+
+    Extracted 2026-09-28. Four call sites in process_reply() each carried an
+    identical `try: import hooks; hooks.fire("on_blocked", ...)` / `except:
+    log` block. They are now one function, which is both less duplication
+    and testable: the previous test for this only did
+    `assertIn('hooks.fire("on_blocked"', inspect.getsource(process_reply))`,
+    so the repo's own formatter splitting that call across lines broke the
+    test while the behaviour was unchanged and correct.
+
+    Never raises -- a failing hook must not take down the dispatch path.
+    """
+    try:
+        import hooks as _hooks
+
+        _hooks.fire(
+            "on_blocked",
+            target,
+            action={
+                "kind": kind,
+                "target": target,
+                "reason": action_reason,
+                "audit_kind": audit_kind,
+            },
+        )
+    except Exception as e:
+        log(f"ON_BLOCKED_HOOK_ERROR ({audit_kind}): {e}")
+
 
 def run_command(cmd):
     print(f"\n🥷  {BOLD}Running:{X} {Y}{cmd}{X}")
+    _mark_activity()
     _t0 = time.time()
     import typed_actions
 
@@ -14428,15 +15580,21 @@ def run_command(cmd):
             capture_output=True,
             text=True,
             timeout=300,
+            cwd=_run_cwd(),
         )
+        _mark_activity()
         output = (result.stdout + result.stderr).strip()
         informational = _is_informational_cmd(shell_cmd, result.returncode)
         chain_ok = result.returncode == 0 or result.returncode == 141 or informational
+        # A leading `cd` has already done its job inside the throwaway
+        # shell; record it so the NEXT RUN: starts there.
+        _track_leading_cd(cmd, result.returncode == 0)
         if output:
             print(f"{G}{output}{X}")
         if result.returncode == 0:
             _print_run_success_summary(shell_cmd, output)
             print(_pill("RAN", f"{D}{shell_cmd[:70]}{X}"))
+            _mark_turn_verified(shell_cmd)
         elif result.returncode == 141:
             print(_pill("SIGPIPE", f"{D}exit 141 · {shell_cmd[:60]}{X}"))
         else:
@@ -16160,6 +17318,7 @@ def confirm_create(filepath, content):
             log(f"PC_CREATE: {filepath}")
             _audit("CREATE-AUTO", filepath)
             _remember_created_file(filepath)
+            _mark_turn_path_mutated(filepath)
             if _fire_hook_or_block("post_create", filepath):
                 return False
             return True
@@ -16231,6 +17390,7 @@ def confirm_create(filepath, content):
             log(f"PC_CREATE: {filepath}")
             _audit("CREATE", filepath)
             _remember_created_file(filepath)
+            _mark_turn_path_mutated(filepath)
             if _fire_hook_or_block("post_create", filepath):
                 return False
             return True
@@ -16391,6 +17551,7 @@ def confirm_edit(filepath, find_text, replace_text):
             print(_pill("EDITED", f"{W}{filepath}{X}  {D}(line {start_line}){X}"))
             log(f"PC_EDIT: {filepath}")
             _audit("EDIT-AUTO", filepath)
+            _mark_turn_path_mutated(filepath)
             if _fire_hook_or_block("post_edit", filepath):
                 return False
             return True
@@ -16436,6 +17597,7 @@ def confirm_edit(filepath, find_text, replace_text):
             print(_pill("EDITED", f"{W}{filepath}{X}  {D}(line {start_line}){X}"))
             log(f"PC_EDIT: {filepath}")
             _audit("EDIT", filepath)
+            _mark_turn_path_mutated(filepath)
             if _fire_hook_or_block("post_edit", filepath):
                 return False
             return True
@@ -17343,6 +18505,84 @@ def _reply_claims_unexecuted_action(reply_text: str) -> bool:
     return sentence_count <= 2 and len(text) < 200
 
 
+# ── Typed dispatch validation gate (CLAUDE.md Tier-1, 2026-09-28) ─────────
+# List-name -> action kind. Explicit because the extraction lists are
+# plural/snake-cased and deriving the kind from the name silently produced
+# RUN_CMDS, which matched no rule and let every payload through.
+_GATE_KIND_BY_LIST = {
+    "read_paths": "READ",
+    "run_cmds": "RUN",
+    "runterm_cmds": "RUNTERM",
+    "send_email_specs": "SEND_EMAIL",
+    "send_telegram_specs": "SEND_TELEGRAM",
+}
+
+
+def _validation_gate(collected):
+    """Run every collected directive through the pre-dispatch validator.
+
+    CLAUDE.md's Tier-1 blocker: nothing validated the shape of an action
+    between "the model emitted a directive" and "we execute it", so a
+    malformed or unparseable action was dispatched anyway and the model went
+    on to report the step as done.
+
+    `collected` is a mapping of list-name -> list of payloads as assembled by
+    process_reply's extraction (plain strings, or (path, content) tuples for
+    CREATE/EDIT). Returns (kept, blocked) where `kept` is a new mapping with
+    the invalid entries removed, preserving order, and `blocked` is a list of
+    (list_name, payload, reason) for feedback into history.
+
+    Legacy extraction still selects WHAT to run — it is the battle-tested
+    path and test_typed_actions_parity.py proves the typed parser agrees with
+    it. What is new here is that the typed parse is LIVE rather than shadow:
+    its verdict now gates dispatch. That is the Tier-1 requirement, and it
+    is deliberately not a wholesale swap of the selector, because a selector
+    swap buys no safety that the gate does not already provide and is far
+    easier to get wrong.
+    """
+    try:
+        import action_validation as _av
+    except Exception as e:  # noqa: BLE001 - a missing module must not stop dispatch
+        log(f"VALIDATION_GATE_UNAVAILABLE: {e}")
+        return collected, []
+
+    kept, blocked = {}, []
+    for name, items in collected.items():
+        survivors = []
+        for payload in items or []:
+            if (
+                name == "create_files"
+                and isinstance(payload, (tuple, list))
+                and payload
+            ):
+                kind, target, content = "CREATE", payload[0], payload[1]
+            elif name == "edit_ops" and isinstance(payload, (tuple, list)) and payload:
+                kind, target, content = (
+                    "EDIT",
+                    payload[0],
+                    (payload[2] if len(payload) > 2 else None),
+                )
+            else:
+                # Explicit map, NOT derived from the list name: these names
+                # are plural and snake-cased ("run_cmds"), so deriving a kind
+                # from them produced RUN_CMDS, matched nothing in the
+                # validator, and silently let every payload through.
+                kind = _GATE_KIND_BY_LIST.get(name, "")
+                target, content = payload, None
+            if not kind:
+                survivors.append(payload)
+                continue
+            res = _av.validate_action(
+                {"kind": kind, "target": target, "create_content": content}
+            )
+            if res.ok:
+                survivors.append(payload)
+            else:
+                blocked.append((name, payload, res.reason))
+        kept[name] = survivors
+    return kept, blocked
+
+
 def process_reply(reply, history, streamed=False, continue_after_tools=False):
     """Parse RUN: / READ: / CREATE: directives from AI reply and execute."""
     globals()["_CHAIN_SUDO_ACKS"] = 0
@@ -17968,6 +19208,82 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         or send_email_specs
         or send_telegram_specs
     )
+
+    # ── Tier-1 pre-dispatch validation gate (2026-09-28) ──────────────
+    # Placed here because every list is final: the per-directive extraction
+    # above and the CREATE/EDIT block builders have all run. Anything that
+    # fails validation is removed BEFORE the first dispatch consumes these
+    # lists, which is the whole point -- the model must not be able to report
+    # a step it never actually performed.
+    _gate_input = {
+        "read_paths": read_paths,
+        "run_cmds": run_cmds,
+        "runterm_cmds": runterm_cmds,
+        "create_files": create_files,
+        "edit_ops": edit_ops,
+        "send_email_specs": send_email_specs,
+        "send_telegram_specs": send_telegram_specs,
+    }
+    _gate_kept, _gate_blocked = _validation_gate(_gate_input)
+    if _gate_blocked:
+        globals()["_LAST_BLOCKED_ACTION"] = {
+            "count": len(_gate_blocked),
+            "reasons": [f"{n}: {r}" for n, _p, r in _gate_blocked[:5]],
+        }
+        for _name, _payload, _reason in _gate_blocked:
+            log(f"TOOL_BLOCKED_VALIDATION: {_name} {_reason}")
+        print(
+            _pill(
+                "BLOCKED",
+                f"{D}{len(_gate_blocked)} action(s) failed validation before "
+                f"dispatch{X}",
+            )
+        )
+        for _name, _payload, _reason in _gate_blocked:
+            print(f"  {Y}{_name}: {_reason}{X}")
+        _detail = "\n".join(
+            f"- {_name}: {_reason}" for _name, _p, _reason in _gate_blocked[:5]
+        )
+        history.append(
+            {
+                "role": "user",
+                "content": (
+                    "[TOOL BLOCKED]\n"
+                    "These actions were rejected by validation and did NOT run:\n"
+                    f"{_detail}\n\n"
+                    "Fix the payloads and re-emit them. Do not report a step as "
+                    "done unless a directive for it actually executed.\n"
+                    'If there is a one-line lesson here (e.g. "CREATE with a '
+                    'body that does not parse"), emit a single '
+                    "`REMEMBER: <one-line lesson>` directive in your next "
+                    "reply so this doesn't repeat next turn."
+                ),
+            }
+        )
+        # Reassign so downstream dispatch sees only validated actions.
+        read_paths = _gate_kept["read_paths"]
+        run_cmds = _gate_kept["run_cmds"]
+        runterm_cmds = _gate_kept["runterm_cmds"]
+        create_files = _gate_kept["create_files"]
+        edit_ops = _gate_kept["edit_ops"]
+        send_email_specs = _gate_kept["send_email_specs"]
+        send_telegram_specs = _gate_kept["send_telegram_specs"]
+        if not (
+            read_paths
+            or run_cmds
+            or runterm_cmds
+            or create_files
+            or edit_ops
+            or remember_facts
+            or task_add_texts
+            or task_done_targets
+            or send_email_specs
+            or send_telegram_specs
+        ):
+            # Everything this reply proposed was invalid: stop the chain
+            # rather than falling through and returning the narrative text as
+            # if it were a completed answer.
+            return None
     # REMEMBER: <fact> — fire first, before any tool dispatch. Memory
     # writes are inert text appends; no fence, no approval needed, same
     # path as the user `remember:` command. The model may emit multiple
@@ -18034,7 +19350,33 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         # narrative and requires no comma anywhere after the gerund lead;
         # kept outside the shared \b(...)\b group above since anchoring
         # ^...$ inside it wouldn't compose the same way.
-        r"|^\s*(?:checking|verifying|confirming|inspecting|scanning|looking at)\s+[^,\n]*$",
+        r"|^\s*(?:checking|verifying|confirming|inspecting|scanning|looking at)\s+[^,\n]*$"
+        # 2026-09-27: reproduced live — "Let me first examine and fix the
+        # start-learning recipe.py: [now proceeding with the fix]" matched
+        # NEITHER "i'll <verb>" list above ("examine" isn't enumerated) NOR
+        # "let me <verb>" list ("examine" isn't there either), so is_stall
+        # stayed False and the announcement rendered as a finished answer
+        # with nothing dispatched. A closed verb list can never be complete
+        # — the model can always phrase intent with a verb nobody
+        # enumerated yet. Replace enumeration with the open-class shape
+        # already proven safe for the gerund branch above: any verb after
+        # the first-person modal, gated by the same "no comma, no
+        # completed-action marker, to end of narrative" structural check —
+        # a real stall IS the whole remaining narrative. "let me know/
+        # clarify/explain/summarize/add/recap/reiterate/note" are excluded
+        # because they're common discourse-framing openers for a real
+        # answer ("Let me know if...", "Let me clarify: ..."), not a stall
+        # — everything else after "i'll"/"let me" is intentionally open,
+        # accepting the residual false-positive risk (one extra forced
+        # retry turn, bounded by max_continuation_turns) over the worse
+        # failure mode this branch exists to close: silently doing nothing
+        # while looking done. Kept alongside the closed-list alternatives
+        # above rather than replacing them — those already cover comma-
+        # tailed cases this end-anchored branch can't match.
+        r"|\b(?:i\'?ll\s+(?:\w+\s+){0,2}\w+\b|"
+        r"let me(?!\s+(?:know|clarify|explain|summarize|add|recap|reiterate|note)\b)\s+(?:\w+\s+){0,2}\w+\b)"
+        r"(?![^,\n]*\b(?:successfully|complete|completed|done|finished|fixed|ready|clean|passed|confirmed|ok|okay|resolved|sent|good|verified)\b)"
+        r"[^,\n]*$",
         re.IGNORECASE,
     )
     # Second shape seen tonight: the model attempts directives but wraps
@@ -18550,21 +19892,12 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             history.append({"role": "user", "content": msg})
             # 2026-05-11: fire on_blocked hook for the [HOOK BLOCKED]
             # path too. Same async lesson-extract pipeline.
-            try:
-                import hooks as _hooks
-
-                _hooks.fire(
-                    "on_blocked",
-                    hpath,
-                    action={
-                        "kind": hkind.upper(),
-                        "target": hpath,
-                        "reason": f"{hid}: {hreason}",
-                        "audit_kind": f"HOOK-BLOCK-{hkind.upper()}",
-                    },
-                )
-            except Exception as e:
-                log(f"ON_BLOCKED_HOOK_ERROR: {e}")
+            _fire_on_blocked(
+                hpath,
+                hkind.upper(),
+                f"{hid}: {hreason}",
+                f"HOOK-BLOCK-{hkind.upper()}",
+            )
             globals()["_LAST_HOOK_BLOCK"] = {}
             log(
                 f"CHAIN_HOOK_BLOCK_FEEDBACK: appended [HOOK BLOCKED] for {hkind} {hpath}"
@@ -18777,17 +20110,11 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         # user. Rate-limited inside the hook itself (max 10/session).
         # Capture the blocked context BEFORE clearing the global.
         try:
-            import hooks as _hooks
-
-            _hooks.fire(
-                "on_blocked",
-                cmd,
-                action={
-                    "kind": (blocked.get("kind") or kind).upper(),
-                    "target": blocked.get("command") or cmd,
-                    "reason": blocked.get("reason", "safeguard refused"),
-                    "audit_kind": blocked.get("audit_kind", "TOOL-BLOCKED"),
-                },
+            _fire_on_blocked(
+                blocked.get("command") or cmd,
+                (blocked.get("kind") or kind).upper(),
+                blocked.get("reason", "safeguard refused"),
+                blocked.get("audit_kind", "TOOL-BLOCKED"),
             )
         except Exception as e:
             log(f"ON_BLOCKED_HOOK_ERROR: {e}")
@@ -18849,18 +20176,12 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             # source so the hook can filter (this is RUN-EXEC-FAIL, not a
             # POLICY/FENCE block).
             try:
-                import hooks as _hooks
-
                 _exit = getattr(result, "exit_code", "?")
-                _hooks.fire(
-                    "on_blocked",
+                _fire_on_blocked(
                     cmd,
-                    action={
-                        "kind": "RUN",
-                        "target": cmd,
-                        "reason": f"command failed (exit {_exit})",
-                        "audit_kind": "RUN-EXEC-FAIL",
-                    },
+                    "RUN",
+                    f"command failed (exit {_exit})",
+                    "RUN-EXEC-FAIL",
                 )
             except Exception as e:
                 log(f"ON_BLOCKED_HOOK_ERROR (exec-fail): {e}")
@@ -18887,21 +20208,15 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                 return None
             # 2026-05-11: same exec-fail on_blocked fire for RUNTERM.
             try:
-                import hooks as _hooks
-
                 _exit = getattr(result, "exit_code", "?")
-                _hooks.fire(
-                    "on_blocked",
+                _fire_on_blocked(
                     cmd,
-                    action={
-                        "kind": "RUNTERM",
-                        "target": cmd,
-                        "reason": f"runterm failed (exit {_exit})",
-                        "audit_kind": "RUNTERM-EXEC-FAIL",
-                    },
+                    "RUNTERM",
+                    f"runterm failed (exit {_exit})",
+                    "RUNTERM-EXEC-FAIL",
                 )
             except Exception as e:
-                log(f"ON_BLOCKED_HOOK_ERROR (runterm-exec-fail): {e}")
+                log(f"ON_BLOCKED_EXEC_HOOK_ERROR (runterm): {e}")
             print(
                 _pill(
                     "BLOCKED",
@@ -19181,10 +20496,9 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
     # backstops (repetition truncation, MAX_CONTINUATION_TURNS) bound it —
     # no separate counter needed here either.
     if not _any_directive_found:
-        try:
-            claims_action = _reply_claims_unexecuted_action(reply)
-        except NotImplementedError:
-            claims_action = False
+        # _reply_claims_unexecuted_action is implemented; the old
+        # `except NotImplementedError` guard was stub-era scaffolding.
+        claims_action = _reply_claims_unexecuted_action(reply)
         if claims_action:
             print(
                 _pill(
@@ -20014,12 +21328,21 @@ def _loop_ai(prompt, history=None, max_tokens=600):
     """Single AI call used inside the loop — plan, critique, or refine.
     Uses the default local path (keeps the loop offline-capable).
     Not routed through handle() because we don't want sandbox prompts
-    inside the planner/critic — these are pure text calls."""
-    msgs = [{"role": "user", "content": prompt}]
+    inside the planner/critic — these are pure text calls.
+
+    `history`, when given, is spliced in before `prompt` so the planner
+    can see a plan the assistant already committed to earlier in the
+    conversation instead of re-deriving one blind. Capped to the last 6
+    turns — this runs on a local model and only the most recent exchange
+    is ever relevant."""
+    msgs = []
     try:
         # Use the behavior contract so tone stays consistent
         if BEHAVIOR_FILE.exists():
-            msgs = [{"role": "system", "content": BEHAVIOR_FILE.read_text()}] + msgs
+            msgs.append({"role": "system", "content": BEHAVIOR_FILE.read_text()})
+        if history:
+            msgs.extend(history[-6:])
+        msgs.append({"role": "user", "content": prompt})
         import urllib.request
 
         body = json.dumps(
@@ -20121,9 +21444,16 @@ def handle_loop_task(task, history, context_policy=None):
         "Break this task into 3 to 5 numbered steps. Each step must be one "
         "specific action (run a command, write a file, edit a file). "
         "No prose between steps. Plan only — do not execute yet. "
-        "If one missing detail blocks safe execution, ask exactly one question "
-        "on a line starting with QUESTION: instead of making a plan.\n\n"
-        f"TASK: {task}"
+        "If the conversation above already contains a numbered plan for "
+        "this task — for example one you or the assistant proposed and the "
+        "user just approved — reuse those exact steps instead of inventing "
+        "new ones. Do not ask a clarifying question when the plan is "
+        "already right there in the conversation. "
+        "If one missing detail blocks safe execution and no prior plan "
+        "covers it, ask exactly one question on a line starting with "
+        "QUESTION: instead of making a plan.\n\n"
+        f"TASK: {task}",
+        history=history,
     )
     steps = _loop_parse_steps(plan)
     if not steps:
@@ -20484,8 +21814,10 @@ def handle_image_status(user_text, arg, history):
     history.append({"role": "assistant", "content": msg})
 
 
+@_tracks_turn_activity
 def handle(user_text, history, image_path=None, context_policy=None):
     _reset_turn_privacy()
+    _reset_turn_verify_state()
     globals()["_LAST_TURN_RENDERED"] = False
     _INTERRUPT_EVENT.clear()
     context_policy = context_policy or {}
@@ -22005,7 +23337,19 @@ def handle(user_text, history, image_path=None, context_policy=None):
     ]
 
     if route == "web":
-        search_results = web_search(user_text)
+        search_query = user_text
+        low = user_text.lower()
+        # 2026-09-26: a bare "what's the weather" had no location to search
+        # with, so it fell through to a slow generic lookup before landing
+        # on Indiana. Only append the default location when a weather word
+        # fires and the query doesn't already name a place (" in " is the
+        # cheap tell for "weather in Chicago") -- an explicit location
+        # always wins over the operator's default.
+        if any(w in low for w in WEATHER_WORDS) and " in " not in low:
+            loc = _default_location()
+            if loc:
+                search_query = f"{user_text} in {loc}"
+        search_results = web_search(search_query)
         augmented = history[:-1] + [
             {
                 "role": "user",
@@ -22391,7 +23735,32 @@ def handle(user_text, history, image_path=None, context_policy=None):
     continuation_turns = 0
     max_continuation_turns = MAX_CONTINUATION_TURNS
     _repair_turns_seen = 0  # how many [Directive repair] nudges fired this chain
-    while result is None and continuation_turns < max_continuation_turns:
+    # The `or _verify_on_stop_nudge()` extends this loop to also cover a
+    # turn that closed on bare prose with an unverified code edit still
+    # outstanding -- see the VERIFY-ON-STOP GATE block above run_command().
+    while (
+        result is None or _verify_on_stop_nudge()
+    ) and continuation_turns < max_continuation_turns:
+        if result is not None:
+            # Verify-on-stop gate fired: fold it into the same "keep going"
+            # shape process_reply's own None-result signal already uses,
+            # so the watermark/interrupt/repair logic below runs unchanged.
+            _verify_nudge = _verify_on_stop_nudge()
+            globals()["_VERIFY_STOP_ATTEMPTS"] = _VERIFY_STOP_ATTEMPTS + 1
+            print(
+                _pill(
+                    "VERIFY",
+                    f"{D}edited {len(_TURN_EDITED_PATHS)} file(s), no verification run yet — "
+                    f"holding the close (attempt {_VERIFY_STOP_ATTEMPTS}/{_VERIFY_STOP_MAX_ATTEMPTS}){X}",
+                )
+            )
+            log(
+                f"VERIFY_ON_STOP_NUDGE: attempt={_VERIFY_STOP_ATTEMPTS} "
+                f"paths={sorted(_TURN_EDITED_PATHS)[:5]}"
+            )
+            history.append({"role": "assistant", "content": reply})
+            history.append({"role": "user", "content": _verify_nudge})
+            result = None
         # 2026-09-24: root-caused live — CTX hit 283% of CONTEXT_WATERMARK
         # during a stuck repetition-loop repair chain. The watermark check
         # only lives in orchestrate(), which runs once at the START of a
@@ -22566,14 +23935,16 @@ def handle(user_text, history, image_path=None, context_policy=None):
 def summarize_session(history):
     msgs = [m for m in history if m.get("role") in ("user", "assistant")]
     if len(msgs) < 4:
-        return None
+        return None, None
     transcript = "\n".join(
         f"{m['role'].upper()}: {m['content'][:300]}" for m in msgs[-30:]
     )
     prompt = (
-        "Summarize this AI session in exactly 4 bullets. Be specific about what was worked on, "
+        "Summarize this AI session. First give a short 3-6 word title on one line "
+        "starting with 'Title: '. Then give exactly 4 bullets. Be specific about what was worked on, "
         "what was decided, what is unfinished, and what to do next. "
-        "Format: • bullet\n• bullet\n• bullet\n• bullet\n\n" + transcript
+        "Format:\nTitle: <title>\n• bullet\n• bullet\n• bullet\n• bullet\n\n"
+        + transcript
     )
     try:
         # 2026-09-08: was `or ask_local(...)` when cloud came back empty.
@@ -22583,7 +23954,7 @@ def summarize_session(history):
         # honest missing summary beats a hung shutdown.
         result = _ask_cloud_for_label([{"role": "user", "content": prompt}])
         if not result:
-            return None
+            return None, None
         result = result.strip()
         # 2026-09-07: reproduced live — a small/free model answering this
         # call emitted the same malformed tool-call XML seen elsewhere
@@ -22604,10 +23975,18 @@ def summarize_session(history):
             result = result[: think_tag.start()].rstrip()
         if "•" not in result or len(result) < 20:
             log(f"SUMMARIZE_SESSION_REJECTED: malformed/empty output: {result[:120]!r}")
-            return None
-        return result
+            return None, None
+        title = ""
+        title_m = re.search(r"^Title:\s*(.+)$", result, re.MULTILINE | re.IGNORECASE)
+        if title_m:
+            title = title_m.group(1).strip()
+            # Remove the title line from the bullet body so legacy parsing stays clean.
+            result = re.sub(
+                r"^Title:\s*.+\n?", "", result, flags=re.MULTILINE | re.IGNORECASE
+            ).strip()
+        return title, result
     except Exception:
-        return None
+        return None, None
 
 
 def save_session(history, silent=False):
@@ -22621,38 +24000,103 @@ def save_session(history, silent=False):
         date_str = _fmt_ampm()
         CHARS_SINCE_SAVE = 0
 
+    def _is_structured_block(content):
+        """True for tool-result / file / directive blocks that should keep
+        their own labeled block shape in the saved transcript, not be
+        flattened under a generic 'You:' line."""
+        if not content:
+            return False
+        prefixes = (
+            "[RUN RESULT]",
+            "[RUNTERM RESULT]",
+            "[SEARCH RESULT]",
+            "[READ RESULT]",
+            "[File contents]",
+            "[EDIT RESULT]",
+            "[CREATE RESULT]",
+            "[TASK LIST RESULT]",
+            "[SUBAGENT RESULT]",
+            "[SUBAGENT ERROR]",
+            "[SEND_EMAIL RESULT]",
+            "[SEND_TELEGRAM RESULT]",
+            "[BROWSER RESULT]",
+            "[TOOL BLOCKED]",
+            "[TOOL FAILED]",
+            "[READ FAILED]",
+            "[HOOK BLOCKED]",
+            "[Directive repair]",
+            "[User declined",
+            "[System:",
+            "[Full last session transcript]",
+            "[Resumed session from",
+        )
+        return any(content.lstrip().startswith(p) for p in prefixes)
+
+    def _block_label_for(content):
+        """Pick a human label for a structured block based on its prefix."""
+        c = content.lstrip()
+        if c.startswith("[RUN RESULT]") or c.startswith("[RUNTERM RESULT]"):
+            return "RUN"
+        if c.startswith("[SEARCH RESULT]"):
+            return "SEARCH"
+        if c.startswith("[READ RESULT]") or c.startswith("[File contents]"):
+            return "READ"
+        if c.startswith("[EDIT RESULT]"):
+            return "EDIT"
+        if c.startswith("[CREATE RESULT]"):
+            return "CREATE"
+        if c.startswith("[TASK LIST RESULT]"):
+            return "TASKS"
+        if c.startswith("[SUBAGENT RESULT]") or c.startswith("[SUBAGENT ERROR]"):
+            return "SUBAGENT"
+        if c.startswith("[SEND_EMAIL RESULT]"):
+            return "EMAIL"
+        if c.startswith("[SEND_TELEGRAM RESULT]"):
+            return "TELEGRAM"
+        if c.startswith("[BROWSER RESULT]"):
+            return "BROWSER"
+        if c.startswith("[TOOL BLOCKED]") or c.startswith("[HOOK BLOCKED]"):
+            return "BLOCKED"
+        if c.startswith("[TOOL FAILED]") or c.startswith("[READ FAILED]"):
+            return "FAILED"
+        if c.startswith("[Directive repair]"):
+            return "REPAIR"
+        if c.startswith("[User declined"):
+            return "DECLINED"
+        if c.startswith("[System:"):
+            return "SYSTEM"
+        if c.startswith("[Full last session transcript]") or c.startswith(
+            "[Resumed session from"
+        ):
+            return "RESUME"
+        return "BLOCK"
+
     # Full chat log
     chat_path = CHATS_DIR / f"{ts}.chat"
     with open(chat_path, "w") as f:
         for m in msgs:
-            label = "You" if m["role"] == "user" else "AI"
-            # 2026-09-07: reproduced live — a genuinely complete, correct
-            # 800+ word reply displayed in full on-screen got silently
-            # clipped to 2000 chars (mid-sentence) in the SAVED transcript,
-            # meaning `load session` (reads this file) and anything relying
-            # on the persisted record saw a truncated answer even though
-            # the live turn never lost anything. Now that longer replies
-            # are the normal case (max_tokens raised from 1024 to 8192/
-            # 16384 tonight), this bites far more often. 20000 chars covers
-            # a full 8192-token reply (~4-5 chars/token) with real margin.
-            # 2026-09-07: 20000 wasn't "generous," it was just a bigger
-            # number that got hit dead-on (20002 chars observed) the very
-            # first time someone deliberately asked for a genuinely large
-            # (3500-word) reply — proving 4-5 chars/word was too tight an
-            # estimate once markdown tables/headers/code blocks are in the
-            # mix. Raised an order of magnitude — 200000 chars covers a
-            # ~30000-word reply with real margin — instead of guessing at
-            # another number that just moves where the next cutoff lands.
-            f.write(f"[{date_str}] {label}: {m['content'][:200000]}\n")
+            role = m.get("role", "")
+            content = (m.get("content") or "")[:200000]
+            if role == "user" and _is_structured_block(content):
+                label = _block_label_for(content)
+                f.write(f"\n[{date_str}] ── {label} ──\n")
+                f.write(f"{content}\n")
+            else:
+                label = "You" if role == "user" else "AI"
+                f.write(f"[{date_str}] {label}: {content}\n")
 
     if not silent:
         play_anim(_A_BOW, delay=0.14, color=C)
         print(f"\n{C}  📝 Summarizing session...{X}", flush=True)
 
-    summary = summarize_session(history)
+    title, summary = summarize_session(history)
     if summary:
         summary_path = CHATS_DIR / f"{ts}.summary"
-        summary_path.write_text(f"[Session {date_str}]\n{summary}\n")
+        summary_body = f"[Session {date_str}]\n"
+        if title:
+            summary_body += f"Title: {title}\n"
+        summary_body += f"{summary}\n"
+        summary_path.write_text(summary_body)
         if not silent:
             print(f"{G}  ✅ Saved + summarized → {summary_path.name}{X}")
             print(f"{D}  {summary[:200]}{X}")
@@ -22800,19 +24244,20 @@ def _sessions_list_entries(limit=30):
     *.summary, one pair per session, named by that session's start
     timestamp) but never expose beyond "the single most recent one".
     Each entry gets a human date (parsed from the chat's own first
-    bracketed timestamp, falling back to the summary's) and a one-line
-    preview pulled from the summary's first bullet — same shape as
-    Hermes' own `sessions list` (numbered, title/preview, excludes
-    current), scoped down to sensei's flat-file storage instead of a
-    session database."""
+    bracketed timestamp, falling back to the summary's), a generated title
+    from the summary or the cloud (batched for speed), and a one-line
+    preview pulled from the summary's first bullet — same shape as Hermes'
+    own `sessions list` (numbered, title/preview, excludes current),
+    scoped down to sensei's flat-file storage instead of a session database."""
     chats = sorted(CHATS_DIR.glob("*.chat"), reverse=True)
     entries = []
+    needs_title_paths = []
     for chat_path in chats:
         ts = chat_path.stem
         if ts == str(SESSION_TS):
             continue  # never list the session you're already in
         summary_path = CHATS_DIR / f"{ts}.summary"
-        date_str, preview = "", ""
+        date_str, preview, title = "", "", ""
         try:
             first_line = chat_path.read_text(errors="replace").splitlines()[0]
             m = re.match(r"^\[(.+?)\]", first_line)
@@ -22825,23 +24270,206 @@ def _sessions_list_entries(limit=30):
                 lines = summary_path.read_text(errors="replace").splitlines()
                 if not date_str and lines:
                     date_str = lines[0].strip("[]")
+                # Title line is optional; legacy summaries may not have one.
+                title = next(
+                    (
+                        l.split(":", 1)[1].strip()
+                        for l in lines[1:]
+                        if re.match(r"^Title:\s*", l, re.IGNORECASE)
+                    ),
+                    "",
+                )
                 bullet = next(
                     (l.strip() for l in lines if l.lstrip().startswith("•")), ""
                 )
                 preview = re.sub(r"^•\s*", "", bullet)[:90]
             except Exception:
                 pass
+        if not title:
+            needs_title_paths.append(chat_path)
         entries.append(
             {
                 "ts": ts,
                 "chat_path": chat_path,
                 "date": _normalize_visible_time(date_str) if date_str else ts,
+                "title": title,
                 "preview": preview,
+                "needs_title": not bool(title),
             }
         )
         if len(entries) >= limit:
             break
+
+    # Batch-generate cloud titles for sessions with no summary in ONE call.
+    # This keeps `sessions list` responsive; per-session cloud calls caused
+    # 5+ minute hangs on old chat directories.
+    if needs_title_paths:
+        batch_titles = _batch_cloud_titles(needs_title_paths)
+        for entry in entries:
+            if entry.get("needs_title"):
+                chat_path = entry["chat_path"]
+                title = batch_titles.get(chat_path)
+                if not title:
+                    # Single-session cloud + clean local truncation last resort.
+                    title = _derive_session_title(chat_path)
+                entry["title"] = title
+                # 2026-09-28: Elijah, live: "i'm still not getting summaries."
+                # Root cause -- a generated title here was never written
+                # anywhere, so every single `sessions list` call re-derived
+                # it from scratch (another cloud call every time) and the
+                # entry still showed "(no summary yet)" forever, no matter
+                # how many times this ran. Persist a minimal summary file
+                # (title only, no bullets -- this path never generated any)
+                # so the title sticks and the next call doesn't redo the work.
+                if title:
+                    try:
+                        summary_path = CHATS_DIR / f"{entry['ts']}.summary"
+                        header_date = entry.get("date") or entry["ts"]
+                        summary_path.write_text(
+                            f"[Session {header_date}]\nTitle: {title}\n"
+                        )
+                    except Exception as e:
+                        log(f"SESSION_TITLE_PERSIST_ERROR: {e}")
+            entry.pop("needs_title", None)
+
     return entries
+
+
+def _derive_session_title(chat_path):
+    """Fallback title for a single session with no summary file.
+
+    1. Ask the cloud for a short 3-6 word title from the first ~600 chars of
+       the transcript. This is one cheap call (no bullets, no summary) and
+       mirrors A.1's proven title quality.
+    2. If cloud fails, truncate the first real user message cleanly to
+       ~8-10 words WITHOUT removing any words — preserving grammar even on
+       dictated run-on sentences.
+    3. Last resort: generic placeholder.
+    """
+    first_transcript = ""
+    first_user_text = ""
+    try:
+        for line in chat_path.read_text(errors="replace").splitlines():
+            m = re.match(r"^\[.+?\]\s*(?:──\s*\w+\s*──|You:|AI:)\s*(.*)$", line)
+            if not m:
+                continue
+            text = m.group(1).strip()
+            if not text:
+                continue
+            # Skip meta/structured lines that happen to start a chat.
+            if text.startswith("[") and "Result" in text:
+                continue
+            if first_user_text:
+                first_transcript += f"{text}\n"
+            else:
+                first_user_text = text
+            if len(first_transcript) >= 600:
+                break
+    except Exception:
+        pass
+
+    # 1) Cloud title call — cheap, no bullets, no local hang.
+    if first_user_text or first_transcript:
+        cloud_input = first_user_text or first_transcript
+        cloud_input = cloud_input[:1200]
+        prompt = (
+            "Give a short 3-6 word title for this conversation. "
+            "Output ONLY the title, nothing else. No quotes, no bullets.\n\n"
+            + cloud_input
+        )
+        try:
+            cloud_title = _ask_cloud_for_label([{"role": "user", "content": prompt}])
+            if cloud_title:
+                cloud_title = cloud_title.strip().strip('"').strip("'")
+                # Reject garbage shapes (raw XML, bullets, way too long).
+                if (
+                    cloud_title
+                    and "•" not in cloud_title
+                    and "\n" not in cloud_title
+                    and len(cloud_title.split()) <= 8
+                    and len(cloud_title) <= 80
+                ):
+                    return cloud_title.rstrip(",.;:?!")
+        except Exception:
+            pass
+
+    # 2) Clean local truncation: take the first N words exactly as spoken.
+    if first_user_text:
+        words = first_user_text.split()
+        if words:
+            return " ".join(words[:10]).rstrip(",.;:?!")
+
+    return "untitled session"
+
+
+def _batch_cloud_titles(chat_paths):
+    """Generate cloud titles for many sessions in ONE call.
+
+    Each chat path without a summary gets its first ~300 chars of transcript
+    sent together; the model returns a numbered list of short titles. This
+    avoids the per-session cloud-call storm that would make `sessions list`
+    hang on old sessions.
+    """
+    snippets = []
+    for chat_path in chat_paths:
+        try:
+            text = ""
+            for line in chat_path.read_text(errors="replace").splitlines():
+                if "You:" in line:
+                    text = line.split("You:", 1)[1].strip()
+                    break
+                m = re.match(r"^\[.+?\]\s*(?:──\s*\w+\s*──)\s*(.*)$", line)
+                if m:
+                    text = m.group(1).strip()
+                    break
+            if not text:
+                text = chat_path.read_text(errors="replace").splitlines()[0] or ""
+            text = text[:300]
+            # Strip emoji/unicode variation selectors that clutter titles.
+            text = re.sub(
+                r"[\U0001f300-\U0001faff\U00002600-\U000027bf\U0001f1e6-\U0001f1ff\U0000fe0f\U0000200d]",
+                "",
+                text,
+            ).strip()
+            snippets.append((chat_path, text))
+        except Exception:
+            snippets.append((chat_path, ""))
+
+    if not snippets or not any(s[1] for s in snippets):
+        return {}
+
+    numbered = "\n".join(f"{i + 1}. {s[1]}" for i, s in enumerate(snippets))
+    prompt = (
+        "For each conversation opening below, give a short 3-6 word title.\n"
+        "Output a numbered list in the same order. No extra prose.\n\n" + numbered
+    )
+    try:
+        result = _ask_cloud_for_label([{"role": "user", "content": prompt}])
+        if not result:
+            return {}
+        result = re.sub(
+            r"\u003c/?(think|thinking).*?\u003e",
+            "",
+            result,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        titles = {}
+        for i, (chat_path, _) in enumerate(snippets):
+            pattern = rf"^\s*{i + 1}[.)]\s*(.+)$"
+            match = re.search(pattern, result, re.MULTILINE | re.IGNORECASE)
+            if match:
+                title = match.group(1).strip().strip('"').strip("'").rstrip(",.;:?!")
+                if (
+                    title
+                    and "•" not in title
+                    and "\n" not in title
+                    and len(title.split()) <= 8
+                    and len(title) <= 80
+                ):
+                    titles[chat_path] = title
+        return titles
+    except Exception:
+        return {}
 
 
 def show_last_summary():
@@ -22855,7 +24483,17 @@ def show_last_summary():
         lines = content.splitlines()
         date_line = (lines[0] if lines else "").replace("[", "").replace("]", "")
         date_line = _normalize_visible_time(date_line)
-        print(f"  {D}◉ last session: {date_line}  {C}→ 'load summary' to restore{X}")
+        title = ""
+        if len(lines) > 1 and lines[1].startswith("Title:"):
+            title = lines[1].split(":", 1)[1].strip()
+        if title:
+            print(
+                f"  {D}◉ last session: {title}  {C}({date_line}) → 'load summary' to restore{X}"
+            )
+        else:
+            print(
+                f"  {D}◉ last session: {date_line}  {C}→ 'load summary' to restore{X}"
+            )
     except Exception:
         pass
 
@@ -22889,6 +24527,128 @@ def _is_simple_search_query(q):
         if marker in q.lower():
             return False
     return True
+
+
+# 2026-09-27: same bug class as _is_simple_search_query above, in the
+# sibling `read ` shortcut -- confirmed live, "read me the first lesson"
+# and "read the first lesson in aiengineering.com" both got their FULL
+# tail ("me the first lesson", "the first lesson in aiengineering.com")
+# treated as a literal local file path, failed to resolve, and dead-ended
+# with "local text file not found" instead of ever reaching the model.
+# `read ` never got the natural-language guard `search ` did. A genuine
+# bare target is a path or a bare filename/phrase with no English filler
+# words in it; anything with common sentence filler reads as conversation,
+# not a literal reference, and should fall through to handle() instead.
+_READ_TARGET_FILLER_WORDS = (
+    " me ",
+    " the ",
+    " in ",
+    " on ",
+    " at ",
+    " for ",
+    " from ",
+    " about ",
+    " a ",
+    " my ",
+)
+
+
+def _looks_like_read_target(raw):
+    """True for something that could plausibly BE a path/filename/bare
+    reference ("notes.txt", "~/Desktop/report", "aiengineering.com"),
+    False for a natural-language sentence that merely starts with the word
+    "read"."""
+    raw = (raw or "").strip()
+    if not raw:
+        return False
+    if re.search(r"[.!?]\s+\S", raw):
+        return False
+    low = f" {raw.lower()} "
+    return not any(w in low for w in _READ_TARGET_FILLER_WORDS)
+
+
+# ── Markdown-only skills (npx skills add packages, etc.) ────────────
+# 2026-09-27: the model's own system prompt (see "AUTHORING A NEW SKILL"
+# below) says a skill needs both SKILL.md and a recipe.py state machine --
+# right for skills Sensei writes for itself, wrong for a skill installed
+# from an external package (`npx skills add rohitg00/ai-engineering-from-
+# scratch`), which ships as a portable SKILL.md meant to be read and
+# followed directly in conversation -- no code at all. Confirmed live:
+# every skill in that package is SKILL.md only. The model kept trying to
+# hand-generate a recipe.py to satisfy a contract that never applied to
+# this kind of skill -- the direct cause of tonight's repeatedly truncated,
+# broken recipe.py files (missing `return` statements, missing closing
+# brackets). This loads a plain SKILL.md directly and hands it to the
+# model as instructions for the conversation, instead of trying to compile
+# it into a state machine.
+_MARKDOWN_SKILL_DIRS = (
+    Path.home() / ".agents" / "skills",
+    Path.home() / ".claude" / "skills",
+    Path.home() / ".master_ai_skills",
+)
+
+
+def _find_markdown_skill(name):
+    """Path to <name>/SKILL.md in the first matching skill directory, or
+    None. Checks the universal `npx skills add` location first, then
+    Claude Code's own, then Sensei's own skill dir last (recipe.py-style
+    skills also live there, but if they ever have ONLY a SKILL.md with no
+    recipe.py, this is still the right way to use them)."""
+    name = (name or "").strip()
+    if not name or "/" in name or ".." in name:
+        return None
+    for base in _MARKDOWN_SKILL_DIRS:
+        candidate = base / name / "SKILL.md"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _strip_skill_frontmatter(text):
+    """Drop the YAML frontmatter block (--- ... ---) a SKILL.md starts
+    with, returning just the prose body the model should follow."""
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            return text[end + 4 :].lstrip("\n")
+    return text
+
+
+def _restore_reload_carry(path=None):
+    """Consume the pending reload-carry note and return it, or None.
+
+    When master_ai.py live-reloads it writes the operator's in-flight
+    instruction to ~/.master_ai_reload_carry and restarts; on the way back
+    up this hands that note to the new process.
+
+    Extracted 2026-09-28 out of main()'s startup block so the behaviour is
+    callable and testable -- as an inline block it had no seam, which is
+    why the unlink-on-failed-read fix that shipped alongside it could only
+    be verified by inspection.
+
+    A carry older than RESUME_FLAG_MAX_AGE is discarded: a stale flag must
+    not revive a session from hours ago. The file is unlinked even when the
+    read raises, otherwise an unreadable carry file survives and re-logs
+    AUTO_RELOAD_CARRY_RESTORE_ERROR on every startup until someone deletes
+    it by hand. Never raises -- a bad carry file must not stop startup.
+    """
+    carry = Path(path) if path is not None else _RELOAD_CARRY_FILE
+    try:
+        if not carry.exists():
+            return None
+        age = time.time() - carry.stat().st_mtime
+        if age > RESUME_FLAG_MAX_AGE:
+            log(f"CARRY_EXPIRED: age={age:.0f}s > {RESUME_FLAG_MAX_AGE}s, discarding")
+            carry.unlink(missing_ok=True)
+            return None
+        try:
+            carried = carry.read_text()
+        finally:
+            carry.unlink(missing_ok=True)
+        return carried or None
+    except Exception as e:
+        log(f"AUTO_RELOAD_CARRY_RESTORE_ERROR: {e}")
+        return None
 
 
 def _reload_if_code_changed(history, pending_cmd):
@@ -22948,30 +24708,421 @@ def _reload_if_code_changed(history, pending_cmd):
     )
 
 
-def _sync_aoe_session_title():
-    """Self-identify inside aoe: rename OUR aoe session to the framework
-    name ('master-ai'). Elijah's naming scheme (2026-09-24): aoe sidebar
-    titles are framework IDs, set by the framework itself — never task
-    names, never touched by Hermes. aoe hands us AOE_INSTANCE_ID in the
-    pane env; `aoe session rename <id> -t master-ai` is aoe's own CLI and
-    hot-reloads its sessions.json daemon-side. Runs once at boot, best
-    effort, silent if not aoe-managed or aoe is absent."""
+_AOE_INSTANCE_ID_CACHE = None
+
+
+def _aoe_instance_id():
+    """This pane's real aoe instance id (hex), for the hook status file and
+    self-rename. aoe injects AOE_INSTANCE_ID for its recognized agents
+    (claude, hermes, opencode, ...) but NEVER for a bare `custom_agents`
+    entry like master-ai -- verified 2026-09-26 by reading a live process's
+    actual environment (/proc/<pid>/environ): present for hermes, absent
+    for master-ai, no exceptions. That's a gap in aoe's own env injection,
+    not something fixable from a launch script.
+
+    `aoe session current -q` self-detects the CALLING pane via tmux context
+    alone (no env var needed) -- verified live against a throwaway
+    custom_agents probe session with zero AOE_* vars in its environment,
+    where it still correctly printed the session's own title. It returns
+    the TITLE, not the hex id, so `session show <title>` resolves the real
+    id from that. Also verified live: aoe's hook-file polling itself is
+    agent-agnostic -- a hand-written status file for that same probe
+    session produced a real `hook=Some(Idle)` in aoe's status_change log,
+    with no AOE_* env vars present at all. So the env var gap only breaks
+    automatic injection, not aoe's ability to read the file once it exists
+    at the right path.
+
+    Cached for the process lifetime: one aoe round-trip per launch, not
+    one per status write. Empty string (silent) outside an aoe pane or on
+    any aoe-CLI hiccup -- this is a best-effort signal, never allowed to
+    block or affect the actual turn."""
+    global _AOE_INSTANCE_ID_CACHE
+    if _AOE_INSTANCE_ID_CACHE is not None:
+        return _AOE_INSTANCE_ID_CACHE
+    inst = os.environ.get("AOE_INSTANCE_ID", "").strip()
+    if not inst:
+        try:
+            title = subprocess.run(
+                ["aoe", "session", "current", "-q"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            ).stdout.strip()
+            if title:
+                shown = subprocess.run(
+                    ["aoe", "session", "show", title],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                ).stdout
+                m = re.search(r"^\s*ID:\s*(\S+)", shown, re.MULTILINE)
+                if m:
+                    inst = m.group(1).strip()
+        except Exception:
+            inst = ""
+    _AOE_INSTANCE_ID_CACHE = inst
+    return inst
+
+
+def _aoe_status(state):
+    """Report our own turn state to aoe, the same way Claude Code's hooks do
+    (.claude/settings.json writes 'running'/'idle'/'waiting' into
+    /tmp/aoe-hooks-1000/$AOE_INSTANCE_ID/status). master-ai has no hook
+    events of its own to piggyback on, so this is called directly from
+    main()'s turn loop instead -- see the `while True:` loop below: 'idle'
+    right before it blocks on input() for the next prompt, 'running' right
+    after a real command comes back. Without this, aoe has zero signal for
+    master-ai sessions (status_change log always showed hook=None,
+    rule=none) and smart_rename's one-shot never gets a turn-complete event
+    to fire on. Mirrors the hook script's own permission checks (dir must
+    be 0700 and owned by us) rather than trusting a pre-existing directory;
+    silent no-op on anything unexpected -- this is a status signal, never
+    allowed to affect the actual turn."""
     try:
-        inst = os.environ.get("AOE_INSTANCE_ID", "").strip()
-        if not inst:
-            return  # human-run in a plain terminal: nothing to retitle
-        subprocess.run(
-            ["aoe", "session", "rename", inst, "-t", "master-ai"],
-            capture_output=True,
-            timeout=10,
-            check=False,
-        )
+        inst = _aoe_instance_id()
+        if not inst or not all(c.isalnum() or c in "-_" for c in inst):
+            return
+        base = Path("/tmp/aoe-hooks-1000")
+        base.mkdir(mode=0o700, exist_ok=True)
+        st = base.stat()
+        if (st.st_mode & 0o777) != 0o700 or st.st_uid != os.getuid():
+            return
+        d = base / inst
+        d.mkdir(mode=0o700, exist_ok=True)
+        st = d.stat()
+        if (st.st_mode & 0o777) != 0o700 or st.st_uid != os.getuid():
+            return
+        (d / "status").write_text(state)
     except Exception:
         pass
 
 
+# ── `schedule ...` REPL commands (2026-09-28) ─────────────────────────────
+# Extracted verbatim out of main()'s inline if-chain. Pure move: this block
+# read only `lo`/`cmd` and called module-level helpers, so it had no
+# business being 44 lines deep inside a 3,600-line function — and no way to
+# be called from a test without driving the whole REPL.
+def _handle_schedule_cmd(lo, cmd):
+    """Handle one `schedule`/`scheduler` command. Returns True if consumed."""
+    if not (lo.startswith("schedule") or lo.startswith("scheduler")):
+        return False
+    parts = cmd.split(None, 2)
+    if lo in ("schedules", "schedule list"):
+        _show_schedules()
+        _start_scheduler_daemon()
+        return True
+    if lo.startswith("schedule start") or lo == "scheduler start":
+        _start_scheduler_daemon()
+        return True
+    if lo.startswith("schedule stop") or lo == "scheduler stop":
+        _stop_scheduler_daemon()
+        return True
+    if lo.startswith("schedule remove") or lo.startswith("unschedule"):
+        target = ""
+        if lo.startswith("schedule remove"):
+            target = cmd.split(None, 2)[2] if len(parts) > 2 else ""
+        else:
+            target = cmd.split(None, 1)[1] if len(parts) > 1 else ""
+        n = _remove_schedule(target)
+        print(f"  {G}removed {n} schedule(s){X}")
+        return True
+    # schedule "command" 09:00 daily
+    m = re.match(
+        r'schedule\s+"([^"]+)"\s+(\d{1,2}:\d{2})\s+(hourly|daily|weekly|monthly)',
+        cmd,
+        re.I,
+    )
+    if not m:
+        m = re.match(
+            r"schedule\s+(\S+)\s+(\d{1,2}:\d{2})\s+(hourly|daily|weekly|monthly)",
+            cmd,
+            re.I,
+        )
+    if m:
+        command, when, cadence = m.group(1), m.group(2), m.group(3).lower()
+        sid = _add_schedule(command, when, cadence)
+        print(f"  {G}scheduled {sid}: {command} @ {when} ({cadence}){X}")
+        _start_scheduler_daemon()
+    else:
+        print(f"  {Y}usage: schedule <command> HH:MM <hourly|daily|weekly|monthly>{X}")
+        print(f"  {D}example: schedule doctor 02:00 daily{X}")
+    return True
+
+
+# ── `hooks` REPL command (2026-09-28) ──────────────────────────────────
+# Extracted verbatim out of main()'s inline if-chain. Pure move.
+def _handle_hooks_cmd(lo, cmd):
+    """Handle one `lo == 'hooks' or lo.startswith('hooks ')`. Returns True if it was consumed."""
+    if not (lo == "hooks" or lo.startswith("hooks ")):
+        return False
+    try:
+        import hooks as _hooks
+
+        _args = (cmd[len("hooks") :].strip()).split(None, 1)
+        _sub = (_args[0] if _args else "").lower()
+        _rest = _args[1] if len(_args) > 1 else ""
+        if _sub in ("", "list"):
+            _hs = _hooks.list_hooks()
+            print(f"\n  {C}Registered hooks ({len(_hs)}):{X}")
+            for h in _hs:
+                state = f"{G}enabled{X}" if h.enabled else f"{D}disabled{X}"
+                print(f"    {W}{h.id:<30}{X}  {h.kind:<14}  {state}  ({h.source})")
+            print()
+        elif _sub == "enable":
+            ok = _hooks.enable(_rest.strip())
+            if ok:
+                print(f"  {G}✅ enabled: {_rest.strip()}{X}\n")
+            else:
+                print(f"  {W}unknown hook: {_rest.strip()!r}{X}\n")
+        elif _sub == "disable":
+            ok = _hooks.disable(_rest.strip())
+            if ok:
+                print(f"  {G}✅ disabled: {_rest.strip()}{X}\n")
+            else:
+                print(f"  {W}unknown hook: {_rest.strip()!r}{X}\n")
+        elif _sub == "reload":
+            n = _hooks.reload_user_hooks()
+            print(
+                f"  {G}✅ reloaded {n} user hook(s) from ~/.master_ai_hooks.json{X}\n"
+            )
+        else:
+            print(f"  {W}usage: hooks [list|enable <id>|disable <id>|reload]{X}\n")
+    except Exception as e:
+        print(f"  {W}hooks command error: {e}{X}\n")
+    return True
+
+
+# ── `delegate` REPL command (2026-09-28) ──────────────────────────────────
+# Extracted verbatim out of main()'s inline if-chain. Pure move.
+def _handle_delegate_cmd(lo, cmd):
+    """Handle one `lo == 'delegate' or lo.startswith('delegate ')`. Returns True if it was consumed."""
+    if not (lo == "delegate" or lo.startswith("delegate ")):
+        return False
+    try:
+        import delegate_runner as _dr
+
+        goal = cmd[len("delegate") :].strip()
+        if not goal:
+            print(f"  {W}usage: delegate <goal>{X}\n")
+            return True
+        print(f"\n  {BC}[delegating: {goal[:60]}...]{X}\n")
+        result = _dr.delegate_task(
+            goal=goal,
+            context={"cwd": str(Path.cwd()), "mode": MODE},
+            max_turns=10,
+            timeout_s=300,
+        )
+
+        print(f"  {C}Delegation result:{X}")
+        print(f"    ok:         {G if result['ok'] else R}{result['ok']}{X}")
+        print(f"    summary:    {W}{result.get('summary', '')}{X}")
+        print(f"    workdir:    {result.get('workdir', '')}{X}")
+        if result.get("stderr", "").strip():
+            print(f"  {Y}stderr:{X}\n{result['stderr'][:500]}")
+        print()
+    except Exception as e:
+        import traceback
+
+        print(f"  {R}Delegation error: {e}{X}\n")
+        traceback.print_exc()
+    return True
+
+
+# ── `mesh` REPL command (2026-09-28) ──────────────────────────────────
+# Extracted verbatim out of main()'s inline if-chain. Pure move.
+def _handle_mesh_cmd(lo, cmd):
+    """Handle one `lo == 'mesh' or lo.startswith('mesh ')`. Returns True if it was consumed."""
+    if not (lo == "mesh" or lo.startswith("mesh ")):
+        return False
+    rest = cmd[5:].strip() if lo.startswith("mesh ") else ""
+    mesh_sh = str(Path.home() / "scripts/mesh.sh")
+    try:
+        if rest == "" or rest in ("ls", "list"):
+            subprocess.run(["bash", mesh_sh, "ls"], check=False)
+        elif rest == "ping":
+            subprocess.run(["bash", mesh_sh, "ping"], check=False)
+        elif rest == "add":
+            subprocess.run(["bash", mesh_sh, "add"], check=False)
+        elif rest.startswith("ask "):
+            # Split into: peer, prompt-remainder
+            parts = rest[4:].strip().split(None, 1)
+            if len(parts) < 2:
+                print(f"  {W}usage: mesh ask <peer> <prompt...>{X}")
+            else:
+                peer, prompt = parts[0], parts[1]
+                subprocess.run(["bash", mesh_sh, "ask", peer, prompt], check=False)
+        else:
+            print(f"  {W}🕸  mesh commands:{X} ls | ping | add | ask <peer> <prompt>")
+            print(f"  {W}   full menu:{X} bash ~/scripts/mesh.sh")
+    except Exception as e:
+        print(f"  {R}❌ mesh error: {e}{X}")
+    return True
+
+
+# ── `mcp` REPL command (2026-09-28) ──────────────────────────────────
+# Extracted verbatim out of main()'s inline if-chain. Pure move.
+def _handle_mcp_cmd(lo, cmd):
+    """Handle one `lo == 'mcp' or lo.startswith('mcp ')`. Returns True if it was consumed."""
+    if not (lo == "mcp" or lo.startswith("mcp ")):
+        return False
+    try:
+        import sensei_mcp_client as _mcp
+
+        _parts = cmd.split()
+        _sub = _parts[1].lower() if len(_parts) > 1 else ""
+        _rest = _parts[2:]
+        if _sub in ("", "list"):
+            _mcp_show()
+        elif _sub == "add":
+            _name, _target, _transport = _mcp.parse_add_args(_rest)
+            if not _name or not _target:
+                print(
+                    f"  {W}usage: mcp add <name> <command|url> [--transport stdio|sse]{X}"
+                )
+                print(
+                    f"  {D}example: mcp add sensei 'python3 ~/projects/master-ai/sensei_mcp_server.py'{X}"
+                )
+            else:
+                _r = _mcp.add_server(_name, _target, _transport)
+                print(f"  {G if _r['ok'] else Y}{_r['message']}{X}")
+        elif _sub == "remove":
+            _r = _mcp.remove_server(" ".join(_rest))
+            print(f"  {G if _r['ok'] else W}{_r['message']}{X}")
+        elif _sub in ("enable", "disable"):
+            _r = _mcp.set_enabled(" ".join(_rest), _sub == "enable")
+            print(f"  {G if _r['ok'] else Y}{_r['message']}{X}")
+        elif _sub == "validate":
+            _r = _mcp.revalidate(" ".join(_rest))
+            print(f"  {G if _r['ok'] else R}{_r['message']}{X}")
+        elif _sub == "tools":
+            if not _rest:
+                print(f"  {W}usage: mcp tools <name>{X}")
+            else:
+                print(_mcp.format_tools(" ".join(_rest), G, R, Y, C, W, D, X))
+        else:
+            print(
+                f"  {W}usage: mcp [list|add <name> <cmd|url> [--transport stdio|sse]|remove <name>|enable <name>|disable <name>|validate <name>|tools <name>]{X}"
+            )
+    except Exception as e:
+        print(f"  {W}mcp command error: {e}{X}\n")
+    return True
+
+
+# ── `proposal` REPL command (2026-09-28) ──────────────────────────────────
+# Extracted verbatim out of main()'s inline if-chain. Pure move.
+def _handle_proposal_cmd(lo, cmd):
+    """Handle one `lo in ('proposals', 'pending proposals') or lo.startswith('proposal ')`. Returns True if it was consumed."""
+    if not (lo in ("proposals", "pending proposals") or lo.startswith("proposal ")):
+        return False
+    try:
+        if lo in ("proposals", "pending proposals"):
+            entries = perpetual_review.list_pending()
+            if not entries:
+                print(f"  {D}(no pending proposals){X}\n")
+            else:
+                print(f"\n  {C}{len(entries)} pending proposal(s):{X}")
+                for entry in entries:
+                    print(
+                        f"    [{entry['id']}] {entry['source']:<16} "
+                        f"priority={entry['priority']:<6} {entry['category']}"
+                    )
+                print(
+                    f"\n  {D}proposal <id>  ·  proposal approve <id>  ·  "
+                    f"proposal reject <id>{X}\n"
+                )
+        else:
+            rest = cmd[len("proposal ") :].strip()
+            if rest.lower().startswith("approve "):
+                proposal_id = rest[len("approve ") :].strip()
+                ok, msg = perpetual_review.approve(proposal_id)
+                print(f"  {G if ok else R}{'ok' if ok else 'x'} {msg}{X}\n")
+            elif rest.lower().startswith("reject "):
+                proposal_id = rest[len("reject ") :].strip()
+                ok, msg = perpetual_review.reject(proposal_id)
+                print(f"  {G if ok else R}{'ok' if ok else 'x'} {msg}{X}\n")
+            else:
+                p = perpetual_review.get(rest)
+                if not p:
+                    print(f"  {W}no proposal matching '{rest}'{X}\n")
+                else:
+                    print(f"\n{p['text']}\n")
+    except Exception as e:
+        print(f"  {W}proposal review error: {e}{X}\n")
+    return True
+
+
+# ── `project` REPL command (2026-09-28) ──────────────────────────────────
+# Extracted verbatim out of main()'s inline if-chain. Pure move.
+def _handle_project_cmd(lo, cmd):
+    """Handle one `lo.startswith('project ')`. Returns True if it was consumed."""
+    if not (lo.startswith("project ")):
+        return False
+    proj = os.path.expanduser(cmd[8:].strip())
+    if os.path.isdir(proj):
+        globals()["ACTIVE_PROJECT"] = proj
+        print(f"  {G}✅ Active project: {W}{proj}{X}")
+        show_hint(
+            "Project context active",
+            "File structure is now injected into AI context.\n"
+            "AI will write paths relative to this project.\n"
+            "Git branch + recent commits also auto-injected.",
+        )
+        struct = subprocess.run(
+            f"find {proj} -type f | grep -v -E '(node_modules|\\.git|__pycache__)' | head -50",
+            shell=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        print(f"  {C}Files:{X}")
+        for f in struct.splitlines():
+            print(f"    {W}{f}{X}")
+    else:
+        print(f"  {R}❌ Directory not found: {proj}{X}")
+    return True
+
+
+# ── `profile` REPL command (2026-09-28) ──────────────────────────────────
+# Extracted verbatim out of main()'s inline if-chain. Pure move.
+def _handle_profile_cmd(lo, cmd):
+    """Handle one `lo.startswith('profile ') and lo not in ('profile list',)`. Returns True if it was consumed."""
+    if not (lo.startswith("profile ") and lo not in ("profile list",)):
+        return False
+    target = cmd.split(None, 1)[1].strip()
+    if not target or target == "default":
+        _ACTIVE_PROFILE_FILE.unlink(missing_ok=True)
+        print(f"  {G}switching to default profile — restarting...{X}", flush=True)
+    else:
+        _activate_profile(target)
+        print(
+            f"  {G}switching to profile '{target}' — restarting...{X}",
+            flush=True,
+        )
+    try:
+        save_session(list(history), silent=True)
+    except Exception:
+        pass
+    if _SENSEI_APP is not None:
+        try:
+            _SENSEI_APP.clear_output()
+        except Exception:
+            pass
+    _clear_tmux_scrollback("profile")
+    try:
+        subprocess.run(["stty", "sane"], check=False)
+    except Exception:
+        pass
+    sys.stdout.write("\033c\033[2J\033[H")
+    sys.stdout.flush()
+    os.execvp(
+        sys.executable,
+        [sys.executable, str(Path.home() / "scripts/master_ai.py")],
+    )
+    return True
+
+
 def main():
-    _sync_aoe_session_title()
     if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
         print(
             "usage: master-ai [-h] [--setup] [--uninstall] [update]\n\n"
@@ -23360,14 +25511,9 @@ def main():
             "purpose. Don't ask what to do next unless the summary above "
             "is genuinely ambiguous about what was being discussed."
         )
-    try:
-        if _RELOAD_CARRY_FILE.exists():
-            carried = _RELOAD_CARRY_FILE.read_text()
-            _RELOAD_CARRY_FILE.unlink(missing_ok=True)
-            if carried:
-                globals()["PENDING_USER_NOTE"] = carried
-    except Exception as e:
-        log(f"AUTO_RELOAD_CARRY_RESTORE_ERROR: {e}")
+    _carried = _restore_reload_carry()
+    if _carried:
+        globals()["PENDING_USER_NOTE"] = _carried
 
     # Save on any exit — force-close, terminal close, SIGTERM. Also summarize
     # so the session shows up in `sessions list` / `sessions resume` without
@@ -23387,6 +25533,7 @@ def main():
 
     atexit.register(lambda: _bounded_save_session(GLOBAL_HISTORY))
     atexit.register(lambda: RESUME_FLAG.unlink(missing_ok=True))
+    _start_stall_watchdog()
     # signal.signal() only works in the MAIN thread. In TUI mode main() runs
     # in a worker thread, so installing handlers here would raise ValueError
     # and silently exit. atexit still covers normal shutdown; the TUI owner
@@ -23422,6 +25569,7 @@ def main():
             else:
                 _SENSEI_APP.set_label(load_thread_label())
                 _SENSEI_APP.set_chat_id(SESSION_TS)
+            _aoe_status("idle")  # about to block for the next prompt
             try:
                 _lbl = load_thread_label()
                 if _SENSEI_APP is None:
@@ -23449,6 +25597,8 @@ def main():
 
         if not cmd:
             continue
+
+        _aoe_status("running")  # real command in hand -- turn starts now
 
         _reload_if_code_changed(history, cmd)  # never returns if it reloads
 
@@ -23653,107 +25803,14 @@ def main():
             continue
 
         # ── Scheduler slash commands ──────────────────────────
-        if lo.startswith("schedule"):
-            parts = cmd.split(None, 2)
-            if lo in ("schedules", "schedule list"):
-                _show_schedules()
-                _start_scheduler_daemon()
-                continue
-            if lo.startswith("schedule start") or lo == "scheduler start":
-                _start_scheduler_daemon()
-                continue
-            if lo.startswith("schedule stop") or lo == "scheduler stop":
-                _stop_scheduler_daemon()
-                continue
-            if lo.startswith("schedule remove") or lo.startswith("unschedule"):
-                target = ""
-                if lo.startswith("schedule remove"):
-                    target = cmd.split(None, 2)[2] if len(parts) > 2 else ""
-                else:
-                    target = cmd.split(None, 1)[1] if len(parts) > 1 else ""
-                n = _remove_schedule(target)
-                print(f"  {G}removed {n} schedule(s){X}")
-                continue
-            # schedule "command" 09:00 daily
-            m = re.match(
-                r'schedule\s+"([^"]+)"\s+(\d{1,2}:\d{2})\s+(hourly|daily|weekly|monthly)',
-                cmd,
-                re.I,
-            )
-            if not m:
-                m = re.match(
-                    r"schedule\s+(\S+)\s+(\d{1,2}:\d{2})\s+(hourly|daily|weekly|monthly)",
-                    cmd,
-                    re.I,
-                )
-            if m:
-                command, when, cadence = m.group(1), m.group(2), m.group(3).lower()
-                sid = _add_schedule(command, when, cadence)
-                print(f"  {G}scheduled {sid}: {command} @ {when} ({cadence}){X}")
-                _start_scheduler_daemon()
-            else:
-                print(
-                    f"  {Y}usage: schedule <command> HH:MM <hourly|daily|weekly|monthly>{X}"
-                )
-                print(f"  {D}example: schedule doctor 02:00 daily{X}")
+        if _handle_schedule_cmd(lo, cmd):
             continue
 
         # ── Cloud fallback chain management (2026-09-03) ────────────────
-        # Management layer on the fallback chain ask_cloud() already runs
-        # (see _load_fallback_order docstring) — matches Hermes' own
-        # `hermes fallback list/add/remove` naming/shape.
-        if lo in ("fallback", "fallback list"):
-            order = _load_fallback_order()
-            custom = _FALLBACK_ORDER_FILE.exists()
-            print(
-                f"\n  {BOLD}Cloud fallback chain{X} {D}({'custom' if custom else 'default'}){X}:"
-            )
-            for i, name in enumerate(order, 1):
-                print(f"  {C}{i}.{X} {name}")
-            print(f"\n  {D}Valid names: {', '.join(sorted(_VALID_FALLBACK_NAMES))}{X}")
-            print(
-                f"  {D}'fallback add <name>' · 'fallback remove <name>' · 'fallback reset'{X}\n"
-            )
-            continue
-
-        if lo.startswith("fallback add"):
-            name = cmd.split(None, 2)[2].strip() if len(cmd.split(None, 2)) > 2 else ""
-            if name not in _VALID_FALLBACK_NAMES:
-                print(
-                    f"  {Y}unknown provider {name!r}. Valid: {', '.join(sorted(_VALID_FALLBACK_NAMES))}{X}"
-                )
-            else:
-                order = _load_fallback_order()
-                if name in order:
-                    print(
-                        f"  {Y}{name} is already in the chain (position {order.index(name) + 1}){X}"
-                    )
-                else:
-                    order.append(name)
-                    _save_fallback_order(order)
-                    print(f"  {G}added {name} → chain is now: {', '.join(order)}{X}")
-            continue
-
-        if lo.startswith("fallback remove"):
-            name = cmd.split(None, 2)[2].strip() if len(cmd.split(None, 2)) > 2 else ""
-            order = _load_fallback_order()
-            if name not in order:
-                print(
-                    f"  {Y}{name!r} isn't in the current chain — see 'fallback list'{X}"
-                )
-            else:
-                order = [n for n in order if n != name]
-                _save_fallback_order(order)
-                print(
-                    f"  {G}removed {name} → chain is now: {', '.join(order) or '(empty)'}{X}"
-                )
-            continue
-
-        if lo == "fallback reset":
-            _FALLBACK_ORDER_FILE.unlink(missing_ok=True)
-            print(
-                f"  {G}reset to default chain: {', '.join(_DEFAULT_FALLBACK_ORDER)}{X}"
-            )
+        # Extracted to _handle_fallback_cmd() (2026-09-28) so the branch is
+        # callable and testable without driving the whole REPL; this was
+        # inline here and untestable.
+        if _handle_fallback_cmd(lo, cmd):
             continue
 
         # ── MCP servers slash commands (Sensei as MCP client) ──
@@ -23765,47 +25822,7 @@ def main():
         #   mcp validate <name>           — re-probe + revalidate schemas
         #   mcp tools <name>              — show a server's tools
         # Implementation: sensei_mcp_client.py (added 2026-09-01).
-        if lo == "mcp" or lo.startswith("mcp "):
-            try:
-                import sensei_mcp_client as _mcp
-
-                _parts = cmd.split()
-                _sub = _parts[1].lower() if len(_parts) > 1 else ""
-                _rest = _parts[2:]
-                if _sub in ("", "list"):
-                    _mcp_show()
-                elif _sub == "add":
-                    _name, _target, _transport = _mcp.parse_add_args(_rest)
-                    if not _name or not _target:
-                        print(
-                            f"  {W}usage: mcp add <name> <command|url> [--transport stdio|sse]{X}"
-                        )
-                        print(
-                            f"  {D}example: mcp add sensei 'python3 ~/projects/master-ai/sensei_mcp_server.py'{X}"
-                        )
-                    else:
-                        _r = _mcp.add_server(_name, _target, _transport)
-                        print(f"  {G if _r['ok'] else Y}{_r['message']}{X}")
-                elif _sub == "remove":
-                    _r = _mcp.remove_server(" ".join(_rest))
-                    print(f"  {G if _r['ok'] else W}{_r['message']}{X}")
-                elif _sub in ("enable", "disable"):
-                    _r = _mcp.set_enabled(" ".join(_rest), _sub == "enable")
-                    print(f"  {G if _r['ok'] else Y}{_r['message']}{X}")
-                elif _sub == "validate":
-                    _r = _mcp.revalidate(" ".join(_rest))
-                    print(f"  {G if _r['ok'] else R}{_r['message']}{X}")
-                elif _sub == "tools":
-                    if not _rest:
-                        print(f"  {W}usage: mcp tools <name>{X}")
-                    else:
-                        print(_mcp.format_tools(" ".join(_rest), G, R, Y, C, W, D, X))
-                else:
-                    print(
-                        f"  {W}usage: mcp [list|add <name> <cmd|url> [--transport stdio|sse]|remove <name>|enable <name>|disable <name>|validate <name>|tools <name>]{X}"
-                    )
-            except Exception as e:
-                print(f"  {W}mcp command error: {e}{X}\n")
+        if _handle_mcp_cmd(lo, cmd):
             continue
 
         # ── Skill marketplace + learning loop slash commands ──
@@ -24922,12 +26939,21 @@ def main():
             else:
                 print(f"\n  {BOLD}Saved sessions ({len(entries)}):{X}")
                 for i, entry in enumerate(entries, 1):
+                    title = entry.get("title") or "untitled session"
                     preview = entry["preview"] or "(no summary yet)"
-                    print(f"  {C}{i:>2}.{X} {entry['date']}  {D}{preview}{X}")
-                    print(f"  {D}    chat id: {entry['ts']}{X}")
-                print(
-                    f"\n  {D}Resume: 'sessions resume <number>' or 'sessions resume <chat id>'{X}\n"
-                )
+                    print(f"  {C}{i:>2}.{X} {BOLD}{title}{X}")
+                    print(f"  {D}    {entry['date']} · {preview}{X}")
+                print(f"\n  {D}Resume: 'sessions resume <number>'{X}\n")
+            continue
+
+        # ── Activity — OpenMuse-style durable task plan status ─────────────
+        # Source of truth is the existing audit log (LOOP-START/LOOP-END).
+        if lo in ("activity", "activities"):
+            _show_activity(_SHOW_ACTIVITY_LIMIT)
+            continue
+
+        if lo == "activity cancel":
+            _cancel_activity()
             continue
 
         if lo.startswith("sessions resume"):
@@ -25146,40 +27172,8 @@ def main():
                 print(f"  {mark} {p}")
             continue
 
-        if lo.startswith("profile ") and lo not in ("profile list",):
-            target = cmd.split(None, 1)[1].strip()
-            if not target or target == "default":
-                _ACTIVE_PROFILE_FILE.unlink(missing_ok=True)
-                print(
-                    f"  {G}switching to default profile — restarting...{X}", flush=True
-                )
-            else:
-                _activate_profile(target)
-                print(
-                    f"  {G}switching to profile '{target}' — restarting...{X}",
-                    flush=True,
-                )
-            try:
-                save_session(list(history), silent=True)
-            except Exception:
-                pass
-            if _SENSEI_APP is not None:
-                try:
-                    _SENSEI_APP.clear_output()
-                except Exception:
-                    pass
-            _clear_tmux_scrollback("profile")
-            try:
-                subprocess.run(["stty", "sane"], check=False)
-            except Exception:
-                pass
-            sys.stdout.write("\033c\033[2J\033[H")
-            sys.stdout.flush()
-            os.execvp(
-                sys.executable,
-                [sys.executable, str(Path.home() / "scripts/master_ai.py")],
-            )
-            continue  # unreachable
+        if _handle_profile_cmd(lo, cmd):
+            continue
 
         if lo in ("new", "clear"):
             _RESTART_STARTED.set()
@@ -25787,118 +27781,18 @@ def main():
         # block ever saw it, since dispatch is sequential top-to-bottom.
         # This phrasing sidesteps that collision without having to touch or
         # reorder the pre-existing approval_queue block at all.
-        if lo in ("proposals", "pending proposals") or lo.startswith("proposal "):
-            try:
-                if lo in ("proposals", "pending proposals"):
-                    entries = perpetual_review.list_pending()
-                    if not entries:
-                        print(f"  {D}(no pending proposals){X}\n")
-                    else:
-                        print(f"\n  {C}{len(entries)} pending proposal(s):{X}")
-                        for entry in entries:
-                            print(
-                                f"    [{entry['id']}] {entry['source']:<16} "
-                                f"priority={entry['priority']:<6} {entry['category']}"
-                            )
-                        print(
-                            f"\n  {D}proposal <id>  ·  proposal approve <id>  ·  "
-                            f"proposal reject <id>{X}\n"
-                        )
-                else:
-                    rest = cmd[len("proposal ") :].strip()
-                    if rest.lower().startswith("approve "):
-                        proposal_id = rest[len("approve ") :].strip()
-                        ok, msg = perpetual_review.approve(proposal_id)
-                        print(f"  {G if ok else R}{'ok' if ok else 'x'} {msg}{X}\n")
-                    elif rest.lower().startswith("reject "):
-                        proposal_id = rest[len("reject ") :].strip()
-                        ok, msg = perpetual_review.reject(proposal_id)
-                        print(f"  {G if ok else R}{'ok' if ok else 'x'} {msg}{X}\n")
-                    else:
-                        p = perpetual_review.get(rest)
-                        if not p:
-                            print(f"  {W}no proposal matching '{rest}'{X}\n")
-                        else:
-                            print(f"\n{p['text']}\n")
-            except Exception as e:
-                print(f"  {W}proposal review error: {e}{X}\n")
+        if _handle_proposal_cmd(lo, cmd):
             continue
 
         # P1.8 delegation runner — isolated subagent spawn inside Master AI CLI.
         #   delegate <goal...>  — run a bounded delegated task in a temp workdir
-        if lo == "delegate" or lo.startswith("delegate "):
-            try:
-                import delegate_runner as _dr
-
-                goal = cmd[len("delegate") :].strip()
-                if not goal:
-                    print(f"  {W}usage: delegate <goal>{X}\n")
-                    continue
-                print(f"\n  {BC}[delegating: {goal[:60]}...]{X}\n")
-                result = _dr.delegate_task(
-                    goal=goal,
-                    context={"cwd": str(Path.cwd()), "mode": MODE},
-                    max_turns=10,
-                    timeout_s=300,
-                )
-                import json as _json
-
-                print(f"  {C}Delegation result:{X}")
-                print(f"    ok:         {G if result['ok'] else R}{result['ok']}{X}")
-                print(f"    summary:    {W}{result.get('summary', '')}{X}")
-                print(f"    workdir:    {result.get('workdir', '')}{X}")
-                if result.get("stderr", "").strip():
-                    print(f"  {Y}stderr:{X}\n{result['stderr'][:500]}")
-                print()
-            except Exception as e:
-                import traceback
-
-                print(f"  {R}Delegation error: {e}{X}\n")
-                traceback.print_exc()
+        if _handle_delegate_cmd(lo, cmd):
             continue
 
         # P1.4 hooks REPL — Codex flagged 2026-05-11 that the hooks
         # system had public Python API but no user-typed command. Sub-
         # commands match agents': list / enable <id> / disable <id>.
-        if lo == "hooks" or lo.startswith("hooks "):
-            try:
-                import hooks as _hooks
-
-                _args = (cmd[len("hooks") :].strip()).split(None, 1)
-                _sub = (_args[0] if _args else "").lower()
-                _rest = _args[1] if len(_args) > 1 else ""
-                if _sub in ("", "list"):
-                    _hs = _hooks.list_hooks()
-                    print(f"\n  {C}Registered hooks ({len(_hs)}):{X}")
-                    for h in _hs:
-                        state = f"{G}enabled{X}" if h.enabled else f"{D}disabled{X}"
-                        print(
-                            f"    {W}{h.id:<30}{X}  {h.kind:<14}  {state}  ({h.source})"
-                        )
-                    print()
-                elif _sub == "enable":
-                    ok = _hooks.enable(_rest.strip())
-                    if ok:
-                        print(f"  {G}✅ enabled: {_rest.strip()}{X}\n")
-                    else:
-                        print(f"  {W}unknown hook: {_rest.strip()!r}{X}\n")
-                elif _sub == "disable":
-                    ok = _hooks.disable(_rest.strip())
-                    if ok:
-                        print(f"  {G}✅ disabled: {_rest.strip()}{X}\n")
-                    else:
-                        print(f"  {W}unknown hook: {_rest.strip()!r}{X}\n")
-                elif _sub == "reload":
-                    n = _hooks.reload_user_hooks()
-                    print(
-                        f"  {G}✅ reloaded {n} user hook(s) from ~/.master_ai_hooks.json{X}\n"
-                    )
-                else:
-                    print(
-                        f"  {W}usage: hooks [list|enable <id>|disable <id>|reload]{X}\n"
-                    )
-            except Exception as e:
-                print(f"  {W}hooks command error: {e}{X}\n")
+        if _handle_hooks_cmd(lo, cmd):
             continue
 
         # ── Project ───────────────────────────────────────────
@@ -25909,28 +27803,7 @@ def main():
                 print(f"  {W}No active project. Use: project <path>{X}")
             continue
 
-        if lo.startswith("project "):
-            proj = os.path.expanduser(cmd[8:].strip())
-            if os.path.isdir(proj):
-                globals()["ACTIVE_PROJECT"] = proj
-                print(f"  {G}✅ Active project: {W}{proj}{X}")
-                show_hint(
-                    "Project context active",
-                    "File structure is now injected into AI context.\n"
-                    "AI will write paths relative to this project.\n"
-                    "Git branch + recent commits also auto-injected.",
-                )
-                struct = subprocess.run(
-                    f"find {proj} -type f | grep -v -E '(node_modules|\\.git|__pycache__)' | head -50",
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                ).stdout.strip()
-                print(f"  {C}Files:{X}")
-                for f in struct.splitlines():
-                    print(f"    {W}{f}{X}")
-            else:
-                print(f"  {R}❌ Directory not found: {proj}{X}")
+        if _handle_project_cmd(lo, cmd):
             continue
 
         # ── Chunked mode — ARCHIVED 2026-04-19 ───────────────
@@ -26043,33 +27916,7 @@ def main():
         # `mesh add`                → shell out to mesh.sh for interactive add
         # `mesh ask <peer> <q...>`  → POST /ask to a peer, get its Ollama's reply
         # Use `self` as the peer name to loopback-test your own /ask pipe.
-        if lo == "mesh" or lo.startswith("mesh "):
-            rest = cmd[5:].strip() if lo.startswith("mesh ") else ""
-            mesh_sh = str(Path.home() / "scripts/mesh.sh")
-            try:
-                if rest == "" or rest in ("ls", "list"):
-                    subprocess.run(["bash", mesh_sh, "ls"], check=False)
-                elif rest == "ping":
-                    subprocess.run(["bash", mesh_sh, "ping"], check=False)
-                elif rest == "add":
-                    subprocess.run(["bash", mesh_sh, "add"], check=False)
-                elif rest.startswith("ask "):
-                    # Split into: peer, prompt-remainder
-                    parts = rest[4:].strip().split(None, 1)
-                    if len(parts) < 2:
-                        print(f"  {W}usage: mesh ask <peer> <prompt...>{X}")
-                    else:
-                        peer, prompt = parts[0], parts[1]
-                        subprocess.run(
-                            ["bash", mesh_sh, "ask", peer, prompt], check=False
-                        )
-                else:
-                    print(
-                        f"  {W}🕸  mesh commands:{X} ls | ping | add | ask <peer> <prompt>"
-                    )
-                    print(f"  {W}   full menu:{X} bash ~/scripts/mesh.sh")
-            except Exception as e:
-                print(f"  {R}❌ mesh error: {e}{X}")
+        if _handle_mesh_cmd(lo, cmd):
             continue
 
         # Legacy alias retained for compatibility, now dependency-free.
@@ -26137,11 +27984,44 @@ def main():
             continue
 
         # ── Read URL/local text — Firecrawl only for real URLs ──────
+        # ── Use a plain-markdown skill (npx skills add packages) ─────
+        # 2026-09-27: see _find_markdown_skill's own comment for why this
+        # exists -- a SKILL.md-only skill (no recipe.py) is meant to be
+        # read and followed directly, not compiled into a state machine.
+        if lo.startswith("use skill ") or lo.startswith("skill:"):
+            name = cmd[10:].strip() if lo.startswith("use skill ") else cmd[6:].strip()
+            if name.startswith(":"):
+                name = name[1:].strip()
+            if not name:
+                print(f"  {Y}usage: use skill <name>  OR  skill: <name>{X}")
+                continue
+            skill_path = _find_markdown_skill(name)
+            if not skill_path:
+                print(
+                    f"  {R}skill not found: {name}{X}\n"
+                    f"  {D}checked ~/.agents/skills, ~/.claude/skills, ~/.master_ai_skills{X}"
+                )
+                continue
+            body = _strip_skill_frontmatter(skill_path.read_text())
+            print(f"\n  {C}📘 Loaded skill:{X} {Y}{name}{X} {D}({skill_path}){X}\n")
+            globals()["PENDING_USER_NOTE"] = (
+                f"[SKILL: {name}]\n{body}\n\n"
+                "Follow the instructions above directly, in this conversation, "
+                "for this and any follow-up turns -- this is a plain-English "
+                "skill, not a recipe.py program. Do not write or run a state "
+                "machine for it; just act on it using your normal "
+                "RUN/CREATE/EDIT/etc. directives wherever its instructions "
+                "call for one."
+            )
+            continue
+
         # Different from `search`: search returns snippets from many pages,
         # `read:` fetches ONE page's full clean content. Prints the markdown
         # inline and saves to history so follow-up questions ("summarize
         # it", "what did it say about X") have real content to work with.
-        if lo.startswith("read ") or lo.startswith("read:"):
+        if lo.startswith("read:") or (
+            lo.startswith("read ") and _looks_like_read_target(cmd[5:].strip())
+        ):
             raw = cmd[5:].strip() if lo.startswith("read ") else cmd[5:].strip()
             # Allow `read: http...` too
             if raw.startswith(":"):
@@ -26473,6 +28353,16 @@ def main():
                 print(f"  {R}reasoning loop error: {e}{X}")
             continue
 
+        # 2026-09-28: the "auto-plan gate" that used to live here (Elijah,
+        # 2026-09-26) auto-flipped MODE to "plan" for any auto/review-mode
+        # request whose language matched a build-scale word list ("build a",
+        # "new feature", "from scratch", etc.). Reverted at Elijah's request
+        # after it kept firing on ordinary phrasing and dragging trivial
+        # requests into the full multi-agent debate: "it's declaring
+        # everything ambiguous and i don't like that." MODE now only
+        # changes via an explicit `mode <name>` command again, same as
+        # before this gate existed.
+
         # ── Plan mode — reason first, then draft a plan ───────────────
         # Plan mode is a reasoning assistant, not a command prompter.
         # The model may:
@@ -26545,6 +28435,23 @@ def main():
                 plan_reply = _debate.get("plan", "") or ""
                 _converged = _debate.get("converged", False)
 
+                # 2026-09-27: the debate now bails fast on _INTERRUPT_EVENT
+                # (checked around every blocking sub-call, not just once per
+                # round — see run_plan_debate()). Honor that here: skip the
+                # Jev gate (another blocking call, no reason to make the
+                # user wait through it after they already asked to stop),
+                # drain any extra keystrokes typed while waiting so they
+                # don't replay as separate turns, and go straight back to
+                # the prompt instead of showing a half-built plan for
+                # approval.
+                if _debate.get("interrupted"):
+                    print(f"\n  {Y}plan debate interrupted{X}")
+                    _INTERRUPT_EVENT.clear()
+                    _drain_stale_tui_input("plan_debate_interrupted")
+                    while len(history) > _hist_len_before:
+                        history.pop()
+                    continue
+
                 # ── Jev end-gate (Elijah's design, 2026-09-24) ──────────
                 # The debate models vote on their own homework; Jev
                 # (typesafe/jev) is an independent typed second opinion on
@@ -26604,6 +28511,46 @@ def main():
             else:
                 # Debate produced nothing usable — keep history for context.
                 history.append({"role": "user", "content": user_text})
+            continue
+
+        # ── Auto-route multi-step requests through the agent loop ──────
+        # 2026-09-27: Elijah's own words — "it should never just drop off in
+        # the middle of something. it should always continue working... this
+        # is what makes me feel like it's a toy." The agent loop
+        # (handle_loop_task) already has plan/execute/critique + persistence
+        # via the task list, but only fires behind the explicit `agent:` prefix.
+        # Ordinary multi-step requests get none of that and can drop off
+        # mid-task with the user left to manually say "proceed". Auto-detect
+        # multi-step language and route it through the same loop, so the
+        # persistence guarantee is not opt-in. Non-multi-step stays the plain
+        # handle() path. False positives cost one extra plan/critique call;
+        # false negatives are the exact failure we're closing.
+        if (
+            MODE in ("auto", "review")
+            and not _ut_lower.startswith("agent:")
+            and not _ut_lower.startswith("task:")
+            and _looks_multi_step(user_text, history)
+        ):
+            try:
+                reply = handle_loop_task(
+                    user_text, history, context_policy=context_policy
+                )
+                reply = sanitize(reply) if reply else reply
+                cache_store(user_text, reply)
+                if TTS_ENABLED:
+                    threading.Thread(target=speak, args=(reply,), daemon=True).start()
+                globals()["CHARS_SINCE_SAVE"] = (
+                    CHARS_SINCE_SAVE + len(user_text) + len(reply or "")
+                )
+                _request_auto_save(history)
+                _watchdog_maybe_auto_continue(reply)
+            except KeyboardInterrupt:
+                print(f"\n  {Y}agent loop interrupted by user{X}")
+                _request_auto_save(history)
+            except Exception as e:
+                log(f"AGENT_LOOP_AUTO_ERROR: {e}")
+                print(f"  {R}agent loop error: {e}{X}")
+                _request_auto_save(history)
             continue
 
         # ── Check cache ───────────────────────────────────────
@@ -26693,6 +28640,11 @@ def _run_with_tui():
         pass
 
     _iq: queue.Queue[str] = queue.Queue()
+    # Exposed globally so main()'s own loop (a plain function, not a closure
+    # here) can drain stale keystrokes after an interrupt -- see
+    # _drain_stale_tui_input() below. TUI-only; non-TUI mode has no queue to
+    # drain (its input() blocks on the real terminal, nothing piles up).
+    globals()["_TUI_INPUT_QUEUE"] = _iq
     _orig_input = builtins.input
     _orig_stdout, _orig_stderr = sys.stdout, sys.stderr
 
@@ -26826,6 +28778,23 @@ def _run_with_tui():
                 _SENSEI_APP.exit()
             except Exception:
                 pass
+
+    # 2026-09-27: fresh aoe/tmux panes occasionally hand this process a
+    # not-yet-ready pty -- stdin.isatty() briefly False right at startup,
+    # before tmux finishes attaching the pane's controlling terminal.
+    # Racing straight into _SENSEI_APP.run() below hit prompt_toolkit's own
+    # "Input is not a terminal" warning followed by EOFError/PermissionError
+    # in its loop.add_reader() call, which the supervisor read as a real
+    # crash and restarted -- looping (observed 2-20x in a row) until the
+    # race happened to resolve on its own. Confirmed live 2026-09-26/27:
+    # every instance self-resolved within seconds once retried, so this is
+    # a startup race, not a permanent condition. Wait for stdin to actually
+    # become a tty before handing off to the TUI; bounded so a genuinely
+    # non-interactive launch still proceeds instead of hanging forever.
+    for _ in range(40):  # 40 * 0.05s = 2s max
+        if sys.stdin.isatty():
+            break
+        time.sleep(0.05)
 
     t = threading.Thread(target=_worker, daemon=True)
     t.start()

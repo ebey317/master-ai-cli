@@ -2,6 +2,12 @@
 
 A 402 / rate-limit on profile A's billing account must not hide the provider
 from profile B's differently-funded account in the same process.
+
+The `profile` parameter on every public function is what actually delivers
+that. Without it the mark is keyed on the ambient process profile, so
+marking a provider unhealthy while routed through alice would also hide it
+from bob -- exactly the leak this module exists to prevent. Single-profile
+callers keep the old behaviour by leaving it None.
 """
 
 from __future__ import annotations
@@ -13,21 +19,33 @@ from . import profile_scope
 _UNHEALTHY: dict[tuple, float] = {}
 
 
-def _key(provider: str, base_url: str | None) -> tuple:
-    return profile_scope.cache_key("unhealthy", provider, base_url or "*")
+def _key(
+    provider: str, base_url: str | None, profile: profile_scope.Profile | None
+) -> tuple:
+    return profile_scope.cache_key(
+        "unhealthy", provider, base_url or "*", profile=profile
+    )
 
 
 def mark_unhealthy(
-    provider: str, base_url: str | None = None, ttl_seconds: float = 300
+    provider: str,
+    base_url: str | None = None,
+    ttl_seconds: float = 300,
+    profile: profile_scope.Profile | None = None,
 ) -> None:
-    _UNHEALTHY[_key(provider, base_url)] = time.monotonic() + ttl_seconds
+    _UNHEALTHY[_key(provider, base_url, profile)] = time.monotonic() + ttl_seconds
 
 
-def is_unhealthy(provider: str, base_url: str | None = None) -> bool:
-    expires = _UNHEALTHY.get(_key(provider, base_url))
+def is_unhealthy(
+    provider: str,
+    base_url: str | None = None,
+    profile: profile_scope.Profile | None = None,
+) -> bool:
+    key = _key(provider, base_url, profile)
+    expires = _UNHEALTHY.get(key)
     if expires is None:
         return False
     if time.monotonic() > expires:
-        _UNHEALTHY.pop(_key(provider, base_url), None)
+        _UNHEALTHY.pop(key, None)
         return False
     return True

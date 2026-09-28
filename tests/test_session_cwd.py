@@ -1,11 +1,10 @@
 """Tests for session-scoped CWD context management."""
+
 from __future__ import annotations
 
 import os
 import tempfile
 from pathlib import Path
-
-import pytest
 
 from scripts.session_cwd import (
     get_session_cwd,
@@ -61,4 +60,31 @@ def test_resolve_effective_cwd_fallback_chain(tmp_path: Path):
         assert resolve_effective_cwd() == tmp_path.resolve()
 
     # Explicit fallback used when nothing else
-    assert resolve_effective_cwd(fallback="/explicit/fallback") == Path("/explicit/fallback")
+    assert resolve_effective_cwd(fallback="/explicit/fallback") == Path(
+        "/explicit/fallback"
+    )
+
+
+def test_resolve_effective_cwd_survives_a_deleted_process_cwd(tmp_path: Path):
+    """A deleted process CWD must fall through, not raise.
+
+    Path.cwd() raises FileNotFoundError once the directory the process is
+    sitting in has been removed, which happens with any TemporaryDirectory
+    that has exited or a scratch dir that got cleaned. The fallback chain
+    exists for exactly that, so it has to be reachable.
+    """
+    token = set_session_cwd("")
+    try:
+        victim = tmp_path / "doomed"
+        victim.mkdir()
+        os.chdir(victim)
+        victim.rmdir()  # cwd is now a deleted inode
+
+        assert resolve_effective_cwd(fallback="/explicit/fallback") == Path(
+            "/explicit/fallback"
+        )
+        # And with no fallback at all it still returns something usable.
+        assert resolve_effective_cwd() == Path.home()
+    finally:
+        reset_session_cwd(token)
+        os.chdir(Path.home())

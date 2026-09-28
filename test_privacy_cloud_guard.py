@@ -170,7 +170,7 @@ class AskCloudGateTests(unittest.TestCase):
 
 class RunOutputExfilTests(unittest.TestCase):
     """RUN/RUNTERM output is fed back into history when continue_after_tools
-    is True. Without this guard, `RUN: cat ~/Documents/foo` would put private
+    is True. Without this guard, `RUN: cat ~/Pictures/foo` would put private
     bytes into the next cloud send. _check_run_output_for_privacy is the
     centralized hook called from _format_tool_result inside process_reply."""
 
@@ -178,8 +178,42 @@ class RunOutputExfilTests(unittest.TestCase):
         master_ai._reset_turn_privacy()
 
     def test_private_path_in_cmd_marks_private(self):
+        """A still-fenced identity folder in the command marks the turn."""
+        reason = master_ai._check_run_output_for_privacy(
+            "RUN", "cat /home/user/Pictures/notes.txt", "hello"
+        )
+        self.assertTrue(reason)
+        self.assertTrue(master_ai._is_turn_private())
+
+    def test_documents_path_alone_is_not_fenced(self):
+        """Documents is deliberately NOT path-blocked (2026-09-08).
+
+        The fence was narrowed from a blanket Desktop/Documents/Downloads/
+        Pictures block because Documents holds ordinary workspace files and
+        blanket-blocking it dead-ended cloud-first tasks with no local
+        fallback. Asserted explicitly so a future widening is a conscious
+        decision rather than an accident.
+
+        Content-based detection is the replacement guard, and it still
+        applies wherever the file lives -- see the term and secret cases in
+        this class.
+        """
         reason = master_ai._check_run_output_for_privacy(
             "RUN", "cat /home/user/Documents/notes.txt", "hello"
+        )
+        self.assertEqual(reason, "")
+        self.assertFalse(master_ai._is_turn_private())
+
+    def test_sensitive_content_in_documents_is_still_caught(self):
+        """The narrowing must not have opened a hole in the content fence.
+
+        A tax document under Documents is exactly the case the path fence
+        used to catch by folder; it now has to be caught by content.
+        """
+        reason = master_ai._check_run_output_for_privacy(
+            "RUN",
+            "cat /home/user/Documents/2025-tax.pdf",
+            "Form 1099 for tax year 2025",
         )
         self.assertTrue(reason)
         self.assertTrue(master_ai._is_turn_private())

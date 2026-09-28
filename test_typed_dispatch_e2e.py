@@ -1,232 +1,207 @@
-#!/usr/bin/env python3
-"""End-to-end tests for the live typed-dispatch boundary (Phase 1.1).
+"""End-to-end typed dispatch validation (CLAUDE.md Tier-1, item 4).
 
-Unlike test_typed_actions.py (schema/parser unit tests, no master_ai
-import, no shell), this file verifies the *live* path: that run_command()
-and run_in_terminal() -- the single execution choke-points for RUN and
-RUNTERM -- actually construct and finalize a real TypedAction on every
-invocation, not just a post-hoc shadow parse of raw model text.
+The Tier-1 requirement: "all model outputs validate before ANY dispatch".
+These tests run the real parser (`typed_actions.parse_reply_with_bodies`)
+into the real pre-dispatch gate (`action_validation.validate_all`) over
+realistic model replies, and assert on what would be dispatched versus what
+gets reported back to the model as blocked.
 
-run_command tests execute real, harmless commands (true/false) -- that's
-the point, this is the live dispatch path, not a mock of it. The timeout
-case mocks subprocess.run so the test doesn't actually wait 5 minutes.
-run_in_terminal mocks subprocess.Popen so no GUI terminal actually spawns.
+The failure this exists to prevent is specific: a model claims a step it
+never performed, because a malformed or unparseable directive was dispatched
+anyway (or silently dropped) and the chain continued regardless. So the
+assertions here are about the BLOCKED set being non-empty and correctly
+attributed -- not merely about the validator returning something.
 
-Run: python3 ~/scripts/test_typed_dispatch_e2e.py
-Exit: 0 = all green, non-zero = at least one live-dispatch typed-record failure.
+No master_ai import: the gate is standalone by design, and process_reply's
+wiring is covered by test_typed_dispatch_wiring.py.
 """
 
-import json
-import os
-import subprocess
-import sys
-import unittest
-from unittest import mock
+from __future__ import annotations
 
-os.environ["SENSEI_TUI"] = "0"
-sys.path.insert(0, os.path.expanduser("~/scripts"))
+import pytest
 
-import master_ai  # noqa: E402
+import action_validation as av
+import typed_actions as ta
 
 
-class RunCommandTypedLifecycle(unittest.TestCase):
-    def setUp(self):
-        master_ai._LAST_LIVE_TYPED_ACTIONS.clear()
-
-    def test_successful_command_records_completed_run_action(self):
-        master_ai.run_command("true")
-        self.assertEqual(len(master_ai._LAST_LIVE_TYPED_ACTIONS), 1)
-        action = master_ai._LAST_LIVE_TYPED_ACTIONS[-1]
-        self.assertEqual(action["kind"], "RUN")
-        self.assertEqual(action["status"], "completed")
-        self.assertEqual(action["extras"]["exit_code"], 0)
-
-    def test_failing_command_records_failed_run_action(self):
-        master_ai.run_command("false")
-        action = master_ai._LAST_LIVE_TYPED_ACTIONS[-1]
-        self.assertEqual(action["kind"], "RUN")
-        self.assertEqual(action["status"], "failed")
-        self.assertEqual(action["extras"]["exit_code"], 1)
-
-    def test_timeout_records_failed_action_with_timeout_marker(self):
-        with mock.patch.object(
-            master_ai.subprocess,
-            "run",
-            side_effect=subprocess.TimeoutExpired(cmd="sleep 600", timeout=300),
-        ):
-            result = master_ai.run_command("sleep 600")
-        self.assertFalse(result.ok)
-        action = master_ai._LAST_LIVE_TYPED_ACTIONS[-1]
-        self.assertEqual(action["kind"], "RUN")
-        self.assertEqual(action["status"], "failed")
-        self.assertEqual(action["extras"]["error"], "timeout")
-
-    def test_live_typed_actions_bounded(self):
-        for _ in range(master_ai._LIVE_TYPED_ACTIONS_CAP + 20):
-            master_ai.run_command("true")
-        self.assertEqual(
-            len(master_ai._LAST_LIVE_TYPED_ACTIONS),
-            master_ai._LIVE_TYPED_ACTIONS_CAP,
-        )
-
-    def test_audit_jsonl_gets_full_lifecycle_record(self):
-        before_size = (
-            master_ai.AUDIT_LOG_JSONL.stat().st_size
-            if master_ai.AUDIT_LOG_JSONL.exists()
-            else 0
-        )
-        master_ai.run_command("true")
-        with master_ai.AUDIT_LOG_JSONL.open() as f:
-            f.seek(before_size)
-            new_lines = [ln for ln in f.read().splitlines() if ln.strip()]
-        self.assertTrue(new_lines, "expected at least one new JSONL line")
-        rec = json.loads(new_lines[-1])
-        self.assertEqual(rec["kind"], "RUN")
-        self.assertEqual(rec["status"], "completed")
-        self.assertIn("id", rec)
+def parse_and_validate(reply: str):
+    """The full pre-dispatch path: model text -> parsed actions -> gate."""
+    actions = ta.parse_reply_with_bodies(reply, model="cloud_fast", cwd="/tmp")
+    dispatchable, blocked = av.validate_all(actions)
+    return actions, dispatchable, blocked
 
 
-class RunInTerminalTypedLifecycle(unittest.TestCase):
-    def setUp(self):
-        master_ai._LAST_LIVE_TYPED_ACTIONS.clear()
-
-    def test_successful_spawn_records_completed_runterm_action(self):
-        with mock.patch.object(master_ai.subprocess, "Popen") as popen:
-            popen.return_value = mock.Mock()
-            master_ai.run_in_terminal("htop")
-        action = master_ai._LAST_LIVE_TYPED_ACTIONS[-1]
-        self.assertEqual(action["kind"], "RUNTERM")
-        self.assertEqual(action["status"], "completed")
-        self.assertIn(
-            action["extras"].get("spawned_via"),
-            (
-                "x-terminal-emulator",
-                "gnome-terminal",
-                "xterm",
-            ),
-        )
-
-    def test_no_terminal_available_records_failed_runterm_action(self):
-        with mock.patch.object(
-            master_ai.subprocess, "Popen", side_effect=FileNotFoundError
-        ):
-            master_ai.run_in_terminal("htop")
-        action = master_ai._LAST_LIVE_TYPED_ACTIONS[-1]
-        self.assertEqual(action["kind"], "RUNTERM")
-        self.assertEqual(action["status"], "failed")
+def blocked_kinds(blocked) -> set:
+    return {a.kind for a, _r in blocked}
 
 
-class StandardsCheckReflectsLiveDispatch(unittest.TestCase):
-    def test_typed_tool_boundary_check_passes_on_live_probe(self):
-        checks = master_ai.agent_standards_checks()
-        row = next(c for c in checks if c[1] == "typed tool boundary")
-        self.assertEqual(row[0], "PASS")
+# ── valid replies dispatch in full ──
 
 
-class DirectiveBacktickParity(unittest.TestCase):
-    """2026-09-09: cross-line backtick spans used to false-positive directives.
+def test_real_command_dispatches():
+    _a, dispatchable, blocked = parse_and_validate("RUN: ls -la /tmp")
+    assert len(dispatchable) == 1
+    assert blocked == []
 
-        A directive wrapped inside a multi-line code span (`` `RUN:
-    ls -la` ``)
-        must be treated as prose and ignored. A real directive outside any
-        backtick span must still be extracted and dispatched.
+
+def test_chained_commands_dispatch():
+    _a, dispatchable, blocked = parse_and_validate("RUN: cd /tmp && ls -la")
+    assert len(dispatchable) == 1 and blocked == []
+
+
+def test_quoted_path_dispatches():
+    _a, dispatchable, blocked = parse_and_validate('RUN: cat "/tmp/my file.txt"')
+    assert len(dispatchable) == 1 and blocked == []
+
+
+def test_read_dispatches():
+    _a, dispatchable, blocked = parse_and_validate("READ: /tmp/notes.md")
+    assert len(dispatchable) == 1 and blocked == []
+
+
+def test_valid_python_create_dispatches():
+    reply = "CREATE: /tmp/ok.py\n<<<CONTENT\ndef f():\n    return 1\n>>>CONTENT"
+    _a, dispatchable, blocked = parse_and_validate(reply)
+    assert len(dispatchable) == 1 and blocked == []
+
+
+def test_valid_shell_create_dispatches():
+    reply = "CREATE: /tmp/ok.sh\n<<<CONTENT\n#!/bin/bash\nset -euo pipefail\necho hi\n>>>CONTENT"
+    _a, dispatchable, blocked = parse_and_validate(reply)
+    assert len(dispatchable) == 1 and blocked == []
+
+
+def test_valid_json_create_dispatches():
+    reply = 'CREATE: /tmp/ok.json\n<<<CONTENT\n{"a": 1}\n>>>CONTENT'
+    _a, dispatchable, blocked = parse_and_validate(reply)
+    assert len(dispatchable) == 1 and blocked == []
+
+
+# ── malformed replies are blocked, and said why ──
+
+
+def test_unparseable_python_create_is_blocked():
+    reply = "CREATE: /tmp/bad.py\n<<<CONTENT\ndef broken(\n>>>CONTENT"
+    _a, dispatchable, blocked = parse_and_validate(reply)
+    assert dispatchable == [], "a file that cannot parse must not be written"
+    assert "CREATE" in blocked_kinds(blocked)
+    reason = blocked[0][1].reason
+    assert "syntax error" in reason, reason
+    assert "line" in reason, "the reason must point at the line for the model to fix it"
+
+
+def test_unparseable_shell_create_is_blocked():
+    reply = "CREATE: /tmp/bad.sh\n<<<CONTENT\n#!/bin/bash\nif [ -f x ; then\n>>>CONTENT"
+    _a, dispatchable, blocked = parse_and_validate(reply)
+    assert dispatchable == []
+    assert "shell syntax error" in blocked[0][1].reason
+
+
+def test_invalid_json_create_is_blocked():
+    reply = "CREATE: /tmp/bad.json\n<<<CONTENT\n{not json,,}\n>>>CONTENT"
+    _a, dispatchable, blocked = parse_and_validate(reply)
+    assert dispatchable == []
+    assert "json syntax error" in blocked[0][1].reason
+
+
+def test_narrated_run_is_blocked():
+    """The headline case: a model describing an action instead of issuing it.
+
+    Without this the dispatcher execs `let` and the model goes on to report
+    the step as done.
     """
-
-    def setUp(self):
-        master_ai._LAST_LIVE_TYPED_ACTIONS.clear()
-
-    def test_run_inside_cross_line_backtick_span_is_ignored(self):
-        # On the closing backtick line, per-line parity used to be 0, so this
-        # looked like a real RUN: directive and executed.
-        reply = "Use `RUN:\nls -la` to list files."
-        master_ai.process_reply(reply, [], streamed=False, continue_after_tools=False)
-        # No live typed action should have been recorded for a skipped directive.
-        self.assertTrue(
-            all(a.get("kind") != "RUN" for a in master_ai._LAST_LIVE_TYPED_ACTIONS),
-            "backtick-wrapped RUN: must not dispatch",
-        )
-
-    def test_real_run_outside_backtick_span_is_dispatched(self):
-        reply = "PLAN ONLY: RUN: echo parity-ok"
-        master_ai.process_reply(reply, [], streamed=False, continue_after_tools=False)
-        self.assertTrue(
-            any(
-                a.get("kind") == "RUN" and "parity-ok" in str(a.get("target", ""))
-                for a in master_ai._LAST_LIVE_TYPED_ACTIONS
-            ),
-            "real RUN: outside backticks must dispatch",
-        )
-
-    def test_read_token_inside_inline_backtick_span_is_ignored(self):
-        reply = "files via `READ:` are safe"
-        master_ai.process_reply(reply, [], streamed=False, continue_after_tools=False)
-        self.assertTrue(
-            all(a.get("kind") != "READ" for a in master_ai._LAST_LIVE_TYPED_ACTIONS),
-            "backtick-wrapped READ: must not dispatch",
-        )
+    _a, dispatchable, blocked = parse_and_validate("RUN: let me run the test suite")
+    assert dispatchable == []
+    assert "sentence" in blocked[0][1].reason
 
 
-class PreRunSyntaxGate(unittest.TestCase):
-    """2026-09-09: pre_run/pre_runterm hook must block malformed shell strings."""
-
-    def test_pre_run_blocks_unclosed_backtick(self):
-        fr = master_ai._fire_hook_or_block("pre_run", "echo hi `")
-        self.assertTrue(fr)
-        self.assertIn(
-            "syntax", str(master_ai._LAST_HOOK_BLOCK.get("reason", "")).lower()
-        )
-
-    def test_pre_run_passes_valid_command(self):
-        fr = master_ai._fire_hook_or_block("pre_run", "echo hi")
-        self.assertFalse(fr)
+def test_unbalanced_quoting_is_blocked():
+    _a, dispatchable, blocked = parse_and_validate('RUN: echo "unterminated')
+    assert dispatchable == []
+    assert "quoting" in blocked[0][1].reason
 
 
-class TestXmlToolCallDirectives(unittest.TestCase):
-    """2026-09-10: live failure on poolside/laguna-xs-2.1:free — model emitted
-    native XML tool-call blocks (<invoke name="RUN"><parameter name="command"
-    string="true">...</parameter></invoke>) which were invisible to every
-    directive parser. Nothing dispatched; the model re-emitted the same block
-    forever. _xml_tool_calls_to_directives() must convert them to bare
-    directives before normalization/dispatch."""
-
-    def _conv(self, reply):
-        return master_ai._xml_tool_calls_to_directives(
-            master_ai._TOOL_CALL_TAG_RE.sub("", reply)
-        )
-
-    def test_live_invoke_run_block(self):
-        reply = (
-            "Freedom work, not free tool.\n\n"
-            '<invoke name="RUN">\n'
-            '<parameter name="command" string="true">ls ~/scripts/ ; echo done</parameter>\n'
-            "</invoke>"
-        )
-        conv = self._conv(reply)
-        self.assertNotIn("<invoke", conv)
-        self.assertNotIn("<parameter", conv)
-        run_lines = [l for l in conv.splitlines() if l.startswith("RUN:")]
-        self.assertTrue(run_lines, "no bare RUN: directive")
-        self.assertIn("ls ~/scripts/", run_lines[0])
-
-    def test_tool_calls_wrapper_and_multiline_payload(self):
-        reply = (
-            '<tool_calls>\n<invoke name="RUN">\n'
-            '<parameter name="command">echo one\necho two</parameter>\n'
-            "</invoke>\n</tool_calls>"
-        )
-        conv = self._conv(reply)
-        self.assertIn("RUN: echo one echo two", conv)
-
-    def test_read_with_path_param(self):
-        reply = (
-            '<invoke name="READ"><parameter name="path">/tmp/x.md</parameter></invoke>'
-        )
-        self.assertEqual(self._conv(reply).strip(), "READ: /tmp/x.md")
-
-    def test_plain_reply_passthrough(self):
-        plain = "Just chatting.\nRUN: echo hi"
-        self.assertEqual(master_ai._xml_tool_calls_to_directives(plain), plain)
+def test_bad_runterm_shell_is_blocked():
+    _a, dispatchable, blocked = parse_and_validate("RUNTERM: if [ -f x ; then echo hi")
+    assert dispatchable == []
+    assert "shell syntax error" in blocked[0][1].reason
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_empty_payload_is_blocked():
+    """A directive with nothing after the colon dispatches nothing."""
+    actions = ta.parse_reply_with_bodies("RUN:", model="m", cwd="/tmp")
+    if not actions:
+        pytest.skip("parser drops a bare RUN: before validation sees it")
+    dispatchable, blocked = av.validate_all(actions)
+    assert dispatchable == []
+    assert "empty" in blocked[0][1].reason
+
+
+# ── a mixed reply: the good parts still run, the bad part is reported ──
+
+
+def test_mixed_reply_dispatches_good_and_blocks_bad():
+    """The realistic case, and the one the Tier-1 gate exists for.
+
+    A reply that writes a broken file and then tries to run something else
+    must not have the broken write land. The independent action still runs.
+    """
+    reply = (
+        "I'll write the module then run it.\n"
+        "CREATE: /tmp/broken.py\n"
+        "<<<CONTENT\n"
+        "def oops(:\n"
+        ">>>CONTENT\n"
+        "RUN: pytest -q\n"
+    )
+    _a, dispatchable, blocked = parse_and_validate(reply)
+
+    kinds_dispatched = [a.kind for a in dispatchable]
+    assert "CREATE" not in kinds_dispatched, "the unparseable file must not be written"
+    assert "RUN" in kinds_dispatched, "an independent valid action should still run"
+    assert "CREATE" in blocked_kinds(blocked)
+    assert len(blocked) == 1, "exactly the bad action should be reported"
+
+
+def test_blocked_reason_is_written_for_the_model():
+    """Reasons go back into history, so they must be actionable prose."""
+    _a, _d, blocked = parse_and_validate(
+        "CREATE: /tmp/x.py\n<<<CONTENT\ndef f(\n>>>CONTENT"
+    )
+    reason = blocked[0][1].reason
+    assert reason and not reason.startswith("ValidationResult")
+    assert "CREATE" in reason or "parse" in reason
+
+
+# ── the gate never raises, and never blocks what it cannot model ──
+
+
+def test_validator_never_raises_on_junk():
+    for junk in [None, "", 0, [], {}, {"kind": None}, object()]:
+        result = av.validate_action(junk)
+        assert result.ok in (True, False)
+
+
+def test_unmodelled_kinds_pass_through():
+    """An unknown kind must not be silently eaten.
+
+    The gate answers "is this well-formed", not "is this allowed". Refusing
+    kinds it has no rule for would drop directives the legacy path handles.
+    """
+    for kind in ("BROWSER_NAV", "SEARCH", "REMEMBER", "PLAN", "SEND_EMAIL"):
+        assert av.validate_action({"kind": kind, "target": "x"}).ok is True
+
+
+def test_dict_and_object_actions_validate_the_same():
+    """Callers hold TypedAction objects; the gate also accepts plain dicts."""
+    obj = ta.TypedAction(kind="RUN", target="ls -la /tmp")
+    assert (
+        av.validate_action(obj).ok
+        == av.validate_action({"kind": "RUN", "target": "ls -la /tmp"}).ok
+    )
+
+
+def test_order_is_preserved():
+    reply = "RUN: ls\nRUNTERM: echo hi\nREAD: /tmp/x"
+    _a, dispatchable, _b = parse_and_validate(reply)
+    assert [a.kind for a in dispatchable] == ["RUN", "RUNTERM", "READ"]

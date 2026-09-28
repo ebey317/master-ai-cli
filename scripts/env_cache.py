@@ -52,6 +52,23 @@ def _decode_env_bytes(raw: bytes) -> str:
         return raw.decode("latin-1")
 
 
+def _strip_export_prefix(line: str) -> str:
+    """Drop a leading `export` keyword, whatever its case or separator.
+
+    `export` is a shell keyword and appears upper-, lower- or mixed-case in
+    real .env files, separated by a space or a tab. The prefix used to be
+    stripped only when it was exactly lowercase `export `, so `EXPORT
+    FOO=bar` was parsed as a variable literally named "EXPORT FOO" -- the
+    key silently never resolved to FOO.
+    """
+    body = line.lstrip()
+    if len(body) > 6 and body[:6].lower() == "export" and body[6] in " \t":
+        return body[7:].lstrip()
+    if body[:6].lower() == "export" and len(body) == 6:
+        return ""
+    return line
+
+
 def _parse_env_text(text: str) -> Dict[str, str]:
     """Tokenize already-read .env text. export prefix, # comments, quote escapes."""
     secrets: Dict[str, str] = {}
@@ -59,8 +76,7 @@ def _parse_env_text(text: str) -> Dict[str, str]:
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        if line.startswith("export "):
-            line = line[len("export ") :]
+        line = _strip_export_prefix(line)
         if "=" not in line:
             continue
         key, _, value = line.partition("=")
@@ -86,6 +102,9 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
     path_str = str(env_path)
 
     # Fast path: check cache under lock, but we must still open file to verify freshness
+    cached_fingerprint: Optional[tuple]
+    cached_secrets: Optional[Dict[str, str]]
+    cached_generation: Optional[int]
     with _ENV_FILE_CACHE_LOCK:
         cached = _ENV_FILE_CACHE.get(path_str)
         if cached is not None:
