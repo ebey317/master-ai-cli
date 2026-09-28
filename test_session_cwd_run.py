@@ -92,9 +92,9 @@ def test_cd_persists_into_the_next_command(ma, spy_subprocess, tmp_path):
     assert after_cd in (None, str(project)), after_cd
 
     after_python = _run(ma, spy_subprocess, "python3 main.py")
-    assert after_python == str(
-        project
-    ), f"second RUN: did not inherit the cd; got {after_python!r}"
+    assert after_python == str(project), (
+        f"second RUN: did not inherit the cd; got {after_python!r}"
+    )
 
 
 def test_cd_is_relative_to_the_previous_cd_not_the_process(

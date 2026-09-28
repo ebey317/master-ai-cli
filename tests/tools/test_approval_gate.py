@@ -7,15 +7,20 @@ from __future__ import annotations
 
 from scripts.approval_gate import (
     Verdict,
-    request_approval,
-    is_approved,
-    clear_session_grants,
     clear_all_grants,
+    clear_session_grants,
+    is_approved,
+    list_grants,
+    request_approval,
     set_explicit_callback,
     set_thread_callback,
-    list_grants,
 )
-from scripts.computer_use_tool import click, type_text, screenshot, set_approval_callback
+from scripts.computer_use_tool import (
+    click,
+    screenshot,
+    set_approval_callback,
+    type_text,
+)
 
 
 def test_no_callback_refuses_unless_yolo() -> None:

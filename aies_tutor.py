@@ -76,8 +76,8 @@ def _read_local(path: str) -> str:
 
 
 def _read_url(url: str) -> str:
-    import urllib.request
     import urllib.parse
+    import urllib.request
 
     with urllib.request.urlopen(url, timeout=30) as r:
         return r.read().decode("utf-8", errors="replace")
@@ -223,7 +223,10 @@ def _find_next_lesson(path: Path | None = None) -> tuple[str, str, str] | None:
                 continue
         lessons = _lessons_for_phase(phase_slug)
         for _, lesson_dir, lesson_slug, title in lessons:
-            if (phase_slug, lesson_slug) not in done and (phase_slug, lesson_dir) not in done:
+            if (phase_slug, lesson_slug) not in done and (
+                phase_slug,
+                lesson_dir,
+            ) not in done:
                 return (phase_slug, lesson_dir, title)
     return None
 
@@ -279,7 +282,10 @@ def speak(text: str) -> None:
 
         data = json.dumps({"text": text[:500]}).encode()
         req = urllib.request.Request(
-            f"{tts_server}/speak", data=data, headers={"Content-Type": "application/json"}, method="POST"
+            f"{tts_server}/speak",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as r:
             _ = r.read()
@@ -329,7 +335,10 @@ def start_learning(
         }
 
     phases = _phase_dirs()
-    path_table = ["| Phase | Name | Status | Est. hours |", "|-------|------|--------|------------|"]
+    path_table = [
+        "| Phase | Name | Status | Est. hours |",
+        "|-------|------|--------|------------|",
+    ]
     # Hours are unknown without ROADMAP; leave blank or default to phase count * 5.
     for num, slug, title in phases:
         status = "Do" if num >= 1 else "Skip"  # default: skip phase 0 setup
@@ -338,7 +347,9 @@ def start_learning(
 
     entry_phase = 1
     pace = hours_per_week or "~5 h"
-    mission_line = mission or "Learn AI engineering from first principles and build real systems."
+    mission_line = (
+        mission or "Learn AI engineering from first principles and build real systems."
+    )
     if build_goal:
         mission_line += f" Goal: {build_goal}."
 
@@ -350,7 +361,7 @@ def start_learning(
 {mission_line}
 
 ## Placement
-- Date: {time.strftime('%Y-%m-%d')}
+- Date: {time.strftime("%Y-%m-%d")}
 - Score: setup (no quiz)
 - Entry point: Phase {entry_phase}: Math Foundations
 - Pace: {pace}/week
@@ -397,7 +408,9 @@ def next_lesson() -> dict[str, Any]:
     }
 
 
-def record_lesson(phase: str, lesson: str, score: str, note: str = "") -> dict[str, Any]:
+def record_lesson(
+    phase: str, lesson: str, score: str, note: str = ""
+) -> dict[str, Any]:
     _append_progress(phase, lesson_dir, score, note)
     return {"status": "recorded", "phase": phase, "lesson": lesson_dir, "score": score}
 
@@ -421,7 +434,9 @@ def current_lesson() -> dict[str, Any] | None:
     }
 
 
-def read_aloud(lesson_result: dict[str, Any] | None = None, chunk_index: int = 0) -> dict[str, Any]:
+def read_aloud(
+    lesson_result: dict[str, Any] | None = None, chunk_index: int = 0
+) -> dict[str, Any]:
     """Speak a lesson's TTS chunks starting from chunk_index.
 
     If no lesson_result is provided, speaks the current next lesson.
@@ -430,14 +445,20 @@ def read_aloud(lesson_result: dict[str, Any] | None = None, chunk_index: int = 0
     if lesson_result is None:
         lesson_result = current_lesson()
     if not lesson_result or lesson_result.get("status") != "lesson":
-        return {"status": "no_lesson", "message": "No next lesson found. Create LEARNING.md or run tutor start."}
+        return {
+            "status": "no_lesson",
+            "message": "No next lesson found. Create LEARNING.md or run tutor start.",
+        }
 
     chunks = lesson_result.get("tts_chunks", [])
     if not chunks:
         return {"status": "no_chunks", "message": "Lesson has no readable content."}
 
     if chunk_index < 0 or chunk_index >= len(chunks):
-        return {"status": "bad_index", "message": f"Chunk {chunk_index} out of range (0-{len(chunks)-1})."}
+        return {
+            "status": "bad_index",
+            "message": f"Chunk {chunk_index} out of range (0-{len(chunks) - 1}).",
+        }
 
     chunk_text = chunks[chunk_index]
     speak(chunk_text)
@@ -515,7 +536,9 @@ def check_understanding(phase_arg: str | int) -> dict[str, Any]:
 def _cli() -> None:
     import argparse
 
-    parser = argparse.ArgumentParser(description="AI Engineering from Scratch tutor helper")
+    parser = argparse.ArgumentParser(
+        description="AI Engineering from Scratch tutor helper"
+    )
     sub = parser.add_subparsers(dest="cmd")
 
     sub.add_parser("start", help="Create LEARNING.md")
@@ -527,8 +550,12 @@ def _cli() -> None:
     p_speak = sub.add_parser("speak", help="Speak a text string via TTS")
     p_speak.add_argument("text")
     p_read = sub.add_parser("read", help="Read the current/next lesson aloud")
-    p_read.add_argument("--chunk", type=int, default=0, help="Chunk index to start from")
-    p_read.add_argument("--all", action="store_true", help="Read all chunks sequentially")
+    p_read.add_argument(
+        "--chunk", type=int, default=0, help="Chunk index to start from"
+    )
+    p_read.add_argument(
+        "--all", action="store_true", help="Read all chunks sequentially"
+    )
 
     args = parser.parse_args()
     if args.cmd == "start":

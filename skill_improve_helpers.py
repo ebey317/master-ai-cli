@@ -21,9 +21,8 @@ import json
 from pathlib import Path
 
 import learning_loop as ll
-import skill_marketplace as sm
 import skill_author as sa
-import session_harvester as sh
+import skill_marketplace as sm
 
 # Config key used by master_ai.py for the auto-author switch.
 AUTO_AUTHOR_KEY = "auto_author_enabled"
@@ -62,7 +61,9 @@ def set_auto_author_enabled(enabled: bool) -> None:
     _save_settings(data)
 
 
-def create_skill(name: str, transcript_path: str | None = None, auto_approve: bool = False) -> tuple[bool, str, dict]:
+def create_skill(
+    name: str, transcript_path: str | None = None, auto_approve: bool = False
+) -> tuple[bool, str, dict]:
     """`skill create <name> [transcript]` — generate, audit, and optionally
     save a new skill from a session transcript.
 
@@ -82,20 +83,26 @@ def create_skill(name: str, transcript_path: str | None = None, auto_approve: bo
     }
 
     if not draft.audit.get("passed"):
-        msg = f"audit failed for '{draft.name}':\n" + "\n".join(f"  ✗ {r}" for r in draft.audit.get("reasons", []))
+        msg = f"audit failed for '{draft.name}':\n" + "\n".join(
+            f"  ✗ {r}" for r in draft.audit.get("reasons", [])
+        )
         return False, msg, details
 
     if draft.approved:
-        return True, f"skill '{draft.name}' created and saved to ~/.master_ai_skills/{draft.name}/", details
+        return (
+            True,
+            f"skill '{draft.name}' created and saved to ~/.master_ai_skills/{draft.name}/",
+            details,
+        )
 
     # audit passed but not saved yet — present draft for approval
     recipe_lines = draft.recipe_py.splitlines()[:12]
     recipe_preview = "\n".join(recipe_lines)
     preview = f"""draft skill '{draft.name}' is ready for review.
 
-low-risk auto-approve: {'yes' if draft.low_risk else 'no'}
+low-risk auto-approve: {"yes" if draft.low_risk else "no"}
 audit: PASS
-warnings: {len(draft.audit.get('warnings', []))}
+warnings: {len(draft.audit.get("warnings", []))}
 
 SKILL.md preview:
 {draft.skill_md[:600]}

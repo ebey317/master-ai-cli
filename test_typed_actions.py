@@ -27,6 +27,9 @@ class KindAndRiskConstants(unittest.TestCase):
         # parser (master_ai._RE_DIRECTIVE, master_ai.py:3780) had grown these
         # after this module's initial 2026-05-17 build; typed_actions had
         # drifted out of sync with it until this gap-closing pass.
+        # MCP_CALL added 2026-09-28 — local MCP invocation, kept distinct
+        # from REMOTE_MCP because that one goes through the Chrome
+        # extension and its own approval gate.
         self.assertEqual(
             ta.DIRECTIVE_KINDS,
             frozenset(
@@ -64,6 +67,7 @@ class KindAndRiskConstants(unittest.TestCase):
                     "BROWSER_CDP_KEY",
                     "BROWSER_TAB_CREATE",
                     "REMOTE_MCP",
+                    "MCP_CALL",
                     "SEND_TELEGRAM",
                 }
             ),

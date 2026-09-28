@@ -7,7 +7,6 @@ Stdlib only.
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,7 +32,9 @@ _TOOL_RE = re.compile(
 )
 
 # Messages that are pure conversational filler, not useful for a skill spec.
-_NOISE_RE = re.compile(r"^\s*(hi|hey|hello|ok|okay|thanks|ty|np|brb|lol)\s*$", re.IGNORECASE)
+_NOISE_RE = re.compile(
+    r"^\s*(hi|hey|hello|ok|okay|thanks|ty|np|brb|lol)\s*$", re.IGNORECASE
+)
 
 
 @dataclass
@@ -75,7 +76,11 @@ def _strip_tool_blocks(text: str) -> str:
         if line.strip().startswith("[TOOL") or line.strip().startswith("[RUN RESULT]"):
             skip = True
             continue
-        if skip and (line.strip() == "" or line.strip().startswith("Exit:") or line.strip().startswith("Output:")):
+        if skip and (
+            line.strip() == ""
+            or line.strip().startswith("Exit:")
+            or line.strip().startswith("Output:")
+        ):
             continue
         if skip and not line.strip().startswith("["):
             skip = False
@@ -88,11 +93,20 @@ def _topic_from_messages(messages: list[str]) -> str:
     """Naive topic extraction: first mention of a concrete noun phrase."""
     combined = " ".join(messages)[:2000]
     # look for "create a X", "build a X", "how do I X"
-    m = re.search(r"(?:create|build|make|set up|install|fix|automate|wire)\s+(?:a|an|the|my)?\s+(.{3,60}?)(?:\.|\?|!|\n|for|with|using|to)", combined, re.IGNORECASE)
+    m = re.search(
+        r"(?:create|build|make|set up|install|fix|automate|wire)\s+(?:a|an|the|my)?\s+(.{3,60}?)(?:\.|\?|!|\n|for|with|using|to)",
+        combined,
+        re.IGNORECASE,
+    )
     if m:
         return m.group(1).strip().lower()[:60]
     # fallback: first 3 meaningful words
-    words = [w for w in re.findall(r"[A-Za-z0-9_]{4,}", combined) if w.lower() not in {"this", "that", "with", "from", "your", "have", "want", "need"}]
+    words = [
+        w
+        for w in re.findall(r"[A-Za-z0-9_]{4,}", combined)
+        if w.lower()
+        not in {"this", "that", "with", "from", "your", "have", "want", "need"}
+    ]
     return " ".join(words[:3]).lower()[:60]
 
 
@@ -181,7 +195,9 @@ def harvest_recent(limit: int = 20, min_score: float = 0.35) -> list[Candidate]:
     if not CHAT_DIR.is_dir():
         return []
 
-    chats = sorted(CHAT_DIR.glob("*.chat"), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
+    chats = sorted(
+        CHAT_DIR.glob("*.chat"), key=lambda p: p.stat().st_mtime, reverse=True
+    )[:limit]
     out = []
     for chat_path in chats:
         summary_path = chat_path.with_suffix(".summary")

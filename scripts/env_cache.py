@@ -12,11 +12,10 @@ import os
 import threading
 from collections import OrderedDict
 from pathlib import Path
-from typing import Dict, Optional, Tuple
 
 # Per-path LRU cache: path_str -> (fingerprint, secrets_dict, generation)
 # fingerprint = (mtime_ns, size, inode, device)
-_ENV_FILE_CACHE: "OrderedDict[str, Tuple[tuple, Dict[str, str], int]]" = OrderedDict()
+_ENV_FILE_CACHE: "OrderedDict[str, tuple[tuple, dict[str, str], int]]" = OrderedDict()
 _ENV_FILE_CACHE_LOCK = threading.Lock()
 _ENV_FILE_CACHE_MAX = 64
 _ENV_FILE_CACHE_GENERATION = 0  # incremented on every invalidation
@@ -28,7 +27,7 @@ def _fd_fingerprint(fileno: int) -> tuple:
     return (st.st_mtime_ns, st.st_size, st.st_ino, st.st_dev)
 
 
-def invalidate_env_file_cache(env_path: Optional[Path] = None) -> None:
+def invalidate_env_file_cache(env_path: Path | None = None) -> None:
     """
     Drop one path from the load_env_file() memo, or all of them.
     Increments the generation counter so in-flight readers won't repopulate stale data.
@@ -69,9 +68,9 @@ def _strip_export_prefix(line: str) -> str:
     return line
 
 
-def _parse_env_text(text: str) -> Dict[str, str]:
+def _parse_env_text(text: str) -> dict[str, str]:
     """Tokenize already-read .env text. export prefix, # comments, quote escapes."""
-    secrets: Dict[str, str] = {}
+    secrets: dict[str, str] = {}
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
@@ -93,7 +92,7 @@ def _parse_env_text(text: str) -> Dict[str, str]:
     return secrets
 
 
-def load_env_file(env_path: Path) -> Dict[str, str]:
+def load_env_file(env_path: Path) -> dict[str, str]:
     """
     THE .env tokenizer: every reader parses through here so no two boundaries
     disagree on which keys/values a file defines. Dict only — never touches os.environ.
@@ -102,9 +101,9 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
     path_str = str(env_path)
 
     # Fast path: check cache under lock, but we must still open file to verify freshness
-    cached_fingerprint: Optional[tuple]
-    cached_secrets: Optional[Dict[str, str]]
-    cached_generation: Optional[int]
+    cached_fingerprint: tuple | None
+    cached_secrets: dict[str, str] | None
+    cached_generation: int | None
     with _ENV_FILE_CACHE_LOCK:
         cached = _ENV_FILE_CACHE.get(path_str)
         if cached is not None:

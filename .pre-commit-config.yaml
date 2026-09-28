@@ -1,7 +1,13 @@
 # Pre-commit configuration
 repos:
   - repo: https://github.com/charliermarsh/ruff-pre-commit
-    rev: v0.4.1
+    # 2026-09-28: bumped 0.4.1 -> 0.16.7 to match the ruff on this machine.
+    # The two disagree on formatting, and a mismatch is not a cosmetic
+    # annoyance: running the local ruff, committing, and having the hook
+    # "fix" the same lines back produces a commit loop that blocks every
+    # commit touching a .py file. Whatever formats the code locally must be
+    # what the hook formats it with, or nothing lands.
+    rev: v0.16.7
     hooks:
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]

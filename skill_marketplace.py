@@ -60,7 +60,10 @@ LOG_PATH = SKILLS_ROOT / "marketplace.log"
 # confirmed identical name/description YAML-frontmatter shape).
 DEFAULT_SOURCES = {
     "hermes": {"path": str(Path.home() / ".hermes" / "skills"), "kind": "dir"},
-    "opencode": {"path": str(Path.home() / ".config" / "opencode" / "skills"), "kind": "dir"},
+    "opencode": {
+        "path": str(Path.home() / ".config" / "opencode" / "skills"),
+        "kind": "dir",
+    },
 }
 
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)

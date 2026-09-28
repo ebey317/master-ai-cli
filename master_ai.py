@@ -10298,12 +10298,41 @@ def auto_inject_context(user_text, enabled=True):
     # through without derailing into [AUTO-CONTEXT].
     low_text = user_text.lower()
     read_cues = (
-        "read", "check", "look at", "show me", "explain", "what's in", "what is in",
-        "open", "review", "audit", "walk through", "walk me through", "debug",
-        "inside", "contents of", "content of", "tell me about", "describe",
-        "what does", "how does", "print", "display", "see", "view", "examine",
-        "inspect", "analyze", "analyse", "grep", "find in", "search in",
-        "file has", "the file", "this file", "that file",
+        "read",
+        "check",
+        "look at",
+        "show me",
+        "explain",
+        "what's in",
+        "what is in",
+        "open",
+        "review",
+        "audit",
+        "walk through",
+        "walk me through",
+        "debug",
+        "inside",
+        "contents of",
+        "content of",
+        "tell me about",
+        "describe",
+        "what does",
+        "how does",
+        "print",
+        "display",
+        "see",
+        "view",
+        "examine",
+        "inspect",
+        "analyze",
+        "analyse",
+        "grep",
+        "find in",
+        "search in",
+        "file has",
+        "the file",
+        "this file",
+        "that file",
     )
 
     path_re = re.compile(
@@ -10320,7 +10349,10 @@ def auto_inject_context(user_text, enabled=True):
     has_read_intent = any(cue in low_text for cue in read_cues) or bool(symbols)
     # Path-shaped tokens with / or ~ are almost always meant to be looked at.
     has_path_literal = bool(
-        re.search(r"(?:^|\s)(?:~\/|\.\/|\.\.\/|\/[A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,8})\b", user_text)
+        re.search(
+            r"(?:^|\s)(?:~\/|\.\/|\.\.\/|\/[A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,8})\b",
+            user_text,
+        )
     )
     if not (has_read_intent or has_path_literal or _is_whole_file_request(low_text)):
         return ("", meta)
@@ -10457,7 +10489,17 @@ def _auto_context_search_dirs():
     requirements.txt at the project root."""
     dirs = []
     cwd = Path.cwd()
-    root_markers = {".git", "pyproject.toml", "setup.py", "setup.cfg", "package.json", "requirements.txt", "README.md", "README", ".claude"}
+    root_markers = {
+        ".git",
+        "pyproject.toml",
+        "setup.py",
+        "setup.cfg",
+        "package.json",
+        "requirements.txt",
+        "README.md",
+        "README",
+        ".claude",
+    }
     # Walk up from cwd looking for a project root
     cur = cwd
     project_root = None
@@ -10474,6 +10516,8 @@ def _auto_context_search_dirs():
     if cwd not in dirs:
         dirs.append(cwd)
     return dirs
+
+
 def load_memory():
     try:
         return MEMORY_FILE.read_text().strip()
@@ -26097,7 +26141,9 @@ def main():
                         else:
                             # audit failed OR draft waiting for approval
                             print(f"\n{_msg}\n")
-                            if _details.get("approved") is False and _details.get("audit", {}).get("passed"):
+                            if _details.get("approved") is False and _details.get(
+                                "audit", {}
+                            ).get("passed"):
                                 print(
                                     f"  {D}Approve? Type 'yes' to save to "
                                     f"~/.master_ai_skills/{_details.get('name')}/{X}"
@@ -26109,9 +26155,7 @@ def main():
                                         transcript_path=_transcript,
                                         auto_approve=True,
                                     )
-                                    print(
-                                        f"  {G if _saved2 else Y}{_msg2}{X}"
-                                    )
+                                    print(f"  {G if _saved2 else Y}{_msg2}{X}")
                                 else:
                                     print(f"  {Y}skill creation cancelled{X}")
                 elif _sub == "auto-author":
@@ -26125,14 +26169,14 @@ def main():
                         print(f"  {Y}auto-author disabled{X}")
                     elif _arg == "status":
                         _on = _sk.get_auto_author_enabled()
-                        print(
-                            f"  auto-author is {'enabled' if _on else 'disabled'}{X}"
-                        )
+                        print(f"  auto-author is {'enabled' if _on else 'disabled'}{X}")
                     elif _arg == "now":
                         # One-shot manual trigger
                         _draft = _sk.propose_auto_skill()
                         if _draft is None:
-                            print(f"  {D}no strong skill candidate found in recent sessions{X}")
+                            print(
+                                f"  {D}no strong skill candidate found in recent sessions{X}"
+                            )
                         else:
                             _d = _draft
                             _transcript_for_save = (
@@ -26145,7 +26189,9 @@ def main():
                                 f" ({'saved' if _d.approved else 'draft'}){X}\n"
                             )
                             print(f"  low-risk: {_d.low_risk}")
-                            print(f"  audit: {'PASS' if _d.audit.get('passed') else 'FAIL'}")
+                            print(
+                                f"  audit: {'PASS' if _d.audit.get('passed') else 'FAIL'}"
+                            )
                             for r in _d.audit.get("reasons", []):
                                 print(f"    ✗ {r}")
                             for w in _d.audit.get("warnings", [])[:3]:
@@ -26159,16 +26205,14 @@ def main():
                                 if _answer in ("yes", "y"):
                                     _saved3, _msg3, _ = _sk.create_skill(
                                         _d.name,
-                                        transcript_path=str(_d.skill_dir / ".." / "transcript.chat"),
+                                        transcript_path=str(
+                                            _d.skill_dir / ".." / "transcript.chat"
+                                        ),
                                         auto_approve=True,
                                     )
-                                    print(
-                                        f"  {G if _saved3 else Y}{_msg3}{X}"
-                                    )
+                                    print(f"  {G if _saved3 else Y}{_msg3}{X}")
                     else:
-                        print(
-                            f"  {W}usage: skill auto-author [on|off|status|now]{X}"
-                        )
+                        print(f"  {W}usage: skill auto-author [on|off|status|now]{X}")
                 else:
                     print(
                         f"  {W}usage: skill [browse [source]|install <source> <id>|run <name> [json]|resume <name> <session-id>|audit <name>|improve <name>|create <name> [transcript]|auto-author [on|off|status|now]]{X}"
@@ -26192,7 +26236,9 @@ def main():
                 _rest = _parts[2:]
                 if _sub in ("", "start"):
                     _r = _tutor.start_learning()
-                    print(f"  {G if _r['status'] == 'created' else Y}{_r['message']}{X}")
+                    print(
+                        f"  {G if _r['status'] == 'created' else Y}{_r['message']}{X}"
+                    )
                 elif _sub == "next":
                     _r = _tutor.next_lesson()
                     if _r["status"] == "lesson":
@@ -26237,7 +26283,7 @@ def main():
                             for i, q in enumerate(_r["questions"][:5], 1):
                                 print(f"\n  {i}. {q['question']}")
                                 for opt_i, opt in enumerate(q.get("options", [])):
-                                    print(f"     {chr(65+opt_i)}. {opt}")
+                                    print(f"     {chr(65 + opt_i)}. {opt}")
                         else:
                             print(f"  {Y}{_r.get('message', 'quiz failed')}{X}")
                 elif _sub == "record":
@@ -26248,7 +26294,9 @@ def main():
                     else:
                         _note = " ".join(_rest[3:]) if len(_rest) > 3 else ""
                         _r = _tutor.record_lesson(_rest[0], _rest[1], _rest[2], _note)
-                        print(f"  {G}{_r['status']}: {_r['phase']}/{_r['lesson']} = {_r['score']}{X}")
+                        print(
+                            f"  {G}{_r['status']}: {_r['phase']}/{_r['lesson']} = {_r['score']}{X}"
+                        )
                 elif _sub == "speak":
                     _text = " ".join(_rest)
                     if not _text:
@@ -26273,17 +26321,17 @@ def main():
                             print(f"  {Y}no current lesson found.{X}")
                         else:
                             _chunks = _r.get("tts_chunks", [])
-                            print(f"\n  {C}Reading {_r['title']} ({len(_chunks)} chunks)...{X}")
+                            print(
+                                f"\n  {C}Reading {_r['title']} ({len(_chunks)} chunks)...{X}"
+                            )
                             for i in range(len(_chunks)):
                                 _rr = _tutor.read_aloud(_r, chunk_index=i)
-                                print(
-                                    f"  {G}chunk {i+1}/{len(_chunks)} spoken.{X}"
-                                )
+                                print(f"  {G}chunk {i + 1}/{len(_chunks)} spoken.{X}")
                     else:
                         _rr = _tutor.read_aloud(chunk_index=_chunk)
                         if _rr.get("status") == "spoken":
                             print(
-                                f"\n  {C}Reading chunk {_rr['chunk_index']+1}/{_rr['total_chunks']} "
+                                f"\n  {C}Reading chunk {_rr['chunk_index'] + 1}/{_rr['total_chunks']} "
                                 f"of {_rr['title']}...{X}"
                             )
                             print(f"  {D}{_rr['chunk_text']}{X}")

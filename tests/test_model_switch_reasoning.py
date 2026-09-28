@@ -1,19 +1,30 @@
 """
 Integration tests for model switch with reasoning effort.
 """
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
-from scripts.model_switch import switch_model, handle_model_command
+
 from scripts.model_reasoning import ModelSwitchRequest, ReasoningEffort
+from scripts.model_switch import handle_model_command, switch_model
 
 
 class TestSwitchModelWithReasoning:
     @pytest.mark.asyncio
     async def test_switch_applies_reasoning_after_swap(self):
-        with patch("scripts.model_switch.agent.set_model", new_callable=AsyncMock) as mock_set_model, \
-             patch("scripts.model_switch.agent.get_session_id", return_value="test-session"), \
-             patch("scripts.model_switch.apply_reasoning_effort", return_value="\nReasoning effort: high (session)") as mock_apply:
-
+        with (
+            patch(
+                "scripts.model_switch.agent.set_model", new_callable=AsyncMock
+            ) as mock_set_model,
+            patch(
+                "scripts.model_switch.agent.get_session_id", return_value="test-session"
+            ),
+            patch(
+                "scripts.model_switch.apply_reasoning_effort",
+                return_value="\nReasoning effort: high (session)",
+            ) as mock_apply,
+        ):
             req = ModelSwitchRequest(
                 model="gpt-4",
                 provider="openai",
@@ -30,7 +41,9 @@ class TestSwitchModelWithReasoning:
 
     @pytest.mark.asyncio
     async def test_switch_without_reasoning(self):
-        with patch("scripts.model_switch.agent.set_model", new_callable=AsyncMock) as mock_set_model:
+        with patch(
+            "scripts.model_switch.agent.set_model", new_callable=AsyncMock
+        ) as mock_set_model:
             req = ModelSwitchRequest(model="gpt-4", provider="openai")
             result = await switch_model(req)
 
@@ -42,7 +55,9 @@ class TestSwitchModelWithReasoning:
 class TestHandleModelCommand:
     @pytest.mark.asyncio
     async def test_cli_command_with_reasoning_flag(self):
-        with patch("scripts.model_switch.switch_model", new_callable=AsyncMock) as mock_switch:
+        with patch(
+            "scripts.model_switch.switch_model", new_callable=AsyncMock
+        ) as mock_switch:
             mock_switch.return_value = MagicMock(
                 success=True,
                 model="gpt-4",
@@ -60,8 +75,12 @@ class TestHandleModelCommand:
 
     @pytest.mark.asyncio
     async def test_cli_command_global_scope(self):
-        with patch("scripts.model_switch.switch_model", new_callable=AsyncMock) as mock_switch:
-            mock_switch.return_value = MagicMock(success=True, model="gpt-4", provider="openai")
+        with patch(
+            "scripts.model_switch.switch_model", new_callable=AsyncMock
+        ) as mock_switch:
+            mock_switch.return_value = MagicMock(
+                success=True, model="gpt-4", provider="openai"
+            )
 
             await handle_model_command(["gpt-4", "--reasoning", "high", "--global"])
 
@@ -70,8 +89,12 @@ class TestHandleModelCommand:
 
     @pytest.mark.asyncio
     async def test_cli_command_once_scope(self):
-        with patch("scripts.model_switch.switch_model", new_callable=AsyncMock) as mock_switch:
-            mock_switch.return_value = MagicMock(success=True, model="gpt-4", provider="openai")
+        with patch(
+            "scripts.model_switch.switch_model", new_callable=AsyncMock
+        ) as mock_switch:
+            mock_switch.return_value = MagicMock(
+                success=True, model="gpt-4", provider="openai"
+            )
 
             await handle_model_command(["gpt-4", "--reasoning", "low", "--once"])
 

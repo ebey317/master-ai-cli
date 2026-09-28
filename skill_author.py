@@ -16,7 +16,6 @@ callers can pass an `extract_fn` callback.
 
 from __future__ import annotations
 
-import json
 import os
 import py_compile
 import re
@@ -24,12 +23,11 @@ import shutil
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from sandbox import run_sandboxed
-from skill_marketplace import validate_skill_dir
-from skill_runtime import SKILLS_ROOT, START, END, ABORT, INTERRUPT
 import session_harvester as harvester
+from skill_marketplace import validate_skill_dir
+from skill_runtime import END, SKILLS_ROOT
 
 # Patterns used to infer what a skill should DO from user turns.
 _CMD_RE = re.compile(
@@ -112,27 +110,35 @@ def _summarize_transcript(messages: list[dict[str, Any]]) -> dict[str, Any]:
     recoveries = []
     for t in ai_texts:
         if "not found" in t.lower() or "missing" in t.lower() or "error" in t.lower():
-            recoveries.append("If a required file or command is missing, report the exact path and ask whether to install it.")
+            recoveries.append(
+                "If a required file or command is missing, report the exact path and ask whether to install it."
+            )
             break
     if not recoveries:
-        recoveries.append("If a step fails, log the error and ask the operator before retrying.")
+        recoveries.append(
+            "If a step fails, log the error and ask the operator before retrying."
+        )
 
     # Parameters: anything that looks like a variable value / path the user provided
     params = []
     for fp in file_paths[:5]:
-        params.append({
-            "name": fp.split("/")[-1].replace(".", "_"),
-            "type": "path",
-            "description": f"Path referenced in session: {fp}",
-            "required": False,
-        })
+        params.append(
+            {
+                "name": fp.split("/")[-1].replace(".", "_"),
+                "type": "path",
+                "description": f"Path referenced in session: {fp}",
+                "required": False,
+            }
+        )
     if not params:
-        params.append({
-            "name": "topic",
-            "type": "string",
-            "description": "The workflow topic or target",
-            "required": True,
-        })
+        params.append(
+            {
+                "name": "topic",
+                "type": "string",
+                "description": "The workflow topic or target",
+                "required": True,
+            }
+        )
 
     return {
         "name": name,
@@ -155,22 +161,24 @@ def _build_skill_md(spec: dict[str, Any]) -> str:
         f"({'required' if p.get('required') else 'optional'})"
         for p in spec["params"]
     )
-    steps_md = "\n".join(f"{i+1}. {s}" for i, s in enumerate(spec["steps"]))
+    steps_md = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(spec["steps"]))
     recoveries_md = "\n".join(f"- {r}" for r in spec["recoveries"])
-    tools_md = ", ".join(f"`{t}`" for t in spec["tools"][:10]) or "_inferred from session_"
+    tools_md = (
+        ", ".join(f"`{t}`" for t in spec["tools"][:10]) or "_inferred from session_"
+    )
 
     return f"""---
-name: {spec['name']}
-description: {spec['goal']}
+name: {spec["name"]}
+description: {spec["goal"]}
 version: 0.1.0
 author: sensei-auto-author
 auto_generated: true
 ---
 
-# {spec['name'].replace('-', ' ').title()}
+# {spec["name"].replace("-", " ").title()}
 
 ## Goal
-{spec['goal']}
+{spec["goal"]}
 
 ## Parameters
 {params_md}
@@ -227,9 +235,9 @@ def _build_recipe_py(spec: dict[str, Any]) -> str:
         )
 
     recipe = f"""#!/usr/bin/env python3
-\"\"\"Auto-generated recipe for skill: {spec['name']}
+\"\"\"Auto-generated recipe for skill: {spec["name"]}
 
-Goal: {spec['goal']}
+Goal: {spec["goal"]}
 \"\"\"
 
 import json

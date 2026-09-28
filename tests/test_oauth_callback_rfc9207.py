@@ -5,7 +5,8 @@ through callback relay paths, matching the behavior required by MCP 2.x.
 """
 
 import pytest
-from scripts.oauth_callback import parse_oauth_callback, OAuthCallbackResult
+
+from scripts.oauth_callback import parse_oauth_callback
 
 
 class TestRFC9207IssParameter:
@@ -15,7 +16,7 @@ class TestRFC9207IssParameter:
         """Cloudflare/Resend send iss; it must be extracted and preserved."""
         url = "http://localhost:1234/callback?code=abc123&state=st-1&iss=https://mcp.cloudflare.com"
         result = parse_oauth_callback(url)
-        
+
         assert result.code == "abc123"
         assert result.state == "st-1"
         assert result.error is None
@@ -25,7 +26,7 @@ class TestRFC9207IssParameter:
         """Providers not advertising RFC 9207 omit iss; must round-trip as None."""
         url = "http://localhost:1234/callback?code=abc123&state=st-1"
         result = parse_oauth_callback(url)
-        
+
         assert result.code == "abc123"
         assert result.state == "st-1"
         assert result.error is None
@@ -35,7 +36,7 @@ class TestRFC9207IssParameter:
         """Error responses must also include iss=None for consistent shape."""
         url = "http://localhost:1234/callback?error=access_denied&state=st-1"
         result = parse_oauth_callback(url)
-        
+
         assert result.code is None
         assert result.state == "st-1"
         assert result.error == "access_denied"
@@ -44,7 +45,7 @@ class TestRFC9207IssParameter:
     def test_unparseable_url_returns_error_with_iss_none(self):
         """Malformed URLs must not crash; iss=None preserves return shape."""
         result = parse_oauth_callback("not-a-valid-url")
-        
+
         assert result.code is None
         assert result.state is None
         assert result.error == "unparseable callback URL"
@@ -54,7 +55,7 @@ class TestRFC9207IssParameter:
         """Legacy call sites using tuple unpacking receive iss in third position."""
         url = "http://localhost:1234/callback?code=abc&state=xyz&iss=https://auth.example.com"
         code, state, iss = parse_oauth_callback(url)
-        
+
         assert code == "abc"
         assert state == "xyz"
         assert iss == "https://auth.example.com"
@@ -63,7 +64,7 @@ class TestRFC9207IssParameter:
         """Legacy call sites get None for iss when provider omits it."""
         url = "http://localhost:1234/callback?code=abc&state=xyz"
         code, state, iss = parse_oauth_callback(url)
-        
+
         assert code == "abc"
         assert state == "xyz"
         assert iss is None
@@ -80,14 +81,14 @@ class TestRFC9207IssParameter:
         encoded_iss = "https%3A%2F%2Fauth.example.com%2Fpath%3Fquery%3Dvalue"
         url = f"http://localhost/callback?code=abc&state=xyz&iss={encoded_iss}"
         result = parse_oauth_callback(url)
-        
+
         assert result.iss == "https://auth.example.com/path?query=value"
 
     def test_extra_parameters_ignored(self):
         """Unknown query parameters must not interfere with known ones."""
         url = "http://localhost/callback?code=abc&state=xyz&iss=https://a.com&extra=ignored&foo=bar"
         result = parse_oauth_callback(url)
-        
+
         assert result.code == "abc"
         assert result.state == "xyz"
         assert result.iss == "https://a.com"
@@ -102,7 +103,7 @@ class TestBackwardCompatibility:
         # This simulates a call site that only knows about code/state
         url = "http://localhost/callback?code=abc&state=xyz"
         result = parse_oauth_callback(url)
-        
+
         # Old-style: code, state = result (would fail with 3-tuple)
         # New-style: code, state, iss = result (works, iss=None)
         code, state, iss = result
@@ -112,8 +113,10 @@ class TestBackwardCompatibility:
 
     def test_attribute_access_preferred_over_indexing(self):
         """Named attributes are clearer and safer than tuple indexing."""
-        result = parse_oauth_callback("http://localhost/callback?code=abc&state=xyz&iss=https://a.com")
-        
+        result = parse_oauth_callback(
+            "http://localhost/callback?code=abc&state=xyz&iss=https://a.com"
+        )
+
         assert result.code == "abc"
         assert result.state == "xyz"
         assert result.iss == "https://a.com"
