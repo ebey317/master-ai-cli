@@ -24177,6 +24177,43 @@ def _strip_skill_frontmatter(text):
     return text
 
 
+def _restore_reload_carry(path=None):
+    """Consume the pending reload-carry note and return it, or None.
+
+    When master_ai.py live-reloads it writes the operator's in-flight
+    instruction to ~/.master_ai_reload_carry and restarts; on the way back
+    up this hands that note to the new process.
+
+    Extracted 2026-09-28 out of main()'s startup block so the behaviour is
+    callable and testable -- as an inline block it had no seam, which is
+    why the unlink-on-failed-read fix that shipped alongside it could only
+    be verified by inspection.
+
+    A carry older than RESUME_FLAG_MAX_AGE is discarded: a stale flag must
+    not revive a session from hours ago. The file is unlinked even when the
+    read raises, otherwise an unreadable carry file survives and re-logs
+    AUTO_RELOAD_CARRY_RESTORE_ERROR on every startup until someone deletes
+    it by hand. Never raises -- a bad carry file must not stop startup.
+    """
+    carry = Path(path) if path is not None else _RELOAD_CARRY_FILE
+    try:
+        if not carry.exists():
+            return None
+        age = time.time() - carry.stat().st_mtime
+        if age > RESUME_FLAG_MAX_AGE:
+            log(f"CARRY_EXPIRED: age={age:.0f}s > {RESUME_FLAG_MAX_AGE}s, discarding")
+            carry.unlink(missing_ok=True)
+            return None
+        try:
+            carried = carry.read_text()
+        finally:
+            carry.unlink(missing_ok=True)
+        return carried or None
+    except Exception as e:
+        log(f"AUTO_RELOAD_CARRY_RESTORE_ERROR: {e}")
+        return None
+
+
 def _reload_if_code_changed(history, pending_cmd):
     """If master_ai.py's own file has changed on disk since this process
     started, transparently save+restart (execvp) instead of continuing to
@@ -24714,28 +24751,9 @@ def main():
             "purpose. Don't ask what to do next unless the summary above "
             "is genuinely ambiguous about what was being discussed."
         )
-    try:
-        if _RELOAD_CARRY_FILE.exists():
-            _carry_age = time.time() - _RELOAD_CARRY_FILE.stat().st_mtime
-            if _carry_age > RESUME_FLAG_MAX_AGE:
-                log(
-                    f"CARRY_EXPIRED: age={_carry_age:.0f}s > "
-                    f"{RESUME_FLAG_MAX_AGE}s, discarding"
-                )
-                _RELOAD_CARRY_FILE.unlink(missing_ok=True)
-            else:
-                try:
-                    carried = _RELOAD_CARRY_FILE.read_text()
-                finally:
-                    # Remove even when the read failed. Otherwise an
-                    # unreadable carry file survives and re-logs
-                    # AUTO_RELOAD_CARRY_RESTORE_ERROR on every startup
-                    # until someone deletes it by hand.
-                    _RELOAD_CARRY_FILE.unlink(missing_ok=True)
-                if carried:
-                    globals()["PENDING_USER_NOTE"] = carried
-    except Exception as e:
-        log(f"AUTO_RELOAD_CARRY_RESTORE_ERROR: {e}")
+    _carried = _restore_reload_carry()
+    if _carried:
+        globals()["PENDING_USER_NOTE"] = _carried
 
     # Save on any exit — force-close, terminal close, SIGTERM. Also summarize
     # so the session shows up in `sessions list` / `sessions resume` without
