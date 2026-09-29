@@ -15,9 +15,15 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+try:
+    # mcp >= 2.0: FastMCP was renamed to MCPServer. Importing the old name
+    # raises ModuleNotFoundError with a migration message, so this file could
+    # not be imported at all against the installed SDK.
+    from mcp.server.mcpserver import MCPServer as _Server
+except ImportError:  # pragma: no cover - mcp 1.x
+    from mcp.server.fastmcp import FastMCP as _Server
 
-mcp = FastMCP("web_search")
+mcp = _Server("web_search")
 
 
 def _load_key(name: str, env_fallback: str) -> str | None:
