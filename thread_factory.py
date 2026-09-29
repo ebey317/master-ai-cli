@@ -1719,14 +1719,21 @@ def count_live_managed_repos(
 
 def pick_replacement_target(managed_repos: list[GithubRepo]) -> GithubRepo | None:
     """The least recently pushed managed repo, or None. The
-    `is_thread_factory_managed` filter is INSIDE the min(), not applied by
-    the caller, so no caller can accidentally skip it -- an unmanaged repo
-    can never be returned no matter how old it is."""
-    return min(
-        (r for r in managed_repos if r.is_thread_factory_managed),
-        key=lambda r: (r.pushed_at, r.name),
-        default=None,
-    )
+    `is_thread_factory_managed` filter is applied before the empty-check
+    below, not left to the caller, so no caller can accidentally skip it --
+    an unmanaged repo can never be returned no matter how old it is.
+
+    Filters into a concrete list and checks emptiness explicitly rather than
+    `min(..., default=None)`: mypy 1.10.0 (this repo's pinned pre-commit
+    version) cannot prove the `key` lambda is never applied to `default`'s
+    value in that form and flags a real union-attr error on `r.pushed_at` --
+    a stub-resolution limitation in that version, not a bug, but pinned is
+    pinned, so the code is written to be unambiguous to it either way.
+    """
+    candidates = [r for r in managed_repos if r.is_thread_factory_managed]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda r: (r.pushed_at, r.name))
 
 
 def verify_pushed_and_retrievable(
