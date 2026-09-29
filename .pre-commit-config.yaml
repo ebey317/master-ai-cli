@@ -23,6 +23,14 @@ repos:
     rev: v0.10.0
     hooks:
       - id: shellcheck
+        # 2026-09-28: the hook's default "docker_image" language has no
+        # docker on this box, and its "entry" is the docker image name
+        # itself (koalaman/shellcheck:v0.10.0), not a runnable command --
+        # overriding language alone made pre-commit try to exec that image
+        # string as a binary. shellcheck is already installed locally
+        # (~/.local/bin/shellcheck); override entry to the real binary too.
+        language: system
+        entry: shellcheck
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v1.10.0
     hooks:

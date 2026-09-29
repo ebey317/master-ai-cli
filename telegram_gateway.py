@@ -29,7 +29,7 @@ import threading
 import time
 from pathlib import Path
 
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -376,7 +376,22 @@ def main():
             "Unhandled error processing update %r", update, exc_info=context.error
         )
 
-    app = Application.builder().token(token).build()
+    async def post_init(app: Application) -> None:
+        # 2026-09-26: the command handlers below all worked fine when typed,
+        # but Telegram's own "/" autocomplete menu was empty -- nobody had
+        # ever called setMyCommands, the one-time registration that tells
+        # the client UI what to suggest. Functionally complete, just not
+        # discoverable without already knowing /help existed.
+        await app.bot.set_my_commands(
+            [
+                BotCommand("help", "show available commands"),
+                BotCommand("status", "gateway uptime + current model"),
+                BotCommand("model", "show or switch the answering model"),
+                BotCommand("new", "start a fresh Sensei REPL session"),
+            ]
+        )
+
+    app = Application.builder().token(token).post_init(post_init).build()
     app.add_handler(CommandHandler(["help", "start"], help_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("model", model_cmd))
