@@ -53,29 +53,104 @@ def discover() -> dict:
     # Commands to probe for existence and version
     probes = {
         "Linux": [
-            "bash", "sh", "zsh",
-            "which", "whereis", "find", "locate", "grep", "awk", "sed",
-            "ls", "cat", "cp", "mv", "rm", "mkdir", "chmod", "chown",
-            "ps", "top", "htop", "kill", "pgrep",
-            "git", "python3", "python", "node", "npm",
-            "apt", "apt-get", "dpkg", "snap", "flatpak", "yum", "dnf", "pacman",
-            "curl", "wget", "ssh", "scp", "rsync",
-            "xdg-open", "notify-send",
+            "bash",
+            "sh",
+            "zsh",
+            "which",
+            "whereis",
+            "find",
+            "locate",
+            "grep",
+            "awk",
+            "sed",
+            "ls",
+            "cat",
+            "cp",
+            "mv",
+            "rm",
+            "mkdir",
+            "chmod",
+            "chown",
+            "ps",
+            "top",
+            "htop",
+            "kill",
+            "pgrep",
+            "git",
+            "python3",
+            "python",
+            "node",
+            "npm",
+            "apt",
+            "apt-get",
+            "dpkg",
+            "snap",
+            "flatpak",
+            "yum",
+            "dnf",
+            "pacman",
+            "curl",
+            "wget",
+            "ssh",
+            "scp",
+            "rsync",
+            "xdg-open",
+            "notify-send",
         ],
         "Darwin": [
-            "bash", "sh", "zsh",
-            "which", "whereis", "find", "mdfind", "grep", "awk", "sed",
-            "ls", "cat", "cp", "mv", "rm", "mkdir", "chmod", "chown",
-            "ps", "top", "htop", "kill", "pgrep",
-            "git", "python3", "python", "node", "npm",
-            "brew", "port",
-            "curl", "wget", "ssh", "scp", "rsync",
-            "open", "osascript",
+            "bash",
+            "sh",
+            "zsh",
+            "which",
+            "whereis",
+            "find",
+            "mdfind",
+            "grep",
+            "awk",
+            "sed",
+            "ls",
+            "cat",
+            "cp",
+            "mv",
+            "rm",
+            "mkdir",
+            "chmod",
+            "chown",
+            "ps",
+            "top",
+            "htop",
+            "kill",
+            "pgrep",
+            "git",
+            "python3",
+            "python",
+            "node",
+            "npm",
+            "brew",
+            "port",
+            "curl",
+            "wget",
+            "ssh",
+            "scp",
+            "rsync",
+            "open",
+            "osascript",
         ],
         "Windows": [
-            "powershell", "cmd", "where", "findstr", "dir", "tasklist", "taskkill",
-            "git", "python", "node", "npm",
-            "winget", "choco", "scoop",
+            "powershell",
+            "cmd",
+            "where",
+            "findstr",
+            "dir",
+            "tasklist",
+            "taskkill",
+            "git",
+            "python",
+            "node",
+            "npm",
+            "winget",
+            "choco",
+            "scoop",
         ],
     }
 
@@ -86,24 +161,49 @@ def discover() -> dict:
 
     # Package managers detected
     pkg_managers = {
-        "Linux": ["apt", "apt-get", "dpkg", "snap", "flatpak", "yum", "dnf", "pacman", "zypper"],
+        "Linux": [
+            "apt",
+            "apt-get",
+            "dpkg",
+            "snap",
+            "flatpak",
+            "yum",
+            "dnf",
+            "pacman",
+            "zypper",
+        ],
         "Darwin": ["brew", "port"],
         "Windows": ["winget", "choco", "scoop"],
     }
     caps["package_managers"] = [
-        pm for pm in pkg_managers.get(os_name, [])
-        if shutil.which(pm)
+        pm for pm in pkg_managers.get(os_name, []) if shutil.which(pm)
     ]
 
     # Terminal emulators / desktops (Linux-only quick scan)
     if os_name == "Linux":
-        for term in ["gnome-terminal", "konsole", "xfce4-terminal", "lxterminal", "alacritty", "kitty", "xterm"]:
+        for term in [
+            "gnome-terminal",
+            "konsole",
+            "xfce4-terminal",
+            "lxterminal",
+            "alacritty",
+            "kitty",
+            "xterm",
+        ]:
             if shutil.which(term):
                 caps["terminal_emulators"].append(term)
         # Desktop-environment helpers
-        for de_cmd in ["xdg-open", "xdg-mime", "xdg-settings", "notify-send",
-                       "gnome-control-center", "cinnamon-settings", "xfce4-settings-manager",
-                       "plasma-systemsettings5", "mate-control-center"]:
+        for de_cmd in [
+            "xdg-open",
+            "xdg-mime",
+            "xdg-settings",
+            "notify-send",
+            "gnome-control-center",
+            "cinnamon-settings",
+            "xfce4-settings-manager",
+            "plasma-systemsettings5",
+            "mate-control-center",
+        ]:
             if shutil.which(de_cmd):
                 caps["common_commands"][de_cmd] = {"path": shutil.which(de_cmd)}
 
@@ -146,11 +246,15 @@ def format_prompt_block(caps: dict) -> str:
     if os_name == "Linux":
         lines.append("- Find executable: `which <name>` or `whereis <name>`")
         lines.append("- Find files: `find /usr -name '<name>*'` or `locate <name>`")
-        lines.append("- List packages: `dpkg -L <package>` / `rpm -ql <package>` / `pacman -Ql <package>`")
+        lines.append(
+            "- List packages: `dpkg -L <package>` / `rpm -ql <package>` / `pacman -Ql <package>`"
+        )
         lines.append("- Search installed: `apt list --installed | grep <name>`")
     elif os_name == "Darwin":
         lines.append("- Find executable: `which <name>` or `whereis <name>`")
-        lines.append("- Find files: `mdfind 'kMDItemFSName == \"*<name>*\"'` or `find / -name '<name>*'`")
+        lines.append(
+            "- Find files: `mdfind 'kMDItemFSName == \"*<name>*\"'` or `find / -name '<name>*'`"
+        )
         lines.append("- List apps: `ls /Applications | grep <name>`")
         lines.append("- Homebrew: `brew list | grep <name>`")
     elif os_name == "Windows":
@@ -159,13 +263,21 @@ def format_prompt_block(caps: dict) -> str:
         lines.append("- Packages: `winget list | findstr <name>`")
 
     if caps.get("package_managers"):
-        lines.append(f"Available package managers: {', '.join(caps['package_managers'])}")
+        lines.append(
+            f"Available package managers: {', '.join(caps['package_managers'])}"
+        )
 
     if caps.get("terminal_emulators"):
-        lines.append(f"Available terminal emulators: {', '.join(caps['terminal_emulators'])}")
+        lines.append(
+            f"Available terminal emulators: {', '.join(caps['terminal_emulators'])}"
+        )
 
-    lines.append("Use `xdg-open` (Linux), `open` (macOS), or `start` (Windows) to open files/URLs in the default desktop app.")
-    lines.append("If a needed command is missing, use Bash to install it via the native package manager.")
+    lines.append(
+        "Use `xdg-open` (Linux), `open` (macOS), or `start` (Windows) to open files/URLs in the default desktop app."
+    )
+    lines.append(
+        "If a needed command is missing, use Bash to install it via the native package manager."
+    )
     lines.append("Do not open `file://` URLs in the browser unless explicitly asked.")
     return "\n".join(lines)
 

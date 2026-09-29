@@ -7395,7 +7395,11 @@ def _inject_system_capabilities(force=False):
     last good block rather than dropping the capability entirely.
     """
     now = time.time()
-    if not force and _SYS_CAP_CACHE["block"] and (now - _SYS_CAP_CACHE["ts"] < _SYS_CAP_TTL_S):
+    if (
+        not force
+        and _SYS_CAP_CACHE["block"]
+        and (now - _SYS_CAP_CACHE["ts"] < _SYS_CAP_TTL_S)
+    ):
         return _SYS_CAP_CACHE["block"]
     try:
         import system_capability_scan as _scan
@@ -7422,7 +7426,10 @@ def _inject_identity(messages):
     prefix = _system_prefix()
     if messages and messages[0].get("role") == "system":
         return [
-            {"role": "system", "content": prefix + "\n\n" + messages[0].get("content", "")}
+            {
+                "role": "system",
+                "content": prefix + "\n\n" + messages[0].get("content", ""),
+            }
         ] + list(messages[1:])
     return [{"role": "system", "content": prefix}] + list(messages)
 
