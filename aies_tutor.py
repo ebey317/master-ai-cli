@@ -353,6 +353,10 @@ def start_learning(
     if build_goal:
         mission_line += f" Goal: {build_goal}."
 
+    # Hoisted so the f-string below stays valid on Python 3.10:
+    # a backslash escape inside an f-string expression part is a
+    # SyntaxError before 3.12, and setup.py declares >=3.10.
+    nl = "\n"
     text = f"""# My AI Engineering Path
 <!-- Managed by the ai-engineering-from-scratch learning skills.
      Repo: https://github.com/rohitg00/ai-engineering-from-scratch -->
@@ -367,7 +371,7 @@ def start_learning(
 - Pace: {pace}/week
 
 ## Path
-{"\n".join(path_table)}
+{nl.join(path_table)}
 
 ## Progress log
 | Date | Lesson | Quiz | Note |

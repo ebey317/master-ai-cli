@@ -76,6 +76,10 @@ setup(
         "dev": [
             "pytest>=7.0.0",
             "pytest-cov>=4.0.0",
+            # test_mcp_web_search.py / test_mcp_call.py exercise the MCP
+            # server surface against the real SDK; CI installs .[dev] and
+            # would otherwise collect-error on the missing module.
+            "mcp>=1.2.0",
         ],
     },
     entry_points={

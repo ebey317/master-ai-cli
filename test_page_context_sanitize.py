@@ -592,6 +592,13 @@ class Test9_BrowserEvalJsAbsenceGuard(unittest.TestCase):
                 r"chrome\.scripting\.executeScript\b",
                 content,
             ):
+                # 2026-09-29: skip matches inside JS line comments — this
+                # guard pins CALL SITES to the files: form; a prose comment
+                # documenting why the arbitrary-code forms are avoided is
+                # not a call site and must not trip the guard.
+                line_start = content.rfind("\n", 0, m.start()) + 1
+                if content[line_start:m.start()].strip().startswith("//"):
+                    continue
                 window = content[m.start() : m.start() + WINDOW]
                 self.assertIn(
                     "files:",

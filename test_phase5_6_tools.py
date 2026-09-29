@@ -117,10 +117,19 @@ class Phase55PlanBlockSchemaTests(unittest.TestCase):
         with (REPO / "master_ai.py").open(encoding="utf-8") as f:
             src = f.read()
         self.assertIn("PLAN-BLOCK STRUCTURED SCHEMA", src)
-        # Source is Python with escaped quotes — match the escaped form.
-        self.assertIn('\\"domains\\"', src)
-        self.assertIn('\\"steps\\"', src)
-        self.assertIn('\\"irreversible\\"', src)
+        # 2026-09-29: the schema teaching moved from double-quoted strings
+        # (escaped \"domains\") to single-quoted ones (plain "domains"), so
+        # pinning the escaped form broke while the teaching itself stayed.
+        # Match each key with optional escapes so the guard tracks the
+        # teaching, not the string-quoting style du jour.
+        import re as _re
+
+        for key in ("domains", "steps", "irreversible"):
+            self.assertRegex(
+                src,
+                _re.compile(r'\\?"' + key + r'\\?"\s*:'),
+                f'schema teaching must define key "{key}"',
+            )
 
 
 class Phase56HookTests(unittest.TestCase):

@@ -23,10 +23,11 @@ taking the run with them. The catalog-independent checks always run.
 
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, "/home/elijah/master-ai-cli")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import master_ai as m  # noqa: E402
 
 

@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-57%20files-green)](tests/)
+[![Tests](https://img.shields.io/badge/tests-69%20files-green)](tests/)
 [![Platform](https://img.shields.io/badge/Platform-Linux-blue)]()
 
 **Two surfaces, one brain:**
