@@ -1880,8 +1880,20 @@ def _attach_text_file(path, history):
         print(f"  {D}reason: {_why}{X}")
         return False
     suffix = p.suffix.lower()
+
+    # Documents are binary by design, so the checks below would reject every
+    # .docx, .xlsx, and .pdf with "does not look like a text file" and tell
+    # the user to convert it by hand -- using software already installed.
+    # Route recognized document types to the document reader instead. The
+    # READ fence above still runs first, so this does not widen what can be
+    # read; it only changes what "reading" means for these extensions.
+    import doc_reader as _doc
+
+    is_doc = _doc.is_document(p)
+
     if (
-        suffix not in _ATTACHMENT_SUFFIXES
+        not is_doc
+        and suffix not in _ATTACHMENT_SUFFIXES
         and suffix not in _ATTACHMENT_DOTFILE_SUFFIXES
     ):
         # Reject obvious binaries, but allow extensionless/dotfile text files.
@@ -1906,7 +1918,16 @@ def _attach_text_file(path, history):
             )
             return False
     try:
-        content = p.read_text(errors="replace")
+        if is_doc:
+            content = _doc.read_document(p, max_chars=ATTACHMENT_MAX_CHARS)
+            # read_document reports failure as text, never by raising, so the
+            # model can never mistake a failed extraction for an empty
+            # document. Surface it to the user too -- a silent failure here
+            # would look like a successful read of a blank file.
+            if content.startswith("[") and "could not read" in content[:120]:
+                print(f"  {Y}document not readable: {content[:200]}{X}")
+        else:
+            content = p.read_text(errors="replace")
     except Exception as e:
         print(f"  {R}attachment read failed: {e}{X}")
         return False
