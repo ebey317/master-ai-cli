@@ -124,8 +124,15 @@ fi
 # Ollama + model inventory
 case "$ollama_state" in
     "not installed")
-        missing_lines+=("Ollama NOT installed — required. Install: https://ollama.com/download")
-        tier="red"; tier_color="${BR:-}"
+        # 2026-09-27: was "required" + tier="red". Red is a BLOCKER — in
+        # POST_INSTALL mode red exits 1 and pauses the whole install, and
+        # missing Ollama used to mean exactly that. Elijah: "make it to
+        # where it's not so dependent upon the local model. make the local
+        # model an option." No Ollama just means the free/private lane is
+        # unavailable; the cloud lanes (and their free fallbacks) still run,
+        # so this is yellow — degraded, not broken.
+        missing_lines+=("Ollama not installed — OPTIONAL. Cloud lanes still work. Install for the free/private lane: https://ollama.com/download")
+        [ "$tier" = "green" ] && { tier="yellow"; tier_color="${BY:-}"; }
         ;;
     "installed (not running)")
         missing_lines+=("Ollama installed but not running. Start: systemctl start ollama (or: ollama serve)")

@@ -112,7 +112,7 @@ case "$OS" in
 esac
 echo ""
 echo -e "  ${BW}This installer sets up:${X}"
-echo -e "    ${C}·${X} Ollama (local model runtime) ${BR}— REQUIRED${X}"
+echo -e "    ${C}·${X} Ollama (local model runtime) ${D}— recommended, optional${X}"
 echo -e "    ${C}·${X} Master AI models (~15 GB, pulled once)"
 echo -e "    ${C}·${X} Auto-start services (platform-appropriate)"
 echo -e "    ${C}·${X} TTS voice (Piper)"
@@ -159,12 +159,16 @@ if command -v ollama >/dev/null 2>&1; then
     echo -e "  ${BG}✅ Ollama already installed${X}"
 else
     ask_install "Ollama (local model runtime)" \
-        "The program that runs the AI models on your machine. Required — if you skip, install stops."
+        "The program that runs AI models on your machine. Recommended — free and private. Optional: skip it and the cloud lanes (and their free fallbacks) still work."
     if [ "$REPLY_CHOICE" = "no" ]; then
-        echo -e "  ${BR}❌ Ollama is required. Install cancelled.${X}"
-        echo -e "  ${D}   Run: bash $TARGET/install.sh  when ready.${X}"
-        exit 1
-    fi
+        # 2026-09-27: was "❌ Ollama is required. Install cancelled." + exit 1
+        # Elijah: "make it to where it's not so dependent upon the local
+        # model. make the local model an option." Declining local is a
+        # supported configuration, not a reason to abort the install.
+        echo -e "  ${Y}⚠  Skipping Ollama — continuing with cloud providers only.${X}"
+        echo -e "  ${D}   Local models stay available later: ollama pull qwen2.5:7b${X}"
+        echo -e "  ${D}   Or re-run: bash $TARGET/install.sh${X}"
+    else
     case "$OS" in
         linux|wsl)
             echo -e "  ${C}  Installing Ollama via official script...${X}"
@@ -188,6 +192,7 @@ else
             ;;
     esac
     log "Ollama installed"
+    fi
 fi
 fi
 
