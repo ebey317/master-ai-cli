@@ -462,29 +462,30 @@ launch_pupil() {
         echo -e "${R}  ❌ pupil.html not found at $html${X}"
         return 1
     fi
-    # Pupil needs Ollama (required provider), TTS (optional, for voice)
+    # Pupil prefers Ollama (free, local) but does not require it; TTS is
+    # optional and only affects voice. Both are preferences, not gates.
     if ! curl -s -m 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
         echo -e "${Y}  ⚠  Ollama not responding — attempting start...${X}"
         systemctl start ollama 2>/dev/null || true
         sleep 2
     fi
-    # Local-first gate: Pupil requires Ollama reachable + ≥1 local model.
-    # Without local, the value prop falls apart — a cloud-only user is
-    # better served by ChatGPT or Gemini directly. Refuse here.
+    # 2026-09-27: was a hard refusal (return 1) -- "Pupil requires local
+    # Ollama + at least one model." Elijah: "make it to where it's not so
+    # dependent upon the local model. make the local model an option." Local
+    # going down (or never being set up) is no longer a reason to block
+    # Pupil -- it launches on cloud providers instead. Mirrors the same
+    # warn-and-continue block in ~/scripts/pupil.sh; keep the two in sync so
+    # a re-sync from this repo can't reintroduce the block.
     if ! curl -s -m 2 http://localhost:11434/api/tags >/dev/null 2>&1 \
        || ! ollama list 2>/dev/null | awk 'NR>1{print $1}' | grep -q .; then
         echo ""
-        echo -e "${R}  ❌ Pupil requires local Ollama + at least one model.${X}"
-        echo -e "${Y}     Either Ollama isn't running, or no models are pulled.${X}"
+        echo -e "${Y}  ⚠  Local Ollama not available — continuing on cloud providers only.${X}"
+        echo -e "     Either Ollama isn't running, or no models are pulled."
         echo ""
-        echo -e "  Pupil is for local-first runs. Without local, ChatGPT or"
-        echo -e "  Gemini will serve you better."
-        echo ""
-        echo -e "  ${BW}Set up local AI:${X}"
+        echo -e "  ${BW}To add local as an option:${X}"
         echo -e "    ${BG}·${X} ${BW}ollama pull qwen2.5:7b${X}  (the daily-driver brain)"
         echo -e "    ${BG}·${X} Or run option 19 (self-scan) for what your box can handle"
         echo ""
-        return 1
     fi
     if ! pgrep -f "tts_server.py" > /dev/null; then
         echo -e "${C}  Starting TTS server (for Pupil voice)...${X}"

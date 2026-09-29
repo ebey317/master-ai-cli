@@ -1,561 +1,728 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="black-belt">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#2266cc">
+  <meta name="theme-color" content="#08090a">
   <link rel="manifest" href="/pupil.webmanifest">
-  <title>Pupil - Master AI</title>
+  <title>Pupil IDE - Master AI</title>
   <style>
-    :root {
-      --ink: #102033;
-      --muted: #607087;
-      --paper: #f5f1e8;
-      --panel: #fffaf0;
-      --line: rgba(16, 32, 51, 0.16);
-      --blue: #2266cc;
-      --blue-dark: #123f82;
-      --plan: #cc0000;
-      --review: #c7761a;
-      --auto: #1a7a3a;
-      --shadow: 0 24px 60px rgba(16, 32, 51, 0.18);
-      --radius: 24px;
+    /* ─────────────────────────────────────────────────────────────
+       Pupil IDE — standalone product surface for the Master AI stack.
+       2026-09-26. Sibling product to Sensei (terminal) — Pupil is the
+       web IDE: chat + terminal + skills + models + status panels,
+       slash commands, 6 themes. Backend: stt_server.py (:8080).
+       Design language: Linear-class dark (popular-web-designs skill).
+       ───────────────────────────────────────────────────────────── */
+
+    /* ── THEMES (7) — martial arts belt system, rank order:
+       white → yellow → blue → green → purple → brown → black ── */
+    :root[data-theme="white-belt"] {
+      --bg: #f7f8fa; --panel: #ffffff; --surface: #f1f3f6; --hover: #e7eaef;
+      --text: #15171c; --text2: #343a46; --text3: #5d6572; --text4: #8b93a1;
+      --accent: #5b6472; --accent2: #0ea5e9; --accent3: #38bdf8;
+      --line: rgba(21,23,28,0.14); --line-subtle: rgba(21,23,28,0.08);
+      --soft: rgba(21,23,28,0.03); --soft2: rgba(21,23,28,0.07);
+      --user-bubble: rgba(91,100,114,0.10); --user-border: rgba(91,100,114,0.35);
+      --plan: #dc2626; --review: #b45309; --auto: #16a34a; --ok: #16a34a;
+      --backdrop: rgba(21,23,28,0.35);
+      --shadow: 0 1px 3px rgba(21,23,28,0.12);
       color-scheme: light;
     }
-
-    * {
-      box-sizing: border-box;
+    :root[data-theme="yellow-belt"] {
+      --bg: #131208; --panel: #1b190e; --surface: #262213; --hover: #332d1a;
+      --text: #faf7e8; --text2: #e8e2c8; --text3: #a89f7d; --text4: #77704f;
+      --accent: #eab308; --accent2: #facc15; --accent3: #fde047;
+      --line: rgba(250,247,232,0.10); --line-subtle: rgba(250,247,232,0.06);
+      --soft: rgba(250,247,232,0.03); --soft2: rgba(250,247,232,0.08);
+      --user-bubble: rgba(234,179,8,0.12); --user-border: rgba(234,179,8,0.3);
+      --plan: #ef4444; --review: #fb923c; --auto: #a3e635; --ok: #a3e635;
+      --backdrop: rgba(19,18,8,0.8);
+      --shadow: 0 1px 3px rgba(0,0,0,0.45);
+      color-scheme: dark;
+    }
+    :root[data-theme="blue-belt"] {
+      --bg: #090f19; --panel: #0f1826; --surface: #18243a; --hover: #20304e;
+      --text: #eaf1fb; --text2: #c9d8ee; --text3: #8ea3c0; --text4: #5f7291;
+      --accent: #3b82f6; --accent2: #60a5fa; --accent3: #93c5fd;
+      --line: rgba(234,241,251,0.10); --line-subtle: rgba(234,241,251,0.06);
+      --soft: rgba(234,241,251,0.03); --soft2: rgba(234,241,251,0.08);
+      --user-bubble: rgba(59,130,246,0.14); --user-border: rgba(59,130,246,0.3);
+      --plan: #f87171; --review: #fbbf24; --auto: #4ade80; --ok: #4ade80;
+      --backdrop: rgba(9,15,25,0.8);
+      --shadow: 0 1px 3px rgba(0,0,0,0.45);
+      color-scheme: dark;
+    }
+    :root[data-theme="green-belt"] {
+      --bg: #081209; --panel: #0e1a10; --surface: #152518; --hover: #1d3322;
+      --text: #ecf7ee; --text2: #cfe6d4; --text3: #93b39b; --text4: #62806c;
+      --accent: #22c55e; --accent2: #4ade80; --accent3: #86efac;
+      --line: rgba(236,247,238,0.10); --line-subtle: rgba(236,247,238,0.06);
+      --soft: rgba(236,247,238,0.03); --soft2: rgba(236,247,238,0.08);
+      --user-bubble: rgba(34,197,94,0.12); --user-border: rgba(34,197,94,0.3);
+      --plan: #f87171; --review: #fbbf24; --auto: #34d399; --ok: #34d399;
+      --backdrop: rgba(8,18,9,0.8);
+      --shadow: 0 1px 3px rgba(0,0,0,0.45);
+      color-scheme: dark;
+    }
+    :root[data-theme="purple-belt"] {
+      --bg: #0f0a17; --panel: #170f26; --surface: #221738; --hover: #2e2049;
+      --text: #f3ecfd; --text2: #ddd0f0; --text3: #a491c4; --text4: #736194;
+      --accent: #a855f7; --accent2: #c084fc; --accent3: #d8b4fe;
+      --line: rgba(243,236,253,0.10); --line-subtle: rgba(243,236,253,0.06);
+      --soft: rgba(243,236,253,0.03); --soft2: rgba(243,236,253,0.08);
+      --user-bubble: rgba(168,85,247,0.14); --user-border: rgba(168,85,247,0.3);
+      --plan: #fb7185; --review: #fbbf24; --auto: #4ade80; --ok: #4ade80;
+      --backdrop: rgba(15,10,23,0.8);
+      --shadow: 0 1px 3px rgba(0,0,0,0.45);
+      color-scheme: dark;
+    }
+    :root[data-theme="brown-belt"] {
+      --bg: #14100b; --panel: #1d1710; --surface: #2a2219; --hover: #382d20;
+      --text: #f0e7d8; --text2: #ddd0bc; --text3: #a99880; --text4: #776854;
+      --accent: #b45309; --accent2: #d97706; --accent3: #f59e0b;
+      --line: rgba(240,231,216,0.10); --line-subtle: rgba(240,231,216,0.06);
+      --soft: rgba(240,231,216,0.03); --soft2: rgba(240,231,216,0.08);
+      --user-bubble: rgba(180,83,9,0.14); --user-border: rgba(180,83,9,0.32);
+      --plan: #ef4444; --review: #eab308; --auto: #84cc16; --ok: #84cc16;
+      --backdrop: rgba(20,16,11,0.8);
+      --shadow: 0 1px 3px rgba(0,0,0,0.45);
+      color-scheme: dark;
+    }
+    :root[data-theme="black-belt"] {
+      --bg: #000000; --panel: #0a0a0b; --surface: #141416; --hover: #1f1f22;
+      --text: #fafafa; --text2: #d4d4d8; --text3: #8e8e96; --text4: #5c5c64;
+      --accent: #ff3b30; --accent2: #ff6b60; --accent3: #ff8a80;
+      --line: rgba(255,255,255,0.10); --line-subtle: rgba(255,255,255,0.06);
+      --soft: rgba(255,255,255,0.02); --soft2: rgba(255,255,255,0.07);
+      --user-bubble: rgba(255,59,48,0.10); --user-border: rgba(255,59,48,0.3);
+      --plan: #ff5f57; --review: #f7b955; --auto: #32d74b; --ok: #32d74b;
+      --backdrop: rgba(0,0,0,0.85);
+      --shadow: 0 0 0 1px rgba(255,255,255,0.06), 0 2px 6px rgba(0,0,0,0.6);
+      color-scheme: dark;
     }
 
-    html,
+    * { box-sizing: border-box; }
+
+    html, body { min-height: 100%; margin: 0; }
+
     body {
-      min-height: 100%;
-      margin: 0;
-    }
-
-    body {
-      font-family: Georgia, "Times New Roman", serif;
-      color: var(--ink);
-      background:
-        radial-gradient(circle at 12% 8%, rgba(34, 102, 204, 0.20), transparent 30rem),
-        radial-gradient(circle at 88% 4%, rgba(26, 122, 58, 0.16), transparent 26rem),
-        linear-gradient(135deg, #f9f4e8 0%, #eaf2ff 100%);
-    }
-
-    button,
-    input,
-    textarea {
-      font: inherit;
-    }
-
-    button,
-    textarea,
-    input,
-    a {
-      outline-offset: 4px;
-    }
-
-    button:focus-visible,
-    textarea:focus-visible,
-    input:focus-visible,
-    a:focus-visible {
-      outline: 3px solid rgba(34, 102, 204, 0.55);
-    }
-
-    .app {
-      width: min(1180px, calc(100% - 28px));
-      margin: 0 auto;
-      padding: 22px 0;
-    }
-
-    .hero {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 18px;
-      align-items: stretch;
-      margin-bottom: 18px;
-    }
-
-    .brand,
-    .status-card,
-    .chat,
-    .rail,
-    dialog {
-      border: 1px solid var(--line);
-      background: rgba(255, 250, 240, 0.92);
-      box-shadow: var(--shadow);
-      backdrop-filter: blur(14px);
-    }
-
-    .brand {
-      border-radius: var(--radius);
-      padding: 24px;
-      position: relative;
+      font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      font-size: 15px;
+      color: var(--text);
+      background: var(--bg);
+      -webkit-font-smoothing: antialiased;
+      display: flex;
+      height: 100vh;
       overflow: hidden;
     }
 
-    .brand:before {
-      content: "";
-      position: absolute;
-      inset: auto -12% -44% auto;
-      width: 34rem;
-      height: 34rem;
-      border-radius: 50%;
-      background: repeating-linear-gradient(
-        135deg,
-        rgba(34, 102, 204, 0.10) 0 12px,
-        transparent 12px 26px
-      );
-      pointer-events: none;
+    :root { --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; }
+
+    button, input, textarea, select { font: inherit; }
+    button:focus-visible, textarea:focus-visible, input:focus-visible, a:focus-visible {
+      outline: 2px solid var(--accent3); outline-offset: 2px;
     }
 
-    h1 {
-      margin: 0;
-      font-size: clamp(2.4rem, 6vw, 5.4rem);
-      line-height: 0.9;
-      letter-spacing: -0.08em;
-      text-transform: uppercase;
+    /* ── Sidebar ── */
+    .sidebar {
+      width: 208px; min-width: 208px;
+      display: flex; flex-direction: column;
+      border-right: 1px solid var(--line-subtle);
+      background: var(--panel);
+      padding: 14px 10px;
+      gap: 4px;
+      transition: width 0.15s ease;
     }
-
-    .tagline {
-      max-width: 58ch;
-      margin: 14px 0 0;
-      color: var(--muted);
-      font-size: 1.05rem;
-      line-height: 1.55;
-    }
-
-    .status-card {
-      min-width: 280px;
-      border-radius: var(--radius);
-      padding: 18px;
-      display: grid;
-      align-content: space-between;
-      gap: 16px;
-    }
-
-    .chip-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-    }
-
-    .chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 7px;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 7px 11px;
-      background: #fff;
-      color: var(--ink);
-      font-size: 0.9rem;
-      white-space: nowrap;
-    }
-
-    .chip strong {
-      color: var(--blue-dark);
-    }
-
-    .mode-buttons {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 8px;
-    }
-
-    .mode-buttons button,
-    .toolbar button,
-    .send-row button,
-    .dialog-actions button {
-      border: 0;
-      border-radius: 16px;
-      padding: 11px 14px;
+    .sidebar.collapsed { width: 56px; min-width: 56px; }
+    .sidebar.collapsed .session-row .s-name, .sidebar.collapsed .session-row .s-meta { display: none; }
+    .sidebar.collapsed .sessions-head span { padding-left: 20px; }
+    .sidebar.collapsed .side-foot-note { font-size: 10px; }
+    .side-brand {
+      display: flex; align-items: center; gap: 10px;
+      padding: 4px 8px 14px;
       cursor: pointer;
-      color: #fff;
-      background: var(--blue);
-      transition: transform 140ms ease, box-shadow 140ms ease, opacity 140ms ease;
     }
+    .side-brand:hover .sidebar-collapse-glyph { opacity: 1; }
 
-    button:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 10px 22px rgba(16, 32, 51, 0.16);
-    }
-
-    button:active {
-      transform: translateY(0);
-    }
-
-    button[data-mode="plan"] {
-      background: var(--plan);
-    }
-
-    button[data-mode="review"] {
-      background: var(--review);
-    }
-
-    button[data-mode="auto"] {
+    .side-brand .dot {
+      width: 9px; height: 9px; border-radius: 50%;
       background: var(--auto);
+      box-shadow: 0 0 8px rgba(70,167,88,0.6);
+      flex-shrink: 0;
+    }
+    .side-brand h1 { margin: 0; font-size: 17px; font-weight: 590; letter-spacing: -0.3px; }
+    .side-brand .sub { font-size: 10px; color: var(--text4); letter-spacing: 0.08em; text-transform: uppercase; margin-left: auto; }
+
+    .nav-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 10px; border-radius: 8px;
+      border: 0; background: transparent; cursor: pointer;
+      color: var(--text3); font-size: 13px; font-weight: 510; letter-spacing: -0.1px;
+      text-align: left; width: 100%;
+      transition: background 100ms ease, color 100ms ease;
+    }
+    .nav-item:hover { background: var(--soft2); color: var(--text2); }
+    .nav-item.active { background: var(--soft2); color: var(--text); }
+    .nav-item svg { width: 16px; height: 16px; flex-shrink: 0; opacity: 0.85; }
+    .nav-item .badge {
+      margin-left: auto; font-size: 10px; font-weight: 590;
+      color: var(--text4); background: var(--soft2);
+      border-radius: 999px; padding: 1px 7px;
+      font-variant-numeric: tabular-nums;
     }
 
-    button[aria-pressed="true"] {
-      box-shadow: inset 0 0 0 3px rgba(255, 255, 255, 0.65), 0 12px 26px rgba(16, 32, 51, 0.18);
+    .side-footer { margin-top: auto; display: grid; gap: 8px; }
+    .theme-label {
+      font-size: 10px; font-weight: 590; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--text4); padding: 0 8px;
+    }
+    .theme-row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; padding: 0 2px; }
+    .theme-swatch {
+      width: 18px; height: 18px; border-radius: 5px; cursor: pointer;
+      border: 2px solid transparent; padding: 0;
+      transition: transform 100ms ease, border-color 100ms ease;
+    }
+    .theme-swatch:hover { transform: scale(1.12); }
+    .theme-swatch.active { border-color: var(--text2); }
+    .side-foot-note { font-size: 10px; color: var(--text4); padding: 0 8px 2px; letter-spacing: -0.05px; }
+    .sidebar.collapsed .nav-item { justify-content: center; padding: 8px 6px; }
+    .sidebar.collapsed .nav-item .badge { display: none; }
+    .sidebar.collapsed .sidebar-collapse-glyph { opacity: 1; }
+
+    /* ── Main area ── */
+    .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+    .topbar {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--line-subtle);
+      background: var(--panel);
+      flex-wrap: wrap;
+    }
+    .topbar .spacer { flex: 1; }
+    .chip-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      border: 1px solid var(--line); border-radius: 999px;
+      padding: 4px 10px; background: var(--soft);
+      color: var(--text2); font-size: 12px; font-weight: 510;
+      letter-spacing: -0.1px; white-space: nowrap; font-variant-numeric: tabular-nums;
+    }
+    .chip strong { color: var(--text); font-weight: 590; }
+    .mode-buttons {
+      display: inline-flex; gap: 2px; padding: 2px;
+      border: 1px solid var(--line); border-radius: 8px; background: var(--soft);
+    }
+    .mode-buttons button, .ghost-btn {
+      border: 0; border-radius: 6px; padding: 6px 12px; cursor: pointer;
+      font-size: 13px; font-weight: 510; letter-spacing: -0.1px;
+      color: var(--text2); background: transparent;
+      transition: background 120ms ease, color 120ms ease;
+    }
+    .ghost-btn { border: 1px solid var(--line); }
+    .ghost-btn:hover { background: var(--soft2); color: var(--text); }
+    .mode-buttons button:hover { background: var(--soft2); color: var(--text); }
+    .mode-buttons button[data-mode="plan"] { color: var(--plan); }
+    .mode-buttons button[data-mode="review"] { color: var(--review); }
+    .mode-buttons button[data-mode="auto"] { color: var(--auto); }
+    .mode-buttons button[aria-pressed="true"] {
+      background: var(--soft2); color: var(--text); box-shadow: 0 0 0 1px var(--line);
+    }
+    .mode-buttons button[aria-pressed="true"][data-mode="plan"] {
+      background: color-mix(in srgb, var(--plan) 14%, transparent); color: var(--plan);
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--plan) 35%, transparent);
+    }
+    .mode-buttons button[aria-pressed="true"][data-mode="review"] {
+      background: color-mix(in srgb, var(--review) 14%, transparent); color: var(--review);
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--review) 35%, transparent);
+    }
+    .mode-buttons button[aria-pressed="true"][data-mode="auto"] {
+      background: color-mix(in srgb, var(--auto) 14%, transparent); color: var(--auto);
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--auto) 35%, transparent);
     }
 
-    .layout {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) 320px;
-      gap: 18px;
-      align-items: start;
+    /* ── Panels ── */
+    .panels { flex: 1; min-height: 0; position: relative; }
+    .panel-view {
+      position: absolute; inset: 0; display: none; overflow: auto;
+    }
+    .panel-view.active { display: flex; }
+    #view-chat.active, #view-terminal.active { flex-direction: column; }
+    #view-skills, #view-models, #view-status { flex-direction: column; }
+
+    /* ── Chat: sessions rail + main column ── */
+    .chat-body { flex: 1; display: flex; min-height: 0; }
+    .chat-sessions {
+      width: 230px; flex-shrink: 0; display: flex; flex-direction: column;
+      border-right: 1px solid var(--line); background: color-mix(in srgb, var(--panel) 60%, transparent);
+    }
+    .sessions-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 12px; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase;
+      color: var(--text2); border-bottom: 1px solid var(--line);
+    }
+    .sessions-list { flex: 1; overflow-y: auto; padding: 6px; }
+    .session-row {
+      display: block; width: 100%; text-align: left; padding: 8px 9px; border-radius: 8px;
+      border: 1px solid transparent; background: none; color: var(--text2);
+      font: inherit; font-size: 12px; cursor: pointer; margin-bottom: 2px;
+    }
+    .session-row:hover { background: var(--hover); color: var(--text); }
+    .session-row.active { background: var(--soft2); color: var(--text); border-color: var(--line); }
+    .session-row .s-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+    .session-row .s-meta { display: flex; gap: 6px; font-size: 10px; color: var(--text2); margin-top: 2px; }
+    .session-row .s-meta .src { color: var(--accent2); }
+    .session-row.muted { color: var(--text2); cursor: default; }
+    .session-row.muted:hover { background: none; }
+    .chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    .chat-main .messages { flex: 1; }
+    @media (max-width: 900px) {
+      .chat-sessions { width: 56px; }
+      .chat-sessions .s-name, .chat-sessions .s-meta, .chat-sessions .sessions-head span { display: none; }
+      .sessions-head { justify-content: center; }
+      .session-row { padding: 8px 4px; }
+      .session-row .s-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent2); }
     }
 
-    .chat {
-      border-radius: var(--radius);
-      min-height: 620px;
-      display: grid;
-      grid-template-rows: auto minmax(320px, 1fr) auto;
-      overflow: hidden;
+    .panel-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 16px; border-bottom: 1px solid var(--line-subtle);
+      background: var(--soft); flex-shrink: 0;
     }
+    .panel-head h2 {
+      margin: 0; font-size: 12px; font-weight: 590;
+      letter-spacing: 0.06em; text-transform: uppercase; color: var(--text3);
+    }
+    .panel-head > div { display: flex; gap: 6px; }
 
-    .toolbar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 14px;
-      border-bottom: 1px solid var(--line);
-      background: rgba(255, 255, 255, 0.55);
-    }
-
-    .toolbar h2,
-    .rail h2 {
-      margin: 0;
-      font-size: 1rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-    }
-
-    .messages {
-      min-height: 0;
-      overflow: auto;
-      padding: 18px;
-      scroll-behavior: smooth;
-    }
-
-    /* P2-followup (2026-05-11) — unified scrollbar across every
-       scrollable surface in Pupil. Matches Sensei's TUI scrollbar
-       which is mode-tinted via _MODE_ACCENT in sensei_tui.py. Both
-       surfaces now feel like one product: 14px chunky thumb that
-       follows the stoplight chrome rule (Plan red / Review amber /
-       Auto green).
-
-       Default thumb color = Pupil blue, used when body has no data-mode
-       set yet (initial page load before /status returns). After
-       setModeButtons() runs, body[data-mode="..."] takes over. */
-    html, body {
-      scrollbar-width: auto;                        /* Firefox */
-      scrollbar-color: var(--blue) #f0f0f0;
-    }
-    ::-webkit-scrollbar {
-      width: 14px;
-      height: 14px;
-      background: #f0f0f0;
-    }
-    ::-webkit-scrollbar-track {
-      background: #f0f0f0;
-      border-radius: 8px;
-    }
-    ::-webkit-scrollbar-thumb {
-      background: var(--blue);
-      border-radius: 8px;
-      border: 3px solid #f0f0f0;
-      min-height: 48px;
-    }
-    ::-webkit-scrollbar-thumb:hover,
-    ::-webkit-scrollbar-thumb:active {
-      filter: brightness(0.85);
-    }
-
-    /* Mode-accent overrides — Plan/Review/Auto each tint EVERY
-       scrollbar thumb on the page, not just .messages. Stoplight rule:
-       scrollbar lives on chrome (frame furniture), so it follows the
-       mode. Firefox uses scrollbar-color shorthand; WebKit uses the
-       ::-webkit-scrollbar-thumb pseudo. Both are set here. */
-    body[data-mode="plan"] {
-      scrollbar-color: var(--plan) #f0f0f0;
-    }
-    body[data-mode="plan"] ::-webkit-scrollbar-thumb {
-      background: var(--plan);
-    }
-    body[data-mode="review"] {
-      scrollbar-color: var(--review) #f0f0f0;
-    }
-    body[data-mode="review"] ::-webkit-scrollbar-thumb {
-      background: var(--review);
-    }
-    body[data-mode="auto"] {
-      scrollbar-color: var(--auto) #f0f0f0;
-    }
-    body[data-mode="auto"] ::-webkit-scrollbar-thumb {
-      background: var(--auto);
-    }
-
+    /* ── Chat ── */
+    .messages { flex: 1; min-height: 0; overflow: auto; padding: 16px; scroll-behavior: smooth; }
     .message {
       width: min(760px, 100%);
-      margin: 0 0 14px;
-      padding: 14px 16px;
-      border-radius: 18px;
-      border: 1px solid var(--line);
-      background: #fff;
-      line-height: 1.55;
-      white-space: pre-wrap;
+      margin: 0 0 12px; padding: 10px 14px;
+      border-radius: 10px; border: 1px solid var(--line-subtle);
+      background: var(--surface); color: var(--text2);
+      font-size: 14px; line-height: 1.55; letter-spacing: -0.13px;
+      white-space: pre-wrap; overflow-wrap: break-word;
     }
-
     .message.user {
       margin-left: auto;
-      background: #eaf2ff;
+      background: var(--user-bubble); border-color: var(--user-border); color: var(--text);
     }
-
-    .message.assistant {
-      background: #fffaf0;
-    }
-
+    .message.assistant { background: var(--surface); }
     .message.system {
-      width: 100%;
-      background: rgba(34, 102, 204, 0.08);
-      color: var(--muted);
-      font-size: 0.94rem;
+      width: 100%; background: transparent; border-color: transparent;
+      color: var(--text4); font-size: 12px; font-family: var(--mono);
     }
-
-    .composer {
-      padding: 14px;
-      border-top: 1px solid var(--line);
-      background: rgba(255, 255, 255, 0.68);
+    .composer-wrap { position: relative; flex-shrink: 0; }
+    .composer { padding: 12px 14px 14px; border-top: 1px solid var(--line-subtle); background: var(--soft); }
+    .composer-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+    .composer label {
+      margin: 0; color: var(--text3); font-size: 11px; font-weight: 590;
+      letter-spacing: 0.05em; text-transform: uppercase;
     }
-
-    label {
-      display: block;
-      margin: 0 0 8px;
-      color: var(--muted);
-      font-size: 0.9rem;
+    .model-select {
+      border: 1px solid var(--line); border-radius: 6px;
+      background: var(--surface); color: var(--text2);
+      font-size: 12px; padding: 4px 8px; max-width: 240px;
     }
-
     textarea {
-      width: 100%;
-      min-height: 132px;
-      resize: vertical;
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      padding: 14px;
-      color: var(--ink);
-      background: #fff;
-      line-height: 1.45;
+      width: 100%; min-height: 88px; resize: vertical;
+      border: 1px solid var(--line); border-radius: 8px;
+      padding: 10px 12px; color: var(--text);
+      background: var(--surface); font-size: 14px; line-height: 1.5; letter-spacing: -0.13px;
+      transition: border-color 120ms ease;
+    }
+    textarea::placeholder { color: var(--text4); }
+    textarea:focus { border-color: var(--accent); outline: none; }
+    .send-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
+    .hint { color: var(--text4); font-size: 12px; letter-spacing: -0.1px; }
+    .send-row button {
+      border: 0; border-radius: 8px; padding: 8px 18px; cursor: pointer;
+      background: var(--accent); color: #fff;
+      font-size: 13px; font-weight: 590; letter-spacing: -0.1px;
+      transition: background 120ms ease, opacity 120ms ease;
+    }
+    .send-row button:hover { background: var(--accent3); }
+    .send-row button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* ── Slash palette ── */
+    .slash-palette {
+      position: absolute; left: 14px; right: 14px; bottom: calc(100% - 4px);
+      background: var(--panel); border: 1px solid var(--line);
+      border-radius: 10px; box-shadow: var(--shadow);
+      max-height: 300px; overflow: auto; z-index: 30; display: none;
+      padding: 6px;
+    }
+    .slash-palette.open { display: block; }
+    .slash-item {
+      display: flex; align-items: baseline; gap: 10px;
+      padding: 7px 10px; border-radius: 6px; cursor: pointer;
+      font-size: 13px; color: var(--text2);
+    }
+    .slash-item:hover, .slash-item.selected { background: var(--soft2); }
+    .slash-item code { font-family: var(--mono); font-size: 12px; color: var(--accent2); min-width: 120px; }
+    .slash-item .desc { color: var(--text3); font-size: 12px; }
+    .slash-item .scope {
+      margin-left: auto; font-size: 10px; font-weight: 590; letter-spacing: 0.05em;
+      text-transform: uppercase; color: var(--text4);
+      border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px;
+    }
+    .slash-empty { padding: 10px; color: var(--text4); font-size: 12px; }
+    .slash-foot {
+      padding: 7px 10px 4px; border-top: 1px solid var(--line-subtle);
+      color: var(--text4); font-size: 11px;
+      display: flex; justify-content: space-between;
     }
 
-    .send-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      margin-top: 10px;
+    /* ── Terminal ── */
+    .term-out {
+      flex: 1; min-height: 0; overflow: auto;
+      padding: 14px 16px;
+      font-family: var(--mono); font-size: 12.5px; line-height: 1.6;
+      color: var(--text2); background: var(--bg);
+      white-space: pre-wrap; overflow-wrap: break-word;
+    }
+    .term-out .cmd { color: var(--text); font-weight: 590; }
+    .term-out .exit-ok { color: var(--auto); font-size: 11px; }
+    .term-out .exit-bad { color: var(--plan); font-size: 11px; }
+    .term-out .stderr { color: var(--plan); }
+    .term-input-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 14px; border-top: 1px solid var(--line-subtle); background: var(--soft);
+    }
+    .term-input-row .ps1 { font-family: var(--mono); font-size: 13px; color: var(--auto); flex-shrink: 0; }
+    .term-input {
+      flex: 1; background: transparent; border: 0; outline: none;
+      color: var(--text); font-family: var(--mono); font-size: 13px;
+      caret-color: var(--accent2);
+    }
+    .term-input:disabled { opacity: 0.5; }
+    .term-note { padding: 4px 14px 8px; color: var(--text4); font-size: 10px; font-family: var(--mono); flex-shrink: 0; }
+
+    /* ── Skills / Models / Status shared cards ── */
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+    .card {
+      border: 1px solid var(--line-subtle); border-radius: 10px;
+      background: var(--panel); padding: 14px;
+      display: grid; gap: 8px; align-content: start;
+    }
+    .card h3 { margin: 0; font-size: 14px; font-weight: 590; letter-spacing: -0.2px; color: var(--text); display: flex; align-items: center; gap: 8px; }
+    .card p { margin: 0; color: var(--text3); font-size: 12.5px; line-height: 1.5; letter-spacing: -0.13px; }
+    .card .card-foot { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+    .tag {
+      font-size: 10px; font-weight: 590; letter-spacing: 0.05em; text-transform: uppercase;
+      border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; color: var(--text4);
+    }
+    .tag.accent { color: var(--accent2); border-color: color-mix(in srgb, var(--accent2) 40%, transparent); }
+    .mono-s { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 11px; color: var(--text2); }
+    .mcp-actions { display: flex; gap: 8px; margin-top: 8px; }
+    .mcp-out { margin-top: 8px; max-height: 180px; overflow: auto; white-space: pre-wrap; display: none; }
+    .mcp-out:not(:empty) { display: block; border-top: 1px solid var(--line); padding-top: 8px; }
+    .card button {
+      margin-left: auto; border: 1px solid var(--line); border-radius: 6px;
+      background: transparent; color: var(--text2);
+      font-size: 12px; font-weight: 510; padding: 5px 10px; cursor: pointer;
+      transition: background 100ms ease, color 100ms ease;
+    }
+    .card button:hover { background: var(--soft2); color: var(--text); }
+    .card.selected { border-color: color-mix(in srgb, var(--accent) 55%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent); }
+    .section-title {
+      margin: 6px 0 0; font-size: 11px; font-weight: 590;
+      letter-spacing: 0.08em; text-transform: uppercase; color: var(--text4);
     }
 
-    .hint {
-      color: var(--muted);
-      font-size: 0.9rem;
+    .status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+    .events { max-height: 220px; overflow: auto; font-family: var(--mono); font-size: 11px; line-height: 1.6; color: var(--text3); white-space: pre-wrap; }
+    .kv { font-size: 12.5px; color: var(--text3); line-height: 1.7; letter-spacing: -0.13px; }
+    .kv b { color: var(--text2); font-weight: 590; }
+    .voice-label {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-size: 13px; font-weight: 510; color: var(--text2); cursor: pointer;
+      letter-spacing: -0.13px;
     }
+    .voice-label input { accent-color: var(--accent); width: 15px; height: 15px; }
 
-    .rail {
-      border-radius: var(--radius);
-      padding: 16px;
-      display: grid;
-      gap: 16px;
-    }
-
-    .panel {
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      padding: 14px;
-      background: rgba(255, 255, 255, 0.62);
-    }
-
-    .panel h3 {
-      margin: 0 0 8px;
-      font-size: 1rem;
-    }
-
-    .panel p,
-    .panel ul {
-      margin: 0;
-      color: var(--muted);
-      line-height: 1.5;
-    }
-
-    .panel ul {
-      padding-left: 18px;
-    }
-
-    .events {
-      max-height: 190px;
-      overflow: auto;
-      font-family: "Courier New", monospace;
-      font-size: 0.82rem;
-      color: var(--muted);
-    }
-
+    /* ── Dialog ── */
     dialog {
-      width: min(760px, calc(100% - 28px));
-      border-radius: var(--radius);
-      padding: 0;
-      color: var(--ink);
+      width: min(720px, calc(100% - 32px)); padding: 0;
+      color: var(--text); border-radius: 12px;
+      border: 1px solid var(--line); background: var(--panel);
+      box-shadow: var(--shadow);
     }
-
-    dialog::backdrop {
-      background: rgba(16, 32, 51, 0.45);
+    dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(2px); }
+    .dialog-body { padding: 20px; }
+    .dialog-body h2 { margin: 0 0 4px; font-size: 17px; font-weight: 590; letter-spacing: -0.3px; }
+    .shortcut-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; margin-top: 14px; }
+    .panel-mini {
+      display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+      border: 1px solid var(--line-subtle); border-radius: 8px;
+      font-size: 13px; color: var(--text2); letter-spacing: -0.13px; background: var(--soft);
     }
-
-    .dialog-body {
-      padding: 22px;
-    }
-
-    .shortcut-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 10px;
-    }
-
     kbd {
-      display: inline-block;
-      min-width: 2.2em;
-      padding: 3px 7px;
-      border: 1px solid var(--line);
-      border-bottom-width: 3px;
-      border-radius: 8px;
-      background: #fff;
-      font-family: "Courier New", monospace;
-      font-size: 0.84em;
-      text-align: center;
+      display: inline-block; min-width: 1.9em; padding: 2px 6px;
+      border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px;
+      background: var(--soft2); color: var(--text);
+      font-family: var(--mono); font-size: 11px; text-align: center;
     }
+    .dialog-actions { margin-top: 16px; display: flex; justify-content: flex-end; }
 
+    /* ── Scrollbars (mode-tinted) ── */
+    html, body { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb {
+      background: var(--line); border-radius: 5px;
+      border: 2px solid transparent; background-clip: padding-box; min-height: 40px;
+    }
+    ::-webkit-scrollbar-thumb:hover { background: var(--text4); background-clip: padding-box; }
+    body[data-mode="plan"] { scrollbar-color: color-mix(in srgb, var(--plan) 45%, transparent) transparent; }
+    body[data-mode="review"] { scrollbar-color: color-mix(in srgb, var(--review) 45%, transparent) transparent; }
+    body[data-mode="auto"] { scrollbar-color: color-mix(in srgb, var(--auto) 45%, transparent) transparent; }
+
+    /* ── Responsive ── */
     @media (max-width: 860px) {
-      .hero,
-      .layout {
-        grid-template-columns: 1fr;
-      }
-
-      .status-card {
-        min-width: 0;
-      }
-
-      .chat {
-        min-height: 72vh;
-      }
-
-      .shortcut-grid {
-        grid-template-columns: 1fr;
-      }
+      body { flex-direction: column; height: auto; overflow: auto; }
+      .sidebar { width: 100%; min-width: 0; flex-direction: row; align-items: center; padding: 8px 10px; overflow-x: auto; }
+      .side-brand { padding: 0 8px 0 0; }
+      .side-brand .sub { display: none; }
+      .nav-item { width: auto; padding: 6px 10px; white-space: nowrap; }
+      .nav-item .badge { display: none; }
+      .side-footer { display: none; }
+      .panels { position: static; }
+      .panel-view.active { position: relative; min-height: 80vh; }
+      #view-chat.active, #view-terminal.active { min-height: 70vh; }
     }
   </style>
 </head>
-<body>
-  <main class="app">
-    <section class="hero" aria-labelledby="title">
-      <div class="brand">
-        <h1 id="title">Pupil</h1>
-        <p class="tagline">
-          Browser surface for Master AI. This is a web app, so it keeps native
-          browser controls: normal right-click, copy, paste, touch selection,
-          Tab order, and page scrolling.
-        </p>
+<body data-mode="plan">
+  <nav class="sidebar" aria-label="Pupil navigation">
+    <div class="side-brand">
+      <span class="dot" id="healthDot" aria-hidden="true"></span>
+      <h1>Pupil</h1>
+      <span class="sub">IDE</span>
+      <span class="sidebar-collapse-glyph" style="opacity:0; font-size:14px; color:var(--text4); margin-left:auto; cursor:pointer;">≡</span>
+    </div>
+
+    <button class="nav-item active" data-view="chat">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v6A1.5 1.5 0 0 1 12.5 11H6l-3.2 2.7c-.4.3-.8.1-.8-.4V3.5z"/></svg>
+      Chat
+    </button>
+    <button class="nav-item" data-view="terminal">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M4 6l2.5 2L4 10M8.5 10H12"/></svg>
+      Terminal
+    </button>
+    <button class="nav-item" data-view="skills">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1.8l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.6l-3.8 2 .7-4.3-3.1-3 4.3-.6L8 1.8z"/></svg>
+      Skills
+      <span class="badge" id="skillCount">–</span>
+    </button>
+    <button class="nav-item" data-view="models">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1.8l5.2 3v6.4l-5.2 3-5.2-3V4.8l5.2-3z"/><path d="M8 8l5.2-3M8 8L2.8 5M8 8v6.2"/></svg>
+      Models
+    </button>
+    <button class="nav-item" data-view="mcp">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.5v3M8 11.5v3M1.5 8h3M11.5 8h3M3.4 3.4l2.1 2.1M10.5 10.5l2.1 2.1M12.6 3.4l-2.1 2.1M5.5 10.5l-2.1 2.1"/></svg>
+      MCP
+      <span class="badge" id="mcpCount">–</span>
+    </button>
+    <button class="nav-item" data-view="status">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 8a6 6 0 1 1 12 0"/><path d="M2 8h3M11 8h3M8 8l2.5-3.5"/></svg>
+      Status
+    </button>
+
+    <div class="side-footer">
+      <div class="theme-label">Belts</div>
+      <div class="theme-row" role="group" aria-label="Theme">
+        <button class="theme-swatch" data-theme-set="white-belt"  style="background:linear-gradient(135deg,#f7f8fa,#8b93a1)" title="White Belt"></button>
+        <button class="theme-swatch" data-theme-set="yellow-belt" style="background:linear-gradient(135deg,#131208,#facc15)" title="Yellow Belt"></button>
+        <button class="theme-swatch" data-theme-set="blue-belt"   style="background:linear-gradient(135deg,#090f19,#60a5fa)" title="Blue Belt"></button>
+        <button class="theme-swatch" data-theme-set="green-belt"  style="background:linear-gradient(135deg,#081209,#4ade80)" title="Green Belt"></button>
+        <button class="theme-swatch" data-theme-set="purple-belt" style="background:linear-gradient(135deg,#0f0a17,#c084fc)" title="Purple Belt"></button>
+        <button class="theme-swatch" data-theme-set="brown-belt"  style="background:linear-gradient(135deg,#14100b,#d97706)" title="Brown Belt"></button>
+        <button class="theme-swatch" data-theme-set="black-belt"  style="background:linear-gradient(135deg,#000000,#ff3b30)" title="Black Belt"></button>
       </div>
+      <div class="side-foot-note">Pupil IDE · Master AI stack</div>
+    </div>
+  </nav>
 
-      <aside class="status-card" aria-label="System status">
-        <div>
-          <div class="chip-row">
-            <span class="chip">Health <strong id="healthText">checking</strong></span>
-            <span class="chip">Mode <strong id="modeText">plan</strong></span>
-            <span class="chip">Model <strong id="modelText">master-ai</strong></span>
-          </div>
-        </div>
-        <div class="mode-buttons" role="group" aria-label="Mode">
-          <button type="button" data-mode="plan" aria-pressed="false">Plan</button>
-          <button type="button" data-mode="review" aria-pressed="false">Review</button>
-          <button type="button" data-mode="auto" aria-pressed="false">Auto</button>
-        </div>
-      </aside>
-    </section>
+  <div class="main">
+    <header class="topbar">
+      <div class="chip-row">
+        <span class="chip">Health <strong id="healthText">checking</strong></span>
+        <span class="chip">Mode <strong id="modeText">plan</strong></span>
+        <span class="chip">Model <strong id="modelText">master-ai</strong></span>
+      </div>
+      <span class="spacer"></span>
+      <div class="mode-buttons" role="group" aria-label="Mode">
+        <button type="button" data-mode="plan" aria-pressed="false">Plan</button>
+        <button type="button" data-mode="review" aria-pressed="false">Review</button>
+        <button type="button" data-mode="auto" aria-pressed="false">Auto</button>
+      </div>
+    </header>
 
-    <section class="layout">
-      <section class="chat" aria-label="Pupil chat">
-        <header class="toolbar">
+    <div class="panels">
+
+      <!-- CHAT -->
+      <section id="view-chat" class="panel-view active" aria-label="Pupil chat">
+        <div class="panel-head">
           <h2>Conversation</h2>
           <div>
-            <button type="button" id="shortcutsButton">Shortcuts</button>
-            <button type="button" id="clearButton">Clear</button>
-          </div>
-        </header>
-
-        <div id="messages" class="messages" tabindex="0" aria-live="polite">
-          <div class="message system">
-            Pupil is ready. Use the browser normally: right-click, Ctrl+C,
-            Ctrl+V, Tab, Shift+Tab, touch selection, and scrolling are native.
+            <button type="button" class="ghost-btn" id="newChatButton" title="Start a fresh session">+ New Chat</button>
+            <button type="button" class="ghost-btn" id="shortcutsButton">Shortcuts</button>
+            <button type="button" class="ghost-btn" id="clearButton">Clear</button>
           </div>
         </div>
-
-        <form id="chatForm" class="composer">
-          <label for="prompt">Message Master AI</label>
-          <textarea id="prompt" name="prompt" autocomplete="off" placeholder="Ask Pupil anything. Ctrl+Enter sends; Enter makes a new line."></textarea>
-          <div class="send-row">
-            <span class="hint">Native web controls stay intact. No terminal emulation here.</span>
-            <button type="submit" id="sendButton">Send</button>
+        <div class="chat-body">
+        <aside class="chat-sessions" aria-label="Saved chats">
+          <div class="sessions-head">
+            <span>Saved chats</span>
+            <button type="button" class="ghost-btn" id="sessionsRefresh" title="Reload session list">↻</button>
           </div>
-        </form>
+          <div id="sessionsList" class="sessions-list">
+            <div class="session-row muted">Loading…</div>
+          </div>
+        </aside>
+        <div class="chat-main">
+        <div id="messages" class="messages" tabindex="0" aria-live="polite">
+          <div class="message system">Pupil is ready. Use the browser normally: right-click, Ctrl+C, Ctrl+V, Tab, Shift+Tab, touch selection, and scrolling are native. Type / for commands.</div>
+        </div>
+        <div class="composer-wrap">
+          <div id="slashPalette" class="slash-palette" role="listbox" aria-label="Slash commands"></div>
+          <form id="chatForm" class="composer">
+            <div class="composer-meta">
+              <label for="prompt">Message Master AI</label>
+              <select id="modelSelect" class="model-select" aria-label="Model for this message">
+                <option value="">Auto (router)</option>
+              </select>
+            </div>
+            <textarea id="prompt" name="prompt" autocomplete="off" placeholder="Ask Pupil anything. / for commands · Ctrl+Enter sends · Enter = newline"></textarea>
+            <div class="send-row">
+              <span class="hint">Native web controls stay intact. No terminal emulation here.</span>
+              <button type="submit" id="sendButton">Send</button>
+            </div>
+          </form>
+        </div>
+        </div>
+        </div>
       </section>
 
-      <aside class="rail" aria-label="Pupil details">
-        <section class="panel">
+      <!-- TERMINAL -->
+      <section id="view-terminal" class="panel-view" aria-label="Pupil terminal">
+        <div class="panel-head">
+          <h2>Terminal</h2>
+          <div><button type="button" class="ghost-btn" id="termClear">Clear</button></div>
+        </div>
+        <div id="termOut" class="term-out" tabindex="0">Pupil terminal · commands run via stt_server /exec (bash, 60s cap, home dir)
+</div>
+        <div class="term-input-row">
+          <span class="ps1" id="termPs1">$</span>
+          <input id="termInput" class="term-input" autocomplete="off" spellcheck="false" placeholder="type a command…">
+          <button type="button" class="ghost-btn" id="termRun">Run</button>
+        </div>
+        <div class="term-note">↑/↓ history · output capped 256KB · 60s timeout · exit code shown per command</div>
+      </section>
+
+      <!-- SKILLS -->
+      <section id="view-skills" class="panel-view" aria-label="Pupil skills">
+        <div class="panel-head">
+          <h2>Skills</h2>
+          <div><button type="button" class="ghost-btn" id="skillsRefresh">Refresh</button></div>
+        </div>
+        <div style="padding: 16px; overflow: auto;">
+          <div id="skillsGrid" class="cards"></div>
+          <p class="kv" style="margin-top: 10px;">Runs go through Master AI's own <b>skill run</b> dispatch — the marketplace, audit, and google-workspace machinery are untouched.</p>
+        </div>
+      </section>
+
+      <!-- MODELS -->
+      <section id="view-models" class="panel-view" aria-label="Pupil models">
+        <div class="panel-head">
+          <h2>Models</h2>
+          <div>
+            <button type="button" class="ghost-btn" id="modelsBack" style="display:none;">← Providers</button>
+            <button type="button" class="ghost-btn" id="modelsRefresh">Refresh</button>
+          </div>
+        </div>
+        <div style="padding: 16px; overflow: auto;">
+          <div id="autoCard" class="card" style="cursor: pointer;">
+            <h3>Auto-routing <span class="tag accent" id="autoTag">CLAF</span></h3>
+            <p>Let the smart router decide local vs cloud per message. This is Sensei's default behavior.</p>
+          </div>
+          <h2 class="section-title" id="modelsSectionTitle">Providers with keys configured</h2>
+          <div id="providerCards" class="cards" style="margin-top: 8px;"></div>
+          <div id="modelCards" class="cards" style="margin-top: 8px; display: none;"></div>
+          <p class="kv" style="margin-top: 10px;">Same live picker as Sensei's TUI: step 1 = providers with keys on this machine, step 2 = that provider's live catalog (free models first). Pinning writes <b>~/.master_ai_active_model</b> — one shared state with Sensei. Per-message override: selector in the chat composer.</p>
+        </div>
+      </section>
+
+      <!-- MCP -->
+      <section id="view-mcp" class="panel-view" aria-label="Pupil MCP">
+        <div class="panel-head">
+          <h2>MCP</h2>
+          <div>
+            <button type="button" class="ghost-btn" id="mcpProbe" title="Live-probe every enabled server">Probe</button>
+            <button type="button" class="ghost-btn" id="mcpRefresh">Refresh</button>
+          </div>
+        </div>
+        <div style="padding: 16px; overflow: auto;">
+          <div id="mcpServers" class="cards"></div>
+          <p class="kv" style="margin-top: 10px;">Headless MCP — runs on the server via Sensei's own catalog (<b>~/.master_ai_mcp/servers.json</b>), no Chrome extension involved. Add servers with <b>mcp add</b> in the Sensei TUI. Auto mode: the model can call any enabled tool itself (REMOTE_MCP directives dispatch server-side).</p>
+        </div>
+      </section>
+
+      <!-- STATUS -->
+      <section id="view-status" class="panel-view" aria-label="Pupil status">
+        <div class="panel-head">
           <h2>Status</h2>
-          <p id="statusText">Loading status...</p>
-        </section>
-
-        <section class="panel">
-          <h3>Voice</h3>
-          <p>
-            <label><input id="voiceToggle" type="checkbox"> Enable Pupil voice preference</label>
-          </p>
-        </section>
-
-        <section class="panel">
-          <h3>Activity</h3>
-          <div id="events" class="events" aria-live="polite">Waiting for events...</div>
-        </section>
-
-        <section class="panel">
-          <h3>Design rule</h3>
-          <p>Sensei follows terminal conventions. Pupil follows browser conventions. Same product, correct surface behavior.</p>
-        </section>
-      </aside>
-    </section>
-  </main>
+          <div><button type="button" class="ghost-btn" id="statusRefresh">Refresh</button></div>
+        </div>
+        <div style="padding: 16px; overflow: auto; display: grid; gap: 14px;">
+          <div class="status-grid">
+            <div class="card">
+              <h3>System</h3>
+              <p id="statusText">Loading status...</p>
+            </div>
+            <div class="card">
+              <h3>Voice</h3>
+              <p><label class="voice-label"><input id="voiceToggle" type="checkbox"> Enable Pupil voice preference</label></p>
+            </div>
+            <div class="card">
+              <h3>Metrics</h3>
+              <p id="metricsText">Loading metrics...</p>
+            </div>
+            <div class="card">
+              <h3>Design rule</h3>
+              <p>Sensei follows terminal conventions. Pupil follows browser conventions. Same product family, correct surface behavior.</p>
+            </div>
+          </div>
+          <div class="card">
+            <h3>Activity</h3>
+            <div id="events" class="events" aria-live="polite">Waiting for events...</div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
 
   <dialog id="shortcutsDialog" aria-labelledby="shortcutsTitle">
     <div class="dialog-body">
       <h2 id="shortcutsTitle">Pupil Browser Shortcuts</h2>
-      <p class="tagline">
-        Pupil is not a terminal. It keeps the controls your browser, phone, and
-        operating system already provide.
-      </p>
+      <p class="kv">Pupil is not a terminal. It keeps the controls your browser, phone, and OS already provide.</p>
       <div class="shortcut-grid">
-        <div class="panel"><kbd>Tab</kbd> next control</div>
-        <div class="panel"><kbd>Shift</kbd> + <kbd>Tab</kbd> previous control</div>
-        <div class="panel"><kbd>Ctrl</kbd> + <kbd>C</kbd> copy selected text</div>
-        <div class="panel"><kbd>Ctrl</kbd> + <kbd>V</kbd> paste into input</div>
-        <div class="panel"><kbd>Right click</kbd> browser context menu</div>
-        <div class="panel"><kbd>Mouse wheel</kbd> or touch scrolls the page</div>
-        <div class="panel"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> send message</div>
-        <div class="panel"><kbd>Esc</kbd> close this dialog</div>
+        <div class="panel-mini"><kbd>Tab</kbd> next control</div>
+        <div class="panel-mini"><kbd>Shift</kbd> + <kbd>Tab</kbd> previous control</div>
+        <div class="panel-mini"><kbd>Ctrl</kbd> + <kbd>C</kbd> copy selected text</div>
+        <div class="panel-mini"><kbd>Ctrl</kbd> + <kbd>V</kbd> paste into input</div>
+        <div class="panel-mini"><kbd>Right click</kbd> browser context menu</div>
+        <div class="panel-mini"><kbd>Mouse wheel</kbd> or touch scrolls the page</div>
+        <div class="panel-mini"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> send message</div>
+        <div class="panel-mini"><kbd>/</kbd> open slash commands</div>
+        <div class="panel-mini"><kbd>Esc</kbd> close this dialog</div>
       </div>
-      <div class="dialog-actions" style="margin-top: 16px;">
-        <button type="button" id="closeShortcuts">Close</button>
+      <div class="dialog-actions">
+        <button type="button" class="ghost-btn" id="closeShortcuts">Close</button>
       </div>
     </div>
   </dialog>
@@ -563,21 +730,152 @@
   <script>
     const state = {
       mode: "plan",
-      eventCount: 0
+      eventCount: 0,
+      view: "chat",
+      theme: localStorage.getItem("pupil-theme") || "black-belt",
+      modelOverride: "",
+      models: { providers: [], models: [] },
+      modelsProvider: "",
+      skills: [],
+      mcpLoaded: false,
+      sessionId: "",
+      termHistory: [],
+      termHistIdx: -1,
+      termBusy: false
     };
 
-    const healthText = document.querySelector("#healthText");
-    const modeText = document.querySelector("#modeText");
-    const modelText = document.querySelector("#modelText");
-    const statusText = document.querySelector("#statusText");
-    const messages = document.querySelector("#messages");
-    const events = document.querySelector("#events");
-    const form = document.querySelector("#chatForm");
-    const promptBox = document.querySelector("#prompt");
-    const sendButton = document.querySelector("#sendButton");
-    const voiceToggle = document.querySelector("#voiceToggle");
-    const shortcutsDialog = document.querySelector("#shortcutsDialog");
+    const $ = (sel) => document.querySelector(sel);
+    const healthText = $("#healthText"), modeText = $("#modeText"), modelText = $("#modelText");
+    const statusText = $("#statusText"), messages = $("#messages"), events = $("#events");
+    const form = $("#chatForm"), promptBox = $("#prompt"), sendButton = $("#sendButton");
+    const voiceToggle = $("#voiceToggle"), shortcutsDialog = $("#shortcutsDialog");
+    const healthDot = $("#healthDot"), modelSelect = $("#modelSelect");
+    const slashPalette = $("#slashPalette");
+    const termOut = $("#termOut"), termInput = $("#termInput"), termRun = $("#termRun");
 
+    /* ── Themes (belt system) ── */
+    const THEMES = ["white-belt", "yellow-belt", "blue-belt", "green-belt", "purple-belt", "brown-belt", "black-belt"];
+    function setTheme(name) {
+      if (!THEMES.includes(name)) name = "black-belt";
+      state.theme = name;
+      document.documentElement.dataset.theme = name;
+      localStorage.setItem("pupil-theme", name);
+      document.querySelectorAll("[data-theme-set]").forEach((b) => {
+        b.classList.toggle("active", b.dataset.themeSet === name);
+      });
+    }
+    document.querySelectorAll("[data-theme-set]").forEach((b) => {
+      b.addEventListener("click", () => setTheme(b.dataset.themeSet));
+    });
+    setTheme(state.theme);
+
+    /* ── Panel router ── */
+    function showView(name) {
+      state.view = name;
+      document.querySelectorAll(".panel-view").forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
+      document.querySelectorAll(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.view === name));
+      localStorage.setItem("pupil-view", name);
+      if (name === "skills" && !state.skills.length) loadSkills();
+      if (name === "models" && !state.modelsProvider) loadModels(state.modelsProvider);
+      if (name === "mcp" && !state.mcpLoaded) loadMcp(false);
+    }
+    document.querySelectorAll(".nav-item").forEach((n) => {
+      n.addEventListener("click", () => showView(n.dataset.view));
+    });
+    showView(localStorage.getItem("pupil-view") || "chat");
+
+    /* ── Sidebar collapse toggle ── */
+    const sidebar = document.querySelector(".sidebar");
+    const collapseGlyph = document.querySelector(".sidebar-collapse-glyph");
+    const isCollapsed = localStorage.getItem("pupil-sidebar-collapsed") === "true";
+    if (isCollapsed) sidebar.classList.add("collapsed");
+    collapseGlyph.addEventListener("click", () => {
+      sidebar.classList.toggle("collapsed");
+      const collapsed = sidebar.classList.contains("collapsed");
+      localStorage.setItem("pupil-sidebar-collapsed", collapsed);
+    });
+
+    /* ── Chat sessions (commercial-chatbot persistence) ── */
+    // One stable session id per browser tab: server keys history +
+    // ~/.master_ai_chats/pupil_<id>.chat on it. New Chat = new id.
+    state.sessionId = localStorage.getItem("pupil-session-id") || (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + "-" + Math.random().toString(36).slice(2));
+    localStorage.setItem("pupil-session-id", state.sessionId);
+    state.activeSessionFile = "";
+
+    // Strip Master AI's internal prompt wrapper for display only.
+    const unwrap = (s) => String(s || "").replace(/^\[API REQUEST\]\s*source:\s*\S+\s*Branch\s+[A-Z]:\s*/, "");
+    async function loadSessions() {
+      const list = $("#sessionsList");
+      try {
+        const res = await fetch("/sessions", { cache: "no-store" });
+        const data = await res.json();
+        const sessions = data.sessions || [];
+        if (!sessions.length) {
+          list.innerHTML = '<div class="session-row muted">No saved chats yet</div>';
+          return;
+        }
+        list.innerHTML = "";
+        for (const s of sessions) {
+          const row = document.createElement("button");
+          row.type = "button";
+          row.className = "session-row" + (s.file === state.activeSessionFile ? " active" : "");
+          const when = s.ts ? new Date(s.ts).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : (s.date || "");
+          row.innerHTML = `<span class="s-dot"></span><span class="s-name">${unwrap(s.name || s.file).slice(0, 60).replace(/</g, "&lt;") || s.file}</span>` +
+            `<span class="s-meta"><span class="src">${(s.source || "").replace(/</g, "&lt;")}</span><span>${when}</span></span>`;
+          row.title = s.file;
+          row.addEventListener("click", () => openSession(s.file));
+          list.appendChild(row);
+        }
+      } catch (e) {
+        list.innerHTML = `<div class="session-row muted">Sessions unavailable: ${e.message}</div>`;
+      }
+    }
+
+    async function openSession(file) {
+      if (!file) return;
+      try {
+        const res = await fetch("/sessions?file=" + encodeURIComponent(file), { cache: "no-store" });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        messages.innerHTML = "";
+        const msgs = data.messages || [];
+        if (!msgs.length) appendMessage("system", "(empty session)");
+        for (const m of msgs) appendMessage(m.role === "user" ? "user" : "assistant", m.content || "");
+        // Pupil-written sessions rebind this tab so replies continue the
+        // same server-side thread. Sensei's own .chat files load read-only.
+        if (data.format === "chat" && file.startsWith("pupil_") && file.endsWith(".chat")) {
+          const sid = file.slice("pupil_".length, -".chat".length).replace(/_/g, ":");
+          if (sid && /^[a-z0-9:_-]+$/i.test(sid)) {
+            state.sessionId = sid;
+            localStorage.setItem("pupil-session-id", sid);
+          }
+        } else if (data.format === "json") {
+          state.sessionId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
+          localStorage.setItem("pupil-session-id", state.sessionId);
+        }
+        state.activeSessionFile = file;
+        appendMessage("system", data.format === "chat" && file.startsWith("pupil_")
+          ? "Resumed this chat — new messages continue the same thread."
+          : "Loaded (read-only). New messages start a fresh thread.");
+        document.querySelectorAll(".session-row").forEach((r) => r.classList.toggle("active", r.title === file));
+      } catch (e) {
+        appendMessage("system", `Could not open session: ${e.message}`);
+      }
+    }
+
+    function newChat() {
+      state.sessionId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + "-" + Math.random().toString(36).slice(2);
+      localStorage.setItem("pupil-session-id", state.sessionId);
+      state.activeSessionFile = "";
+      messages.innerHTML = "";
+      appendMessage("system", "New chat started. Saved automatically on the server as you talk.");
+      document.querySelectorAll(".session-row").forEach((r) => r.classList.remove("active"));
+      loadSessions();
+    }
+    $("#newChatButton").addEventListener("click", newChat);
+    $("#sessionsRefresh").addEventListener("click", loadSessions);
+
+    /* ── Messages ── */
     function appendMessage(role, text) {
       const node = document.createElement("div");
       node.className = `message ${role}`;
@@ -589,10 +887,6 @@
     function setModeButtons(mode) {
       state.mode = mode || "plan";
       modeText.textContent = state.mode;
-      // P2-followup (2026-05-11): also stamp the mode on <body> so the
-      // scrollbar CSS rules below can tint the thumb to the stoplight
-      // accent (Plan red / Review amber / Auto green). Matches Sensei's
-      // _MODE_ACCENT — both surfaces now feel like one product.
       document.body.dataset.mode = state.mode;
       document.querySelectorAll("[data-mode]").forEach((button) => {
         button.setAttribute("aria-pressed", button.dataset.mode === state.mode ? "true" : "false");
@@ -610,11 +904,32 @@
         healthText.textContent = health.ollama || "unknown";
         modelText.textContent = status.model || health.model || "master-ai";
         setModeButtons(status.mode || "plan");
+        healthDot.style.background = health.ok ? "var(--auto)" : "var(--plan)";
         const mem = status.mem || {};
         statusText.textContent = `Memory facts: ${status.memory_facts ?? 0}. Last route: ${status.last_route || "none"}. RAM available: ${mem.available_mb ?? "?"} MB.`;
+        const loaded = status.loaded_models || [];
+        if (loaded.length) {
+          statusText.textContent += ` Loaded: ${loaded.map((m) => m.name).join(", ")}.`;
+        }
       } catch (error) {
         healthText.textContent = "offline";
+        healthDot.style.background = "var(--plan)";
         statusText.textContent = `Status failed: ${error.message}`;
+      }
+    }
+
+    async function loadMetrics() {
+      try {
+        const res = await fetch("/metrics", { cache: "no-store" });
+        const m = await res.json();
+        const bits = [];
+        if (m.routes) bits.push(`routes: ${Object.entries(m.routes).map(([k, v]) => `${k}=${v}`).join(" · ")}`);
+        if (typeof m.total_calls === "number") bits.push(`total calls: ${m.total_calls}`);
+        if (typeof m.blocked === "number") bits.push(`blocked: ${m.blocked}`);
+        if (typeof m.fallbacks === "number") bits.push(`fallbacks: ${m.fallbacks}`);
+        $("#metricsText").textContent = bits.length ? bits.join(" · ") : JSON.stringify(m).slice(0, 220);
+      } catch (error) {
+        $("#metricsText").textContent = `metrics failed: ${error.message}`;
       }
     }
 
@@ -635,16 +950,18 @@
       appendMessage("user", prompt);
       appendMessage("system", "Pupil is waiting for Master AI...");
       try {
+        const body = { prompt, mode: state.mode, session_id: state.sessionId, source: "pupil" };
+        if (state.modelOverride) body.model = state.modelOverride;
         const res = await fetch("/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt, mode: state.mode })
+          body: JSON.stringify(body)
         });
-        const body = await res.json();
+        const data = await res.json();
         messages.lastElementChild.remove();
-        if (!res.ok) throw new Error(body.error || "chat failed");
-        appendMessage("assistant", body.reply || "(empty reply)");
-        appendMessage("system", `Route: ${body.route || "unknown"} | Model: ${body.model || "unknown"} | ${body.latency_ms ?? 0} ms`);
+        if (!res.ok) throw new Error(data.error || "chat failed");
+        appendMessage("assistant", data.reply || "(empty reply)");
+        appendMessage("system", `Route: ${data.route || "unknown"} | Model: ${data.model || "unknown"} | ${data.latency_ms ?? 0} ms`);
         loadStatus();
       } catch (error) {
         messages.lastElementChild.remove();
@@ -655,6 +972,343 @@
       }
     }
 
+    /* ── Slash commands ── */
+    const SLASH_LOCAL = [
+      { cmd: "/plan",      desc: "Set mode: Plan",     scope: "local", run: () => setMode("plan") },
+      { cmd: "/review",    desc: "Set mode: Review",   scope: "local", run: () => setMode("review") },
+      { cmd: "/auto",      desc: "Set mode: Auto",     scope: "local", run: () => setMode("auto") },
+      { cmd: "/theme",     desc: "Switch theme",       scope: "local", args: THEMES, run: (arg) => setTheme(arg) },
+      { cmd: "/clear",     desc: "Clear conversation", scope: "local", run: () => { messages.innerHTML = ""; appendMessage("system", "Conversation cleared in this browser tab only."); } },
+      { cmd: "/shortcuts", desc: "Keyboard shortcuts", scope: "local", run: () => shortcutsDialog.showModal() },
+      { cmd: "/sessions",   desc: "Reload saved chats",  scope: "local", run: () => { showView("chat"); loadSessions(); } },
+      { cmd: "/terminal",  desc: "Go to Terminal panel", scope: "nav", run: () => showView("terminal") },
+      { cmd: "/skills",    desc: "Go to Skills panel", scope: "nav",   run: () => showView("skills") },
+      { cmd: "/models",    desc: "Go to Models panel", scope: "nav",   run: () => showView("models") },
+      { cmd: "/status",    desc: "Go to Status panel", scope: "nav",   run: () => showView("status") }
+    ];
+
+    let slashItems = [], slashIdx = 0;
+
+    function slashMatches(value) {
+      const v = value.trim().toLowerCase();
+      if (!v.startsWith("/")) return null;
+      const token = v.split(/\s+/)[0];
+      let out = [];
+      for (const s of SLASH_LOCAL) {
+        if (s.args && (v === "/theme" || v.startsWith("/theme "))) {
+          for (const a of s.args) {
+            if (("/theme " + a).startsWith(v)) out.push({ cmd: `/theme ${a}`, desc: "Theme", scope: "local", run: () => setTheme(a) });
+          }
+          continue;
+        }
+        if (s.cmd.startsWith(token)) out.push(s);
+      }
+      return { items: out, passthrough: out.length === 0 };
+    }
+
+    function renderSlashPalette(value) {
+      const m = slashMatches(value);
+      if (!m) { slashPalette.classList.remove("open"); slashPalette.innerHTML = ""; slashItems = []; return; }
+      if (m.passthrough) {
+        slashPalette.classList.add("open");
+        slashPalette.innerHTML = `<div class="slash-empty">No local command match — this will be sent to Master AI as a message.</div>
+          <div class="slash-foot"><span>Enter = send</span><span>Esc = dismiss</span></div>`;
+        slashItems = [{ passthrough: true }];
+        slashIdx = 0;
+        return;
+      }
+      slashItems = m.items;
+      slashIdx = Math.min(slashIdx, Math.max(0, slashItems.length - 1));
+      slashPalette.classList.add("open");
+      slashPalette.innerHTML = slashItems.map((s, i) =>
+        `<div class="slash-item ${i === slashIdx ? "selected" : ""}" data-i="${i}" role="option">
+           <code>${s.cmd}</code><span class="desc">${s.desc}</span><span class="scope">${s.scope}</span>
+         </div>`).join("") +
+        `<div class="slash-foot"><span>↑↓ move · Tab/Enter run · Esc dismiss</span><span>other /commands go to Master AI</span></div>`;
+      slashPalette.querySelectorAll(".slash-item").forEach((el) => {
+        el.addEventListener("click", () => runSlash(parseInt(el.dataset.i, 10)));
+      });
+    }
+
+    function runSlash(i) {
+      const item = slashItems[i];
+      slashPalette.classList.remove("open");
+      if (!item) return;
+      if (item.passthrough) {
+        const text = promptBox.value.trim();
+        promptBox.value = "";
+        if (text) sendChat(text);
+        return;
+      }
+      promptBox.value = "";
+      Promise.resolve(item.run()).catch((e) => appendMessage("system", `Command failed: ${e.message}`));
+    }
+
+    promptBox.addEventListener("input", () => { slashIdx = 0; renderSlashPalette(promptBox.value); });
+    promptBox.addEventListener("keydown", (event) => {
+      if (slashPalette.classList.contains("open") && slashItems.length) {
+        if (event.key === "ArrowDown") { event.preventDefault(); slashIdx = (slashIdx + 1) % slashItems.length; renderSlashPalette(promptBox.value); return; }
+        if (event.key === "ArrowUp") { event.preventDefault(); slashIdx = (slashIdx - 1 + slashItems.length) % slashItems.length; renderSlashPalette(promptBox.value); return; }
+        if (event.key === "Tab") { event.preventDefault(); runSlash(slashIdx); return; }
+        if (event.key === "Enter" && !event.ctrlKey && !event.metaKey && slashItems[slashIdx] && slashItems[slashIdx].passthrough !== true) { event.preventDefault(); runSlash(slashIdx); return; }
+        if (event.key === "Escape") { event.preventDefault(); slashPalette.classList.remove("open"); return; }
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+        event.preventDefault();
+        form.requestSubmit();
+      }
+    });
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest(".composer-wrap")) slashPalette.classList.remove("open");
+    });
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const prompt = promptBox.value.trim();
+      if (!prompt) return;
+      slashPalette.classList.remove("open");
+      promptBox.value = "";
+      sendChat(prompt);
+    });
+
+    /* ── Model selection (2-step live picker, same as Sensei TUI) ── */
+    let modelsView = { provider: "" };
+
+    async function loadModels(provider) {
+      modelsView.provider = provider || "";
+      state.modelsProvider = modelsView.provider;
+      try {
+        const qs = modelsView.provider ? `?provider=${encodeURIComponent(modelsView.provider)}` : "";
+        const res = await fetch(`/models${qs}`, { cache: "no-store" });
+        const m = await res.json();
+        const activeName = m.active || "";
+        $("#autoTag").textContent = (m.auto ? "ACTIVE" : "CLAF");
+        $("#autoCard").classList.toggle("selected", !!m.auto);
+        $("#autoCard").onclick = () => pinModel(activeName, !!activeName);
+
+        if (!modelsView.provider) {
+          // Step 1: providers (only ones with keys configured / Ollama live)
+          $("#modelsSectionTitle").textContent = "Providers with keys configured";
+          $("#modelsBack").style.display = "none";
+          $("#modelCards").style.display = "none";
+          $("#providerCards").style.display = "";
+          $("#providerCards").innerHTML = (m.providers || []).map((p) => `
+            <div class="card" style="cursor:pointer;" data-provider="${p.key}">
+              <h3>${p.display} ${p.key === "local" ? '<span class="tag">local</span>' : '<span class="tag">cloud</span>'}</h3>
+              <p>${p.hint || ""}</p>
+              <div class="card-foot">${activeName.startsWith(p.key + "::") ? '<span class="tag accent">PINNED HERE</span>' : ""}<button type="button">Browse</button></div>
+            </div>`).join("");
+          document.querySelectorAll("[data-provider]").forEach((card) => {
+            card.addEventListener("click", () => loadModels(card.dataset.provider));
+          });
+          $("#modelCards").innerHTML = "";
+        } else {
+          // Step 2: the chosen provider's live catalog
+          $("#modelsSectionTitle").textContent = `Catalog — ${modelsView.provider}`;
+          $("#modelsBack").style.display = "";
+          $("#providerCards").style.display = "none";
+          $("#modelCards").style.display = "";
+          $("#modelCards").innerHTML = (m.models || []).map((row) => `
+            <div class="card model-card ${activeName === row.pin ? "selected" : ""}" data-model="${row.pin}">
+              <h3 style="overflow-wrap:anywhere;">${row.name}</h3>
+              <p>${row.hint || ""}</p>
+              <div class="card-foot">${activeName === row.pin ? '<span class="tag accent">PINNED</span>' : ""}<button type="button">${activeName === row.pin ? "Unpin" : "Pin"}</button></div>
+            </div>`).join("");
+          document.querySelectorAll(".model-card").forEach((card) => {
+            card.addEventListener("click", () => pinModel(card.dataset.model, activeName === card.dataset.model));
+          });
+          refreshComposerSelect((m.models || []).map((r) => ({ pin: r.pin, name: r.name })));
+        }
+      } catch (error) {
+        appendMessage("system", `Model list failed: ${error.message}`);
+      }
+    }
+    $("#modelsBack").addEventListener("click", () => loadModels(""));
+    $("#modelsRefresh").addEventListener("click", () => loadModels(modelsView.provider));
+
+    function refreshComposerSelect(rows) {
+      // Composer per-message select: Auto + current provider's live catalog.
+      const cur = state.modelOverride;
+      modelSelect.innerHTML = `<option value="">Auto (router)</option>` +
+        (rows || []).map((r) => `<option value="${r.pin}">${r.name}</option>`).join("");
+      modelSelect.value = cur;
+      if (modelSelect.value !== cur) { modelSelect.value = ""; state.modelOverride = ""; }
+    }
+
+    async function pinModel(name, isPinned) {
+      const next = isPinned ? "" : name;
+      try {
+        const res = await fetch("/models", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: next })
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || "pin failed");
+        appendMessage("system", next ? `Model pinned: ${next}.` : "Model pin cleared — auto-routing restored.");
+        loadModels(modelsView.provider);
+        loadStatus();
+      } catch (error) {
+        appendMessage("system", `Model pin failed: ${error.message}`);
+      }
+    }
+
+    modelSelect.addEventListener("change", () => {
+      state.modelOverride = modelSelect.value;
+      appendMessage("system", state.modelOverride
+        ? `This conversation now requests model: ${state.modelOverride} (per-message).`
+        : "Model override cleared — router decides per message.");
+    });
+
+    /* ── Skills panel ── */
+    /* ── MCP (headless, server-side via Sensei's catalog) ── */
+    async function loadMcp(probe) {
+      const box = $("#mcpServers");
+      state.mcpLoaded = true;
+      box.innerHTML = `<div class="card"><p>${probe ? "Probing servers…" : "Loading MCP catalog…"}</p></div>`;
+      try {
+        const res = await fetch("/mcp" + (probe ? "?probe=1" : ""), { cache: "no-store" });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        const servers = data.servers || [];
+        $("#mcpCount").textContent = String(servers.length);
+        if (!servers.length) {
+          box.innerHTML = `<div class="card"><h3>No MCP servers configured</h3>
+            <p>Add one from the Sensei TUI: <b>mcp add &lt;name&gt; &lt;command|url&gt;</b> — it lands in <b>~/.master_ai_mcp/servers.json</b> and shows up here and in auto-mode dispatch.</p></div>`;
+          return;
+        }
+        box.innerHTML = "";
+        for (const s of servers) {
+          const card = document.createElement("div");
+          card.className = "card";
+          const valid = s.valid === true ? "✅" : s.valid === false ? "❌" : "•";
+          const tools = (s.tool_names || []);
+          card.innerHTML = `
+            <h3>${valid} ${s.name.replace(/</g, "&lt;")} <span class="tag">${s.transport || "stdio"}</span>${s.enabled === false ? ' <span class="tag">disabled</span>' : ""}</h3>
+            <p class="mono-s" style="word-break: break-all;">${(s.target || "").replace(/</g, "&lt;")}</p>
+            <p>${s.problems && s.problems.length ? "⚠ " + s.problems.map((p) => String(p).replace(/</g, "&lt;")).join("; ") : tools.length + " tool(s)"}</p>
+            <div class="mcp-actions">
+              <button type="button" class="ghost-btn" data-mcp-list="${s.name}">tools/list</button>
+              <button type="button" class="ghost-btn" data-mcp-call="${s.name}" data-mcp-tool="">run tool…</button>
+            </div>
+            <div class="mcp-out mono-s" data-mcp-out="${s.name}"></div>`;
+          box.appendChild(card);
+        }
+        box.querySelectorAll("[data-mcp-list]").forEach((b) => b.addEventListener("click", async () => {
+          const out = box.querySelector(`[data-mcp-out="${b.dataset.mcpList}"]`);
+          out.textContent = "…";
+          const r = await fetch("/mcp", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ server: b.dataset.mcpList, method: "tools/list" }) });
+          const d = await r.json();
+          out.textContent = d.error ? "error: " + d.error : JSON.stringify(d.result, null, 1).slice(0, 1200);
+        }));
+        box.querySelectorAll("[data-mcp-call]").forEach((b) => b.addEventListener("click", async () => {
+          const srv = b.dataset.mcpCall;
+          const tool = prompt(`Tool name on "${srv}":`);
+          if (!tool) return;
+          let args = {};
+          const raw = prompt("Tool arguments as JSON (Enter for {}):", "{}");
+          if (raw && raw.trim()) { try { args = JSON.parse(raw); } catch { alert("bad JSON"); return; } }
+          const out = box.querySelector(`[data-mcp-out="${srv}"]`);
+          out.textContent = "…";
+          const r = await fetch("/mcp", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ server: srv, method: "tools/call", params: { name: tool, arguments: args } }) });
+          const d = await r.json();
+          out.textContent = d.error ? "error: " + d.error : JSON.stringify(d.result, null, 1).slice(0, 1200);
+        }));
+      } catch (e) {
+        box.innerHTML = `<div class="card"><h3>MCP unavailable</h3><p>${e.message}</p></div>`;
+        state.mcpLoaded = false;
+      }
+    }
+    $("#mcpRefresh").addEventListener("click", () => loadMcp(false));
+    $("#mcpProbe").addEventListener("click", () => loadMcp(true));
+
+    async function loadSkills() {
+      try {
+        const res = await fetch("/skills", { cache: "no-store" });
+        const m = await res.json();
+        state.skills = m.skills || [];
+        $("#skillCount").textContent = String(state.skills.length);
+        $("#skillsGrid").innerHTML = state.skills.map((s) => `
+          <div class="card">
+            <h3>${s.name} ${s.version ? `<span class="tag">v${s.version}</span>` : ""}</h3>
+            <p>${s.description || "Adapted Master AI skill."}</p>
+            <div class="card-foot"><button type="button" data-skill="${s.name}">Run in chat</button></div>
+          </div>`).join("");
+        document.querySelectorAll("[data-skill]").forEach((b) => {
+          b.addEventListener("click", () => {
+            showView("chat");
+            promptBox.value = `skill run ${b.dataset.skill} `;
+            promptBox.focus();
+          });
+        });
+      } catch (error) {
+        $("#skillsGrid").innerHTML = `<div class="card"><h3>Skills unavailable</h3><p>${error.message}</p></div>`;
+      }
+    }
+    $("#skillsRefresh").addEventListener("click", loadSkills);
+    $("#modelsRefresh").addEventListener("click", loadModels);
+    $("#statusRefresh").addEventListener("click", () => { loadStatus(); loadMetrics(); });
+
+    /* ── Terminal panel ── */
+    function termAppend(html) {
+      termOut.innerHTML += html;
+      termOut.scrollTop = termOut.scrollHeight;
+    }
+    function esc(s) {
+      return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+    async function runTerm() {
+      const cmd = termInput.value.trim();
+      if (!cmd || state.termBusy) return;
+      state.termBusy = true;
+      termInput.disabled = true; termRun.disabled = true;
+      state.termHistory.push(cmd);
+      state.termHistIdx = state.termHistory.length;
+      termAppend(`<span class="cmd">$ ${esc(cmd)}</span>\n`);
+      termInput.value = "";
+      try {
+        const res = await fetch("/exec", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cmd })
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || "exec failed");
+        if (body.stdout) termAppend(esc(body.stdout) + "\n");
+        if (body.stderr) termAppend(`<span class="stderr">${esc(body.stderr)}</span>\n`);
+        const ok = body.exit_code === 0;
+        termAppend(`<span class="${ok ? "exit-ok" : "exit-bad"}">[exit ${body.exit_code}]</span>\n\n`);
+      } catch (error) {
+        termAppend(`<span class="stderr">error: ${esc(error.message)}</span>\n\n`);
+      } finally {
+        state.termBusy = false;
+        termInput.disabled = false; termRun.disabled = false;
+        termInput.focus();
+      }
+    }
+    termRun.addEventListener("click", runTerm);
+    termInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") { event.preventDefault(); runTerm(); }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        if (state.termHistory.length) {
+          state.termHistIdx = Math.max(0, state.termHistIdx - 1);
+          termInput.value = state.termHistory[state.termHistIdx] || "";
+        }
+      }
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        state.termHistIdx = Math.min(state.termHistory.length, state.termHistIdx + 1);
+        termInput.value = state.termHistory[state.termHistIdx] || "";
+      }
+    });
+    $("#termClear").addEventListener("click", () => {
+      termOut.textContent = "Pupil terminal · commands run via stt_server /exec (bash, 60s cap, home dir)\n";
+    });
+
+    /* ── Events (SSE) ── */
     function connectEvents() {
       if (!("EventSource" in window)) {
         events.textContent = "EventSource not supported by this browser.";
@@ -671,34 +1325,20 @@
       source.onerror = () => logEvent("events", "connection issue; browser will retry");
     }
 
-    form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      const prompt = promptBox.value.trim();
-      if (!prompt) return;
-      promptBox.value = "";
-      sendChat(prompt);
-    });
-
-    promptBox.addEventListener("keydown", (event) => {
-      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-        event.preventDefault();
-        form.requestSubmit();
-      }
-    });
-
+    /* ── Mode buttons / clear / shortcuts / voice ── */
     document.querySelectorAll("[data-mode]").forEach((button) => {
       button.addEventListener("click", () => setMode(button.dataset.mode).catch((error) => {
         appendMessage("system", `Mode change failed: ${error.message}`);
       }));
     });
 
-    document.querySelector("#clearButton").addEventListener("click", () => {
+    $("#clearButton").addEventListener("click", () => {
       messages.innerHTML = "";
       appendMessage("system", "Conversation cleared in this browser tab only.");
     });
 
-    document.querySelector("#shortcutsButton").addEventListener("click", () => shortcutsDialog.showModal());
-    document.querySelector("#closeShortcuts").addEventListener("click", () => shortcutsDialog.close());
+    $("#shortcutsButton").addEventListener("click", () => shortcutsDialog.showModal());
+    $("#closeShortcuts").addEventListener("click", () => shortcutsDialog.close());
     shortcutsDialog.addEventListener("cancel", (event) => {
       event.preventDefault();
       shortcutsDialog.close();
@@ -724,8 +1364,14 @@
     }
 
     loadStatus();
+    loadModels();
+    loadSkills();
+    loadMetrics();
+    loadSessions();
     connectEvents();
     setInterval(loadStatus, 15000);
+    setInterval(loadMetrics, 60000);
+    setInterval(loadSessions, 45000);
   </script>
 </body>
 </html>
