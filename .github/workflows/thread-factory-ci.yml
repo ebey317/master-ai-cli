@@ -1,0 +1,27 @@
+name: thread-factory CI
+on:
+  push:
+    paths: ["thread_factory.py", "test_thread_factory*.py", "pyproject.toml"]
+  pull_request:
+    paths: ["thread_factory.py", "test_thread_factory*.py", "pyproject.toml"]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      # mypy pinned to match .pre-commit-config.yaml's version (v1.10.0) --
+      # an unpinned second mypy in CI is exactly the drift risk this repo's
+      # main ci.yml documents having removed on 2026-09-25 (two toolchains
+      # silently disagreeing on what's a type error). --strict here is a
+      # different, deliberately stricter check than the shared lenient
+      # pre-commit hook, not a duplicate of it -- but the version stays pinned.
+      - run: pip install pytest pytest-cov "mypy==1.10.0"
+      # --follow-imports=silent: thread_factory.py lazily imports the repo's
+      # own harvest.py/master_ai.py as optional integrations; both predate
+      # strict typing, and without this flag --strict follows the import
+      # graph into their unrelated, pre-existing issues.
+      - run: python3 -m mypy --strict --follow-imports=silent thread_factory.py
+      - run: python3 -m pytest test_thread_factory.py test_thread_factory_publish.py -v
