@@ -7348,11 +7348,83 @@ MASTER_AI_IDENTITY_SYSTEM = (
 )
 
 
+# Cache for the capability block. Rebuilt at most every 10 minutes: a scan
+# forks and execs probes, and it does not change because the user typed.
+_SYS_CAP_CACHE = {"ts": 0.0, "block": ""}
+_SYS_CAP_TTL_S = 600.0
+
+
+# ── `syscap` REPL command (2026-09-28) ───────────────────────────────────
+def _handle_syscap_cmd(lo, cmd):
+    """`syscap` / `syscap refresh` / `syscap show` — what this box has.
+
+    The scan file is written by system_capability_scan.discover() and read
+    by _inject_system_capabilities() on a 10-minute TTL. `refresh` forces a
+    re-probe, which matters after installing something: until the TTL lapses
+    the prompt still describes the machine as it was.
+    """
+    if lo not in ("syscap", "syscap show", "syscap refresh"):
+        return False
+    try:
+        import system_capability_scan as _scan
+    except Exception as e:
+        print(f"  {R}system_capability_scan unavailable: {e}{X}")
+        return True
+
+    if lo == "syscap refresh":
+        caps = _scan.discover()
+        _scan.save(caps)
+        _inject_system_capabilities(force=True)
+        print(f"  {G}re-scanned this machine{X}")
+    print(f"  {D}{_scan.format_prompt_block(_scan.load())}{X}")
+    return True
+
+
+def _inject_system_capabilities(force=False):
+    """Prompt block describing what THIS machine actually has.
+
+    system_capability_scan.py probes the real box — OS, arch, shell, desktop
+    session, and which of a long list of commands and package managers
+    actually exist — and renders that as a compact block. Without it the
+    model guesses at a shell, a package manager, or a binary, and is wrong
+    about whatever this particular machine does not have.
+
+    The scan writes ~/.claf/system_capabilities.json; this only READS it, so
+    a refresh elsewhere is picked up within the TTL. A missing or unreadable
+    file costs one prompt block, not the turn — never raises, and keeps the
+    last good block rather than dropping the capability entirely.
+    """
+    now = time.time()
+    if not force and _SYS_CAP_CACHE["block"] and (now - _SYS_CAP_CACHE["ts"] < _SYS_CAP_TTL_S):
+        return _SYS_CAP_CACHE["block"]
+    try:
+        import system_capability_scan as _scan
+
+        block = _scan.format_prompt_block(_scan.load())
+    except Exception as e:
+        log(f"SYSTEM_CAPABILITY_BLOCK_ERROR: {e}")
+        return _SYS_CAP_CACHE["block"]
+    _SYS_CAP_CACHE["ts"] = now
+    _SYS_CAP_CACHE["block"] = block
+    return block
+
+
+def _system_prefix():
+    """Identity plus what this machine has, as one system-prompt head."""
+    parts = [MASTER_AI_IDENTITY_SYSTEM]
+    caps = _inject_system_capabilities()
+    if caps:
+        parts.append("THIS MACHINE (probed, not assumed):\n" + caps)
+    return "\n\n".join(parts)
+
+
 def _inject_identity(messages):
+    prefix = _system_prefix()
     if messages and messages[0].get("role") == "system":
-        merged = MASTER_AI_IDENTITY_SYSTEM + "\n\n" + messages[0].get("content", "")
-        return [{"role": "system", "content": merged}] + list(messages[1:])
-    return [{"role": "system", "content": MASTER_AI_IDENTITY_SYSTEM}] + list(messages)
+        return [
+            {"role": "system", "content": prefix + "\n\n" + messages[0].get("content", "")}
+        ] + list(messages[1:])
+    return [{"role": "system", "content": prefix}] + list(messages)
 
 
 # 2026-09-07: continuation feature — every direct-provider function just
@@ -28081,6 +28153,9 @@ def main():
         # `mesh ask <peer> <q...>`  → POST /ask to a peer, get its Ollama's reply
         # Use `self` as the peer name to loopback-test your own /ask pipe.
         if _handle_mesh_cmd(lo, cmd):
+            continue
+
+        if _handle_syscap_cmd(lo, cmd):
             continue
 
         # Legacy alias retained for compatibility, now dependency-free.
