@@ -39,6 +39,7 @@ setup(
         "sensei_native_host",
         "sensei_reasoning_loop",
         "sensei_reflect",
+        "sensei_tables",
         "sensei_tool_detector",
         "sensei_tui",
         "setup_email",
