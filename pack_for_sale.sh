@@ -45,15 +45,25 @@ rsync -a \
 
 # 2. Strip all lines containing literal secrets / API keys patterns
 #    This is a safety pass; real keys should not be in source anyway.
+#    2026-09-29: the patterns are length-qualified (16-20+ key-body chars
+#    after each prefix). Bare prefixes deleted install.sh's own key
+#    documentation — the prompt "(sk-or-v1-...)" and the guard
+#    [[ "$key" == sk-or-v1-* ]] — orphaning an `if`'s `fi` and shipping a
+#    syntactically broken installer to the buyer (pack died at the
+#    clean-machine install test with "syntax error near unexpected token
+#    `fi'"). Prefix mentions in prompts/docs are not secrets; real keys
+#    have long bodies and still match. This also stops the scrubber from
+#    deleting its own pattern line out of the staged pack_for_sale.sh.
+_KEY_RE='(sk-ant-[A-Za-z0-9_-]{16,}|sk-or-v1-[A-Za-z0-9]{20,}|sk-proj-[A-Za-z0-9_-]{16,}|gsk_[A-Za-z0-9]{20,}|AIzaSy[A-Za-z0-9_-]{16,}|hf_[A-Za-z0-9]{20,}|xai-[A-Za-z0-9_-]{16,}|nvapi-[A-Za-z0-9-]{20,}|AKIA[A-Z0-9]{16})'
 find "$STAGE_DIR" -type f \( -name "*.py" -o -name "*.sh" -o -name "*.md" -o -name "*.json" -o -name "*.yaml" -o -name "*.yml" -o -name "*.txt" \) \
-  -exec grep -lE "(sk-ant-|sk-or-v1-|sk-proj-|gsk_|AIzaSy|hf_|xai-|nvapi-|AKIA[A-Z0-9]{16})" {} \; 2>/dev/null | while read -r f; do
+  -exec grep -lE "$_KEY_RE" {} \; 2>/dev/null | while read -r f; do
     echo "⚠ Removing suspected secret line from $f"
-    sed -i -E "/(sk-ant-|sk-or-v1-|sk-proj-|gsk_|AIzaSy|hf_|xai-|nvapi-|AKIA[A-Z0-9]{16})/d" "$f"
+    sed -i -E "/${_KEY_RE}/d" "$f"
 done
 
 # 3. Assert no PII/secret leftovers in key files
 leftovers=$(find "$STAGE_DIR" -type f \( -name "*.py" -o -name "*.sh" -o -name "*.md" -o -name "*.json" \) \
-  -exec grep -lE "(sk-ant-|sk-or-v1-|sk-proj-|gsk_|AIzaSy|hf_|xai-|nvapi-|AKIA[A-Z0-9]{16})" {} \; 2>/dev/null || true)
+  -exec grep -lE "$_KEY_RE" {} \; 2>/dev/null || true)
 if [ -n "$leftovers" ]; then
     echo "✗ Secret patterns still found after scrub:"
     echo "$leftovers"
