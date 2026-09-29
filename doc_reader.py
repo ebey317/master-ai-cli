@@ -47,8 +47,10 @@ wrong answer rather than an error:
 from __future__ import annotations
 
 import html.parser
+import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -290,33 +292,54 @@ def _read_markup_text(markup: str) -> str:
 def _soffice_convert(
     binary: str, profile: Path, target: Path, path: Path, to: str, timeout: float
 ) -> str:
-    """One headless conversion. Returns stdout/stderr, never raises."""
+    """One headless conversion. Returns stdout/stderr, never raises.
+
+    `soffice` is a launcher script that forks the real `soffice.bin` worker.
+    subprocess.run(..., timeout=...) only kills the process it started --
+    the launcher -- so on timeout the worker survives as an orphan with no
+    ceiling on how long it runs or how much it writes. This is not
+    hypothetical: it filled 71GB of disk across two orphaned soffice.bin
+    processes on 2026-09-28 before being caught. start_new_session=True
+    puts the whole tree in its own process group so the timeout handler can
+    kill everything in it, not just the launcher.
+    """
+    proc = subprocess.Popen(
+        [
+            binary,
+            f"-env:UserInstallation=file://{profile}",
+            "--headless",
+            "--norestore",
+            "--invisible",
+            "--nolockcheck",
+            "--nodefault",
+            "--nofirststartwizard",
+            "--convert-to",
+            to,
+            "--outdir",
+            str(target),
+            str(path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
     try:
-        result = subprocess.run(
-            [
-                binary,
-                f"-env:UserInstallation=file://{profile}",
-                "--headless",
-                "--norestore",
-                "--invisible",
-                "--nolockcheck",
-                "--nodefault",
-                "--nofirststartwizard",
-                "--convert-to",
-                to,
-                "--outdir",
-                str(target),
-                str(path),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
         return f"TIMEOUT after {timeout:.0f}s"
     except Exception as e:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         return f"{type(e).__name__}: {e}"
-    return (result.stderr or result.stdout or "").strip()
+    return (stderr or stdout or "").strip()
 
 
 def _first_output(target: Path) -> Path | None:
