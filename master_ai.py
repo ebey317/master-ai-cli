@@ -2828,6 +2828,46 @@ def _scrappy_model_present() -> Any:
 
 _DEFAULT_LOCATION_CACHE = None
 
+def _operator_first_name() -> str:
+    """The operator's first name, or '' when no profile is present.
+
+    Used anywhere a prompt or user-facing string would otherwise have to
+    hardcode a particular person's name. An empty result is the honest answer
+    on a fresh install, and callers phrase around it rather than inventing one.
+    """
+    try:
+        with open(os.path.expanduser("~/.master_ai_profile.json")) as f:
+            return (json.load(f).get("personal", {}).get("first_name") or "").strip()
+    except Exception:
+        return ""
+
+
+def _operator_identity() -> Any:
+    """'First Name; contact email' for outbound HTTP User-Agent headers.
+
+    Reads `personal.first_name` / `personal.email` from the same
+    ~/.master_ai_profile.json that `_default_location()` already uses, and
+    degrades to a bare product token when no profile exists.
+
+    Why this exists (2026-09-29): the header used to be a hardcoded literal,
+    `"MasterAI/1.8 (Elijah; contact you@example.com)"`, at every call site. That
+    shipped the original author's name to Wikipedia, arXiv, and every other
+    third party on every request from a stranger's install, and the contact
+    address was a placeholder nobody could reply to. An outbound identifier has
+    to come from the operator's own config or not be sent at all.
+    """
+    name, email = _operator_first_name(), ""
+    try:
+        with open(os.path.expanduser("~/.master_ai_profile.json")) as f:
+            email = (json.load(f).get("personal", {}).get("email") or "").strip()
+    except Exception:
+        pass
+    if not name and not email:
+        return "MasterAI/1.8"
+    parts = [p for p in (name, f"contact {email}" if email else "") if p]
+    return "MasterAI/1.8 (" + "; ".join(parts) + ")"
+
+
 def _default_location() -> Any:
     """'City, ST' from the operator's on-disk profile (~/.master_ai_profile.json),
     for location-dependent web queries (weather, etc.) that don't name a place.
@@ -4676,7 +4716,7 @@ def wikipedia_search(query: Any, max_articles: int=3, timeout: int=8) -> Any:
     try:
         req = urllib.request.Request(
             search_url,
-            headers={"User-Agent": "MasterAI/1.8 (Elijah; contact you@example.com)"},
+            headers={"User-Agent": _operator_identity()},
         )
         with urllib.request.urlopen(req, timeout=timeout) as r:
             hits = json.loads(r.read().decode()).get("query", {}).get("search", [])
@@ -4698,7 +4738,7 @@ def wikipedia_search(query: Any, max_articles: int=3, timeout: int=8) -> Any:
             req = urllib.request.Request(
                 sum_url,
                 headers={
-                    "User-Agent": "MasterAI/1.8 (Elijah; contact you@example.com)"
+                    "User-Agent": _operator_identity()
                 },
             )
             with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -4730,7 +4770,7 @@ def ddg_instant_answer(query: Any, timeout: int=6) -> Any:
     try:
         req = urllib.request.Request(
             url,
-            headers={"User-Agent": "MasterAI/1.8 (Elijah; contact you@example.com)"},
+            headers={"User-Agent": _operator_identity()},
         )
         with urllib.request.urlopen(req, timeout=timeout) as r:
             d = json.loads(r.read().decode())
@@ -5100,7 +5140,8 @@ def _plan_grounding(user_text: str) -> Any:
         return ""
     return (
         "\n\nGROUNDING FACTS (use these to make the plan specific to "
-        "Elijah's actual project, not generic):\n\n" + "\n\n".join(sections) + "\n"
+        f"{_operator_first_name() or 'the operator'}'s actual project, "
+        "not generic):\n\n" + "\n\n".join(sections) + "\n"
     )
 
 def _ollama_ps() -> Any:
@@ -19617,7 +19658,8 @@ def handle(user_text: str, history: list, image_path: Any | None=None, context_p
         f"{project_ctx}"
     )
     CLOUD_SYSTEM = (
-        f"You are Master AI — a task-executing AI service agent built by Elijah, "
+        f"You are Master AI — a task-executing AI service agent built by "
+        f"{_operator_first_name() or 'its operator'}, "
         f"running on your-machine ({os_info}, {arch}).\n"
         f"\nEXECUTION RULE: When the user gives a multi-step task and says 'proceed' or 'proceed all', "
         f"execute the entire task chain autonomously. Do not pause after every file or step to ask permission. "
@@ -24968,31 +25010,6 @@ def _run_with_tui() -> Any:
     if worker_err and isinstance(worker_err[0], KeyboardInterrupt):
         sys.exit(99)
 
-if __name__ == "__main__":
-    try:
-        # CLI flags (-h/--setup/--uninstall/update) must reach main()'s argv
-        # dispatch even though the TUI launches unconditionally otherwise —
-        # without this check they were dead code, silently swallowed by
-        # _run_with_tui() starting the interactive session instead.
-        _CLI_FLAGS = ("-h", "--help", "--setup", "--uninstall", "update", "--update")
-        if any(arg in _CLI_FLAGS for arg in sys.argv[1:]):
-            main()
-        elif _SENSEI_ENABLED and _ensure_sensei_app() is not None:
-            _run_with_tui()
-        else:
-            main()
-    except KeyboardInterrupt:
-        # Final safety net — same reasoning as above, for any Ctrl-C that
-        # reaches all the way up here uncaught (plain non-TUI mode, or a
-        # code path the two handlers above don't cover).
-        try:
-            _bounded_save_session(GLOBAL_HISTORY)
-        except Exception:
-            pass
-        sys.exit(99)
-
-
-
 def _handle_skill_cmd(cmd: str, history: list) -> str:
     """Extracted from `main()` REPL dispatch.
 
@@ -26379,3 +26396,27 @@ def _handle_tinyfish(cmd: str, lo: str) -> str:
         print(f"  {Y}usage: tinyfish [search|fetch|status] ...{X}")
     except Exception as e:
         print(f"  {R}TinyFish command error: {e}{X}")
+
+
+if __name__ == "__main__":
+    try:
+        # CLI flags (-h/--setup/--uninstall/update) must reach main()'s argv
+        # dispatch even though the TUI launches unconditionally otherwise —
+        # without this check they were dead code, silently swallowed by
+        # _run_with_tui() starting the interactive session instead.
+        _CLI_FLAGS = ("-h", "--help", "--setup", "--uninstall", "update", "--update")
+        if any(arg in _CLI_FLAGS for arg in sys.argv[1:]):
+            main()
+        elif _SENSEI_ENABLED and _ensure_sensei_app() is not None:
+            _run_with_tui()
+        else:
+            main()
+    except KeyboardInterrupt:
+        # Final safety net — same reasoning as above, for any Ctrl-C that
+        # reaches all the way up here uncaught (plain non-TUI mode, or a
+        # code path the two handlers above don't cover).
+        try:
+            _bounded_save_session(GLOBAL_HISTORY)
+        except Exception:
+            pass
+        sys.exit(99)
