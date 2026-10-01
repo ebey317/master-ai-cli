@@ -220,6 +220,50 @@ class DirectiveParserTests(unittest.TestCase):
         )
         self.assertEqual(self.calls, [])
 
+    def test_run_directive_wrapped_in_arg_value_tags_is_unwrapped(self):
+        # Reproduced live 2026-09-14 on the real running session
+        # (tmux aoe_Turks_5588e698): the model emits a real colon-ed
+        # RUN directive, but wraps the entire payload in its own
+        # <arg_value>...</arg_value> tags:
+        #     RUN: <arg_value>cd ~/scripts && gh pr list --state all
+        #     --limit 10 2>&1 || echo "GH CLI not available or not
+        #     logged in"</arg_value>
+        # The existing _ARG_XML_TAG_RE truncate-at-first-tag logic
+        # assumed leaked tags always trail AFTER real content, so
+        # truncating "everything before the first tag" wiped the whole
+        # command to "" here (the opening tag is the very first thing
+        # in the payload) -- the directive silently vanished with no
+        # repair attempt, since RUN: already has a colon (has_directives
+        # is True) so the malformed-directive stall detector, which only
+        # fires when it's False, never saw it either.
+        master_ai.process_reply(
+            'RUN: <arg_value>gh pr list --state all --limit 10</arg_value>',
+            [],
+            streamed=False,
+        )
+        self.assertEqual(self.calls, [("run", "gh pr list --state all --limit 10")])
+
+    def test_strip_arg_xml_noise_unwraps_and_truncates(self):
+        # Direct unit coverage of the shared helper (master_ai.py, next
+        # to _ARG_XML_TAG_RE) for both shapes it must handle.
+        # Wrapping shape (opening tag at position 0): unwrap, keep the
+        # middle.
+        self.assertEqual(
+            master_ai._strip_arg_xml_noise("<arg_value>echo hi</arg_value>"),
+            "echo hi",
+        )
+        # Trailing shape (real content first, tag leaks afterward):
+        # truncate at the tag, keep what's before it -- the original,
+        # still-correct behavior for this shape.
+        self.assertEqual(
+            master_ai._strip_arg_xml_noise(
+                "echo hi</arg_value><arg_key>description</arg_key>"
+            ),
+            "echo hi",
+        )
+        # No tag at all: unchanged.
+        self.assertEqual(master_ai._strip_arg_xml_noise("echo hi"), "echo hi")
+
     def test_read_directive_accepts_line_range_and_comment(self):
         probe = Path("/tmp/sensei-read-range-test.txt")
         probe.write_text("alpha\nbeta\ngamma\ndelta\n")
