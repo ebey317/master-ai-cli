@@ -1,1 +1,1 @@
-"""Sensei tool-scripts package (allows relative imports between scoping helpers)."""
+# Ensures scripts/ is a package for imports
