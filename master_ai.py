@@ -93,7 +93,277 @@ from typing import Any
 
 import approval_queue
 import perpetual_review
-from sensei_tables import *  # noqa: F401,F403
+from sensei_tables import (  # noqa: F401
+    _A_APPEAR,
+    _A_AUTO,
+    _A_BOW,
+    _A_PLAN,
+    _A_PUNCH,
+    _A_SAFE,
+    _A_SHURIKEN,
+    _A_VANISH,
+    _ACKNOWLEDGMENT_RESPONSES,
+    _ACTION_VERBS,
+    _ACTIVE_PROFILE_FILE,
+    _AGENT_POLICY_COMMAND_RULES,
+    _AGENT_POLICY_EXFIL_TOKENS,
+    _AGENT_POLICY_REQUEST_RULES,
+    _ANSI_RE,
+    _APP_INSTALLED_RE,
+    _APP_SHAPE_WORDS,
+    _APPROVED_DEFAULT_TTL_S,
+    _APPROVED_GLOBAL_SCOPE,
+    _ARG_XML_TAG_RE,
+    _ATTACHMENT_DOTFILE_SUFFIXES,
+    _ATTACHMENT_SUFFIXES,
+    _AUTO_CONTEXT_FILE_ALIASES,
+    _AUTO_CONTEXT_MAX_FILES,
+    _BARE_KEYWORD_ARG_RE,
+    _BARE_KEYWORD_LINE_RE,
+    _BROWSER_DIRECTIVE_RE,
+    _BROWSER_READONLY_KINDS,
+    _BROWSER_SEP_RE,
+    _CD_SEPARATORS,
+    _CEREBRAS_MODELS_CACHE,
+    _CHAIN_SUDO_ACKS,
+    _CLEANUP_PROTECTED_PATHS,
+    _CLEANUP_SAFE_DELETE_HINTS,
+    _CLOUD_CIRCUITS,
+    _CLOUD_HARD_TIMEOUT,
+    _CLOUD_STORAGE_SERVICE_NAMES,
+    _CODE_SYNTHESIS_ARTIFACT_WORDS,
+    _CODE_SYNTHESIS_VERBS,
+    _COMPACT_KEEP_RECENT,
+    _CRON_INSTALL_REDIRECT_RE,
+    _CRONTAB_INVOCATION_RE,
+    _DEFAULT_FALLBACK_ORDER,
+    _DESKTOP_APP_ALIASES,
+    _DESKTOP_APP_COMMANDS,
+    _DESKTOP_DOC_SUFFIXES,
+    _DESTRUCTIVE_PATTERNS,
+    _DIM,
+    _DIRECTIVE_KEYWORDS_RE,
+    _DIRECTIVE_NAMES,
+    _DOWNLOAD_INSTALL_RE,
+    _EMAIL_PROVIDERS,
+    _EMBEDDED_DIRECTIVE_RE,
+    _ERROR_MARKERS,
+    _FALLBACK_ORDER_FILE,
+    _FEW_SHOT_SETTINGS_FILE,
+    _FILE_INTENT_PATTERNS,
+    _FILE_LOCAL_CONTEXT_PHRASES,
+    _FILEISH_WORD_HINTS,
+    _GATE_KIND_BY_LIST,
+    _GEMINI_MODEL_CHAIN,
+    _GOOGLE_WORKSPACE_BARE_NAV_COMMAND,
+    _GOOGLE_WORKSPACE_BARE_NAV_RE,
+    _GREETINGS,
+    _GROQ_MAX_INPUT_CHARS,
+    _GROQ_MODELS_CACHE,
+    _HELP_HIDDEN_FILE,
+    _IMAGE_PATH_RE,
+    _INSTRUCTION_VERB_BLACKLIST,
+    _INTERACTIVE_RUN_WORDS,
+    _JSON_TOOL_CALL_RE,
+    _LAST_BLOCKED_ACTION,
+    _LAST_BUSY_CLEARED_TS,
+    _LAST_DENIED_ACTION,
+    _LAST_HOOK_BLOCK,
+    _LAST_LIVE_TYPED_ACTIONS,
+    _LAST_MEMORY_SLICE_AT_S,
+    _LAST_MEMORY_SLICE_HASH,
+    _LIVE_TYPED_ACTIONS_CAP,
+    _LOCAL_FIND_HINTS,
+    _LOCAL_HARD_TIMEOUT,
+    _MARKDOWN_SKILL_DIRS,
+    _MAX_AUTO_CONTINUATIONS,
+    _MAX_LINE_REPEATS,
+    _MISTRAL_TOOL_CALLS_RE,
+    _MULTI_STEP_PHRASES,
+    _NON_CODE_SYNTHESIS_HINTS,
+    _NON_CODE_VERIFY_EXTENSIONS,
+    _NONLOCAL_ROUTE_TIERS,
+    _NOOP_TOKENS,
+    _NVIDIA_MODELS_CACHE,
+    _OLLAMA_CLOUD_MODELS_CACHE,
+    _OLLAMA_LOCAL_CACHE,
+    _OLLAMA_LOCAL_TTL,
+    _OPEN_ANYWHERE_RE,
+    _OPENCODE_GO_MODELS_CACHE,
+    _OPENCODE_GO_MODELS_TTL,
+    _OPENCODE_ZEN_MODELS_CACHE,
+    _OPENCODE_ZEN_MODELS_TTL,
+    _OPENROUTER_MODELS_CACHE,
+    _OPENROUTER_MODELS_TTL,
+    _PLACEHOLDER_HOSTS,
+    _PLACEHOLDER_URL_RE,
+    _PLAN_APPROVAL_PHRASES,
+    _POOLSIDE_MODELS_CACHE,
+    _POST_REPLY_GRACE,
+    _PREFIX_ANSI_RE,
+    _PRONOUNS_NEED_ANTECEDENT,
+    _PROSE_LEAK_RE,
+    _PROSE_TARGET_RE,
+    _PROVIDER_MODELS_TTL,
+    _PROVIDER_PICKER_ORDER,
+    _QUESTION_LEAD_WORDS,
+    _QUESTION_MARKERS,
+    _QWEN_MODELS_CACHE,
+    _READ_ALLOWED_ROOTS,
+    _READ_DENY_PATTERNS,
+    _READ_TARGET_FILLER_WORDS,
+    _REAL_CTX_FILE,
+    _REASON_DEPTHS,
+    _RECALL_TRIGGERS,
+    _REF_DENSITY_EXPAND_ABOVE,
+    _REF_DENSITY_TIGHT_BELOW,
+    _RELOAD_CARRY_FILE,
+    _ROUTE_HISTORY_BUDGETS,
+    _SECURITY_AUDIT_NAME_ALIASES,
+    _SENSEI_BRIDGE_URL,
+    _SETTINGS,
+    _SHELL_SYNTAX_MARKER_RE,
+    _SHOW_ACTIVITY_LIMIT,
+    _SKILL_SESSION_MARKER,
+    _SLICER_MAX_CHARS,
+    _SLICER_MAX_SLICES_PER_FILE,
+    _SLICER_POST_LINES,
+    _SLICER_PRE_LINES,
+    _STALL_TIMEOUT_S,
+    _STRAY_EMOJI_RE,
+    _SYMBOL_MIN_LENGTH,
+    _SYMBOL_PATTERNS,
+    _SYS_CAP_CACHE,
+    _SYS_CAP_TTL_S,
+    _TERMINAL_VISUAL_ACTION_RE,
+    _TERMINAL_VISUAL_BARE_REQUESTS,
+    _THINK,
+    _THINK_REJECT_CACHE,
+    _THINK_TAG_RE,
+    _THINK_TIPS,
+    _THINKING_T0,
+    _TIGHTER_INTENTS_RE,
+    _TIME_PHRASES,
+    _TIME_WORDS,
+    _TOOL_CALL_TAG_RE,
+    _TURN_DEPTH,
+    _TURN_EDITED_PATHS,
+    _TURN_PRIVATE_REASONS,
+    _TURN_VERIFIED_SINCE_EDIT,
+    _VALID_FALLBACK_NAMES,
+    _VERIFY_COMMAND_MARKERS,
+    _VERIFY_STOP_ATTEMPTS,
+    _VERIFY_STOP_MAX_ATTEMPTS,
+    _VISION_INTENT_RE,
+    _VISION_NEGATION_LOOKBACK,
+    _VISION_NEGATION_RE,
+    _VISUAL_RUN_WORDS,
+    _VOICE_FILE,
+    _WATERMARK_HEADROOM,
+    _WHATSNEW_STATE,
+    _WHOLE_FILE_CLOUD_BIAS_AT,
+    _WHOLE_FILE_MAX_CHARS,
+    _WHOLE_FILE_PHRASES,
+    _WHOLE_FILE_THRESHOLD,
+    _WIDER_INTENTS_RE,
+    _XML_FUNCTION_NAME_ALIASES,
+    _XML_FUNCTION_PARAM_RE,
+    _XML_FUNCTION_RE,
+    _XML_INVOKE_RE,
+    _XML_PARAM_RE,
+    ACTIVE_MODEL_FILE,
+    ACTIVE_PROJECT,
+    ACTIVE_PROJECT_FILE,
+    ACTIVE_TASK,
+    ACTIVE_TASK_FILE,
+    ALTER_WORDS,
+    AMBER,
+    ARIA_VOICE_CONFIG,
+    ASK_CLOUD_BARE_PROVIDERS,
+    ATTACHMENT_MAX_CHARS,
+    AUDIT_LOG,
+    AUDIT_LOG_JSONL,
+    AUTO_NUDGE_MAX,
+    AUTO_SAVE_EVERY_TURN,
+    AUTO_SAVE_THRESHOLD,
+    BC,
+    BEHAVIOR_FILE,
+    BG,
+    BLOCKED_PATTERNS,
+    BM,
+    BO,
+    BOLD,
+    BTN_C,
+    BTN_G,
+    BTN_R,
+    BTN_Y,
+    BW,
+    BY,
+    CHARS_PER_TOKEN,
+    CHARS_SINCE_REMIND,
+    CLOUD_MODEL_KEYS,
+    CLOUD_MODEL_NAMES,
+    CODE_WORDS,
+    COMPLEX_WORDS,
+    CONTEXT_FILL_RATIO,
+    CONTEXT_WATERMARK_FLOOR,
+    DIMB,
+    DRIFT_REMINDER_CHARS,
+    FREE_SUFFIX,
+    GLOBAL_HISTORY,
+    KEYS_FILE,
+    LAST_MODEL,
+    LAST_ROUTE,
+    LOCAL_DIRECTIVE_HINT,
+    LOCAL_NUM_CTX,
+    LOCAL_REQUEST_TIMEOUT_OVERRIDE,
+    LOG_FILE,
+    LOOP_MAX_CYCLES,
+    LOOP_MAX_SECONDS,
+    MASTER_AI_IDENTITY_SYSTEM,
+    MAX_CONTINUATION_TURNS,
+    MODE_CONTRACTS,
+    MODE_FILE,
+    MODE_HINT_TITLES,
+    OLLAMA_URL,
+    PENDING_CONTINUATION,
+    PENDING_PLAN_REQUEST,
+    PENDING_PLAN_TEXT,
+    PENDING_USER_NOTE,
+    PIPER_MODEL,
+    PLAN_DEBATE_FALLBACK,
+    PLAN_DEBATE_MAX_ROUNDS,
+    PLAN_DEBATE_MERGER,
+    PLAN_DEBATE_PLANNER_A,
+    PLAN_DEBATE_PLANNER_B,
+    PRODUCT_UPDATE_COMMANDS,
+    PROJECTS_MD_FILE,
+    PROVIDER_CONTEXT_TOKENS,
+    REASONING_WORDS,
+    REPLY_SHAPES_SYSTEM_ADDITION,
+    RESUME_FLAG,
+    RESUME_FLAG_MAX_AGE,
+    ROUTER_METRICS_FILE,
+    ROUTER_METRICS_MAX_SCAN,
+    SESSION_TS,
+    SURVIVAL_WORDS,
+    THREAD_FILE,
+    TOOL_REQUIRED_PHRASES,
+    TTS_ENABLED,
+    TTS_MAX_CHARS,
+    VISION_WORDS,
+    WEATHER_WORDS,
+    WEB_WORDS,
+    WHISPER_MODEL,
+    C,
+    D,
+    G,
+    M,
+    R,
+    W,
+    X,
+    Y,
+)
 from url_grounding import resolve_open_target_url
 
 try:
@@ -299,6 +569,7 @@ _LAST_ACTIVITY_TS = time.time()
 _ACTIVITY_LOCK = threading.Lock()
 _STALL_NOTIFIED = False
 
+
 def _mark_activity() -> None:
     """Call from anywhere real progress just happened (a token streamed, a
     RUN finished, a cloud call returned, a debate round completed). Clears
@@ -307,6 +578,7 @@ def _mark_activity() -> None:
     with _ACTIVITY_LOCK:
         _LAST_ACTIVITY_TS = time.time()
         _STALL_NOTIFIED = False
+
 
 def _stall_watchdog_loop() -> None:
     """Background daemon, started once. Fires at most one notice per stall
@@ -334,11 +606,13 @@ def _stall_watchdog_loop() -> None:
         except Exception:
             pass
 
+
 def _start_stall_watchdog() -> None:
     if globals().get("_STALL_WATCHDOG_STARTED"):
         return
     globals()["_STALL_WATCHDOG_STARTED"] = True
     threading.Thread(target=_stall_watchdog_loop, daemon=True).start()
+
 
 def _tracks_turn_activity(fn: Any) -> Any:
     """Decorator: mark activity on entry and track turn-in-progress depth
@@ -358,7 +632,8 @@ def _tracks_turn_activity(fn: Any) -> Any:
 
     return _wrapper
 
-def _drain_stale_tui_input(reason: str="") -> None:
+
+def _drain_stale_tui_input(reason: str = "") -> None:
     """Discard anything sitting in the TUI's type-ahead queue.
 
     2026-09-27: root-caused live — Elijah hit Ctrl+C repeatedly during a
@@ -384,6 +659,7 @@ def _drain_stale_tui_input(reason: str="") -> None:
         pass
     if dropped:
         log(f"DRAINED_STALE_TUI_INPUT [{reason}]: {dropped!r}")
+
 
 # 2026-08-31: kick/new/clear/refresh all queue through the same _iq the
 # worker's main() loop reads with a blocking input()/queue.get() — if
@@ -414,6 +690,7 @@ try:
 except Exception:
     os.environ.setdefault("SENSEI_MOUSE", "1")
 
+
 def _ensure_sensei_app() -> Any:
     """Lazily create the SenseiApp when TUI mode is actually entered."""
     global _SENSEI_APP, _SENSEI_ENABLED
@@ -443,6 +720,7 @@ def _ensure_sensei_app() -> Any:
         _SENSEI_ENABLED = False
         log(f"SENSEI_TUI_INIT_ERROR: {_e}")
     return _SENSEI_APP
+
 
 # ── PROFILE-AWARE PATHS ──────────────────────────────────────
 
@@ -494,6 +772,7 @@ else:
     _PROFILE_ROOT = Path.home()  # legacy / default profile
     _PROFILE_NAME = ""
 
+
 def _activate_profile(name: Any) -> bool:
     """Create (if new) + persist `name` as the active profile. Shared by
     the --profile argv path above and the in-session `profile <name>`
@@ -510,6 +789,7 @@ def _activate_profile(name: Any) -> bool:
     _PROFILE_ROOT = Path.home() / ".master_ai_profiles" / name
     return True
 
+
 def _list_profiles() -> Any:
     """Return sorted profile names under ~/.master_ai_profiles/, plus
     'default' always first."""
@@ -519,6 +799,7 @@ def _list_profiles() -> Any:
     )
     return ["default"] + names
 
+
 def _pfile(name: Any) -> Any:
     """Per-profile dotfile path.
     For the legacy/default profile, uses ~/.master_ai_<name>.
@@ -526,6 +807,7 @@ def _pfile(name: Any) -> Any:
     if _PROFILE_NAME:
         return _PROFILE_ROOT / name
     return Path.home() / (".master_ai_" + name)
+
 
 # ── CONFIG ───────────────────────────────────────────────────
 CHATS_DIR = _PROFILE_ROOT / ("chats" if _PROFILE_NAME else ".master_ai_chats")
@@ -539,9 +821,11 @@ LAST_ACTION_FILE = _pfile("last_action.json")
 HINTS_FILE = _pfile("hints_off")
 TUTORIAL_FILE = _pfile("tutorial_done")
 
-def _local_request_timeout(default: int=600) -> Any:
+
+def _local_request_timeout(default: int = 600) -> Any:
     v = LOCAL_REQUEST_TIMEOUT_OVERRIDE
     return v if isinstance(v, (int, float)) and v > 0 else default
+
 
 # Make sure a named profile's directory skeleton exists so reads don't 404
 if _PROFILE_NAME:
@@ -553,6 +837,7 @@ if _PROFILE_NAME:
 
 # ── MODE / PLAN STATE ────────────────────────────────────────
 
+
 def _load_saved_mode() -> Any:
     """Read persisted mode from disk. Returns 'plan' (default) if missing,
     unreadable, or not one of the three valid modes."""
@@ -561,6 +846,7 @@ def _load_saved_mode() -> Any:
         return v if v in ("plan", "review", "auto") else "plan"
     except Exception:
         return "plan"
+
 
 def save_mode(mode: Any) -> None:
     """Persist current mode so reopening Sensei restores it.
@@ -571,6 +857,7 @@ def save_mode(mode: Any) -> None:
         MODE_FILE.write_text(mode)
     except Exception:
         pass
+
 
 MODE = _load_saved_mode()  # Plan is the default if no file exists. Review = per-command confirm; Auto = flow-through.
 
@@ -714,6 +1001,7 @@ AUTO_NUDGE_STREAK = 0
 
 # ── DOJO GATE STATE (written by dojo_gate.sh before launch) ──
 
+
 def _load_active_from_gate() -> None:
     """Pull project + task + model set by dojo_gate.sh into globals.
     Empty model file = auto-router stays active (PINNED_MODEL untouched)."""
@@ -739,12 +1027,14 @@ def _load_active_from_gate() -> None:
     except Exception:
         pass
 
+
 _load_active_from_gate()
 
 # ── PROJECTS.md task-board helpers ──
 # The dojo gate writes checkbox task lists under "### <Project>" headings inside
 # the "## Project Boards" section of PROJECTS.md. Sensei edits them in place
 # when a task is marked done.
+
 
 def _dojo_unchecked(project: Any) -> Any:
     """Return list of unchecked task strings for the given project name."""
@@ -768,9 +1058,11 @@ def _dojo_unchecked(project: Any) -> Any:
                 out.append(m.group(1))
     return out
 
+
 def _dojo_next_task(project: Any) -> Any:
     tasks = _dojo_unchecked(project)
     return tasks[0] if tasks else ""
+
 
 def _dojo_mark_done(project: Any, task: str) -> Any:
     """Flip the first '- [ ] <task>' → '- [x] <task>' under the project. Returns True if found."""
@@ -803,6 +1095,7 @@ def _dojo_mark_done(project: Any, task: str) -> Any:
             return False
     return changed
 
+
 def load_behavior() -> Any:
     """Read ~/.sensei_behavior.md into the system prompt. Returns empty string if missing."""
     try:
@@ -810,7 +1103,9 @@ def load_behavior() -> Any:
     except Exception:
         return ""
 
+
 # ── THREAD LABEL (editable chat-thread locator on top rule line) ──
+
 
 def load_thread_label() -> Any:
     try:
@@ -818,17 +1113,20 @@ def load_thread_label() -> Any:
     except Exception:
         return ""
 
+
 def save_thread_label(name: Any) -> None:
     try:
         THREAD_FILE.write_text((name or "").strip())
     except Exception:
         pass
 
+
 def _term_cols() -> Any:
     try:
         return shutil.get_terminal_size((80, 24)).columns
     except Exception:
         return 80
+
 
 def print_thread_box_top() -> None:
     """Top rule of input frame — label sits BOTTOM-LEFT (inside the rule)."""
@@ -840,11 +1138,13 @@ def print_thread_box_top() -> None:
     line = "┌──" + tag + "─" * (right - 3) + "┐"
     print(f"{BC}{line[:cols]}{X}")
 
+
 def print_thread_box_bottom() -> None:
     """Closing rule with └ ┘ corners — drawn right after input is captured."""
     cols = _term_cols()
     line = "└" + "─" * (cols - 2) + "┘"
     print(f"{BC}{line[:cols]}{X}")
+
 
 def print_legend() -> None:
     """Plain legend line — TYPE these commands at the prompt."""
@@ -852,9 +1152,11 @@ def print_legend() -> None:
         f"  {D}⌨ type:{X}  {BC}hub{X} · {BC}help{X} · {BC}tips{X} · {BC}model{X} · {BC}mode plan{X} · {BC}chats{X} · {BC}tts{X} · {BC}e{X}=edit label · {BC}x{X}=exit"
     )
 
+
 # ── Auto-label: after N exchanges, suggest a label if none is set ──
 _AUTO_LABEL_LOCK = threading.Lock()
 _AUTO_LABEL_TRIED = False  # per-session flag so we only auto-fire once
+
 
 def _ask_cloud_for_label(messages: Any) -> Any:
     """Try whichever cloud key is actually live, not a single hardcoded
@@ -881,6 +1183,7 @@ def _ask_cloud_for_label(messages: Any) -> Any:
         except Exception:
             continue
     return None
+
 
 def _auto_label_bg(history_snapshot: Any) -> None:
     """Background: generate a kebab-case label from recent exchanges, save it."""
@@ -936,6 +1239,7 @@ def _auto_label_bg(history_snapshot: Any) -> None:
     except Exception as e:
         log(f"AUTO_LABEL_ERROR: {e}")
 
+
 def maybe_auto_label(history: Any) -> None:
     """Fire auto-label suggestion once per session after 3+ user messages.
     Only runs if no label is already set and we haven't tried yet."""
@@ -949,6 +1253,7 @@ def maybe_auto_label(history: Any) -> None:
         _AUTO_LABEL_TRIED = True
     # run in background so we don't block the prompt
     threading.Thread(target=_auto_label_bg, args=(list(history),), daemon=True).start()
+
 
 # ── QUERY QUEUE (up to 3 live) ───────────────────────────────
 # User types Q1, Q2, Q3 while Sensei is still answering Q1 — each queues.
@@ -973,6 +1278,7 @@ _TMUX_LAST_CLIENT_DIMS = ""
 # flag. Confirm prompts wrap themselves via @_awaiting_confirm.
 _CONFIRM_IQ: queue.Queue[Any] = queue.Queue()
 
+
 def _CHOICE_IQ_PUT(key: Any) -> None:
     """Resolve a single key press against the armed choice and post the result
     to the confirm queue, reading the state dict exactly once. No-ops when the
@@ -985,6 +1291,7 @@ def _CHOICE_IQ_PUT(key: Any) -> None:
     if resolved is None:
         return
     _CONFIRM_IQ.put(str(resolved) + "\n")
+
 
 # Single-key choice state (2026-09-25). _AWAITING_CONFIRM marks a whole
 # confirm FUNCTION, which is too coarse: several confirms have more than one
@@ -999,6 +1306,7 @@ def _CHOICE_IQ_PUT(key: Any) -> None:
 _CHOICE_STATE: dict = {"codes": {}, "aliases": {}}
 _AWAITING_CHOICE = threading.Event()
 _AWAITING_CONFIRM = threading.Event()
+
 
 def _awaiting_confirm(fn: Any) -> Any:
     """Mark a function as a confirm prompt — its lifetime sets _AWAITING_CONFIRM
@@ -1017,6 +1325,7 @@ def _awaiting_confirm(fn: Any) -> Any:
     _wrap.__doc__ = fn.__doc__
     _wrap.__wrapped__ = fn
     return _wrap
+
 
 # ── LOAD KEYS ────────────────────────────────────────────────
 # ~/.master_ai_keys is a symlink to the canonical keychain
@@ -1038,6 +1347,7 @@ def _awaiting_confirm(fn: Any) -> Any:
 from keychain_kv import _looks_like_real_key
 from keychain_kv import parse_kv_keys as _parse_kv_keys
 
+
 def load_keys() -> Any:
     try:
         text = KEYS_FILE.read_text()
@@ -1049,7 +1359,9 @@ def load_keys() -> Any:
     except Exception:
         return _parse_kv_keys(text)
 
+
 KEYS = load_keys()
+
 
 # ── SEND_EMAIL — model emits SEND_EMAIL: directive, dispatcher calls
 # send_email_via_smtp. Polish/template happens at the model layer via
@@ -1073,9 +1385,10 @@ def _send_email_log(record: Any) -> None:
         except Exception:
             pass
 
+
 # ── telegram_client interface ─────────────────────────────────
 # Lazy import so Sensei starts fine even if telegram_client.py is missing.
-def send_telegram_message(chat_id: Any, text: Any, silent: bool=False) -> Any:
+def send_telegram_message(chat_id: Any, text: Any, silent: bool = False) -> Any:
     try:
         import telegram_client as _tc
 
@@ -1089,6 +1402,7 @@ def send_telegram_message(chat_id: Any, text: Any, silent: bool=False) -> Any:
             "message_id": None,
         }
 
+
 def _email_provider_for_sender(sender: str) -> Any:
     """Return provider name for a sender address by domain match. Defaults to gmail."""
     domain = (sender.split("@", 1)[-1] if "@" in sender else "").lower()
@@ -1097,7 +1411,15 @@ def _email_provider_for_sender(sender: str) -> Any:
             return name
     return "gmail"
 
-def send_email_via_smtp(to: Any, subject: Any, body: Any, *, attach: Any | None=None, sender: Any | None=None) -> dict:
+
+def send_email_via_smtp(
+    to: Any,
+    subject: Any,
+    body: Any,
+    *,
+    attach: Any | None = None,
+    sender: Any | None = None,
+) -> dict:
     """Send one email via Gmail/AOL/Outlook SMTP using the provider-appropriate
     app-password from ~/.master_ai_keys. Provider routed from sender domain.
     Returns {ok, error, recipient, provider}.
@@ -1206,13 +1528,16 @@ def send_email_via_smtp(to: Any, subject: Any, body: Any, *, attach: Any | None=
         )
         return {"ok": False, "error": err, "recipient": to, "provider": provider}
 
+
 # ── COLORS — matches brand.sh (visible on light + dark terminals) ──
 
+
 # ── LOGGING ──────────────────────────────────────────────────
-def _fmt_ampm(dt: Any | None=None, seconds: bool=False) -> Any:
+def _fmt_ampm(dt: Any | None = None, seconds: bool = False) -> Any:
     dt = dt or datetime.now()
     fmt = "%Y-%m-%d %I:%M:%S %p" if seconds else "%Y-%m-%d %I:%M %p"
     return dt.strftime(fmt)
+
 
 def _normalize_visible_time(text: Any) -> Any:
     """Convert legacy visible 24-hour timestamps to 12-hour AM/PM."""
@@ -1228,6 +1553,7 @@ def _normalize_visible_time(text: Any) -> Any:
         r"\b(\d{4}-\d{2}-\d{2} [0-2]\d:[0-5]\d)\b(?!\s*(?:AM|PM))", repl, text or ""
     )
 
+
 def log(msg: Any) -> None:
     ts = _fmt_ampm(seconds=True)
     try:
@@ -1235,6 +1561,7 @@ def log(msg: Any) -> None:
             f.write(f"[{ts}] {msg}\n")
     except Exception:
         pass
+
 
 def _resolve_default_local_model() -> Any:
     """Hardware-based local default (2026-09-24, Elijah's rule): the model
@@ -1258,9 +1585,11 @@ def _resolve_default_local_model() -> Any:
         log(f"HARDWARE_PICK_ERROR: {e} — falling back to {DEFAULT_LOCAL_MODEL}")
     return DEFAULT_LOCAL_MODEL
 
+
 _resolve_default_local_model()
 
-def _clear_runtime_cache(reason: str="startup") -> Any:
+
+def _clear_runtime_cache(reason: str = "startup") -> Any:
     """Clear exact-response cache for a fresh run; harvest memory stays intact."""
     try:
         existed = CACHE_FILE.exists()
@@ -1270,6 +1599,7 @@ def _clear_runtime_cache(reason: str="startup") -> Any:
     except Exception as e:
         log(f"CACHE_CLEAR_ERROR [{reason}]: {e}")
         return False
+
 
 def _tmux_current_session_name() -> Any:
     if not os.environ.get("TMUX") or not shutil.which("tmux"):
@@ -1285,6 +1615,7 @@ def _tmux_current_session_name() -> Any:
         return (r.stdout or "").strip()
     except Exception:
         return ""
+
 
 def _tmux_latest_client_dims() -> Any:
     """Return latest client dims as 'WxH', else ''."""
@@ -1337,7 +1668,8 @@ def _tmux_latest_client_dims() -> Any:
         pass
     return ""
 
-def _tmux_resize_to_client(kill_others: bool=False, preferred_dims: str="") -> Any:
+
+def _tmux_resize_to_client(kill_others: bool = False, preferred_dims: str = "") -> Any:
     """Keep Sensei tmux window matched to the latest attached client."""
     global _TMUX_LAST_CLIENT_DIMS
     if not os.environ.get("TMUX") or not shutil.which("tmux"):
@@ -1386,6 +1718,7 @@ def _tmux_resize_to_client(kill_others: bool=False, preferred_dims: str="") -> A
             log(f"RESIZE_ERROR: {e}")
             return None
 
+
 def _tmux_install_auto_resize_hooks() -> Any:
     """Install tmux hooks so attach/resize events keep window dimensions synced."""
     if not os.environ.get("TMUX") or not shutil.which("tmux"):
@@ -1416,6 +1749,7 @@ def _tmux_install_auto_resize_hooks() -> Any:
         ok = ok or (r.returncode == 0)
     return ok
 
+
 def _tmux_auto_resize_loop() -> None:
     """Background watcher: keep tmux window in sync with client size changes."""
     while not _TMUX_RESIZE_STOP.is_set():
@@ -1427,6 +1761,7 @@ def _tmux_auto_resize_loop() -> None:
             log(f"TMUX_RESIZE_WATCH_ERROR: {e}")
         _TMUX_RESIZE_PULSE.wait(timeout=1.0)
         _TMUX_RESIZE_PULSE.clear()
+
 
 def _start_tmux_auto_resize_watcher() -> bool:
     global _TMUX_RESIZE_THREAD
@@ -1441,11 +1776,13 @@ def _start_tmux_auto_resize_watcher() -> bool:
     _TMUX_RESIZE_PULSE.set()
     return True
 
+
 def _nudge_tmux_auto_resize() -> None:
     if os.environ.get("TMUX"):
         _TMUX_RESIZE_PULSE.set()
 
-def _clear_tmux_scrollback(reason: str="refresh") -> None:
+
+def _clear_tmux_scrollback(reason: str = "refresh") -> None:
     """Clear tmux history so old visual context is gone after fresh starts."""
     if not os.environ.get("TMUX"):
         return
@@ -1455,6 +1792,7 @@ def _clear_tmux_scrollback(reason: str="refresh") -> None:
     except Exception as e:
         log(f"TMUX_CLEAR_HISTORY_ERROR [{reason}]: {e}")
 
+
 def _remember_created_file(filepath: Any) -> None:
     try:
         p = Path(os.path.expanduser(filepath)).resolve()
@@ -1462,7 +1800,8 @@ def _remember_created_file(filepath: Any) -> None:
     except Exception as e:
         log(f"LAST_CREATED_WRITE_ERROR: {e}")
 
-def _remember_last_action(kind: Any, command: str="", path: str="") -> None:
+
+def _remember_last_action(kind: Any, command: str = "", path: str = "") -> None:
     try:
         LAST_ACTION_FILE.write_text(
             json.dumps(
@@ -1480,7 +1819,8 @@ def _remember_last_action(kind: Any, command: str="", path: str="") -> None:
     except Exception as e:
         log(f"LAST_ACTION_WRITE_ERROR: {e}")
 
-def _load_last_action(max_age_s: int=300) -> Any:
+
+def _load_last_action(max_age_s: int = 300) -> Any:
     try:
         data = json.loads(LAST_ACTION_FILE.read_text())
         if int(time.time()) - int(data.get("ts", 0)) <= max_age_s:
@@ -1488,6 +1828,7 @@ def _load_last_action(max_age_s: int=300) -> Any:
     except Exception:
         pass
     return {}
+
 
 def _latest_created_file() -> Any:
     def _preview_rank(p: Any) -> Any:
@@ -1521,7 +1862,8 @@ def _latest_created_file() -> Any:
         return None
     return max(candidates, key=lambda p: (_preview_rank(p), p.stat().st_mtime))
 
-def _open_file_preview(path: Any | None=None) -> bool:
+
+def _open_file_preview(path: Any | None = None) -> bool:
     p = Path(os.path.expanduser(str(path))) if path else _latest_created_file()
     if not p or not p.exists():
         print(f"  {Y}No created file found to preview yet.{X}")
@@ -1537,6 +1879,7 @@ def _open_file_preview(path: Any | None=None) -> bool:
         print(f"  {R}preview failed: {e}{X}")
         log(f"PREVIEW_ERROR: {e}")
         return False
+
 
 def _attach_text_file(path: Any, history: list) -> bool:
     p = Path(os.path.expanduser(str(path))).expanduser()
@@ -1623,6 +1966,7 @@ def _attach_text_file(path: Any, history: list) -> bool:
     )
     return True
 
+
 def _spawn_detached_new_pgroup(argv: Any) -> Any:
     """Launch argv as a new process-group leader (stdout/stderr to
     /dev/null), without detaching it from the controlling session.
@@ -1661,7 +2005,8 @@ def _spawn_detached_new_pgroup(argv: Any) -> Any:
     finally:
         os.close(devnull_fd)
 
-def _launch_desktop_argv(argv: Any, label: str="desktop app") -> Any:
+
+def _launch_desktop_argv(argv: Any, label: str = "desktop app") -> Any:
     try:
         _spawn_detached_new_pgroup(argv)
         print(
@@ -1684,6 +2029,7 @@ def _launch_desktop_argv(argv: Any, label: str="desktop app") -> Any:
             command=" ".join(map(str, argv)),
             error=str(e),
         )
+
 
 def launch_desktop_app_safely(app_name: Any) -> Any:
     """Capability registry executor for desktop.launch_app.
@@ -1711,7 +2057,8 @@ def launch_desktop_app_safely(app_name: Any) -> Any:
         )
     return _launch_desktop_argv([app_name], label=app_name)
 
-def notify_desktop(args: Any | None=None) -> Any:
+
+def notify_desktop(args: Any | None = None) -> Any:
     """Capability registry executor for desktop.notify.
 
     Calls the verified wrapper ~/scripts/sensei-notify.sh which sets
@@ -1807,6 +2154,7 @@ def notify_desktop(args: Any | None=None) -> Any:
             error=str(e),
         )
 
+
 def _desktop_launch_from_command(cmd: Any) -> Any:
     """Return argv for GUI/browser/app commands that must not be wrapped in a terminal."""
     try:
@@ -1834,6 +2182,7 @@ def _desktop_launch_from_command(cmd: Any) -> Any:
         args.append(os.path.expanduser(p))
     return [first, *args]
 
+
 def _resolve_discord_launch_argv() -> None:
     """Best-effort launcher for Discord across package variants."""
     if shutil.which("discord"):
@@ -1856,6 +2205,7 @@ def _resolve_discord_launch_argv() -> None:
     if shutil.which("xdg-open"):
         return ["xdg-open", "discord://"]
     return None
+
 
 def _app_name_matches(app_name: str, candidate: str) -> bool:
     """True if app_name plausibly refers to the same app as `candidate`
@@ -1891,6 +2241,7 @@ def _app_name_matches(app_name: str, candidate: str) -> bool:
     ):
         return True
     return False
+
 
 def _resolve_installed_app_launch_argv(app_name: str) -> None:
     """Find a real installed app's actual launch command via its .desktop
@@ -1948,6 +2299,7 @@ def _resolve_installed_app_launch_argv(app_name: str) -> None:
             # convenience.
             return (argv, f.stem)
     return None
+
 
 def _try_desktop_open_intent(user_text: str) -> Any:
     """Deterministic launcher for browser URLs, local documents, and GUI apps.
@@ -2012,6 +2364,7 @@ def _try_desktop_open_intent(user_text: str) -> Any:
     ):
         return (["xdg-open", str(expanded)], str(expanded))
     return _resolve_installed_app_launch_argv(target)
+
 
 def _check_app_installed(app_name: str) -> dict:
     """Check whether app_name is actually installed, using real package-
@@ -2090,6 +2443,7 @@ def _check_app_installed(app_name: str) -> dict:
         "detail": f"no dpkg/flatpak/snap package or .desktop entry matched {app_name!r}",
     }
 
+
 def _try_ground_app_installed_intent(user_text: str, history: list) -> Any:
     """Ground an 'is X installed?' question in a real dpkg/flatpak/snap/
     .desktop-file check instead of letting the model guess plausible
@@ -2148,6 +2502,7 @@ def _try_ground_app_installed_intent(user_text: str, history: list) -> Any:
         }
     )
     return None
+
 
 def _try_ground_download_install_intent(user_text: str, history: list) -> bool:
     """Force a real web search before the model responds to a 'download/
@@ -2213,6 +2568,7 @@ def _try_ground_download_install_intent(user_text: str, history: list) -> bool:
     log(f"DOWNLOAD_GROUNDING: {app_name}")
     return True
 
+
 def _try_google_workspace_bare_nav_intent(user_text: str) -> Any:
     """Deterministic catch for a bare 'go to/open Google Drive/Gmail/
     Calendar' with no further detail — same idiom as
@@ -2243,7 +2599,8 @@ def _try_google_workspace_bare_nav_intent(user_text: str) -> Any:
         f"RUN_SKILL: google-workspace {json.dumps({'command': command, 'args': args})}"
     )
 
-def _show_activity(limit: int=20) -> None:
+
+def _show_activity(limit: int = 20) -> None:
     """List recent agent loop activities from the audit log.
 
     Reads LOOP-START / LOOP-END / VERIFY_ON_STOP_NUDGE lines from
@@ -2328,6 +2685,7 @@ def _show_activity(limit: int=20) -> None:
     print(f"{BC}  ╚{'═' * 78}╝{X}")
     print(f"  {D}Cancel a running activity: 'activity cancel'{X}\n")
 
+
 def _cancel_activity() -> None:
     """Signal the shared interrupt event to stop the current agent loop.
 
@@ -2389,7 +2747,8 @@ def _cancel_activity() -> None:
     print(f"  {G}✅ Sent cancel signal to running activity:{X} {C}{task[:60]}{X}")
     print(f"  {D}It will stop at the next safe checkpoint.{X}\n")
 
-def _show_recent_log(lines: int=80) -> None:
+
+def _show_recent_log(lines: int = 80) -> None:
     try:
         raw = LOG_FILE.read_text(errors="replace").splitlines()
     except Exception as e:
@@ -2401,7 +2760,9 @@ def _show_recent_log(lines: int=80) -> None:
         print(f"  {D}{line}{X}")
     print(f"{C}  ─────────────────────────────{X}\n")
 
+
 _NETWORK_DOWN_UNTIL = 0.0
+
 
 def _cloud_allowed(provider: Any) -> bool:
     global _NETWORK_DOWN_UNTIL
@@ -2415,11 +2776,13 @@ def _cloud_allowed(provider: Any) -> bool:
         return False
     return True
 
-def _cloud_trip(provider: Any, reason: Any, seconds: int=30) -> None:
+
+def _cloud_trip(provider: Any, reason: Any, seconds: int = 30) -> None:
     _CLOUD_CIRCUITS[provider] = time.time() + seconds
     log(f"CLOUD_CIRCUIT [{provider}]: {reason} for {seconds}s")
 
-def _cloud_trip_network(reason: Any, seconds: int=60) -> None:
+
+def _cloud_trip_network(reason: Any, seconds: int = 60) -> None:
     global _NETWORK_DOWN_UNTIL
     # 2026-09-27: this is the GLOBAL circuit -- _cloud_allowed() checks it
     # before every single provider, so tripping it blocks all of them at
@@ -2444,6 +2807,7 @@ def _cloud_trip_network(reason: Any, seconds: int=60) -> None:
         return
     _NETWORK_DOWN_UNTIL = time.time() + seconds
     log(f"CLOUD_NETWORK_DOWN: {reason} for {seconds}s")
+
 
 def _network_error(e: Any) -> Any:
     text = str(e).lower()
@@ -2475,6 +2839,7 @@ def _network_error(e: Any) -> Any:
         )
     return False
 
+
 def _matches_terms(text: Any, words: Any, terms: Any) -> Any:
     """True when a term set contains either exact words or phrases."""
     if not terms:
@@ -2482,6 +2847,7 @@ def _matches_terms(text: Any, words: Any, terms: Any) -> Any:
     single = {t for t in terms if " " not in t}
     phrase = [t for t in terms if " " in t]
     return bool(words & single) or any(p in text for p in phrase)
+
 
 def _web_search_package_available() -> tuple:
     """DuckDuckGo package probe. Supports both the old and new package names."""
@@ -2500,6 +2866,7 @@ def _web_search_package_available() -> tuple:
     except Exception:
         return False, ""
 
+
 def _web_dns_ready() -> bool:
     """Cheap DNS probe so search failures can explain network issues plainly."""
     for host in (
@@ -2514,7 +2881,9 @@ def _web_dns_ready() -> bool:
             continue
     return False
 
+
 # ── ROUTER ───────────────────────────────────────────────────
+
 
 def _looks_like_question(text: Any) -> Any:
     low = (text or "").strip().lower()
@@ -2523,6 +2892,7 @@ def _looks_like_question(text: Any) -> Any:
     if any(m in low for m in _QUESTION_MARKERS):
         return True
     return any(low.startswith(w) for w in _QUESTION_LEAD_WORDS)
+
 
 def _looks_like_plan_approval(text: Any) -> Any:
     """True for a short reply that APPROVES a plan rather than describing
@@ -2533,6 +2903,7 @@ def _looks_like_plan_approval(text: Any) -> Any:
     if len(low) > 60:
         return False
     return any(f" {phrase} " in low for phrase in _PLAN_APPROVAL_PHRASES)
+
 
 def _assistant_just_proposed_a_plan(history: Any) -> Any:
     """True when the most recent assistant turn committed to a numbered
@@ -2563,7 +2934,8 @@ def _assistant_just_proposed_a_plan(history: Any) -> Any:
         return numbered_lines >= 2
     return False
 
-def _looks_multi_step(text: Any, history: Any | None=None) -> bool:
+
+def _looks_multi_step(text: Any, history: Any | None = None) -> bool:
     """Cheap heuristic: does this request span multiple steps?
 
     Returns True when the request language contains multi-step sequencing
@@ -2591,6 +2963,7 @@ def _looks_multi_step(text: Any, history: Any | None=None) -> bool:
     ):
         return True
     return False
+
 
 def _looks_terminal_visual_request(text: Any) -> bool:
     """True when the user is asking for terminal-native visual work."""
@@ -2641,6 +3014,7 @@ def _looks_terminal_visual_request(text: Any) -> bool:
         or len(re.findall(r"[a-z0-9']+", low)) <= 5
     )
 
+
 def _looks_code_synthesis_request(stripped_low: Any) -> bool:
     words = set(re.findall(r"[a-z0-9_-]+", stripped_low or ""))
     if not (words & _CODE_SYNTHESIS_VERBS):
@@ -2659,6 +3033,7 @@ def _looks_code_synthesis_request(stripped_low: Any) -> bool:
         )
     )
 
+
 def _router_metric(kind: Any, **fields) -> None:
     """Append a compact router/feedback event. Best-effort only."""
     try:
@@ -2669,7 +3044,8 @@ def _router_metric(kind: Any, **fields) -> None:
     except Exception:
         pass
 
-def _router_recent_events(limit: Any=ROUTER_METRICS_MAX_SCAN) -> Any:
+
+def _router_recent_events(limit: Any = ROUTER_METRICS_MAX_SCAN) -> Any:
     try:
         if not ROUTER_METRICS_FILE.exists():
             return []
@@ -2684,7 +3060,8 @@ def _router_recent_events(limit: Any=ROUTER_METRICS_MAX_SCAN) -> Any:
             continue
     return out
 
-def _router_model_stats(model: Any, task_type: Any | None=None) -> dict | tuple:
+
+def _router_model_stats(model: Any, task_type: Any | None = None) -> dict | tuple:
     def scan(match_task: Any) -> tuple:
         calls = failures = 0
         total_latency = 0.0
@@ -2710,6 +3087,7 @@ def _router_model_stats(model: Any, task_type: Any | None=None) -> dict | tuple:
         "avg_latency_s": total_latency / calls,
     }
 
+
 def _router_perf_bonus(model: Any, task_type: Any) -> Any:
     """Small score adjustment from observed outcomes.
 
@@ -2734,6 +3112,7 @@ def _router_perf_bonus(model: Any, task_type: Any) -> Any:
         bonus += 3
     return max(-45.0, min(15.0, bonus))
 
+
 def _rank_route_candidates(candidates: Any) -> Any:
     ranked = []
     for cand in candidates:
@@ -2746,7 +3125,8 @@ def _rank_route_candidates(candidates: Any) -> Any:
     ranked.sort(key=lambda x: x["score"], reverse=True)
     return ranked
 
-def _choose_route(candidates: Any, reason_prefix: str="scored") -> Any:
+
+def _choose_route(candidates: Any, reason_prefix: str = "scored") -> Any:
     ranked = _rank_route_candidates(candidates)
     picked = ranked[0]
     decision = {k: picked[k] for k in ("route", "model") if k in picked}
@@ -2764,6 +3144,7 @@ def _choose_route(candidates: Any, reason_prefix: str="scored") -> Any:
         for c in ranked
     ]
     return decision
+
 
 def format_router_stats() -> Any:
     events = _router_recent_events(limit=ROUTER_METRICS_MAX_SCAN)
@@ -2796,6 +3177,7 @@ def format_router_stats() -> Any:
         lines.append(f"   execution : {exec_ok}/{exec_total} ok")
     return "\n".join(lines)
 
+
 def _scrappy_model_present() -> Any:
     """Return Ollama tag of the first 'scrappy' model pulled, else ''.
     Cached for 60s like _have_14b so orchestrator calls don't thrash."""
@@ -2826,7 +3208,9 @@ def _scrappy_model_present() -> Any:
     globals()["_SCRAPPY_TS"] = now
     return tag
 
+
 _DEFAULT_LOCATION_CACHE = None
+
 
 def _operator_first_name() -> str:
     """The operator's first name, or '' when no profile is present.
@@ -2890,7 +3274,8 @@ def _default_location() -> Any:
     _DEFAULT_LOCATION_CACHE = loc
     return loc
 
-def detect_route(text: str, has_image: bool=False) -> tuple:
+
+def detect_route(text: str, has_image: bool = False) -> tuple:
     global PINNED_MODEL
     t = text.lower()
     words = set(t.split())
@@ -2926,10 +3311,12 @@ def detect_route(text: str, has_image: bool=False) -> tuple:
         return "local", MODELS["qwen3"], "complex → qwen3.5:cloud (397B)"
     return "local", MODELS["master"], f"general → {MODELS['master']}"
 
+
 # ── SMART ORCHESTRATOR ───────────────────────────────────────
 # Returns a decision dict instead of dispatching a model directly.
 # Possible routes: local | cloud_fast | cloud_vision | acknowledgment | ask_user | recall_memory | save_refresh
 # First match wins.
+
 
 def _acknowledgment_short_circuit(text: Any) -> Any:
     low = (text or "").strip().lower()
@@ -2939,6 +3326,7 @@ def _acknowledgment_short_circuit(text: Any) -> Any:
     if not normalized or len(normalized.split()) > 2:
         return ""
     return _ACKNOWLEDGMENT_RESPONSES.get(normalized, "")
+
 
 def _is_tool_required(stripped_low: Any) -> bool:
     if _looks_terminal_visual_request(stripped_low):
@@ -2958,6 +3346,7 @@ def _is_tool_required(stripped_low: Any) -> bool:
     ):
         return True
     return False
+
 
 def _find_auto_context_file(fname: Any, search_dirs: Any) -> Any:
     names = [fname]
@@ -2981,6 +3370,7 @@ def _find_auto_context_file(fname: Any, search_dirs: Any) -> Any:
             except Exception:
                 continue
     return None
+
 
 def _local_text_target_candidates(raw: Any) -> Any:
     target = (raw or "").strip().strip("'\"`")
@@ -3021,7 +3411,8 @@ def _local_text_target_candidates(raw: Any) -> Any:
             out.append(c)
     return out
 
-def _resolve_local_text_target(raw: Any, search_dirs: Any | None=None) -> Any:
+
+def _resolve_local_text_target(raw: Any, search_dirs: Any | None = None) -> Any:
     search_dirs = search_dirs or [
         Path.home() / "scripts",
         Path(os.getcwd()),
@@ -3036,6 +3427,7 @@ def _resolve_local_text_target(raw: Any, search_dirs: Any | None=None) -> Any:
         if found:
             return found
     return None
+
 
 def _normalize_file_target(target: Any) -> Any:
     target = (target or "").strip().rstrip(".!?,")
@@ -3052,8 +3444,10 @@ def _normalize_file_target(target: Any) -> Any:
     ).strip()
     return target
 
+
 def _has_local_file_context(low_text: Any) -> Any:
     return any(p in (low_text or "") for p in _FILE_LOCAL_CONTEXT_PHRASES)
+
 
 def _looks_path_or_filename(target: Any) -> bool:
     t = (target or "").strip()
@@ -3073,8 +3467,10 @@ def _looks_path_or_filename(target: Any) -> bool:
         return True
     return False
 
+
 def _file_query_is_local_machine_intent(low_text: Any, target: Any) -> Any:
     return _has_local_file_context(low_text) or _looks_path_or_filename(target)
+
 
 def _reply_has_directive(reply: str) -> bool:
     """True if the reply contains a non-backticked RUN/RUNTERM/READ/CREATE/EDIT
@@ -3092,6 +3488,7 @@ def _reply_has_directive(reply: str) -> bool:
                 if line[: match.start()].count("`") % 2 == 0:
                     return True
     return False
+
 
 def _desktop_launch_short_circuit(text: Any, low: Any, words: Any) -> Any:
     """Match 'open/launch/start <app>' for apps in the capability registry's
@@ -3148,6 +3545,7 @@ def _desktop_launch_short_circuit(text: Any, low: Any, words: Any) -> Any:
         f"Launching {app} via the registered desktop.launch_app capability.\n"
         f"RUN: {app} &"
     )
+
 
 def _is_system_state_question(low: str) -> Any:
     """Lightweight classifier — true if the user is asking a system-state Q
@@ -3209,6 +3607,7 @@ def _is_system_state_question(low: str) -> Any:
     )
     return any(t.startswith(k) for k in starts)
 
+
 def _is_generative_video_request(stripped_low: Any) -> bool:
     return bool(
         re.search(r"\b(create|make|generate)\b.*\b(video|clip|movie)\b", stripped_low)
@@ -3230,12 +3629,31 @@ def _is_generative_video_request(stripped_low: Any) -> bool:
         )
     )
 
-def _video_quality_anchor() -> Any:
-    return Path("/home/user/Desktop/rabbit_hop.mp4")
+
+def _video_quality_anchor() -> str:
+    """Name a quality bar for generated video, or say there isn't one.
+
+    2026-09-29: this returned a hardcoded
+    `Path("/home/user/Desktop/rabbit_hop.mp4")` -- a leftover from local
+    testing. On any machine that is not the author's, that path resolves to
+    nothing, so the prompt told the model to "match or exceed the quality of"
+    a file that does not exist. It now looks for a real video on this
+    machine's Desktop and degrades to a plain instruction when there is none.
+    """
+    for pattern in ("~/Desktop/*.mp4", "~/Desktop/*.mov", "~/Desktop/*.webm"):
+        try:
+            found = sorted(Path(pattern).expanduser().glob("*"))
+        except OSError:
+            continue
+        if found:
+            return str(found[-1])
+    return "the best video you can produce with the local tooling available"
+
 
 def _looks_app_shaped(low: Any, word_set: Any) -> Any:
     """True if the text looks like an app-build request (vs. a vision question)."""
     return len(word_set & _APP_SHAPE_WORDS) >= 2
+
 
 def _is_explicit_vision_request(text: str) -> bool:
     """Vision routes need an image-extension path or a verb+vision-noun phrase.
@@ -3255,6 +3673,7 @@ def _is_explicit_vision_request(text: str) -> bool:
         return True
     return False
 
+
 def _vision_vs_app_question(stripped: Any) -> str:
     """Clarifying question when vision words appear without an image attached
     AND the request looks app-shaped. Uses 1/2/3/4 to match Sensei's existing
@@ -3269,6 +3688,7 @@ def _vision_vs_app_question(stripped: Any) -> str:
         "  3) generate a new image — type 3\n"
         "  4) something else — explain"
     )
+
 
 def _is_ambiguous(stripped: str, words: Any, history: Any) -> Any:
     low = stripped.lower()
@@ -3320,6 +3740,7 @@ def _is_ambiguous(stripped: str, words: Any, history: Any) -> Any:
 
     return None
 
+
 def _clarifying_question(stripped: str, reason: str) -> Any:
     if reason.startswith("pronoun"):
         return f"Which one? I don't have a recent reference for '{stripped.split()[0]}' — tell me what you mean."
@@ -3332,6 +3753,7 @@ def _clarifying_question(stripped: str, reason: str) -> Any:
     if "which" in reason.lower():
         return "I'd rather not guess between options. Which one do you want?"
     return "I'm not sure what you're asking — rephrase?"
+
 
 def _memory_recall_payload(user_text: str) -> Any:
     """Explicit recall triggers pull a memory snippet. Returns str or None."""
@@ -3358,6 +3780,7 @@ def _memory_recall_payload(user_text: str) -> Any:
         return None
     # Return the last 800 chars of memory — most recent session summaries live at the end
     return mem[-800:]
+
 
 def _project_keywords() -> list:
     """Keywords that mean 'still on the current project':
@@ -3404,6 +3827,7 @@ def _project_keywords() -> list:
 
     return out
 
+
 def _maybe_drift_reminder(history_ref: Any) -> None:
     """Fire a drift reminder only when recent user messages miss EVERY
     project keyword. Silent if we're still on-topic (no spam, no waste).
@@ -3444,6 +3868,7 @@ def _maybe_drift_reminder(history_ref: Any) -> None:
         f"or 'task add ...' to log a sidetrack task.{X}\n"
     )
 
+
 def _read_run_mode() -> str:
     """Which product mode is the user running in?
       stored default — local-first. Cloud is opt-in per-request.
@@ -3459,6 +3884,7 @@ def _read_run_mode() -> str:
     except Exception:
         pass
     return "apocalypse"
+
 
 def _clean_intent_object(text: Any) -> Any:
     # 2026-09-22: dictated/typed messages routinely carry trailing (sometimes
@@ -3488,6 +3914,7 @@ def _clean_intent_object(text: Any) -> Any:
     )
     return cleaned.strip(" '\"")
 
+
 def _looks_like_local_find_target(target: Any) -> Any:
     low = str(target or "").lower()
     words = {w for w in re.split(r"[^a-z0-9]+", low) if w}
@@ -3496,6 +3923,7 @@ def _looks_like_local_find_target(target: Any) -> Any:
         or any(ch in target for ch in ("/", ".", "_", "-"))
         or low.startswith(("~", "$home"))
     )
+
 
 def _looks_like_prose_not_target(target: str) -> bool:
     if not target:
@@ -3508,10 +3936,12 @@ def _looks_like_prose_not_target(target: str) -> bool:
         return True
     return False
 
+
 def _names_cloud_storage_service(target: Any) -> Any:
     low = re.sub(r"[?!.]+$", "", str(target or "").strip().lower())
     low = re.sub(r"^(?:my|the|a|an)\s+", "", low)
     return low in _CLOUD_STORAGE_SERVICE_NAMES
+
 
 def _quote_home_path(path_text: Any) -> Any:
     raw = str(path_text or "").strip().strip("'\"")
@@ -3519,6 +3949,7 @@ def _quote_home_path(path_text: Any) -> Any:
         return ""
     expanded = os.path.expandvars(os.path.expanduser(raw))
     return shlex.quote(expanded)
+
 
 def _deterministic_intent_to_directive(user_text: Any) -> Any:
     """Return a RUN:/READ: directive for common local/system intents."""
@@ -3584,6 +4015,7 @@ def _deterministic_intent_to_directive(user_text: Any) -> Any:
 
     return None
 
+
 def _json_object_from_text(text: Any) -> Any:
     raw = str(text or "").strip()
     if not raw:
@@ -3602,13 +4034,17 @@ def _json_object_from_text(text: Any) -> Any:
     except Exception:
         return None
 
+
 def _fast_classifier_enabled() -> Any:
     # 2026-08-27: Fast classifier disabled — it uses Ollama and times out at 4s,
     # adding dead latency to every request. The rule-based router handles routing fine.
     flag = os.environ.get("SENSEI_FAST_CLASSIFIER", "0").strip().lower()
     return flag not in {"0", "false", "off", "no"}
 
-def _classify_intent_fast(user_text: Any, *, model: Any | None=None, timeout_s: Any | None=None) -> Any:
+
+def _classify_intent_fast(
+    user_text: Any, *, model: Any | None = None, timeout_s: Any | None = None
+) -> Any:
     """Use the installed 3B model as a cheap first-pass intent classifier."""
     text = str(user_text or "").strip()
     if not text or len(text) > 800 or not _fast_classifier_enabled():
@@ -3684,6 +4120,7 @@ def _classify_intent_fast(user_text: Any, *, model: Any | None=None, timeout_s: 
     )
     return out
 
+
 def _route_from_fast_classifier(user_text: Any) -> None:
     cls = _classify_intent_fast(user_text)
     if not isinstance(cls, dict):
@@ -3717,7 +4154,8 @@ def _route_from_fast_classifier(user_text: Any) -> None:
             }
     return None
 
-def orchestrate(history: Any, user_text: Any, image_path: Any | None=None) -> Any:
+
+def orchestrate(history: Any, user_text: Any, image_path: Any | None = None) -> Any:
     """Pick a route. Returns decision dict with 'route'/'model'/'reason'.
 
     Two product modes (read from ~/.master_ai_run_mode):
@@ -4471,6 +4909,7 @@ def orchestrate(history: Any, user_text: Any, image_path: Any | None=None) -> An
         )
     return _choose_route(candidates, reason_prefix="local scored")
 
+
 def _looks_time_sensitive(low: Any, word_set: Any) -> bool:
     """Return True if the query is clearly asking about a recent/current
     event a frozen local model cannot know. Phrase-only to avoid false
@@ -4484,6 +4923,7 @@ def _looks_time_sensitive(low: Any, word_set: Any) -> bool:
         if p in low:
             return True
     return False
+
 
 def _is_placeholder_url(url: str) -> bool:
     """True for fake/template URLs that must never be presented as sources."""
@@ -4513,6 +4953,7 @@ def _is_placeholder_url(url: str) -> bool:
         return True
     return False
 
+
 def _valid_urls_in_text(text: Any) -> Any:
     urls = []
     for m in _PLACEHOLDER_URL_RE.finditer(text or ""):
@@ -4520,6 +4961,7 @@ def _valid_urls_in_text(text: Any) -> Any:
         if not _is_placeholder_url(url):
             urls.append(url)
     return urls
+
 
 def _filter_placeholder_links(text: Any) -> Any:
     """Remove fake/template URLs from search output and require one real URL."""
@@ -4541,6 +4983,7 @@ def _filter_placeholder_links(text: Any) -> Any:
     if not _valid_urls_in_text(cleaned):
         return None
     return cleaned
+
 
 def _local_big_brain_model() -> Any:
     """Name of the biggest pulled local model, if any is >= 14B params —
@@ -4580,9 +5023,11 @@ def _local_big_brain_model() -> Any:
     globals()["_BIG_BRAIN_TS"] = now
     return best
 
+
 # ── WEB SEARCH ───────────────────────────────────────────────
 
-def gemini_grounded_search(query: Any, timeout: int=20) -> Any:
+
+def gemini_grounded_search(query: Any, timeout: int = 20) -> Any:
     """Google-grounded search via Gemini with Google Search tool enabled.
     Returns a formatted string with synthesized answer + source URLs, or
     None if no gemini model in the fallback chain has quota available.
@@ -4657,7 +5102,8 @@ def gemini_grounded_search(query: Any, timeout: int=20) -> Any:
         return f"{text}\n\nSources (Google):\n" + "\n".join(sources)
     return text
 
-def duckduckgo_search(query: Any, max_results: int=4) -> Any:
+
+def duckduckgo_search(query: Any, max_results: int = 4) -> Any:
     """Raw DuckDuckGo results — title + snippet per hit. Returns a
     formatted string or None on error. Handles the 2026-era package
     rename from `duckduckgo_search` → `ddgs` by trying both imports."""
@@ -4697,7 +5143,8 @@ def duckduckgo_search(query: Any, max_results: int=4) -> Any:
         log(f"DDG_SEARCH_ERROR: {e}")
         return None
 
-def wikipedia_search(query: Any, max_articles: int=3, timeout: int=8) -> Any:
+
+def wikipedia_search(query: Any, max_articles: int = 3, timeout: int = 8) -> Any:
     """Wikipedia REST API — no key, no rate limit beyond "be reasonable."
     Returns the top N article summaries with titles + extract + canonical
     URL, or None on failure. Great for factual / encyclopedic queries
@@ -4737,9 +5184,7 @@ def wikipedia_search(query: Any, max_articles: int=3, timeout: int=8) -> Any:
             )
             req = urllib.request.Request(
                 sum_url,
-                headers={
-                    "User-Agent": _operator_identity()
-                },
+                headers={"User-Agent": _operator_identity()},
             )
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 s = json.loads(r.read().decode())
@@ -4756,7 +5201,8 @@ def wikipedia_search(query: Any, max_articles: int=3, timeout: int=8) -> Any:
             continue
     return "\n".join(lines) if lines else None
 
-def ddg_instant_answer(query: Any, timeout: int=6) -> Any:
+
+def ddg_instant_answer(query: Any, timeout: int = 6) -> Any:
     """DuckDuckGo Instant Answer API — no key, returns structured answers
     for well-known facts (definitions, people, brands). Often empty for
     news-style queries; that's expected. Acts as a cheap first check
@@ -4788,7 +5234,8 @@ def ddg_instant_answer(query: Any, timeout: int=6) -> Any:
         )
     return None
 
-def brave_search(query: Any, max_results: int=5, timeout: int=10) -> Any:
+
+def brave_search(query: Any, max_results: int = 5, timeout: int = 10) -> Any:
     """Brave Search API — independent index, often better than DDG for
     news and recent events. Free tier: 2000 queries/month with a signup
     at api.search.brave.com. Returns a formatted string or None if the
@@ -4832,7 +5279,8 @@ def brave_search(query: Any, max_results: int=5, timeout: int=10) -> Any:
             lines.append(f"• {title}: {desc[:200]}\n  {href}")
     return "\n".join(lines) if lines else None
 
-def serper_search(query: Any, max_results: int=5, timeout: int=10) -> Any:
+
+def serper_search(query: Any, max_results: int = 5, timeout: int = 10) -> Any:
     """Serper — Google results via a simple API. Free tier: 2500 queries
     on signup at serper.dev, no recurring quota. Returns a formatted
     string or None. Keys file field: 'serper'."""
@@ -4878,7 +5326,8 @@ def serper_search(query: Any, max_results: int=5, timeout: int=10) -> Any:
             lines.append(f"• {title}: {snippet[:200]}\n  {link}")
     return "\n".join(lines) if lines else None
 
-def firecrawl_fetch(url: str, timeout: int=45) -> Any:
+
+def firecrawl_fetch(url: str, timeout: int = 45) -> Any:
     """Firecrawl — clean markdown from any URL. Different tool than the
     search engines above: instead of a list of snippets, this returns the
     FULL page content of one specific URL, scrubbed of ads/nav/scripts.
@@ -4928,7 +5377,8 @@ def firecrawl_fetch(url: str, timeout: int=45) -> Any:
     header = f"# {title}\n\n{url}\n\n" if title else f"{url}\n\n"
     return header + markdown
 
-def wikihow_via_gemini(query: Any, timeout: int=15) -> Any:
+
+def wikihow_via_gemini(query: Any, timeout: int = 15) -> Any:
     """WikiHow doesn't have a public API and scraping their site is
     against their ToS. Instead, use Gemini's grounded search with a
     site: filter to pull top WikiHow articles for how-to queries. This
@@ -4947,7 +5397,8 @@ def wikihow_via_gemini(query: Any, timeout: int=15) -> Any:
     scoped = f"{query} site:wikihow.com"
     return gemini_grounded_search(scoped)
 
-def web_search(query: Any, max_results: int=4) -> Any:
+
+def web_search(query: Any, max_results: int = 4) -> Any:
     """Top-level search. Queries several engines in parallel-ish priority,
     blends the best hits. Engines tried:
       1. TinyFish Search          — free/token-efficient web grounding when API key present
@@ -5015,8 +5466,9 @@ def web_search(query: Any, max_results: int=4) -> Any:
         "(Gemini, Brave, Serper, Wikipedia, DuckDuckGo, Instant Answer, WikiHow)."
     )
 
+
 # ── DOWNLOAD FILE ────────────────────────────────────────────
-def download_file(url: str, dest: Any | None=None) -> Any:
+def download_file(url: str, dest: Any | None = None) -> Any:
     log(f"DOWNLOAD: {url}")
     if not dest:
         fname = url.split("/")[-1].split("?")[0] or "download"
@@ -5028,6 +5480,7 @@ def download_file(url: str, dest: Any | None=None) -> Any:
     except Exception as e:
         log(f"DOWNLOAD_ERROR: {e}")
         return None
+
 
 # ── LOCAL AI (OLLAMA) ─────────────────────────────────────────
 def _plan_grounding(user_text: str) -> Any:
@@ -5144,6 +5597,7 @@ def _plan_grounding(user_text: str) -> Any:
         "not generic):\n\n" + "\n\n".join(sections) + "\n"
     )
 
+
 def _ollama_ps() -> Any:
     """Return list of dicts from /api/ps (loaded runners). [] on any error."""
     try:
@@ -5151,6 +5605,7 @@ def _ollama_ps() -> Any:
             return (json.loads(r.read().decode()) or {}).get("models") or []
     except Exception:
         return []
+
 
 def _ollama_unload_one(name: Any) -> tuple:
     """Tell Ollama to unload `name` by issuing a 0-token generate with
@@ -5170,6 +5625,7 @@ def _ollama_unload_one(name: Any) -> tuple:
     except Exception as e:
         return False, str(e)
 
+
 def _ollama_runner_pid(name: str) -> None | int:
     """Find PID of the runner process for model `name`. None if not found."""
     try:
@@ -5184,6 +5640,7 @@ def _ollama_runner_pid(name: str) -> None | int:
             if parts and parts[0].isdigit():
                 return int(parts[0])
     return None
+
 
 def cmd_unload_local_models() -> None:
     """User-facing 'unload' / 'cooldown' / 'free memory' command.
@@ -5229,6 +5686,7 @@ def cmd_unload_local_models() -> None:
     for n, err in failures:
         print(f"  {R}✗ {n}: {err}{X}")
 
+
 def _few_shot_enabled() -> Any:
     try:
         if not _FEW_SHOT_SETTINGS_FILE.exists():
@@ -5241,6 +5699,7 @@ def _few_shot_enabled() -> Any:
     except Exception:
         return False
     return False
+
 
 def _few_shot_set(on: Any) -> bool:
     """Write FEW_SHOT=1|0 into ~/.master_ai_settings, preserving other keys."""
@@ -5265,6 +5724,7 @@ def _few_shot_set(on: Any) -> bool:
     except Exception as e:
         log(f"FEWSHOT_SET_ERROR: {e}")
         return False
+
 
 def _inject_few_shot(messages: Any, model: Any) -> Any:
     """If FEW_SHOT toggle is on, prepend a system message with top-3
@@ -5296,6 +5756,7 @@ def _inject_few_shot(messages: Any, model: Any) -> Any:
         log(f"FEWSHOT_INJECT_ERROR: {e}")
         return messages
 
+
 # ── PRIVACY: cloud-send guard for READ-injected private content ─────
 # Source of truth for "private" is harvest._privacy_reason() — same policy
 # that filters harvest entries and few-shot examples. When READ injects a
@@ -5312,12 +5773,14 @@ _TURN_PRIVATE_APPROVED = False  # one-shot; consumed by next ask_cloud check
 # file-persisted approval like confirm_run's "Always" option.
 _PRIVACY_APPROVED_FOR_SESSION = False
 
+
 def _reset_turn_privacy() -> None:
     """Clear per-turn privacy state. Called at handle() entry on each user input."""
     global _TURN_PRIVATE, _TURN_PRIVATE_APPROVED
     _TURN_PRIVATE = False
     _TURN_PRIVATE_APPROVED = False
     _TURN_PRIVATE_REASONS.clear()
+
 
 def _mark_turn_private(reason: Any) -> None:
     """Mark this turn as containing private content. reason is a short label."""
@@ -5326,10 +5789,12 @@ def _mark_turn_private(reason: Any) -> None:
     if reason:
         _TURN_PRIVATE_REASONS.append(str(reason))
 
+
 def _is_turn_private() -> Any:
     return _TURN_PRIVATE
 
-def _privacy_check_path_or_content(path: str, content: str="") -> Any:
+
+def _privacy_check_path_or_content(path: str, content: str = "") -> Any:
     """Use harvest's privacy policy. Returns the reason string (truthy)
     when path or content trips it, else empty string.
     2026-09-11: howwework.txt and the Sensei source files are framework-level
@@ -5349,10 +5814,12 @@ def _privacy_check_path_or_content(path: str, content: str="") -> Any:
         log(f"PRIVACY_CHECK_ERROR: {e}")
         return ""
 
+
 def _approve_cloud_send_once() -> None:
     """Set the one-shot approval flag. Consumed by the next allowed cloud send."""
     global _TURN_PRIVATE_APPROVED
     _TURN_PRIVATE_APPROVED = True
+
 
 def _check_cloud_send_allowed() -> tuple:
     """Returns (ok, reason). When turn is private and not approved, ok=False.
@@ -5368,6 +5835,7 @@ def _check_cloud_send_allowed() -> tuple:
         return True, "approved (one-shot)"
     summary = "; ".join(_TURN_PRIVATE_REASONS[-3:]) or "private content"
     return False, summary
+
 
 def _check_run_output_for_privacy(kind: Any, cmd: Any, output: Any) -> Any:
     """RUN/RUNTERM exfil guard: when the command string or its captured
@@ -5386,7 +5854,9 @@ def _check_run_output_for_privacy(kind: Any, cmd: Any, output: Any) -> Any:
         log(f"PRIVACY_RUN_CHECK_ERROR: {e}")
     return ""
 
+
 # ── LOCAL "THINK" CAPABILITY (2026-09-24) ─────────────────────────
+
 
 def _model_rejects_think(model: Any) -> bool:
     m = (model or "").strip()
@@ -5419,7 +5889,10 @@ def _model_rejects_think(model: Any) -> bool:
         )
     return rejects
 
-def ask_local(messages: Any, model: Any | None=None, image_path: Any | None=None) -> Any:
+
+def ask_local(
+    messages: Any, model: Any | None = None, image_path: Any | None = None
+) -> Any:
     model = model or MODELS["master"]
     log(f"LOCAL [{model}]")
     _t0 = time.time()
@@ -5518,6 +5991,7 @@ def ask_local(messages: Any, model: Any | None=None, image_path: Any | None=None
         )
         return None
 
+
 # ── LOCAL AI STREAMING ───────────────────────────────────────
 # ── REPLY LINE CLASSIFIER + REPLY SHAPES ──────────────────────
 
@@ -5530,6 +6004,7 @@ _RE_DIRECTIVE = _re_classify.compile(
 _RE_SCRATCH = _re_classify.compile(r"^\s*\[scratchpad:", _re_classify.IGNORECASE)
 _RE_URL = _re_classify.compile(r"https?://\S+")
 
+
 # Per-line typewriter pause between rendered chat lines. Cloud lanes
 # (Groq, OpenRouter) push full replies in <100ms; without a pause the
 # user sees a splash and has to scroll up to read from the top.
@@ -5541,11 +6016,13 @@ def _env_float(name: Any, default: Any) -> float:
     except (TypeError, ValueError):
         return float(default)
 
+
 def _env_int(name: Any, default: Any) -> int:
     try:
         return int(os.environ.get(name, default))
     except (TypeError, ValueError):
         return int(default)
+
 
 SENSEI_REPLY_LINE_DELAY = _env_float(
     "SENSEI_REPLY_LINE_DELAY",
@@ -5553,6 +6030,7 @@ SENSEI_REPLY_LINE_DELAY = _env_float(
 )
 SENSEI_REPLY_WRAP = max(30, _env_int("SENSEI_REPLY_WRAP", "70"))
 SENSEI_STREAM_DELAY = SENSEI_REPLY_LINE_DELAY
+
 
 def _paint_line(line: str) -> str:
     """Classify a complete line and return it wrapped in the right ANSI
@@ -5591,6 +6069,7 @@ def _paint_line(line: str) -> str:
     # Default → VOICE (green)
     return f"{BG}{stripped}{X}\n"
 
+
 def _stream_with_color(token_iter: Any) -> None:
     """Wrap a token generator: buffer until newline, paint line, yield.
     Final partial line (no trailing \\n) gets painted and yielded at end.
@@ -5617,7 +6096,10 @@ def _stream_with_color(token_iter: Any) -> None:
             if SENSEI_STREAM_DELAY > 0:
                 time.sleep(SENSEI_STREAM_DELAY)
 
-def ask_local_stream(messages: Any, model: Any | None=None, image_path: Any | None=None) -> Any:
+
+def ask_local_stream(
+    messages: Any, model: Any | None = None, image_path: Any | None = None
+) -> Any:
     """Stream tokens from Ollama directly to terminal. Returns full text.
     Shows a rotating 'thinking' animation until the first token lands.
 
@@ -5686,7 +6168,7 @@ def ask_local_stream(messages: Any, model: Any | None=None, image_path: Any | No
             sys.stdout.flush()
             _mark_activity()
 
-        def _flush_line(final: bool=False) -> None:
+        def _flush_line(final: bool = False) -> None:
             """Print complete lines in line_buf with the right brand color.
             Soft-wraps at SOFT_WRAP columns so the eye sees steady rolling
             progress on slow CPU inference instead of waiting for full
@@ -5836,8 +6318,10 @@ def ask_local_stream(messages: Any, model: Any | None=None, image_path: Any | No
         globals()["_THINKING_T0"] = 0.0
         local_thinking_stop(_anim)
 
+
 # ── LOCAL "THINKING" ANIMATION (before first Ollama token arrives) ──
 _VOICE_CACHE = None
+
 
 def _load_voice() -> Any:
     global _VOICE_CACHE
@@ -5852,6 +6336,7 @@ def _load_voice() -> Any:
     _VOICE_CACHE = {}
     return _VOICE_CACHE
 
+
 _DEFAULT_THINKING = [
     "Grinding...",
     "Pushing through...",
@@ -5862,6 +6347,7 @@ _DEFAULT_THINKING = [
     "Doing what ninjas do...",
 ]
 _LOCAL_THINKING_LINES = _load_voice().get("thinking") or _DEFAULT_THINKING
+
 
 def local_thinking_start() -> None:
     """Rotating narrative while Ollama loads/generates. Returns (stop_event, thread) or None.
@@ -5901,6 +6387,7 @@ def local_thinking_start() -> None:
     except Exception:
         return None
 
+
 def local_thinking_stop(handle: Any) -> None:
     if not handle:
         return
@@ -5919,6 +6406,7 @@ def local_thinking_stop(handle: Any) -> None:
     except Exception:
         pass
 
+
 # Inventory the local Ollama models actually installed so prompts don't
 # hallucinate deleted ones (qwen2.5:7b, master-ai:latest, llava, etc.).
 _LOCAL_MODEL_INVENTORY = (
@@ -5928,6 +6416,7 @@ _LOCAL_MODEL_INVENTORY = (
     "Deleted/legacy models are NOT present: master-ai:latest, "
     "qwen2.5:7b, qwen2.5-coder:7b, llava, qwen2.5:3b."
 )
+
 
 def _current_model_identity_line() -> Any:
     """One line naming the model actually answering this turn. 2026-09-10:
@@ -5940,6 +6429,7 @@ def _current_model_identity_line() -> Any:
             return f"CURRENT MODEL: {pin.split('::', 1)[1]} via Ollama Cloud."
         return f"CURRENT MODEL: {pin}."
     return f"CURRENT MODEL: auto-routed this turn (may be local {DEFAULT_LOCAL_MODEL} or a cloud model)."
+
 
 # ── `syscap` REPL command (2026-09-28) ───────────────────────────────────
 def _handle_syscap_cmd(lo: Any, cmd: Any) -> bool:
@@ -5966,6 +6456,7 @@ def _handle_syscap_cmd(lo: Any, cmd: Any) -> bool:
     print(f"  {D}{_scan.format_prompt_block(_scan.load())}{X}")
     return True
 
+
 def _handle_rag_cmd(lo: str, cmd: Any) -> bool:
     """`rag` / `rag stats` / `rag build` / `rag <query>` — memory retrieval.
 
@@ -5984,8 +6475,10 @@ def _handle_rag_cmd(lo: str, cmd: Any) -> bool:
 
     if lo in ("rag", "rag stats"):
         info = _rag.stats()
-        print(f"  {D}chunks: {info['chunks']}  embedded: {info['embedded']}"
-              f"  coverage: {info['coverage']:.0%}{X}")
+        print(
+            f"  {D}chunks: {info['chunks']}  embedded: {info['embedded']}"
+            f"  coverage: {info['coverage']:.0%}{X}"
+        )
         print(f"  {D}model: {info['model']}  available: {info['model_available']}{X}")
         for source, count in sorted(info.get("sources", {}).items()):
             print(f"    {count:6}  {source}")
@@ -6004,7 +6497,8 @@ def _handle_rag_cmd(lo: str, cmd: Any) -> bool:
     print(f"  {D}{_rag.format_results(results)}{X}")
     return True
 
-def _inject_relevant_memory(history: list, user_text: Any, limit: int=3) -> None:
+
+def _inject_relevant_memory(history: list, user_text: Any, limit: int = 3) -> None:
     """Prepend the most relevant remembered passages to the conversation.
 
     This is the half that makes retrieval matter. An index nobody queries is
@@ -6047,7 +6541,8 @@ def _inject_relevant_memory(history: list, user_text: Any, limit: int=3) -> None
         },
     )
 
-def _inject_system_capabilities(force: bool=False) -> Any:
+
+def _inject_system_capabilities(force: bool = False) -> Any:
     """Prompt block describing what THIS machine actually has.
 
     system_capability_scan.py probes the real box — OS, arch, shell, desktop
@@ -6079,6 +6574,7 @@ def _inject_system_capabilities(force: bool=False) -> Any:
     _SYS_CAP_CACHE["block"] = block
     return block
 
+
 def _system_prefix() -> Any:
     """Identity plus what this machine has, as one system-prompt head."""
     parts = [MASTER_AI_IDENTITY_SYSTEM]
@@ -6086,6 +6582,7 @@ def _system_prefix() -> Any:
     if caps:
         parts.append("THIS MACHINE (probed, not assumed):\n" + caps)
     return "\n\n".join(parts)
+
 
 def _inject_identity(messages: Any) -> Any:
     prefix = _system_prefix()
@@ -6098,6 +6595,7 @@ def _inject_identity(messages: Any) -> Any:
         ] + list(messages[1:])
     return [{"role": "system", "content": prefix}] + list(messages)
 
+
 # 2026-09-07: continuation feature — every direct-provider function just
 # discarded the API's own finish_reason ("length" means the reply was cut
 # off at max_tokens, "stop" means it ended naturally), so a truncated reply
@@ -6105,7 +6603,7 @@ def _inject_identity(messages: Any) -> Any:
 # via a global the same way _LAST_MODEL already is, rather than changing
 # every _ask_*'s return signature (6+ call sites, all currently return a
 # bare string that other code already depends on).
-def _extract_cloud_reply(resp_json: dict, model: Any | None=None) -> tuple:
+def _extract_cloud_reply(resp_json: dict, model: Any | None = None) -> tuple:
     """(content, finish_reason) from a standard OpenAI-shaped chat completion
     response. Also stamps globals()['_LAST_FINISH_REASON'] for callers that
     can't easily thread a second return value through (ask_cloud's fn_map).
@@ -6125,7 +6623,8 @@ def _extract_cloud_reply(resp_json: dict, model: Any | None=None) -> tuple:
         )
     return content, finish_reason
 
-def _trim_groq_messages(messages: Any, max_chars: Any=_GROQ_MAX_INPUT_CHARS) -> Any:
+
+def _trim_groq_messages(messages: Any, max_chars: Any = _GROQ_MAX_INPUT_CHARS) -> Any:
     """Trim oldest non-system messages until total chars <= max_chars.
     Keep the system message (if any) in full, and keep the latest user
     message in full. Char-based, no external dep, safe-undertrim."""
@@ -6165,6 +6664,7 @@ def _trim_groq_messages(messages: Any, max_chars: Any=_GROQ_MAX_INPUT_CHARS) -> 
         except Exception:
             pass
     return out
+
 
 def ask_cloud_groq(messages: Any) -> Any:
     if not _cloud_allowed("groq"):
@@ -6229,7 +6729,8 @@ def ask_cloud_groq(messages: Any) -> Any:
             _cloud_trip_network(e, 60)
         return None
 
-def _ask_groq(messages: Any, model: Any, label: Any, timeout: int=60) -> Any:
+
+def _ask_groq(messages: Any, model: Any, label: Any, timeout: int = 60) -> Any:
     """Generic Groq caller — takes an explicit model id so the live picker
     (any of Groq's models, not just the hardcoded llama-3.3-70b default
     lane in ask_cloud_groq) can dispatch through this instead."""
@@ -6280,7 +6781,8 @@ def _ask_groq(messages: Any, model: Any, label: Any, timeout: int=60) -> Any:
             _cloud_trip_network(e, 60)
         return None
 
-def _ask_nvidia(messages: Any, model: Any, label: Any, timeout: int=90) -> Any:
+
+def _ask_nvidia(messages: Any, model: Any, label: Any, timeout: int = 90) -> Any:
     """Generic NVIDIA NIM caller — takes an explicit model id so the live
     picker (any of NVIDIA's 100+ models, not just the one default lane)
     can dispatch through this instead of a hardcoded model string.
@@ -6340,7 +6842,8 @@ def _ask_nvidia(messages: Any, model: Any, label: Any, timeout: int=90) -> Any:
             return None
     return None
 
-def _ask_qwen(messages: Any, model: Any, label: Any, timeout: int=90) -> Any:
+
+def _ask_qwen(messages: Any, model: Any, label: Any, timeout: int = 90) -> Any:
     """QwenCloud Token Plan direct caller — mirrors _ask_nvidia's shape.
     Only QWEN_TOKENPLAN_API_KEY (the 'sp' key) is ever used here; the 'ws'
     key is tracked in KEYS for visibility but confirmed dead (401) as of
@@ -6392,6 +6895,7 @@ def _ask_qwen(messages: Any, model: Any, label: Any, timeout: int=90) -> Any:
             _cloud_trip_network(e, 60)
         return None
 
+
 def ask_cloud_nvidia(messages: Any) -> Any:
     # 2026-08-27: llama-3.1-nemotron-70b-instruct's NIM function was
     # retired (404 "Function ... Not found for account") — verified live
@@ -6401,10 +6905,12 @@ def ask_cloud_nvidia(messages: Any) -> Any:
         messages, "nvidia/nemotron-3-super-120b-a12b", "nemotron-3-super-120b"
     )
 
+
 def ask_cloud_nvidia_nano(messages: Any) -> Any:
     return _ask_nvidia(
         messages, "nvidia/nemotron-3-nano-30b-a3b", "nemotron-3-nano-30b"
     )
+
 
 def _opencode_session_id() -> Any:
     """Return the canonical x-opencode-session value, with env override."""
@@ -6423,7 +6929,8 @@ def _opencode_session_id() -> Any:
         pass
     return "sensei-bridge"
 
-def _ask_opencode_zen(messages: Any, model: Any, label: Any, timeout: int=60) -> Any:
+
+def _ask_opencode_zen(messages: Any, model: Any, label: Any, timeout: int = 60) -> Any:
     """Generic OpenCode Zen relay caller — keyless, takes an explicit model id
     so the plan-debate fallback can reach mimo-v2.5-free (a clean
     instruction-follower) instead of only the hardcoded laguna-s-2.1-free.
@@ -6491,6 +6998,7 @@ def _ask_opencode_zen(messages: Any, model: Any, label: Any, timeout: int=60) ->
             _cloud_trip_network(e, 60)
         return None
 
+
 def ask_cloud_opencode_free(messages: Any) -> Any:
     """OpenCode's free Zen relay — keyless (no account, nothing to leak or
     run out of, not subject to any other provider's shared rate limits).
@@ -6502,7 +7010,9 @@ def ask_cloud_opencode_free(messages: Any) -> Any:
         messages, "ling-3.0-flash-fin-free", "ling-3.0-flash-fin-free"
     )
 
+
 # ── OpenCode Go ($10/mo subscription, https://opencode.ai/go) ──
+
 
 def _opencode_go_key() -> Any:
     """OPENCODE_API_KEY — keychain first (canonical), ~/.hermes/.env as
@@ -6532,6 +7042,7 @@ def _opencode_go_key() -> Any:
     except Exception:
         pass
     return ""
+
 
 def _opencode_go_model_catalog() -> Any:
     """Live model list from https://opencode.ai/zen/go/v1/models, cached to
@@ -6585,6 +7096,7 @@ def _opencode_go_model_catalog() -> Any:
             ]
         except Exception:
             return []
+
 
 def _opencode_zen_model_catalog() -> Any:
     """Live model list from https://opencode.ai/zen/v1/models -- the same
@@ -6656,7 +7168,8 @@ def _opencode_zen_model_catalog() -> Any:
         except Exception:
             return []
 
-def _ask_opencode_go(messages: Any, model: Any, label: Any, timeout: int=120) -> Any:
+
+def _ask_opencode_go(messages: Any, model: Any, label: Any, timeout: int = 120) -> Any:
     """OpenCode Go relay — paid $10/mo subscription lane. Authenticated
     via Bearer key; failure paths mirror the Zen free relay (rate-limit
     trips, network-error backoff) so the fallback chain treats it
@@ -6714,6 +7227,7 @@ def _ask_opencode_go(messages: Any, model: Any, label: Any, timeout: int=120) ->
             _cloud_trip_network(e, 60)
         return None
 
+
 def ask_cloud_openai(messages: Any) -> Any:
     if not _cloud_allowed("openai"):
         return None
@@ -6734,6 +7248,7 @@ def ask_cloud_openai(messages: Any) -> Any:
         if _network_error(e):
             _cloud_trip_network(e, 60)
         return None
+
 
 def ask_cloud_gemini(messages: Any) -> Any:
     if not _cloud_allowed("gemini"):
@@ -6760,6 +7275,7 @@ def ask_cloud_gemini(messages: Any) -> Any:
         if _network_error(e):
             _cloud_trip_network(e, 60)
         return None
+
 
 def ask_cloud_anthropic(messages: Any) -> Any:
     if not _cloud_allowed("anthropic"):
@@ -6796,6 +7312,7 @@ def ask_cloud_anthropic(messages: Any) -> Any:
             _cloud_trip_network(e, 60)
         return None
 
+
 def ask_cloud_deepseek(messages: Any) -> Any:
     if not _cloud_allowed("deepseek"):
         return None
@@ -6830,6 +7347,7 @@ def ask_cloud_deepseek(messages: Any) -> Any:
         if _network_error(e):
             _cloud_trip_network(e, 60)
         return None
+
 
 def ask_cloud_fireworks_dsv3(messages: Any) -> Any:
     """Fireworks AI → DeepSeek V3.1 (non-reasoning, long-context chat/coder).
@@ -6924,7 +7442,8 @@ def ask_cloud_fireworks_dsv3(messages: Any) -> Any:
             _cloud_trip_network(e, 60)
         return None
 
-def _ask_openrouter(messages: Any, model: Any, label: Any, timeout: int=60) -> Any:
+
+def _ask_openrouter(messages: Any, model: Any, label: Any, timeout: int = 60) -> Any:
     """Generic OpenRouter caller with token tracking.
 
     2026-08-27: HARD free-only gate. Operator: "we're using only the slash
@@ -7021,7 +7540,8 @@ def _ask_openrouter(messages: Any, model: Any, label: Any, timeout: int=60) -> A
             _cloud_trip_network(e, 60)
         return None
 
-def _ask_poolside(messages: Any, model: Any, label: Any, timeout: int=90) -> Any:
+
+def _ask_poolside(messages: Any, model: Any, label: Any, timeout: int = 90) -> Any:
     """Poolside direct (OpenAI-compatible), Laguna agentic-coding models.
     Verified against docs.poolside.ai (2026-09-25) before wiring in: base
     URL, Bearer auth, GET /v1/models catalog support, and the
@@ -7100,7 +7620,8 @@ def _ask_poolside(messages: Any, model: Any, label: Any, timeout: int=90) -> Any
         text = message.get("reasoning_content") or message.get("reasoning") or ""
     return text or None
 
-def _ask_cerebras(messages: Any, model: Any, label: Any, timeout: int=60) -> Any:
+
+def _ask_cerebras(messages: Any, model: Any, label: Any, timeout: int = 60) -> Any:
     """Generic Cerebras caller with token tracking."""
     provider_key = f"cerebras/{label}"
     if not _cloud_allowed(provider_key):
@@ -7166,13 +7687,16 @@ def _ask_cerebras(messages: Any, model: Any, label: Any, timeout: int=60) -> Any
             _cloud_trip_network(e, 60)
         return None
 
+
 def ask_cloud_cerebras(messages: Any) -> Any:
     return _ask_cerebras(
         messages, "qwen-3-235b-a22b-instruct-2507", "qwen3-235b", timeout=60
     )
 
+
 def ask_cloud_cerebras_llama8b(messages: Any) -> Any:
     return _ask_cerebras(messages, "llama3.1-8b", "llama3.1-8b", timeout=30)
+
 
 def ask_cloud_openrouter_405b(messages: Any) -> Any:
     # 2026-09-07: free-only live catalog; hardcoded slug era is over.
@@ -7181,9 +7705,11 @@ def ask_cloud_openrouter_405b(messages: Any) -> Any:
         _ask_openrouter(messages, slug, "openrouter-free", timeout=90) if slug else None
     )
 
+
 def ask_cloud_openrouter_gptoss(messages: Any) -> Any:
     # 2026-09-07: free-only live catalog.
     return ask_cloud_openrouter_generic(messages)
+
 
 def ask_cloud_openrouter_nemotron(messages: Any) -> Any:
     # 2026-09-07: prefer a live nemotron free slug if available, else any free.
@@ -7196,13 +7722,16 @@ def ask_cloud_openrouter_nemotron(messages: Any) -> Any:
         _ask_openrouter(messages, slug, "openrouter-free", timeout=60) if slug else None
     )
 
+
 def ask_cloud_openrouter_qwen3coder(messages: Any) -> Any:
     # 2026-09-07: free-only live catalog.
     return ask_cloud_openrouter_generic(messages)
 
+
 def ask_cloud_openrouter_r1(messages: Any) -> Any:
     # 2026-09-07: OpenRouter /free models only — reasoner lane maps to generic free chain.
     return ask_cloud_openrouter_generic(messages)
+
 
 def ask_cloud_openrouter_generic(messages: Any) -> Any:
     # 2026-09-07: free-only live catalog. Try known-good free slugs in priority
@@ -7238,9 +7767,11 @@ def ask_cloud_openrouter_generic(messages: Any) -> Any:
             break
     return None
 
+
 def ask_cloud_openrouter(messages: Any) -> Any:
     # 2026-09-07: OpenRouter /free models only, from live catalog.
     return ask_cloud_openrouter_generic(messages)
+
 
 def _ollama_cloud_key() -> Any:
     """OLLAMA_API_KEY lives in ~/.hermes/.env (NOT the keychain) —
@@ -7270,7 +7801,8 @@ def _ollama_cloud_key() -> Any:
         pass
     return ""
 
-def _ask_ollama_cloud(messages: Any, model: str, label: Any, timeout: int=120) -> Any:
+
+def _ask_ollama_cloud(messages: Any, model: str, label: Any, timeout: int = 120) -> Any:
     """Ollama Cloud (https://ollama.com/v1) — the operator's paid
     subscription. OpenAI-compatible endpoint. Key lives in ~/.hermes/.env
     as OLLAMA_API_KEY (NOT the keychain). Used for plan-debate generation
@@ -7343,7 +7875,8 @@ def _ask_ollama_cloud(messages: Any, model: str, label: Any, timeout: int=120) -
             _cloud_trip_network(e, 60)
         return None
 
-def _ask_claf(messages: Any, timeout: int=90) -> Any:
+
+def _ask_claf(messages: Any, timeout: int = 90) -> Any:
     """Route through CLAF (~/projects/claf) — the router this whole stack
     note), running as claf.service. Only for AUTO/unpinned cloud
     escalation: CLAF's provider selection (claf_config.select_provider)
@@ -7369,6 +7902,7 @@ def _ask_claf(messages: Any, timeout: int=90) -> Any:
     except Exception as e:
         log(f"CLAF_ERROR: {e}")
         return None
+
 
 # 2026-08-30: hard outer timeout for every cloud call. Every _ask_* /
 # ask_cloud_* function already passes its own timeout= to urlopen(), but
@@ -7396,8 +7930,13 @@ _CLOUD_CALL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=32, thread_name_prefix="cloud-call"
 )
 
+
 def _call_with_hard_timeout(
-    fn: Any, *args, timeout: Any=_CLOUD_HARD_TIMEOUT, cloud_provider: Any | None=None, **kwargs
+    fn: Any,
+    *args,
+    timeout: Any = _CLOUD_HARD_TIMEOUT,
+    cloud_provider: Any | None = None,
+    **kwargs,
 ) -> Any:
     future = _CLOUD_CALL_EXECUTOR.submit(fn, *args, **kwargs)
     try:
@@ -7462,6 +8001,7 @@ def _call_with_hard_timeout(
         log(f"CLOUD_CALL_ERROR: {getattr(fn, '__name__', fn)}: {e}")
         return None
 
+
 def _load_fallback_order() -> Any:
     """Names only — ask_cloud resolves each against its own fn_map, so a
     stale/typo'd saved name is just dropped, never a crash. No override
@@ -7480,8 +8020,10 @@ def _load_fallback_order() -> Any:
         log(f"FALLBACK_ORDER_LOAD_ERROR: {e}")
     return list(_DEFAULT_FALLBACK_ORDER)
 
+
 def _save_fallback_order(names: Any) -> None:
     _FALLBACK_ORDER_FILE.write_text(json.dumps(names, indent=2))
+
 
 # ── `fallback ...` REPL commands (2026-09-28) ────────────────────────────
 # Extracted verbatim out of main()'s inline if-chain so the branch is
@@ -7582,6 +8124,7 @@ def _handle_fallback_cmd(lo: str, cmd: str) -> bool:
 
     return False
 
+
 def _pinned_fallback_notice(provider: Any) -> bool:
     """True when `provider` is the model the operator explicitly pinned, so a
     fall-through is worth telling them about.
@@ -7596,6 +8139,7 @@ def _pinned_fallback_notice(provider: Any) -> bool:
     if not pin or not provider:
         return False
     return str(pin) == str(provider)
+
 
 def _notice_pinned_falling_back(provider: Any, order: Any) -> None:
     """Session-visible: the pinned model didn't answer; here's the plan."""
@@ -7612,6 +8156,7 @@ def _notice_pinned_falling_back(provider: Any, order: Any) -> None:
     except Exception as e:  # never let a notice break the call
         log(f"FALLBACK_NOTICE_ERROR: {e}")
 
+
 def _notice_backup_answered(provider: Any, used_model: Any) -> None:
     """Session-visible: name the model that actually produced the answer."""
     try:
@@ -7624,7 +8169,8 @@ def _notice_backup_answered(provider: Any, used_model: Any) -> None:
     except Exception as e:  # never let a notice break the call
         log(f"FALLBACK_NOTICE_ERROR: {e}")
 
-def ask_cloud(messages: Any, provider: str="opencode") -> Any:
+
+def ask_cloud(messages: Any, provider: str = "opencode") -> Any:
     # Privacy guard: if READ injected private content into this turn, ask
     # for one-shot approval right here (TTY present -> interactive y/N,
     # same "absent user is not a consenting user" rule as confirm_run's
@@ -7910,7 +8456,10 @@ def ask_cloud(messages: Any, provider: str="opencode") -> Any:
         _notice_backup_answered(provider, None)
     return None
 
-def ask_model_router(messages: Any, model: Any | None=None, max_tokens: Any | None=None) -> tuple:
+
+def ask_model_router(
+    messages: Any, model: Any | None = None, max_tokens: Any | None = None
+) -> tuple:
     """Model/provider-agnostic single-call router.
 
     Picks the right backend based on the model identifier:
@@ -8034,8 +8583,9 @@ def ask_model_router(messages: Any, model: Any | None=None, max_tokens: Any | No
     elapsed = round(time.time() - t0, 2)
     return text, elapsed
 
+
 # ── STT: WHISPER ──────────────────────────────────────────────
-def record_audio(duration: int=5) -> Any:
+def record_audio(duration: int = 5) -> Any:
     print(f"{C}  🎤 Recording {duration}s — speak now...{X}")
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     tmp.close()
@@ -8044,6 +8594,7 @@ def record_audio(duration: int=5) -> Any:
         stderr=subprocess.DEVNULL,
     )
     return tmp.name
+
 
 def transcribe(audio_file: Any) -> Any:
     print(f"{Y}  📝 Transcribing...{X}")
@@ -8074,7 +8625,9 @@ def transcribe(audio_file: Any) -> Any:
         log(f"WHISPER_ERROR: {e}")
         return ""
 
+
 # ── TTS: PIPER ────────────────────────────────────────────────
+
 
 def _aria_voice_settings() -> None:
     try:
@@ -8089,6 +8642,7 @@ def _aria_voice_settings() -> None:
         }
     except Exception:
         return None
+
 
 def speak(text: str) -> Any:
     if not text:
@@ -8214,6 +8768,7 @@ def speak(text: str) -> Any:
         except Exception:
             pass
 
+
 # ── TASK TRACKER ─────────────────────────────────────────────
 def load_tasks() -> Any:
     try:
@@ -8221,14 +8776,17 @@ def load_tasks() -> Any:
     except Exception:
         return []
 
+
 def save_tasks(tasks: Any) -> None:
     try:
         TASKS_FILE.write_text(json.dumps(tasks, indent=2))
     except Exception:
         pass
 
+
 def active_task_count() -> Any:
     return sum(1 for t in load_tasks() if not t.get("done", False))
+
 
 def _build_task_list_context() -> Any:
     """Fresh-from-disk task list grounding, shared by every turn that needs it.
@@ -8254,6 +8812,7 @@ def _build_task_list_context() -> Any:
         f"an earlier turn]\n"
         + ("\n".join(f"- {p}" for p in pending[:15]) if pending else "All tasks done.")
     )
+
 
 def _reply_needs_operator_input(reply_text: str) -> bool:
     """True if this turn's reply is genuinely waiting on the operator —
@@ -8326,6 +8885,7 @@ def _reply_needs_operator_input(reply_text: str) -> bool:
 
     return False
 
+
 def _watchdog_maybe_auto_continue(reply_text: str) -> bool:
     """Called right after a normal turn finishes. Returns True if it
     queued an auto-continuation (via PENDING_USER_NOTE) instead of
@@ -8361,6 +8921,7 @@ def _watchdog_maybe_auto_continue(reply_text: str) -> bool:
     )
     return True
 
+
 def show_tasks() -> None:
     tasks = load_tasks()
     if not tasks:
@@ -8372,6 +8933,7 @@ def show_tasks() -> None:
         icon = f"{G}✅{X}" if done else f"{Y}○ {X}"
         print(f"  {icon} {i}) {W}{t.get('text', '')}{X}")
     print()
+
 
 def handle_task_cmd(cmd: str) -> bool:
     """Handle task add/done/list/clear/toggle commands."""
@@ -8424,7 +8986,9 @@ def handle_task_cmd(cmd: str) -> bool:
 
     return False
 
+
 # ── CONTEXT-PRESSURE COMPACTION (in-place, no restart) ─────────
+
 
 def _compact_older_messages(older_msgs: Any) -> Any:
     """One cloud call: a dense WORKING summary for a model to continue
@@ -8449,6 +9013,7 @@ def _compact_older_messages(older_msgs: Any) -> Any:
     except Exception as e:
         log(f"CONTEXT_COMPACT_ERROR: {e}")
         return ""
+
 
 def _compact_history_in_place(history: Any) -> bool:
     """Replace older turns with a dense summary; keep the system
@@ -8475,6 +9040,7 @@ def _compact_history_in_place(history: Any) -> bool:
     history[:] = system + [note] + recent
     return True
 
+
 # ── HISTORY COMPACT ───────────────────────────────────────────
 def compact_history(history: Any) -> None:
     """Keep system message + last 100 exchanges (200 msgs). Silent.
@@ -8495,6 +9061,7 @@ def compact_history(history: Any) -> None:
     convo = [m for m in history if m.get("role") != "system"]
     if len(convo) > 200:
         history[:] = system + convo[-200:]
+
 
 def _route_history_budget(route_name: Any, user_text: Any) -> Any:
     """Pick a history-trim budget tuned to the chosen route.
@@ -8542,7 +9109,10 @@ def _route_history_budget(route_name: Any, user_text: Any) -> Any:
         pass
     return _ROUTE_HISTORY_BUDGETS["default"]
 
-def _trim_history_by_chars(history: Any, max_chars: Any, keep_system: bool=True) -> Any:
+
+def _trim_history_by_chars(
+    history: Any, max_chars: Any, keep_system: bool = True
+) -> Any:
     """Trim oldest non-system messages until total chars <= max_chars.
     Used to prevent local prefill from ballooning into 10-minute TTFT."""
     if not history or not max_chars or max_chars <= 0:
@@ -8567,7 +9137,9 @@ def _trim_history_by_chars(history: Any, max_chars: Any, keep_system: bool=True)
     after = len(kept)
     return after != before
 
+
 # ── AUTO FILE INJECTION ───────────────────────────────────────
+
 
 def _adaptive_slice_params(content: Any, symbol: Any, user_text: Any) -> tuple:
     """Return (pre_lines, post_lines, max_chars) tuned to density + intent.
@@ -8604,7 +9176,8 @@ def _adaptive_slice_params(content: Any, symbol: Any, user_text: Any) -> tuple:
         mc = int(mc * 1.4)
     return (pre, post, mc)
 
-def _extract_target_symbols(user_text: str, ignored_symbols: Any | None=None) -> list:
+
+def _extract_target_symbols(user_text: str, ignored_symbols: Any | None = None) -> list:
     """Pull candidate code identifiers from the user prompt.
     Returns deduped list, ordered by appearance, lowercased dedup key."""
     ignored = {str(s).lower() for s in (ignored_symbols or []) if s}
@@ -8623,6 +9196,7 @@ def _extract_target_symbols(user_text: str, ignored_symbols: Any | None=None) ->
             seen.add(key)
             out.append(s)
     return out
+
 
 def _slice_around_symbol(
     content: str,
@@ -8685,10 +9259,12 @@ def _slice_around_symbol(
         )
     return (start + 1, end, slice_text, match_idx + 1)
 
+
 def _is_whole_file_request(user_text_low: str) -> bool:
     return any(p in user_text_low for p in _WHOLE_FILE_PHRASES)
 
-def auto_inject_context(user_text: str, enabled: bool=True) -> tuple:
+
+def auto_inject_context(user_text: str, enabled: bool = True) -> tuple:
     """Scan message for file paths/names, inject relevant slices as [AUTO-CONTEXT].
 
     Returns (injected_text, meta) where meta carries:
@@ -8894,6 +9470,7 @@ def auto_inject_context(user_text: str, enabled: bool=True) -> tuple:
     meta["inject_chars"] = len(text)
     return (text, meta)
 
+
 # 2026-09-28: repo-aware search directories for auto-context. Avoid finding
 # stray files by bare name when the real file lives in a project root.
 def _auto_context_search_dirs() -> Any:
@@ -8933,21 +9510,25 @@ def _auto_context_search_dirs() -> Any:
         dirs.append(cwd)
     return dirs
 
+
 def load_memory() -> Any:
     try:
         return MEMORY_FILE.read_text().strip()
     except Exception:
         return ""
 
+
 def _is_memory_marker_line(line: str) -> bool:
     s = (line or "").strip().lower()
     # Topic markers are for human rewind / AI_CONTEXT snapshots; they are not durable facts.
     return s.startswith("--- new topic ---") or s.startswith("--- topic ---")
 
+
 def _topic_marker_line(kind: str = "NEW TOPIC") -> str:
     ts = _fmt_ampm()
     kind = (kind or "NEW TOPIC").strip().upper()
     return f"--- {kind} --- {ts}"
+
 
 def _append_memory_marker(line: str) -> None:
     line = (line or "").strip()
@@ -8962,6 +9543,7 @@ def _append_memory_marker(line: str) -> None:
     except Exception:
         pass
 
+
 def _timeout_fallback_system_prompt(cloud_system: str) -> str:
     """Cloud timeout fallback keeps identity/tool rules, but drops durable memory.
     The failure mode here is stale-topic drift, so memory must not ride along."""
@@ -8970,6 +9552,7 @@ def _timeout_fallback_system_prompt(cloud_system: str) -> str:
         head
         + "\n\n[MEMORY]\n(omitted for timeout fallback; answer only the current user request)"
     )
+
 
 # ── SCHEDULER ──────────────────────────────────────────────────
 # 2026-09-01: restored — this was built 2026-08-20 (commit 64597c3), then
@@ -8982,11 +9565,14 @@ def _timeout_fallback_system_prompt(cloud_system: str) -> str:
 def _scheduler_path() -> Any:
     return Path.home() / ".master_ai_schedules.json"
 
+
 def _scheduler_log() -> Any:
     return Path.home() / ".master_ai_scheduler.log"
 
+
 def _scheduler_pid() -> Any:
     return Path.home() / ".master_ai_scheduler.pid"
+
 
 def _load_schedules() -> Any:
     try:
@@ -8999,11 +9585,13 @@ def _load_schedules() -> Any:
         log(f"SCHEDULER_LOAD_ERROR: {e}")
         return []
 
+
 def _save_schedules(schedules: Any) -> None:
     try:
         _scheduler_path().write_text(json.dumps(schedules, indent=2))
     except Exception as e:
         log(f"SCHEDULER_SAVE_ERROR: {e}")
+
 
 def _scheduler_running() -> bool:
     pid_file = _scheduler_pid()
@@ -9018,6 +9606,7 @@ def _scheduler_running() -> bool:
     except Exception:
         pid_file.unlink(missing_ok=True)
         return False
+
 
 def _start_scheduler_daemon() -> bool:
     import subprocess
@@ -9048,6 +9637,7 @@ def _start_scheduler_daemon() -> bool:
     print(f"{Y}scheduler start pending — check log{X}")
     return True
 
+
 def _stop_scheduler_daemon() -> bool:
     import subprocess
     import sys
@@ -9071,6 +9661,7 @@ def _stop_scheduler_daemon() -> bool:
     print(f"{G}scheduler stopped{X}")
     return True
 
+
 def _add_schedule(command: Any, when: Any, cadence: Any) -> Any:
     schedules = _load_schedules()
     sid = f"sched_{int(__import__('time').time())}"
@@ -9087,6 +9678,7 @@ def _add_schedule(command: Any, when: Any, cadence: Any) -> Any:
     _save_schedules(schedules)
     return sid
 
+
 def _remove_schedule(sid: Any) -> Any:
     schedules = _load_schedules()
     before = len(schedules)
@@ -9094,8 +9686,10 @@ def _remove_schedule(sid: Any) -> Any:
     _save_schedules(schedules)
     return before - len(schedules)
 
+
 def _list_schedules() -> Any:
     return _load_schedules()
+
 
 def _show_schedules() -> None:
     rows = [
@@ -9121,6 +9715,7 @@ def _show_schedules() -> None:
         )
     print(f"{BC}  ╚{'═' * 70}╝{X}\n")
 
+
 # ── MCP SERVERS — Sensei as MCP CLIENT ─────────────────────────
 # 2026-09-01. Sensei was always an MCP SERVER (sensei_mcp_server.py in
 # ~/projects/master-ai speaks JSON-RPC 2.0 over stdio to other agents) but
@@ -9139,7 +9734,10 @@ def _mcp_show() -> None:
 
     print(_mcp.format_catalog(G, R, Y, C, W, D, X))
 
-def select_memory_context(user_text: Any, max_chars: int=6000, mode: str="default") -> Any:
+
+def select_memory_context(
+    user_text: Any, max_chars: int = 6000, mode: str = "default"
+) -> Any:
     """Compact durable memory for local-model turns.
 
     Local routes intentionally skip a dynamic system prompt so Ollama can keep
@@ -9191,7 +9789,9 @@ def select_memory_context(user_text: Any, max_chars: int=6000, mode: str="defaul
             out = out[first_nl + 1 :]
     return out
 
+
 # ── APPROVED COMMANDS ─────────────────────────────────────────
+
 
 def _parse_approved_line(line: str) -> None:
     """Return (ts, cwd, cmd). ts=0 + cwd=_APPROVED_GLOBAL_SCOPE for legacy
@@ -9213,6 +9813,7 @@ def _parse_approved_line(line: str) -> None:
         return None
     return (ts, cwd or _APPROVED_GLOBAL_SCOPE, cmd)
 
+
 def load_approved() -> Any:
     """Backward-compatible accessor — returns a set of approved commands
     ignoring TTL/cwd. Most callers should use ``is_approved()`` instead;
@@ -9227,6 +9828,7 @@ def load_approved() -> Any:
     except Exception:
         return set()
 
+
 def _load_approved_entries() -> Any:
     """Return parsed list of (ts, cwd, cmd) — TTL/cwd aware."""
     try:
@@ -9239,7 +9841,10 @@ def _load_approved_entries() -> Any:
     except Exception:
         return []
 
-def is_approved(cmd: Any, cwd: Any | None=None, max_age_s: Any=_APPROVED_DEFAULT_TTL_S) -> bool:
+
+def is_approved(
+    cmd: Any, cwd: Any | None = None, max_age_s: Any = _APPROVED_DEFAULT_TTL_S
+) -> bool:
     """Match-with-TTL: returns True iff (cmd, cwd) matches an active
     entry. Legacy bare-command entries (ts=0, cwd='*') match unconditionally
     — back-compat for existing approvals. New entries match only if:
@@ -9262,7 +9867,8 @@ def is_approved(cmd: Any, cwd: Any | None=None, max_age_s: Any=_APPROVED_DEFAULT
         return True
     return False
 
-def save_approved(cmd: Any, cwd: Any | None=None, scope: str="cwd") -> None:
+
+def save_approved(cmd: Any, cwd: Any | None = None, scope: str = "cwd") -> None:
     """Persist an approval. ``scope`` is either 'cwd' (default, scoped to
     the current working dir) or 'global' (matches anywhere). The line
     format is "<ts>\t<cwd>\t<cmd>" so the TTL check works on read."""
@@ -9288,10 +9894,12 @@ def save_approved(cmd: Any, cwd: Any | None=None, scope: str="cwd") -> None:
     keep.append(new_line)
     APPROVED_FILE.write_text("\n".join(keep) + "\n")
 
+
 # ── RESPONSE CACHE ─────────────────────────────
 _RICH_OK = False
 _RICH_CONSOLE = None
 _RICH_MARKDOWN = None
+
 
 def _ensure_rich() -> Any:
     """Lazy-load rich + markdown_it only when rendering a reply."""
@@ -9309,6 +9917,7 @@ def _ensure_rich() -> Any:
         _RICH_OK = False
     return _RICH_OK
 
+
 def _reply_margin_for_prefix(prefix: Any) -> Any:
     """Visible-width margin matching a printed reply prefix (e.g. "  🥋 "),
     so wrapped/continuation lines line up under the first instead of
@@ -9318,7 +9927,10 @@ def _reply_margin_for_prefix(prefix: Any) -> Any:
     visible = _PREFIX_ANSI_RE.sub("", prefix or "")
     return " " * len(visible.rsplit("\n", 1)[-1])
 
-def render_reply(text: Any, prefix: Any | None=None, suffix: Any | None=None) -> None:
+
+def render_reply(
+    text: Any, prefix: Any | None = None, suffix: Any | None = None
+) -> None:
     """Render AI reply as markdown via rich when available. Falls back to
     plain colored print.
 
@@ -9375,11 +9987,13 @@ def render_reply(text: Any, prefix: Any | None=None, suffix: Any | None=None) ->
     if suffix:
         print(suffix)
 
+
 def sanitize(text: Any) -> Any:
     if not isinstance(text, str):
         return text
     cleaned = _ANSI_RE.sub("", text)
     return cleaned.strip()
+
 
 def read_nav_key(prompt: Any) -> Any:
     """Read a single navigation key OR a full typed line.
@@ -9448,14 +10062,17 @@ def read_nav_key(prompt: Any) -> Any:
         except EOFError:
             return "quit"
 
+
 def cache_key(text: str) -> Any:
     return hashlib.md5(text.strip().lower().encode()).hexdigest()
+
 
 def _is_error_reply(r: str) -> Any:
     if not r:
         return True
     lo = r.lower()
     return any(m in lo for m in _ERROR_MARKERS) and len(r) < 200
+
 
 def cache_lookup(text: Any) -> Any:
     try:
@@ -9475,6 +10092,7 @@ def cache_lookup(text: Any) -> Any:
         pass
     return None
 
+
 def cache_store(text: Any, reply: Any) -> None:
     if _is_error_reply(reply):
         return
@@ -9491,6 +10109,7 @@ def cache_store(text: Any, reply: Any) -> None:
         CACHE_FILE.write_text(json.dumps(cache))
     except Exception:
         pass
+
 
 # ── GIT CONTEXT ───────────────────────────────────────────────
 def git_context() -> Any:
@@ -9516,8 +10135,9 @@ def git_context() -> Any:
     except Exception:
         return ""
 
+
 # ── NINJA ANIMATIONS ─────────────────────────────────────────
-def play_anim(frames: Any, delay: float=0.13, color: Any | None=None) -> None:
+def play_anim(frames: Any, delay: float = 0.13, color: Any | None = None) -> None:
     """Print ASCII animation frames in-place."""
     color = color or BC
     if not frames:
@@ -9535,6 +10155,7 @@ def play_anim(frames: Any, delay: float=0.13, color: Any | None=None) -> None:
         time.sleep(delay)
     print()
 
+
 # ── SAFE MODE — guard stance ──────────────────────────────────
 
 # ── PLAN MODE — meditation ────────────────────────────────────
@@ -9551,6 +10172,7 @@ def play_anim(frames: Any, delay: float=0.13, color: Any | None=None) -> None:
 
 # ── STARTUP — ninja appears ───────────────────────────────────
 
+
 # ── HINT SYSTEM ───────────────────────────────────────────────
 def show_hint(title: Any, body: str) -> None:
     global HINTS
@@ -9564,11 +10186,13 @@ def show_hint(title: Any, body: str) -> None:
     print(f"  {C}{'─' * 55}{X}")
     print(f"  {W}{Y}type hints off to disable tips{X}\n")
 
+
 # ── MODE HELPERS ──────────────────────────────────────────────
 def mode_label() -> Any:
     global MODE
     labels = {"review": f"{R}REVIEW{X}", "plan": f"{Y}PLAN{X}", "auto": f"{G}AUTO{X}"}
     return labels.get(MODE, MODE.upper())
+
 
 def show_plan_demo() -> None:
     os.system("clear")
@@ -9627,6 +10251,7 @@ def show_plan_demo() -> None:
     print(f"  {G}That's it! Type 'mode plan' and try it for real.{X}\n")
     print(f"  {C}Switch back to Plan mode anytime:{X}  {W}mode plan{X}\n")
 
+
 def show_mode_status() -> None:
     global MODE
     anims = {"review": (_A_SAFE, R), "plan": (_A_PLAN, Y), "auto": (_A_AUTO, G)}
@@ -9648,6 +10273,7 @@ def show_mode_status() -> None:
             MODE_HINT_TITLES.get(MODE, f"Mode: {MODE}"),
             contract["contract"] + "\n\nType 'mode plan' to go back to default.",
         )
+
 
 # ── TUTORIAL ─────────────────────────────────────────────────
 def run_tutorial() -> None:
@@ -9709,6 +10335,7 @@ def run_tutorial() -> None:
             step += 1
     TUTORIAL_FILE.touch()
 
+
 # ── MODEL PICKER ──────────────────────────────────────────────
 def _model_catalog() -> Any:
     """Curated menu plus every cloud provider catalog that is currently
@@ -9738,6 +10365,7 @@ def _model_catalog() -> Any:
             catalog[_m.lower()] = f"opencode-go::{_m}"
     return catalog
 
+
 def _refresh_ollama_key() -> None:
     """Pull OLLAMA_API_KEY from ~/.hermes/.env into KEYS lazily so
     Ollama Cloud is gated like every other cloud provider. The provider
@@ -9749,6 +10377,7 @@ def _refresh_ollama_key() -> None:
     except Exception:
         pass
 
+
 def _refresh_opencode_go_key() -> None:
     """Pull the OpenCode Go key into KEYS lazily (keychain via
     _opencode_go_key()'s KEYS lookup, or ~/.hermes/.env fallback) so the
@@ -9759,6 +10388,7 @@ def _refresh_opencode_go_key() -> None:
             KEYS.setdefault("opencode_go", _og_key)
     except Exception:
         pass
+
 
 def _active_model_context_tokens() -> tuple:
     """The ACTIVE model's real context window, in tokens.
@@ -9869,6 +10499,7 @@ def _active_model_context_tokens() -> tuple:
             return toks, f"table:{prov}"
     return None, "unknown"
 
+
 def _context_watermark() -> tuple:
     """Char budget for the CURRENT model: 95% of its real context window.
 
@@ -9889,6 +10520,7 @@ def _context_watermark() -> tuple:
         return CONTEXT_WATERMARK_FLOOR, tokens, f"{source} (raised to floor)"
     return chars, tokens, source
 
+
 def _load_real_ctx_from_disk() -> Any:
     try:
         rec = json.loads(_REAL_CTX_FILE.read_text())
@@ -9898,7 +10530,9 @@ def _load_real_ctx_from_disk() -> Any:
         pass
     return {"model": None, "tokens": None, "ts": 0.0}
 
+
 _LAST_REAL_CTX: dict = _load_real_ctx_from_disk()
+
 
 def _record_real_ctx_tokens(model: Any, tokens: Any) -> None:
     """Stash the most recent REAL (model-native) total token count for
@@ -9923,6 +10557,7 @@ def _record_real_ctx_tokens(model: Any, tokens: Any) -> None:
         _REAL_CTX_FILE.write_text(json.dumps(rec))
     except Exception:
         pass  # best-effort -- the in-memory copy is what actually matters this turn
+
 
 def _real_ctx_tokens_for_active_model() -> Any:
     """The most recent real token count, IF it was measured against the
@@ -9965,6 +10600,7 @@ def _real_ctx_tokens_for_active_model() -> Any:
     if not active_probe and measured_model == str(DEFAULT_LOCAL_MODEL):
         return tokens
     return None
+
 
 def _openrouter_model_catalog() -> Any:
     """Returns [(id, name, is_free), ...] for every model OpenRouter
@@ -10025,6 +10661,7 @@ def _openrouter_model_catalog() -> Any:
             ]
         return []
 
+
 # 2026-09-07: free-only, catalog-aware OpenRouter model selection. The
 # hardcoded slug era (nvidia/nemotron-3.5-lightning:free, etc.) drifts too
 # fast — providers rotate free cohorts weekly.
@@ -10054,12 +10691,14 @@ def _openrouter_free_models() -> list:
         log(f"OPENROUTER_FREE_MODELS_ERROR: {e}")
         return []
 
+
 def _openrouter_best_free_model() -> Any:
     """Single best free slug, or None if no free models are available."""
     slugs = _openrouter_free_models()
     return slugs[0] if slugs else None
 
-def print_openrouter_search(query: Any, free_only: bool=False) -> None:
+
+def print_openrouter_search(query: Any, free_only: bool = False) -> None:
     catalog = _openrouter_model_catalog()
     if not catalog:
         print(
@@ -10099,7 +10738,8 @@ def print_openrouter_search(query: Any, free_only: bool=False) -> None:
         f"\n  {D}pin one with: model <exact-id>   (use 'model or free' to see only 🆓 models){X}\n"
     )
 
-def print_full_model_catalog(query: str="", free_only: bool=False) -> None:
+
+def print_full_model_catalog(query: str = "", free_only: bool = False) -> None:
     """Every model reachable through every configured key, unfiltered —
     paid and free, local and cloud, one screen per provider.
 
@@ -10217,7 +10857,9 @@ def print_full_model_catalog(query: str="", free_only: bool=False) -> None:
         )
     print(f"\n  {D}pin one with: model <exact-id>{X}\n")
 
+
 # ── Live model picker — every configured key, arrow keys + Enter ──────
+
 
 def _provider_model_catalog(cache_file: Any, url: Any, key: Any) -> Any:
     """Generic OpenAI-style /v1/models fetch+cache for a single-endpoint
@@ -10247,6 +10889,7 @@ def _provider_model_catalog(cache_file: Any, url: Any, key: Any) -> Any:
         log(f"PROVIDER_MODELS_FETCH_ERROR [{url}]: {e}")
         return list(cached.get("models", [])) if cached else []
 
+
 def _nvidia_model_catalog() -> Any:
     return _provider_model_catalog(
         _NVIDIA_MODELS_CACHE,
@@ -10254,12 +10897,14 @@ def _nvidia_model_catalog() -> Any:
         KEYS.get("nvidia"),
     )
 
+
 def _cerebras_model_catalog() -> Any:
     return _provider_model_catalog(
         _CEREBRAS_MODELS_CACHE,
         "https://api.cerebras.ai/v1/models",
         KEYS.get("cerebras"),
     )
+
 
 def _poolside_model_catalog() -> Any:
     """Poolside direct inference catalog. Ids come back already
@@ -10270,6 +10915,7 @@ def _poolside_model_catalog() -> Any:
         "https://inference.poolside.ai/v1/models",
         KEYS.get("poolside"),
     )
+
 
 def _qwen_model_catalog() -> Any:
     """QwenCloud Token Plan's real entitlement list — verified live
@@ -10284,10 +10930,12 @@ def _qwen_model_catalog() -> Any:
         KEYS.get("qwen"),
     )
 
+
 def _groq_model_catalog() -> Any:
     return _provider_model_catalog(
         _GROQ_MODELS_CACHE, "https://api.groq.com/openai/v1/models", KEYS.get("groq")
     )
+
 
 def _ollama_cloud_model_catalog() -> Any:
     """Ollama Cloud's own /v1/models — same OpenAI-compatible shape NVIDIA/
@@ -10297,6 +10945,7 @@ def _ollama_cloud_model_catalog() -> Any:
     return _provider_model_catalog(
         _OLLAMA_CLOUD_MODELS_CACHE, "https://ollama.com/v1/models", _ollama_cloud_key()
     )
+
 
 def _ollama_local_models() -> Any:
     if time.time() - _OLLAMA_LOCAL_CACHE["ts"] < _OLLAMA_LOCAL_TTL:
@@ -10311,6 +10960,7 @@ def _ollama_local_models() -> Any:
     _OLLAMA_LOCAL_CACHE["ts"] = time.time()
     _OLLAMA_LOCAL_CACHE["models"] = models
     return models
+
 
 def _invalidate_provider_caches() -> None:
     """Delete every on-disk provider model cache so the next catalog read
@@ -10349,7 +10999,8 @@ def _invalidate_provider_caches() -> None:
     # too so the picker never shows a model deleted with `ollama rm`.
     _OLLAMA_LOCAL_CACHE["ts"] = 0.0
 
-def live_provider_completions(query: str="", mode: Any | None=None) -> Any:
+
+def live_provider_completions(query: str = "", mode: Any | None = None) -> Any:
     _refresh_ollama_key()
     """Providers with a key configured (or local Ollama actually running)
     — step 1 of the modal /model picker (sensei_tui._open_model_picker).
@@ -10414,6 +11065,7 @@ def live_provider_completions(query: str="", mode: Any | None=None) -> Any:
     if KEYS.get("poolside"):
         rows.append(("poolside", "Poolside", "paid — code + reasoning"))
     return rows
+
 
 def live_model_completions(provider: Any) -> Any:
     _refresh_ollama_key()
@@ -10522,6 +11174,7 @@ def live_model_completions(provider: Any) -> Any:
         ]
     return []
 
+
 def _resolve_model_choice(choice: Any) -> Any:
     """Map a direct `model <name>` choice to a pin target.
 
@@ -10568,6 +11221,7 @@ def _resolve_model_choice(choice: Any) -> Any:
         return raw
     return ""
 
+
 def _is_key_backed_model(model: Any) -> Any:
     m = (model or "").lower()
     # "nvidia::"/"cerebras::" = an explicit direct-API pick from the live
@@ -10591,6 +11245,7 @@ def _is_key_backed_model(model: Any) -> Any:
     # CLOUD_MODEL_NAMES, picked via `model or search <term>`.
     return m in CLOUD_MODEL_NAMES or "/" in m
 
+
 def _model_required_key(model: Any) -> Any:
     """Return the key name required for a model choice. Provider-prefixed
     ids (provider::model) map to their provider key generically; legacy
@@ -10601,6 +11256,7 @@ def _model_required_key(model: Any) -> Any:
     if m in CLOUD_MODEL_KEYS:
         return CLOUD_MODEL_KEYS[m]
     return "openrouter" if "/" in m else ""
+
 
 def _pin_model_choice(choice: Any) -> tuple:
     global PINNED_MODEL
@@ -10660,7 +11316,8 @@ def _pin_model_choice(choice: Any) -> tuple:
             msg += f"\n  {Y}⚠ couldn't confirm free/paid for this id — check: model or search {resolved.split('/')[-1]}{X}"
     return True, msg
 
-def _model_usage_rows(limit: int=12) -> Any:
+
+def _model_usage_rows(limit: int = 12) -> Any:
     rows = []
     for e in _router_recent_events():
         if e.get("kind") != "model_call":
@@ -10676,6 +11333,7 @@ def _model_usage_rows(limit: int=12) -> Any:
         found["lat"] += float(e.get("latency_s") or 0.0)
     rows.sort(key=lambda r: (-r["calls"], r["model"]))
     return rows[:limit]
+
 
 def format_model_monitor() -> Any:
     keys_now = load_keys()
@@ -10700,6 +11358,7 @@ def format_model_monitor() -> Any:
     else:
         lines.append("   recent use: no model calls recorded yet")
     return "\n".join(lines)
+
 
 def show_model_menu() -> None:
     global PINNED_MODEL
@@ -10767,6 +11426,7 @@ def show_model_menu() -> None:
             ok, msg = _pin_model_choice(choice)
             print(f"  {msg if ok else msg}")
 
+
 # ── THOUGHT-CLOUD: rotating tips line above prompt while idle ─────
 # Pulled from master_ai_voice.json — trademark quotes mixed with command tips,
 # so the idle bubble occasionally drops a brand line like "Your AI. Every entry
@@ -10795,11 +11455,13 @@ def _build_idle_tips() -> Any:
         ]
     return out
 
+
 _IDLE_TIPS = _build_idle_tips()
 
 _IDLE_STOP = threading.Event()
 _IDLE_THREAD = None
 _IDLE_IDX = 0
+
 
 def _is_sensei_idle() -> bool:
     """True-idle predicate used by the idle-tips thread. The user is
@@ -10819,6 +11481,7 @@ def _is_sensei_idle() -> bool:
         if (time.time() - _LAST_BUSY_CLEARED_TS) < _POST_REPLY_GRACE:
             return False
     return True
+
 
 def _idle_tips_runner() -> bool:
     """Background: cycle tips on the reserved line above the prompt.
@@ -10914,6 +11577,7 @@ def _idle_tips_runner() -> bool:
     except Exception:
         pass
 
+
 def start_idle_tips() -> None:
     """Reserve a line above the prompt and spin up the rotation thread."""
     global _IDLE_THREAD
@@ -10923,6 +11587,7 @@ def start_idle_tips() -> None:
     _IDLE_STOP.clear()
     _IDLE_THREAD = threading.Thread(target=_idle_tips_runner, daemon=True)
     _IDLE_THREAD.start()
+
 
 def stop_idle_tips() -> None:
     """Signal the idle thread to clear the tip line and exit."""
@@ -10934,10 +11599,12 @@ def stop_idle_tips() -> None:
         except Exception:
             pass
 
+
 # ── THOUGHT-CLOUD while AI is thinking (not idle — model generating) ──
 _THINK_STOP = threading.Event()
 _THINK_THREAD = None
 _THINK_IDX = 0
+
 
 def _think_runner() -> None:
     global _THINK_IDX
@@ -10961,6 +11628,7 @@ def _think_runner() -> None:
     except Exception:
         pass
 
+
 def start_thinking_tips() -> None:
     global _THINK_THREAD
     if not sys.stdout.isatty():
@@ -10969,6 +11637,7 @@ def start_thinking_tips() -> None:
     _THINK_STOP.clear()
     _THINK_THREAD = threading.Thread(target=_think_runner, daemon=True)
     _THINK_THREAD.start()
+
 
 def stop_thinking_tips() -> None:
     _THINK_STOP.set()
@@ -10979,8 +11648,9 @@ def stop_thinking_tips() -> None:
         except Exception:
             pass
 
+
 # ── AUTO-TIPS SLIDESHOW (self-advancing, any key skips) ────────
-def show_autotips(slide_delay: float=4.0) -> None:
+def show_autotips(slide_delay: float = 4.0) -> None:
     """Auto-advancing tips carousel. Any key skips to next slide. Letter 'q' quits."""
     slides = [
         (
@@ -11078,6 +11748,7 @@ def show_autotips(slide_delay: float=4.0) -> None:
 
     print(f"\n  {G}── end of tips ──  {D}type 'autotips' anytime to replay{X}\n")
 
+
 # ── HUB MENU (master control panel — numbered actions) ────────
 def show_hub() -> Any:
     """Show the Master AI hub with all features as numbered options.
@@ -11163,6 +11834,7 @@ def show_hub() -> Any:
         # Anything else → pass through as a command / question
         return ans
 
+
 # ── PROJECTS SLIDE SHOW ───────────────────────────────────────
 def show_projects() -> Any:
     """Paginated view of Elijah's shipped projects — one per slide."""
@@ -11229,7 +11901,9 @@ def show_projects() -> Any:
             return None
         return ans  # user typed a question → caller sends it as a message
 
+
 # ── HELP CARD (slide show — one section per slide, mobile-friendly) ──
+
 
 def _load_hidden_help_sections() -> set:
     try:
@@ -11241,11 +11915,13 @@ def _load_hidden_help_sections() -> set:
     except Exception:
         return set()
 
+
 def _save_hidden_help_sections(hidden: set) -> None:
     try:
         _HELP_HIDDEN_FILE.write_text("\n".join(sorted(hidden)))
     except Exception as e:
         log(f"HIDE_HELP_SAVE_ERROR: {e}")
+
 
 def show_help() -> Any:
     """Paginated help. Returns None if user quit, or a string if user
@@ -11485,6 +12161,7 @@ def show_help() -> Any:
         # User typed a real question mid-help — exit and route it
         return ans
 
+
 # ── TIPS SCREEN ───────────────────────────────────────────────
 def show_tips() -> None:
     os.system("clear")
@@ -11492,7 +12169,7 @@ def show_tips() -> None:
     w = min(cols - 4, 72)
     bar = "═" * w
 
-    def row(label: Any, text: Any, lw: int=26) -> None:
+    def row(label: Any, text: Any, lw: int = 26) -> None:
         print(f"{BC}  ║{X}  {Y}{label:<{lw}}{X}{C}{text}{X}")
 
     def section(title: Any) -> None:
@@ -11618,6 +12295,7 @@ def show_tips() -> None:
     except Exception:
         pass
 
+
 def show_commands() -> None:
     """Simple first-screen command card for normal users."""
     rows = [
@@ -11692,6 +12370,7 @@ def show_commands() -> None:
     print(f"{BC}  ╚{'═' * width}╝{X}")
     print(f"  {D}Tip: you can ignore commands and just say what you want built.{X}\n")
 
+
 def show_controls() -> Any:
     """Standards-based control map for Sensei and Pupil.
 
@@ -11733,6 +12412,7 @@ def show_controls() -> Any:
         f"  {D}Rule: do not reinvent platform controls; use the standard surface behavior.{X}\n"
     )
 
+
 def show_buckets() -> None:
     """Quick reference for the punctuation command buckets."""
     rows = [
@@ -11752,7 +12432,9 @@ def show_buckets() -> None:
         f"  {D}Tip: type punctuation + letters (example: /im or ;mod) to narrow fast.{X}\n"
     )
 
+
 # ── SAFETY BLOCK ─────────────────────────────────────────────
+
 
 def _blocked_shell_issue(cmd: Any) -> None | str:
     """Return a hard shell-block reason for commands Sensei must never run."""
@@ -11804,8 +12486,10 @@ def _blocked_shell_issue(cmd: Any) -> None | str:
         return "self-capture of own tmux pane blocked — the conversation is already in your context, answer directly"
     return None
 
+
 def is_blocked(cmd: Any) -> Any:
     return _blocked_shell_issue(cmd) is not None
+
 
 def _directive_corruption_issue(cmd: Any) -> Any:
     """Return a refusal reason if `cmd` looks like a corrupted/concatenated
@@ -11823,6 +12507,7 @@ def _directive_corruption_issue(cmd: Any) -> Any:
     if len(re.findall(r"[a-z]\.\s+[A-Z]", cmd)) >= 1 and _PROSE_LEAK_RE.search(cmd):
         return "conversational prose leaked into RUN payload — model rambled past the command on the same line"
     return None
+
 
 def _cleanup_safety_issue(cmd: Any) -> Any:
     """Return a refusal reason for broad cleanup deletes that risk user data.
@@ -11865,6 +12550,7 @@ def _cleanup_safety_issue(cmd: Any) -> Any:
             return f"cleanup delete touches protected path: {path}"
     return None
 
+
 def _cron_persistence_write(low: Any) -> bool:
     """True only for cron commands that install/modify a schedule.
 
@@ -11885,6 +12571,7 @@ def _cron_persistence_write(low: Any) -> bool:
         return True
     return False
 
+
 def _agent_policy_issue_for_request(text: Any) -> Any:
     """Return a policy refusal reason for clearly disallowed agent requests."""
     low = (text or "").lower()
@@ -11894,6 +12581,7 @@ def _agent_policy_issue_for_request(text: Any) -> Any:
         if any(n in low for n in needles):
             return f"disallowed agent request: {label}"
     return None
+
 
 def _agent_policy_issue_for_command(cmd: Any) -> Any:
     """Return a policy refusal reason for risky generated shell commands."""
@@ -11932,7 +12620,9 @@ def _agent_policy_issue_for_command(cmd: Any) -> Any:
         return f"policy block: {label} ({matched[0]})"
     return None
 
+
 # ── DESTRUCTIVE HEURISTIC ────────────────────────────────────
+
 
 def _hallucination_warn(cmd: Any) -> bool:
     """Warn if the first-token binary doesn't exist on PATH.
@@ -12034,6 +12724,7 @@ def _hallucination_warn(cmd: Any) -> bool:
     print(f"  {D}  (on Linux: try `ip addr` instead of `ipconfig`, etc.){X}")
     return False
 
+
 def _is_destructive(cmd: Any) -> Any:
     """True if `cmd` matches a destructive pattern. Case-insensitive
     substring match against the allow-prompt list. `rm ` gets its own
@@ -12046,7 +12737,9 @@ def _is_destructive(cmd: Any) -> Any:
         return True
     return any(p in low for p in _DESTRUCTIVE_PATTERNS)
 
+
 # ── AUTO-MODE SANDBOX ────────────────────────────────────────
+
 
 def _audit(kind: Any, detail: Any) -> None:
     """Append one line: 12-hour timestamp · profile · mode · cwd · kind · detail.
@@ -12092,7 +12785,10 @@ def _audit(kind: Any, detail: Any) -> None:
     except Exception:
         pass
 
-def _record_blocked_action(kind: Any, command: str="", reason: str="", audit_kind: str="POLICY-CMD-BLOCK") -> Any:
+
+def _record_blocked_action(
+    kind: Any, command: str = "", reason: str = "", audit_kind: str = "POLICY-CMD-BLOCK"
+) -> Any:
     """Remember a refusal so process_reply can feed it back to the model.
     2026-05-11: also stores audit_kind on the entry so downstream on_blocked
     hooks (auto-extract-lesson) can filter by source — POLICY/FENCE blocks
@@ -12112,6 +12808,7 @@ def _record_blocked_action(kind: Any, command: str="", reason: str="", audit_kin
         pass
     return entry
 
+
 # ── SAFE PROMPT ─────────────────────────────────────────────
 # Safeguards must never deadlock but must ALSO never answer for the user.
 # If the pane has no TTY (e.g. a subprocess called confirm_run), we cannot
@@ -12119,10 +12816,11 @@ def _record_blocked_action(kind: Any, command: str="", reason: str="", audit_kin
 # forever for the user's answer — that is the intended behavior. Reason:
 # 2026-04-19 freeze where input() hung in a stdin-less pane with no way
 # out. Claude is NOT permitted to auto-answer; only the user consents.
-def _opt_lines(options: Any, prefix: str="║   ") -> list:
+def _opt_lines(options: Any, prefix: str = "║   ") -> list:
     """Format choice option rows. `options` is a sequence of
     (code, btn_style, description) where `code` is any single character."""
     return [f"{prefix}{style} {code}) {desc}{X}" for code, style, desc in options]
+
 
 def _safe_text(prompt: Any) -> Any:
     """Read FREE TEXT inside a confirm (the Edit / Ask follow-ups). Two
@@ -12139,6 +12837,7 @@ def _safe_text(prompt: Any) -> Any:
     except (EOFError, KeyboardInterrupt):
         return None
 
+
 def _drain_queue(q: Any) -> None:
     """Discard everything currently queued. Used before a choice prompt
     blocks, so a value left over from an earlier prompt cannot be returned
@@ -12151,7 +12850,14 @@ def _drain_queue(q: Any) -> None:
     except Exception:
         pass
 
-def _safe_choice(prompt: Any, keys: Any | None=None, options: Any | None=None, aliases: Any | None=None, audit_cmd: Any | None=None) -> Any:
+
+def _safe_choice(
+    prompt: Any,
+    keys: Any | None = None,
+    options: Any | None = None,
+    aliases: Any | None = None,
+    audit_cmd: Any | None = None,
+) -> Any:
     """Read a single-key choice.
 
     Pass `options` (the same list whose labels were printed) and the live keys
@@ -12203,7 +12909,8 @@ def _safe_choice(prompt: Any, keys: Any | None=None, options: Any | None=None, a
         if not had_confirm:
             _AWAITING_CONFIRM.clear()
 
-def _safe_input(prompt: Any, audit_cmd: Any | None=None) -> Any:
+
+def _safe_input(prompt: Any, audit_cmd: Any | None = None) -> Any:
     """input() with one guardrail: refuse if stdin isn't a TTY.
 
     Returns None (and audits DENY-NO-TTY) when no live stdin is attached.
@@ -12227,6 +12934,7 @@ def _safe_input(prompt: Any, audit_cmd: Any | None=None) -> Any:
             _audit("DENY-EOF", audit_cmd)
         return None
 
+
 # ── NO-TTY QUEUE (2026-09-11) ────────────────────────────────────────
 # _safe_input()'s no-TTY branch above is correct to refuse rather than
 # hang — but a flat refusal with no way to reconsider means every RUN/
@@ -12236,7 +12944,15 @@ def _safe_input(prompt: Any, audit_cmd: Any | None=None) -> Any:
 # a real terminal (`approval_queue.py pending` / `approve <id>`) or from
 # inside a live Sensei session (`pending` / `approve <id>` REPL commands).
 def _queue_for_approval(
-    entry_type: Any, who: Any, what: Any, where: Any, why: Any, how: Any, payload: Any, trigger: str="", diff: str=""
+    entry_type: Any,
+    who: Any,
+    what: Any,
+    where: Any,
+    why: Any,
+    how: Any,
+    payload: Any,
+    trigger: str = "",
+    diff: str = "",
 ) -> Any:
     """No live TTY to confirm — queue the action instead of just denying it.
 
@@ -12258,6 +12974,7 @@ def _queue_for_approval(
     _audit("QUEUED-NO-TTY", f"{entry_type}:{what}")
     return entry_id
 
+
 # ── APPROVAL HANDLERS ────────────────────────────────────────────────
 # Registered so `approval_queue.approve(<id>)` can actually replay a
 # queued action later. Each one just calls the same execution primitive
@@ -12265,18 +12982,22 @@ def _queue_for_approval(
 # _dispatch_browser_action) — one code path for "actually do the thing",
 # whether it runs immediately or gets approved after the fact.
 
+
 @approval_queue.register_handler("run_command")
 def _approval_run_command(entry: Any) -> Any:
     return run_command(entry["payload"]["cmd"])
+
 
 @approval_queue.register_handler("run_terminal")
 def _approval_run_terminal(entry: Any) -> Any:
     return run_in_terminal(entry["payload"]["cmd"])
 
+
 @approval_queue.register_handler("browser_action")
 def _approval_browser_action(entry: Any) -> Any:
     p = entry["payload"]
     return _dispatch_browser_action(p["kind"], p["target"], p.get("value"))
+
 
 @approval_queue.register_handler("file_create")
 def _approval_file_create(entry: Any) -> Any:
@@ -12294,6 +13015,7 @@ def _approval_file_create(entry: Any) -> Any:
     if _fire_hook_or_block("post_create", filepath):
         raise RuntimeError("post_create hook blocked")
     return f"created {filepath}"
+
 
 @approval_queue.register_handler("file_edit")
 def _approval_file_edit(entry: Any) -> Any:
@@ -12320,6 +13042,7 @@ def _approval_file_edit(entry: Any) -> Any:
     if _fire_hook_or_block("post_edit", filepath):
         raise RuntimeError("post_edit hook blocked")
     return f"edited {filepath}"
+
 
 def _is_sudo_cmd(cmd: Any) -> bool:
     """Cheap detector — does this command invoke privilege escalation?
@@ -12349,6 +13072,7 @@ def _is_sudo_cmd(cmd: Any) -> bool:
             inner = ""
         return bool(inner and _is_sudo_cmd(inner))
     return False
+
 
 def _split_top_level_pipes(cmd: Any) -> Any:
     """Split shell pipelines without treating `||` as a pipe."""
@@ -12386,6 +13110,7 @@ def _split_top_level_pipes(cmd: Any) -> Any:
         parts.append(tail)
     return parts
 
+
 def _first_shell_word(part: Any) -> Any:
     try:
         toks = shlex.split(part or "")
@@ -12397,7 +13122,8 @@ def _first_shell_word(part: Any) -> Any:
         return ""
     return os.path.basename(toks[0]).lower()
 
-def _is_web_grep_no_match(cmd: Any, exit_code: Any | None=None) -> Any:
+
+def _is_web_grep_no_match(cmd: Any, exit_code: Any | None = None) -> Any:
     """True when grep's exit 1 means the search simply found no hits, not
     that the command failed. Applies to any producer piped into a
     grep-family tool (grep/egrep/fgrep/rg) — not just curl/wget — since
@@ -12419,7 +13145,8 @@ def _is_web_grep_no_match(cmd: Any, exit_code: Any | None=None) -> Any:
         return False
     return _first_shell_word(parts[-1]) in {"grep", "egrep", "fgrep", "rg"}
 
-def _is_informational_cmd(cmd: str, exit_code: Any | None=None) -> bool:
+
+def _is_informational_cmd(cmd: str, exit_code: Any | None = None) -> bool:
     """True for commands whose nonzero exits are diagnostic answers, not
     failures. `systemctl status` returns 3 when a service is inactive —
     that's the right answer to 'is this running?', not a fatal error.
@@ -12465,6 +13192,7 @@ def _is_informational_cmd(cmd: str, exit_code: Any | None=None) -> bool:
         return True
     return False
 
+
 def _is_noop_cmd(cmd: Any) -> bool:
     """True if `cmd` is empty/whitespace or a bash no-op the model
     sometimes emits as a placeholder (`:`, `true`, etc.). Born from the
@@ -12479,6 +13207,7 @@ def _is_noop_cmd(cmd: Any) -> bool:
     if not any(c.isalnum() for c in s):
         return True
     return False
+
 
 def _sudo_handoff(cmd: Any) -> Any:
     """sudo commands NEVER run inside Sensei. Password prompts must happen
@@ -12520,6 +13249,7 @@ def _sudo_handoff(cmd: Any) -> Any:
         output="[sudo handed off to user terminal]", ok=True, exit_code=0, command=cmd
     )
 
+
 def _build_self_mod_denylist() -> Any:
     home = Path.home()
     paths = [
@@ -12541,7 +13271,9 @@ def _build_self_mod_denylist() -> Any:
             pass
     return out
 
+
 _SELF_MOD_DENYLIST = _build_self_mod_denylist()
+
 
 def _read_path_is_framework(filepath: Any) -> Any:
     """Framework files (Sensei source, docs, config) may be read in larger
@@ -12556,6 +13288,7 @@ def _read_path_is_framework(filepath: Any) -> Any:
         or fpath.endswith("/launch_master_ai.sh")
         or "/.config/ai-controller/" in fpath
     )
+
 
 def _read_path_ok(filepath: Any) -> tuple:
     """Return (ok, why). Resolves symlinks and checks:
@@ -12586,6 +13319,7 @@ def _read_path_ok(filepath: Any) -> tuple:
         except ValueError:
             continue
     return (False, f"outside allowed roots (resolved to {s})")
+
 
 def _cwd_fence_ok(filepath: Any) -> tuple:
     """Return (ok, reason) — is this path under a writable allowlist?
@@ -12631,12 +13365,13 @@ def _cwd_fence_ok(filepath: Any) -> tuple:
         f"auto-mode refuses writes outside CWD/Desktop/scripts/tmp (got {abspath})",
     )
 
+
 # ── ACTION PILLS ─────────────────────────────────────────────
 # Visual color-badges for action outcomes — matches Claude Code's
 # per-action status pills. Each kind renders as a short colored
 # chiclet that scans at a glance: green for success, red for
 # failure/blocked, yellow for skipped/warned.
-def _pill(kind: Any, detail: str="") -> Any:
+def _pill(kind: Any, detail: str = "") -> Any:
     """Return a colored pill badge + optional trailing detail."""
     badges = {
         "RAN": f"{BTN_G} RAN     {X}",
@@ -12654,16 +13389,25 @@ def _pill(kind: Any, detail: str="") -> Any:
     tag = badges.get(kind, f"[{kind}]")
     return f"  {tag}  {detail}" if detail else f"  {tag}"
 
+
 class RunResult(str):
     """String-compatible shell result with reliable status metadata."""
 
-    def __new__(cls, output: str="", ok: bool=False, exit_code: Any | None=None, command: str="", error: str="") -> Any:
+    def __new__(
+        cls,
+        output: str = "",
+        ok: bool = False,
+        exit_code: Any | None = None,
+        command: str = "",
+        error: str = "",
+    ) -> Any:
         obj = str.__new__(cls, output or "")
         obj.ok = bool(ok)
         obj.exit_code = exit_code
         obj.command = command
         obj.error = error
         return obj
+
 
 def _action_ok(result: Any) -> Any:
     if isinstance(result, bool):
@@ -12673,6 +13417,7 @@ def _action_ok(result: Any) -> Any:
     if hasattr(result, "ok"):
         return bool(result.ok)
     return result is not None
+
 
 def _format_tool_result(kind: Any, cmd: Any, result: Any) -> Any:
     ok = _action_ok(result)
@@ -12693,6 +13438,7 @@ def _format_tool_result(kind: Any, cmd: Any, result: Any) -> Any:
         output = output[:max_chars].rstrip() + f"\n... [truncated {omitted} chars]"
     return f"[{kind} RESULT]\nCommand: {cmd}\nExit: {exit_code}\nOutput:\n{output}"
 
+
 def _extract_path_lines(output: Any) -> Any:
     """Best-effort parse of path-like lines from shell output."""
     out = output or ""
@@ -12704,6 +13450,7 @@ def _extract_path_lines(output: Any) -> Any:
         if line.startswith(("/", "~/", "./", "../")):
             paths.append(line)
     return paths
+
 
 def _print_run_success_summary(cmd: Any, output: Any) -> None:
     """Human-readable result summary for common discovery commands."""
@@ -12729,6 +13476,7 @@ def _print_run_success_summary(cmd: Any, output: Any) -> None:
             print(_pill("FOUND", f"{D}{paths[0][:140]}{X}"))
         else:
             print(_pill("WARN", f"{D}not installed / not in PATH{X}"))
+
 
 def _shell_and_parts(cmd: Any) -> Any:
     """Split a simple shell chain on top-level && while preserving quotes.
@@ -12769,12 +13517,14 @@ def _shell_and_parts(cmd: Any) -> Any:
         parts.append(tail)
     return parts or [(cmd or "").strip()]
 
+
 def _scriptish_token(token: Any) -> bool:
     t = (token or "").strip().strip("'\"")
     return bool(
         t.startswith(("~", "/home/", "./", "../"))
         or t.endswith((".sh", ".py", ".js", ".html", ".htm"))
     )
+
 
 def _is_setup_command_part(part: Any) -> bool:
     try:
@@ -12794,6 +13544,7 @@ def _is_setup_command_part(part: Any) -> bool:
         return True
     return False
 
+
 def _is_script_execution_part(part: Any) -> Any:
     try:
         toks = shlex.split(part)
@@ -12805,6 +13556,7 @@ def _is_script_execution_part(part: Any) -> Any:
     if first in ("bash", "sh", "python", "python3", "node"):
         return any(_scriptish_token(t) for t in toks[1:] if not t.startswith("-"))
     return _scriptish_token(toks[0])
+
 
 def _missing_execution_targets(cmd: Any) -> Any:
     missing = []
@@ -12837,7 +13589,8 @@ def _missing_execution_targets(cmd: Any) -> Any:
                 missing.append(exp)
     return sorted(set(missing))
 
-def _is_visual_command_part(part: Any, visual_requested: bool=False) -> bool:
+
+def _is_visual_command_part(part: Any, visual_requested: bool = False) -> bool:
     low = (part or "").strip().lower()
     if not low or _is_setup_command_part(part):
         return False
@@ -12855,7 +13608,8 @@ def _is_visual_command_part(part: Any, visual_requested: bool=False) -> bool:
         return True
     return False
 
-def _split_run_policy(cmd: Any, visual_requested: bool=False) -> tuple:
+
+def _split_run_policy(cmd: Any, visual_requested: bool = False) -> tuple:
     """Return (run_parts, runterm_parts) for a model-emitted RUN command."""
     parts = _shell_and_parts(cmd)
     if len(parts) == 1:
@@ -12876,6 +13630,7 @@ def _split_run_policy(cmd: Any, visual_requested: bool=False) -> tuple:
         i += 1
     return run_parts, runterm_parts
 
+
 def _looks_interactive_run(cmd: Any) -> Any:
     low = (cmd or "").strip().lower()
     if not low:
@@ -12890,7 +13645,9 @@ def _looks_interactive_run(cmd: Any) -> Any:
         first = low.split()[0] if low.split() else ""
     return first in _INTERACTIVE_RUN_WORDS or low.startswith("tail -f ")
 
+
 # ── RUN COMMAND ───────────────────────────────────────────────
+
 
 def _record_live_typed_action(action: Any) -> None:
     """Persist one TypedAction's final lifecycle state.
@@ -12915,6 +13672,7 @@ def _record_live_typed_action(action: Any) -> None:
     except Exception:
         pass
 
+
 # 2026-09-01: sandbox wrapper moved to sandbox.py so skill_runtime.py
 # recipes can share the exact same sandboxing instead of bypassing it
 # entirely with their own bare subprocess.run() calls. Kept as a thin
@@ -12924,6 +13682,7 @@ from sandbox import build_sandbox_argv as _build_sandbox_argv
 
 # ── VERIFY-ON-STOP GATE (2026-09-27) ──────────────────────────
 
+
 def _is_non_code_verify_path(path: Any) -> Any:
     try:
         return (
@@ -12932,10 +13691,12 @@ def _is_non_code_verify_path(path: Any) -> Any:
     except Exception:
         return False
 
+
 def _reset_turn_verify_state() -> None:
     globals()["_TURN_EDITED_PATHS"] = set()
     globals()["_TURN_VERIFIED_SINCE_EDIT"] = True
     globals()["_VERIFY_STOP_ATTEMPTS"] = 0
+
 
 def _mark_turn_path_mutated(filepath: Any) -> None:
     """Call from every successful EDIT/CREATE dispatch path."""
@@ -12944,11 +13705,13 @@ def _mark_turn_path_mutated(filepath: Any) -> None:
     globals()["_TURN_EDITED_PATHS"].add(filepath)
     globals()["_TURN_VERIFIED_SINCE_EDIT"] = False
 
+
 def _mark_turn_verified(cmd: Any) -> None:
     """Call from run_command() on a successful (exit-0) RUN."""
     low = (cmd or "").lower()
     if any(marker in low for marker in _VERIFY_COMMAND_MARKERS):
         globals()["_TURN_VERIFIED_SINCE_EDIT"] = True
+
 
 def _verify_on_stop_nudge() -> Any:
     """Mirrors Hermes's build_verify_on_stop_nudge(): non-empty only when
@@ -12969,6 +13732,7 @@ def _verify_on_stop_nudge() -> Any:
         "only then give your closing answer. If verification genuinely "
         "isn't possible here, say so plainly instead of claiming it works.]"
     )
+
 
 # ── Session-scoped CWD (2026-09-28) ──────────────────────────────────────
 # 2026-09-27, root-caused live: a model emitted `cd /some/project/dir` as
@@ -13004,9 +13768,11 @@ if _MASTER_AI_DIR and _MASTER_AI_DIR not in sys.path:
 # and the path is fixed above.
 from scripts.session_cwd import get_session_cwd, set_session_cwd
 
+
 def _run_cwd() -> Any:
     """cwd= to hand subprocess.run: the session CWD, or None to inherit."""
     return get_session_cwd() or None
+
 
 def _track_leading_cd(cmd: Any, ok: Any) -> None:
     """Persist a successful leading `cd` so the NEXT RUN: inherits it.
@@ -13047,7 +13813,10 @@ def _track_leading_cd(cmd: Any, ok: Any) -> None:
     if moved:
         set_session_cwd(base)
 
-def _fire_on_blocked(target: Any, kind: Any, action_reason: Any, audit_kind: Any) -> None:
+
+def _fire_on_blocked(
+    target: Any, kind: Any, action_reason: Any, audit_kind: Any
+) -> None:
     """Fire the `on_blocked` hook for one blocked or failed action.
 
     Extracted 2026-09-28. Four call sites in process_reply() each carried an
@@ -13075,6 +13844,7 @@ def _fire_on_blocked(target: Any, kind: Any, action_reason: Any, audit_kind: Any
         )
     except Exception as e:
         log(f"ON_BLOCKED_HOOK_ERROR ({audit_kind}): {e}")
+
 
 def run_command(cmd: Any) -> Any:
     print(f"\n🥷  {BOLD}Running:{X} {Y}{cmd}{X}")
@@ -13206,6 +13976,7 @@ def run_command(cmd: Any) -> Any:
         _record_live_typed_action(_typed)
         return RunResult(str(e), ok=False, exit_code=1, command=cmd, error=str(e))
 
+
 def _settings_set(key: Any, value: Any) -> None:
     """Set one KEY=value line in ~/.master_ai_settings without disturbing others."""
     path = Path.home() / ".master_ai_settings"
@@ -13215,7 +13986,8 @@ def _settings_set(key: Any, value: Any) -> None:
     out.append(f"{key}={value}")
     path.write_text("\n".join(out).strip() + "\n")
 
-def _settings_get(key: Any, default: str="") -> Any:
+
+def _settings_get(key: Any, default: str = "") -> Any:
     path = Path.home() / ".master_ai_settings"
     if not path.exists():
         return default
@@ -13224,6 +13996,7 @@ def _settings_get(key: Any, default: str="") -> Any:
         if line.startswith(prefix):
             return line.split("=", 1)[1].strip()
     return default
+
 
 def set_mouse_profile(profile: Any) -> bool:
     """Switch tmux/Sensei mouse behavior for phone-vs-local work.
@@ -13290,6 +14063,7 @@ def set_mouse_profile(profile: Any) -> bool:
         )
     return True
 
+
 def _mouse_profile_restart(history: Any) -> None:
     """Lightweight restart after a mouse-profile switch — mirrors the
     `profile <name>` restart path (save, clear screen, execvp) rather
@@ -13315,14 +14089,16 @@ def _mouse_profile_restart(history: Any) -> None:
         sys.executable, [sys.executable, str(Path.home() / "scripts/master_ai.py")]
     )
 
-def _doctor_cmd(argv: Any, timeout: int=2) -> tuple:
+
+def _doctor_cmd(argv: Any, timeout: int = 2) -> tuple:
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
         return proc.returncode, (proc.stdout + proc.stderr).strip()
     except Exception as e:
         return 1, str(e)
 
-def _doctor_http(url: Any, timeout: int=2) -> tuple:
+
+def _doctor_http(url: Any, timeout: int = 2) -> tuple:
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             return resp.status, resp.read(65536)
@@ -13331,12 +14107,14 @@ def _doctor_http(url: Any, timeout: int=2) -> tuple:
     except Exception:
         return 0, b""
 
-def _doctor_port(host: Any, port: Any, timeout: float=1.5) -> bool:
+
+def _doctor_port(host: Any, port: Any, timeout: float = 1.5) -> bool:
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
     except Exception:
         return False
+
 
 def _doctor_service(name: Any) -> Any:
     if not shutil.which("systemctl"):
@@ -13344,6 +14122,7 @@ def _doctor_service(name: Any) -> Any:
     rc, out = _doctor_cmd(["systemctl", "--user", "is-active", name], timeout=2)
     state = (out.splitlines() or ["unknown"])[0].strip()
     return state if rc == 0 or state else "inactive"
+
 
 def _doctor_count_lines(path: Any) -> Any:
     try:
@@ -13353,12 +14132,14 @@ def _doctor_count_lines(path: Any) -> Any:
     except Exception:
         return 0
 
+
 def _doctor_tailscale_ip() -> Any:
     if shutil.which("tailscale"):
         rc, out = _doctor_cmd(["tailscale", "ip", "-4"], timeout=2)
         if rc == 0 and out.strip():
             return out.strip().splitlines()[0]
     return "100.101.249.96"
+
 
 def agent_standards_checks() -> Any:
     """Local, Anthropic-inspired agent-readiness checks.
@@ -13566,12 +14347,14 @@ def agent_standards_checks() -> Any:
 
     return checks
 
-def agent_standards_score(checks: Any | None=None) -> Any:
+
+def agent_standards_score(checks: Any | None = None) -> Any:
     """Return Sensei's local readiness score as an integer percentage."""
     checks = checks if checks is not None else agent_standards_checks()
     weights = {"PASS": 1.0, "WARN": 0.5, "FAIL": 0.0}
     earned = sum(weights.get(status, 0.0) for status, _, _ in checks)
     return round(100 * earned / max(1, len(checks)))
+
 
 def format_agent_standards() -> Any:
     checks = agent_standards_checks()
@@ -13591,6 +14374,7 @@ def format_agent_standards() -> Any:
         lines.append(f"{status:4}  {name}: {detail}")
     return "\n".join(lines)
 
+
 def show_agent_standards() -> None:
     print(f"\n{BC}  ╔════════════════════════════════════════════════════════════╗{X}")
     print(f"{BC}  ║{X}  {BW}SENSEI — Agent Standards{X}")
@@ -13605,6 +14389,7 @@ def show_agent_standards() -> None:
         else:
             print(f"  {line}")
     print()
+
 
 def _sensei_third_party_imports() -> Any:
     """Top-level third-party import names actually used by master_ai.py —
@@ -13630,6 +14415,7 @@ def _sensei_third_party_imports() -> Any:
         if n not in stdlib and n not in local_modules and not n.startswith("_")
     )
 
+
 def _resolve_installed_dist(import_name: Any) -> tuple:
     """Import name -> (installed distribution name, version), or (None,
     None) if not resolvable. Handles the import-name != PyPI-name case
@@ -13645,6 +14431,7 @@ def _resolve_installed_dist(import_name: Any) -> tuple:
         except _im.PackageNotFoundError:
             continue
     return None, None
+
 
 def run_security_audit() -> dict:
     """Scope pip-audit to sensei's OWN direct third-party dependencies
@@ -13717,6 +14504,7 @@ def run_security_audit() -> dict:
         "dependencies": dependencies,
         "unscannable": unscannable,
     }
+
 
 def show_doctor() -> Any:
     """Compact live health card for real use: URLs, services, mode, next fixes."""
@@ -13925,6 +14713,7 @@ def show_doctor() -> Any:
             f"\n  {G}A-grade live path: terminal, Pupil, memory, models, and voice file are reachable.{X}\n"
         )
 
+
 def run_in_terminal(cmd: Any) -> Any:
     """Spawn cmd in a fresh graphical terminal window. Fire-and-forget —
     we do NOT wait, do NOT capture output, do NOT impose a timeout.
@@ -13982,6 +14771,7 @@ def run_in_terminal(cmd: Any) -> Any:
     _record_live_typed_action(_typed)
     return "no-terminal-available"
 
+
 # ── KICK ESCAPE FROM CONFIRM PROMPTS ─────────────────────────
 # Born from the 2026-04-21 clarify-prompt trap: typing 'kick' at a
 # Choose (1/2/3) prompt was being SKIPPED, then the input got routed
@@ -14002,6 +14792,7 @@ def _check_kick_escape(choice: Any) -> None:
         # bypasses both traps.
         os._exit(42)
 
+
 def _normalize_run_cmd(cmd: Any) -> Any:
     """Repair common model/voice shell slips before execution."""
     fixed = (cmd or "").strip()
@@ -14014,6 +14805,7 @@ def _normalize_run_cmd(cmd: Any) -> Any:
     if fixed != (cmd or "").strip():
         print(f"{Y}  normalized command:{X} {fixed}")
     return fixed
+
 
 def _normalize_ollama_systemctl_scope(cmd: Any) -> Any:
     """Ollama is a system unit on your-machine, never a user unit."""
@@ -14064,7 +14856,9 @@ def _normalize_ollama_systemctl_scope(cmd: Any) -> Any:
         rewritten.insert(0, "sudo")
     return " ".join(shlex.quote(p) for p in rewritten)
 
+
 # ── BROWSER_* DISPATCH ───────────────────────────────────────
+
 
 def _extract_browser_actions(lines: Any) -> Any:
     """Pull {kind, target, value} out of BROWSER_*: lines, same shape as
@@ -14086,6 +14880,7 @@ def _extract_browser_actions(lines: Any) -> Any:
         actions.append({"kind": kind, "target": target, "value": value})
     return actions
 
+
 class _BrowserResult:
     """Adapts the bridge's JSON result to what _action_ok()/
     _format_tool_result() already expect (an object with .ok, stringified
@@ -14103,6 +14898,7 @@ class _BrowserResult:
                 pass
         return str(self.data)
 
+
 def _sensei_bridge_alive() -> bool:
     try:
         req = urllib.request.Request(f"{_SENSEI_BRIDGE_URL}/health")
@@ -14111,8 +14907,13 @@ def _sensei_bridge_alive() -> bool:
     except Exception:
         return False
 
+
 def _dispatch_browser_action(
-    kind: Any, target: Any, value: Any, session_id: str="mcp-default", wait_seconds: int=25
+    kind: Any,
+    target: Any,
+    value: Any,
+    session_id: str = "mcp-default",
+    wait_seconds: int = 25,
 ) -> Any:
     """Push one action to sensei_bridge's /extension/queue and poll
     /extension/result for the outcome — the identical push/await shape
@@ -14152,6 +14953,7 @@ def _dispatch_browser_action(
             pass
         time.sleep(0.5)
     return _BrowserResult(False, {"reason": "timeout", "action_id": action_id})
+
 
 @_awaiting_confirm
 def confirm_browser_action(kind: Any, target: Any, value: Any) -> Any:
@@ -14217,6 +15019,7 @@ def confirm_browser_action(kind: Any, target: Any, value: Any) -> Any:
         return None
     _audit("BROWSER", label)
     return _dispatch_browser_action(kind, target, value)
+
 
 # ── 4-OPTION CONFIRM ─────────────────────────────────────────
 @_awaiting_confirm
@@ -14468,6 +15271,7 @@ def confirm_run(cmd: str) -> Any:
     _remember_last_action("run_denied", command=cmd)
     return None
 
+
 @_awaiting_confirm
 def confirm_runterm(cmd: str) -> Any:
     """Confirm + spawn in a fresh graphical terminal. Same safety gates as
@@ -14640,6 +15444,7 @@ def confirm_runterm(cmd: str) -> Any:
     _remember_last_action("runterm_denied", command=cmd)
     return None
 
+
 def _looks_like_english(s: str) -> bool:
     """True if `s` looks like a natural-language instruction rather than a
     shell command. Heuristic only — users can force-run via plain `edit`
@@ -14687,9 +15492,10 @@ def _looks_like_english(s: str) -> bool:
     alpha_tokens = sum(1 for t in tokens if t.replace("'", "").isalpha())
     return alpha_tokens >= max(2, len(tokens) - 1)
 
+
 # ── FILE CREATE CONFIRM ───────────────────────────────────────
 @_awaiting_confirm
-def _fire_hook_or_block(kind: str, target: Any, content: Any | None=None) -> bool:
+def _fire_hook_or_block(kind: str, target: Any, content: Any | None = None) -> bool:
     """P1.4: fire hooks for ``kind``; on block, record _LAST_HOOK_BLOCK +
     audit + return True (caller should abort). Returns False if no hook
     blocked (caller proceeds). Hooks module unavailable / errors swallow
@@ -14727,6 +15533,7 @@ def _fire_hook_or_block(kind: str, target: Any, content: Any | None=None) -> boo
     print(_pill("HOOK-BLOCK", f"{R}{result.hook_id}: {result.reason}{X}"))
     log(f"HOOK_BLOCK {kind} on {target}: {result.hook_id}: {result.reason}")
     return True
+
 
 @_awaiting_confirm
 def confirm_create(filepath: Any, content: str) -> bool:
@@ -14866,6 +15673,7 @@ def confirm_create(filepath: Any, content: str) -> bool:
         _remember_last_action("create_denied", path=filepath)
         return False
 
+
 # ── SEND_EMAIL CONFIRM ───────────────────────────────────────
 # Irreversible action — sent = sent. Always prompts in auto mode (no
 # bypass) per the same irreversible-action policy Claude-for-Chrome uses
@@ -14924,6 +15732,7 @@ def confirm_send_email(spec: dict) -> Any:
     _audit("SEND_EMAIL-CANCELLED", f"to={to}")
     return {"ok": False, "error": "user cancelled", "recipient": to}
 
+
 @_awaiting_confirm
 def confirm_send_telegram(spec: dict) -> Any:
     """Irreversible message — prompt once in review/auto, refuse in plan."""
@@ -14959,6 +15768,7 @@ def confirm_send_telegram(spec: dict) -> Any:
     print(_pill("CANCELLED"))
     _audit("SEND_TELEGRAM-CANCELLED", f"chat_id={chat_id}")
     return {"ok": False, "error": "user cancelled", "chat_id": chat_id}
+
 
 # ── FILE EDIT CONFIRM ────────────────────────────────────────
 @_awaiting_confirm
@@ -15070,6 +15880,7 @@ def confirm_edit(filepath: Any, find_text: str, replace_text: str) -> bool:
         _remember_last_action("edit_denied", path=filepath)
         return False
 
+
 # ── REMEMBER directive (self-write to memory, 2026-05-11) ────
 # Sensei's self-teaching loop. The user's `remember:` REPL command has
 # always written to MEMORY_FILE; this gives the MODEL the same ability
@@ -15119,11 +15930,13 @@ def confirm_remember(fact: Any) -> bool:
         log(f"REMEMBER_WRITE_ERROR: {e}")
         return False
 
+
 def _normalize_skill_name(name: Any) -> Any:
     slug = re.sub(
         r"[^a-z0-9_-]+", "-", str(name or "").strip().lower().replace("_", "-")
     ).strip("-")
     return slug if re.match(r"^[a-z0-9][a-z0-9_-]{0,80}$", slug or "") else ""
+
 
 def _parse_run_skill_payload(payload: Any) -> Any:
     raw = str(payload or "").strip()
@@ -15165,6 +15978,7 @@ def _parse_run_skill_payload(payload: Any) -> Any:
             resume = True
     return {"name": name, "params": params, "session_id": session_id, "resume": resume}
 
+
 def _run_skill_specs_from_reply(reply: Any) -> Any:
     specs = []
     for line in str(reply or "").splitlines():
@@ -15179,11 +15993,13 @@ def _run_skill_specs_from_reply(reply: Any) -> Any:
             specs.append(spec)
     return specs
 
+
 def _real_directive_line(line: Any, name: Any) -> bool:
     for m in re.finditer(rf"\b{name}:", str(line or ""), re.IGNORECASE):
         if str(line or "")[: m.start()].count("`") % 2 == 0:
             return True
     return False
+
 
 def _skill_pending_directives(state: Any) -> Any:
     pending = (getattr(state, "data", {}) or {}).get("_pending_directives")
@@ -15202,6 +16018,7 @@ def _skill_pending_directives(state: Any) -> Any:
             out.append(line)
     return out
 
+
 def _append_skill_session_marker(history: list, state: Any) -> None:
     meta = {
         "name": getattr(state, "skill_name", ""),
@@ -15217,6 +16034,7 @@ def _append_skill_session_marker(history: list, state: Any) -> None:
             "content": _SKILL_SESSION_MARKER + "\n" + json.dumps(meta, sort_keys=True),
         }
     )
+
 
 def _latest_skill_session_marker(history: Any) -> Any:
     for msg in reversed(history or []):
@@ -15236,6 +16054,7 @@ def _latest_skill_session_marker(history: Any) -> Any:
         ):
             return meta
     return None
+
 
 def _skill_state_reply(state: Any, history: Any) -> Any:
     pending = _skill_pending_directives(state)
@@ -15269,6 +16088,7 @@ def _skill_state_reply(state: Any, history: Any) -> Any:
     _append_skill_session_marker(history, state)
     return f"Skill {getattr(state, 'skill_name', 'unknown')} paused: {reason}"
 
+
 def _run_skill_reply_from_reply(reply: Any, history: Any) -> Any:
     specs = _run_skill_specs_from_reply(reply)
     if not specs:
@@ -15292,6 +16112,7 @@ def _run_skill_reply_from_reply(reply: Any, history: Any) -> Any:
     except Exception as e:
         log(f"RUN_SKILL_ERROR: {type(e).__name__}: {e}")
         return f"Skill dispatch failed: {type(e).__name__}: {e}"
+
 
 def _resume_skill_reply_from_turn(user_text: Any, history: Any) -> Any:
     if "[PREVIOUS ROUND RESULTS]" not in str(user_text or ""):
@@ -15334,7 +16155,9 @@ def _resume_skill_reply_from_turn(user_text: Any, history: Any) -> Any:
         log(f"RUN_SKILL_RESUME_ERROR: {type(e).__name__}: {e}")
         return f"Skill resume failed: {type(e).__name__}: {e}"
 
+
 # ── REPLY PROCESSOR ──────────────────────────────────────────
+
 
 def _json_tool_call_to_directive_line(name: str, arguments: dict) -> Any:
     """Shared conversion for both JSON-shaped formats above: a {"name":
@@ -15364,6 +16187,7 @@ def _json_tool_call_to_directive_line(name: str, arguments: dict) -> Any:
     if not payload:
         return None
     return f"{directive_name}: {payload}"
+
 
 def _xml_tool_calls_to_directives(reply: str) -> Any:
     """Translate native tool-call shapes into bare `X: payload` directives
@@ -15496,6 +16320,7 @@ def _xml_tool_calls_to_directives(reply: str) -> Any:
 
     return reply
 
+
 def _join_bare_keyword_lines(reply: Any) -> Any:
     """A third malformed-directive shape, distinct from
     _xml_tool_calls_to_directives (native <invoke> XML) and
@@ -15574,7 +16399,8 @@ def _join_bare_keyword_lines(reply: Any) -> Any:
         i += 1
     return "\n".join(out)
 
-def _truncate_repeated_lines(reply: Any, max_repeats: Any=_MAX_LINE_REPEATS) -> Any:
+
+def _truncate_repeated_lines(reply: Any, max_repeats: Any = _MAX_LINE_REPEATS) -> Any:
     """Circuit-breaker for a model stuck regenerating the same broken
     line(s) instead of ever finishing a reply.
 
@@ -15647,6 +16473,7 @@ def _truncate_repeated_lines(reply: Any, max_repeats: Any=_MAX_LINE_REPEATS) -> 
         )
     return "\n".join(out)
 
+
 def _normalize_directive_lines(reply: Any) -> Any:
     """Give every parser downstream (_extract_directive, split-on-newline
     per-line matchers, _extract_browser_actions's line.strip()-anchored
@@ -15703,6 +16530,7 @@ def _normalize_directive_lines(reply: Any) -> Any:
             pos = start
     out.append(text[pos:])
     return "".join(out)
+
 
 def _reply_claims_unexecuted_action(reply_text: str) -> bool:
     """True if reply_text talks like it's taking/about to take an action
@@ -15788,7 +16616,9 @@ def _reply_claims_unexecuted_action(reply_text: str) -> bool:
     sentence_count = len([s for s in re.split(r"[.!?]+", text) if s.strip()])
     return sentence_count <= 2 and len(text) < 200
 
+
 # ── Typed dispatch validation gate (CLAUDE.md Tier-1, 2026-09-28) ─────────
+
 
 def _validation_gate(collected: dict) -> tuple:
     """Run every collected directive through the pre-dispatch validator.
@@ -15814,9 +16644,14 @@ def _validation_gate(collected: dict) -> tuple:
     """
     try:
         import action_validation as _av
-    except Exception as e:  # noqa: BLE001 - a missing module must not stop dispatch
-        log(f"VALIDATION_GATE_UNAVAILABLE: {e}")
-        return collected, []
+    except Exception as e:  # noqa: BLE001 - fail-closed: a missing module blocks ALL dispatch
+        log(f"⚠ FAIL-CLOSED VALIDATION_GATE_UNAVAILABLE: {e}")
+        all_blocked = [
+            (name, payload, "validation gate unavailable — fail-closed")
+            for name, items in collected.items()
+            for payload in items or []
+        ]
+        return {}, all_blocked
 
     kept, blocked = {}, []
     for name, items in collected.items():
@@ -15853,6 +16688,7 @@ def _validation_gate(collected: dict) -> tuple:
                 blocked.append((name, payload, res.reason))
         kept[name] = survivors
     return kept, blocked
+
 
 # ── MCP_CALL dispatch (2026-09-28) ────────────────────────────────────────
 def _run_mcp_call_spec(spec: Any, history: list) -> None:
@@ -15920,7 +16756,13 @@ def _run_mcp_call_spec(spec: Any, history: list) -> None:
         except Exception:
             pass
 
-def process_reply(reply: str, history: list, streamed: bool=False, continue_after_tools: bool=False) -> Any:
+
+def process_reply(
+    reply: str,
+    history: list,
+    streamed: bool = False,
+    continue_after_tools: bool = False,
+) -> Any:
     """Parse RUN: / READ: / CREATE: directives from AI reply and execute."""
     globals()["_CHAIN_SUDO_ACKS"] = 0
     reply = _xml_tool_calls_to_directives(reply)
@@ -16088,14 +16930,14 @@ def process_reply(reply: str, history: list, streamed: bool=False, continue_afte
             1 if _ch == "`" else 0
         )
 
-    def _real_directive(line: Any, name: Any, line_start: int=0) -> bool:
+    def _real_directive(line: Any, name: Any, line_start: int = 0) -> bool:
         for m in re.finditer(rf"\b{name}:", line, re.IGNORECASE):
             global_pos = line_start + m.start()
             if _prefix_backtick_parity[global_pos] % 2 == 0:
                 return True
         return False
 
-    def _directive_payload(line: Any, name: Any, line_start: int=0) -> Any:
+    def _directive_payload(line: Any, name: Any, line_start: int = 0) -> Any:
         if not _real_directive(line, name, line_start=line_start):
             return ""
         return _strip_command_wrap(
@@ -17931,7 +18773,10 @@ def process_reply(reply: str, history: list, streamed: bool=False, continue_afte
 
     return reply
 
-def execute_approved_plan(original_request: Any, approved_plan: Any, history: Any) -> Any:
+
+def execute_approved_plan(
+    original_request: Any, approved_plan: Any, history: Any
+) -> Any:
     """Turn a Plan-mode prose plan into a real execution turn.
 
     Older Plan mode re-ran the original user sentence after approval. That
@@ -17952,6 +18797,7 @@ def execute_approved_plan(original_request: Any, approved_plan: Any, history: An
         "Start executing now."
     )
     return handle(execution_prompt, history)
+
 
 # ── PERMISSIONS WIZARD ────────────────────────────────────────
 @_awaiting_confirm
@@ -18086,6 +18932,7 @@ def permissions_wizard() -> None:
         time.sleep(0.6)
     print()
 
+
 # ── STARTUP CHECK ─────────────────────────────────────────────
 def startup_check() -> Any:
     errors = 0
@@ -18181,6 +19028,7 @@ def startup_check() -> Any:
     print()
     return errors
 
+
 def _humanize_commit_subject(subject: str) -> str:
     """One git commit subject -> one plain-English bullet, no engineering
     jargon. Elijah: "I need to know what's new... described in
@@ -18210,17 +19058,20 @@ def _humanize_commit_subject(subject: str) -> str:
         return f"{verb}: {rest}"
     return s[0].upper() + s[1:] if s else s
 
+
 def _load_whatsnew_last_shown() -> str:
     try:
         return json.loads(_WHATSNEW_STATE.read_text()).get("last_shown_sha", "")
     except Exception:
         return ""
 
+
 def _save_whatsnew_last_shown(sha: str) -> None:
     try:
         _WHATSNEW_STATE.write_text(json.dumps({"last_shown_sha": sha}))
     except Exception:
         pass
+
 
 def _valid_ref(repo_dir: str, ref: str) -> bool:
     if not ref:
@@ -18231,6 +19082,7 @@ def _valid_ref(repo_dir: str, ref: str) -> bool:
         timeout=5,
     )
     return r.returncode == 0
+
 
 def _whats_new_report(repo_dir: str, after: str, from_ref: str | None) -> str:
     """Plain-English 'what changed' block for everything reaching `after`
@@ -18302,6 +19154,7 @@ def _whats_new_report(repo_dir: str, after: str, from_ref: str | None) -> str:
     )
     return f"\nWhat's new:\n{(plain or bullets).strip()}\n"
 
+
 def _run_git_update(repo_dir: str | None = None) -> tuple[bool, str]:
     """Pull the repo master_ai.py (and everything alongside it, incl.
     sensei_tui.py) is symlinked from — the one real update mechanism,
@@ -18369,6 +19222,7 @@ def _run_git_update(repo_dir: str | None = None) -> tuple[bool, str]:
         )
     except Exception as e:
         return False, f"Update failed: {e}"
+
 
 def _check_update_status(
     repo_dir: str | None = None,
@@ -18496,7 +19350,10 @@ def _check_update_status(
         pass
     return color, message
 
-def _show_tui_credit_roll(cloud_status: Any, mem_count: Any, update_color: str="", update_message: str="") -> bool:
+
+def _show_tui_credit_roll(
+    cloud_status: Any, mem_count: Any, update_color: str = "", update_message: str = ""
+) -> bool:
     """Opening-credit style brand roll inside the TUI chat frame."""
     if _SENSEI_APP is None:
         return False
@@ -18526,8 +19383,9 @@ def _show_tui_credit_roll(cloud_status: Any, mem_count: Any, update_color: str="
         time.sleep(0.10)
     return True
 
+
 # ── STATUS BAR ───────────────────────────────────────────────
-def draw_status_bar(history: Any | None=None) -> Any:
+def draw_status_bar(history: Any | None = None) -> Any:
     """Active status — bold blue, right-aligned at TOP RIGHT. No bg color.
     Shows only what's currently ON/active (modes, TTS, memory, tasks, model).
 
@@ -18649,10 +19507,12 @@ def draw_status_bar(history: Any | None=None) -> Any:
         pad = 0
     print(f"\n{' ' * pad}{BC}{tag}{X}")
 
+
 # ── MAIN HANDLER ─────────────────────────────────────────────
 # ── AGENT MODE — plan / execute / critique / refine ─────────────
 
-def _loop_ai(prompt: Any, history: Any | None=None, max_tokens: int=600) -> Any:
+
+def _loop_ai(prompt: Any, history: Any | None = None, max_tokens: int = 600) -> Any:
     """Single AI call used inside the loop — plan, critique, or refine.
     Uses the default local path (keeps the loop offline-capable).
     Not routed through handle() because we don't want sandbox prompts
@@ -18694,6 +19554,7 @@ def _loop_ai(prompt: Any, history: Any | None=None, max_tokens: int=600) -> Any:
     except Exception as e:
         return f"(loop ai error: {e})"
 
+
 def _loop_parse_steps(plan_text: Any) -> Any:
     """Extract numbered steps from an AI-generated plan. Accepts:
      1. Step one
@@ -18712,6 +19573,7 @@ def _loop_parse_steps(plan_text: Any) -> Any:
             steps.append(m.group(1).strip())
     return steps[:8]
 
+
 def _loop_extract_question(plan_text: Any) -> Any:
     """Return a planner clarification question, if the agent asked one."""
     text = (plan_text or "").strip()
@@ -18728,6 +19590,7 @@ def _loop_extract_question(plan_text: Any) -> Any:
         ).strip()
     return ""
 
+
 def _loop_critique_verdict(critique_text: Any) -> Any:
     """Parse the AI critic's verdict from the critique reply.
     Expected tokens: DONE | RETRY | CONTINUE | STOP.
@@ -18739,7 +19602,10 @@ def _loop_critique_verdict(critique_text: Any) -> Any:
             return tok
     return "CONTINUE"
 
-def handle_loop_task(task: Any, history: list, context_policy: Any | None=None) -> Any:
+
+def handle_loop_task(
+    task: Any, history: list, context_policy: Any | None = None
+) -> Any:
     """Run a task through plan → (execute → critique → refine) × N.
     Bounded by LOOP_MAX_CYCLES and LOOP_MAX_SECONDS. Every step goes
     through handle() so sandbox stays enforced end-to-end."""
@@ -18870,6 +19736,7 @@ def handle_loop_task(task: Any, history: list, context_policy: Any | None=None) 
     history.append({"role": "assistant", "content": summary})
     return summary
 
+
 def _extract_prefixed_payload(text: Any, prefixes: Any) -> Any:
     stripped = (text or "").strip()
     low = stripped.lower()
@@ -18879,11 +19746,13 @@ def _extract_prefixed_payload(text: Any, prefixes: Any) -> Any:
             return stripped[len(prefix) :].lstrip(" :;\t")
     return None
 
+
 def _try_open_url_intent(user_text: Any) -> Any:
     """If user_text is 'open <url|domain|shortcut>', return URL. Else None.
     Deterministic pre-route catch so 'open <X>' never reaches a model that
     might hallucinate a URL."""
     return resolve_open_target_url(user_text)
+
 
 def _neutralize_directive_lines(text: Any) -> Any:
     """Display-only safety for pure reasoning answers."""
@@ -18892,6 +19761,7 @@ def _neutralize_directive_lines(text: Any) -> Any:
         r"\1# \2:",
         text or "",
     )
+
 
 def _display_reasoning_answer(user_text: Any, answer: Any, history: list) -> bool:
     safe_answer = _neutralize_directive_lines((answer or "").strip())
@@ -18903,6 +19773,7 @@ def _display_reasoning_answer(user_text: Any, answer: Any, history: list) -> boo
     if TTS_ENABLED:
         threading.Thread(target=speak, args=(safe_answer,), daemon=True).start()
     return True
+
 
 def _parse_reason_command(user_text: Any) -> None:
     """Recognize the four reason surface forms (P1.3):
@@ -18934,7 +19805,10 @@ def _parse_reason_command(user_text: Any) -> None:
         return ("deep", m.group(1).strip())
     return None
 
-def handle_tight_reasoning(user_text: Any, query: Any, history: Any, depth: str="deep") -> None:
+
+def handle_tight_reasoning(
+    user_text: Any, query: Any, history: Any, depth: str = "deep"
+) -> None:
     """Best available pure-text reasoning lane.
 
     P1.3: ``depth`` selects the cognitive budget:
@@ -18999,6 +19873,7 @@ def handle_tight_reasoning(user_text: Any, query: Any, history: Any, depth: str=
     except Exception as e:
         print(f"  {R}tight reasoning error: {e}{X}")
 
+
 def handle_image_gen(user_text: Any, prompt: Any, history: list) -> None:
     """Submit a local image-gen job via sd-server (CPU, ~56s/image on your-machine).
 
@@ -19059,8 +19934,10 @@ def handle_image_gen(user_text: Any, prompt: Any, history: list) -> None:
     history.append({"role": "user", "content": user_text})
     history.append({"role": "assistant", "content": msg})
 
+
 def _imagegen_script() -> Any:
     return Path.home() / "scripts" / "image_engine" / "imagegen.sh"
+
 
 def _latest_image_file() -> Any:
     out_dir = Path.home() / "scripts" / "image_engine" / "out"
@@ -19071,6 +19948,7 @@ def _latest_image_file() -> Any:
     except Exception:
         imgs = []
     return imgs[0] if imgs else None
+
 
 def handle_image_status(user_text: Any, arg: str, history: list) -> None:
     """Show/fetch image artifacts so chat results can contain image paths."""
@@ -19121,8 +19999,14 @@ def handle_image_status(user_text: Any, arg: str, history: list) -> None:
     history.append({"role": "user", "content": user_text})
     history.append({"role": "assistant", "content": msg})
 
+
 @_tracks_turn_activity
-def handle(user_text: str, history: list, image_path: Any | None=None, context_policy: Any | None=None) -> Any:
+def handle(
+    user_text: str,
+    history: list,
+    image_path: Any | None = None,
+    context_policy: Any | None = None,
+) -> Any:
     _reset_turn_privacy()
     _reset_turn_verify_state()
     globals()["_LAST_TURN_RENDERED"] = False
@@ -20913,7 +21797,7 @@ def handle(user_text: str, history: list, image_path: Any | None=None, context_p
         # standing pat on the raw dump as the final answer.
         result = None
 
-    def _continue_model_turn(repair_turn: bool=False) -> tuple:
+    def _continue_model_turn(repair_turn: bool = False) -> tuple:
         if route in ("cloud", "web"):
             # 2026-09-07: removed automatic "private tool output -> local" branch.
             # It was forcing every tool result on a private path to be summarized
@@ -21238,6 +22122,7 @@ def handle(user_text: str, history: list, image_path: Any | None=None, context_p
     compact_history(history)
     return reply
 
+
 # ── SESSION SUMMARY ──────────────────────────────────────────
 def summarize_session(history: Any) -> tuple:
     msgs = [m for m in history if m.get("role") in ("user", "assistant")]
@@ -21295,7 +22180,45 @@ def summarize_session(history: Any) -> tuple:
     except Exception:
         return None, None
 
-def save_session(history: Any, silent: bool=False) -> Any:
+
+def _atomic_write_text(path: Any, text: str) -> None:
+    """Write *text* to *path* atomically via a sibling temp file.
+
+    Writes to a temp file in the same directory, fsyncs the fd, then
+    os.replace()s it over the target so concurrent readers never see a
+    partial write.  Cleans up the temp file on any error and re-raises.
+    Parent directory must already exist.
+    """
+    path = Path(path)
+    tmp_path: Path | None = None
+    fd = -1
+    try:
+        fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        tmp_path = Path(tmp_name)
+        with os.fdopen(fd, "w") as fh:
+            fd = -1  # os.fdopen owns the fd now
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, path)
+        tmp_path = None
+    except Exception:
+        if fd != -1:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
+
+
+def save_session(
+    history: Any, silent: bool = False, summarize_timeout: float | None = None
+) -> Any:
     global CHARS_SINCE_SAVE
     with _SAVE_LOCK:
         msgs = [m for m in history if m.get("role") in ("user", "assistant")]
@@ -21377,37 +22300,61 @@ def save_session(history: Any, silent: bool=False) -> Any:
             return "RESUME"
         return "BLOCK"
 
-    # Full chat log
+    # Full chat log — build in memory first, then write atomically under lock
     chat_path = CHATS_DIR / f"{ts}.chat"
-    with open(chat_path, "w") as f:
-        for m in msgs:
-            role = m.get("role", "")
-            content = (m.get("content") or "")[:200000]
-            if role == "user" and _is_structured_block(content):
-                label = _block_label_for(content)
-                f.write(f"\n[{date_str}] ── {label} ──\n")
-                f.write(f"{content}\n")
-            else:
-                label = "You" if role == "user" else "AI"
-                f.write(f"[{date_str}] {label}: {content}\n")
+    _chat_parts: list[str] = []
+    for m in msgs:
+        role = m.get("role", "")
+        content = (m.get("content") or "")[:200000]
+        if role == "user" and _is_structured_block(content):
+            label = _block_label_for(content)
+            _chat_parts.append(f"\n[{date_str}] ── {label} ──\n")
+            _chat_parts.append(f"{content}\n")
+        else:
+            label = "You" if role == "user" else "AI"
+            _chat_parts.append(f"[{date_str}] {label}: {content}\n")
+    with _SAVE_LOCK:
+        _atomic_write_text(chat_path, "".join(_chat_parts))
 
     if not silent:
         play_anim(_A_BOW, delay=0.14, color=C)
         print(f"\n{C}  📝 Summarizing session...{X}", flush=True)
 
-    title, summary = summarize_session(history)
+    if summarize_timeout is not None and summarize_timeout > 0:
+        _sum_result: list[Any] = [None, None]
+        _sum_done = threading.Event()
+
+        def _do_summarize() -> None:
+            try:
+                _sum_result[0], _sum_result[1] = summarize_session(history)
+            finally:
+                _sum_done.set()
+
+        threading.Thread(target=_do_summarize, daemon=True).start()
+        if not _sum_done.wait(timeout=summarize_timeout):
+            log(
+                "SAVE_SESSION_SUMMARY_TIMEOUT: skipping session summary (time limit exceeded)"
+            )
+            if not silent:
+                print(f"{G}  ✅ Session saved → {chat_path.name}{X}")
+            return
+        title, summary = _sum_result[0], _sum_result[1]
+    else:
+        title, summary = summarize_session(history)
     if summary:
         summary_path = CHATS_DIR / f"{ts}.summary"
         summary_body = f"[Session {date_str}]\n"
         if title:
             summary_body += f"Title: {title}\n"
         summary_body += f"{summary}\n"
-        summary_path.write_text(summary_body)
+        with _SAVE_LOCK:
+            _atomic_write_text(summary_path, summary_body)
         if not silent:
             print(f"{G}  ✅ Saved + summarized → {summary_path.name}{X}")
             print(f"{D}  {summary[:200]}{X}")
     elif not silent:
         print(f"{G}  ✅ Session saved → {chat_path.name}{X}")
+
 
 def _auto_save_background(history: Any) -> None:
     """Run save_session silently in a background thread."""
@@ -21416,7 +22363,8 @@ def _auto_save_background(history: Any) -> None:
     except Exception:
         pass
 
-def _bounded_save_session(history: Any, timeout: float=8.0) -> None:
+
+def _bounded_save_session(history: Any, timeout: float = 8.0) -> None:
     """save_session() on a daemon thread with a hard wall-clock bound.
 
     2026-09-07 already proved this live for the TUI's SIGTERM handler:
@@ -21441,6 +22389,7 @@ def _bounded_save_session(history: Any, timeout: float=8.0) -> None:
     threading.Thread(target=_bg, daemon=True).start()
     done.wait(timeout=timeout)
 
+
 def _request_auto_save(history: Any) -> None:
     """Save the current session shortly after a turn completes."""
     if not history:
@@ -21455,6 +22404,7 @@ def _request_auto_save(history: Any) -> None:
         threading.Thread(
             target=_auto_save_background, args=(list(history),), daemon=True
         ).start()
+
 
 def _query_worker(history_ref: Any) -> None:
     """Serial worker: pop queued queries, run handle(), handle reply+cache+tts+autosave.
@@ -21488,6 +22438,7 @@ def _query_worker(history_ref: Any) -> None:
             _WORKER_BUSY.clear()
             globals()["_LAST_BUSY_CLEARED_TS"] = time.time()
             _QUERY_QUEUE.task_done()
+
 
 def handle_save_refresh(history: Any) -> None:
     """Snapshot session, summarize it, then restart fresh — and reload the
@@ -21525,7 +22476,7 @@ def handle_save_refresh(history: Any) -> None:
     except Exception as e:
         log(f"SAVE_REFRESH_SAVE_ERROR: {e}")
     try:
-        RESUME_FLAG.write_text(str(CHATS_DIR / f"{SESSION_TS}.chat"))
+        _atomic_write_text(RESUME_FLAG, str(CHATS_DIR / f"{SESSION_TS}.chat"))
     except Exception as e:
         log(f"SAVE_REFRESH_FLAG_WRITE_ERROR: {e}")
     try:
@@ -21538,7 +22489,8 @@ def handle_save_refresh(history: Any) -> None:
         sys.executable, [sys.executable, str(Path.home() / "scripts/master_ai.py")]
     )
 
-def _sessions_list_entries(limit: int=30) -> Any:
+
+def _sessions_list_entries(limit: int = 30) -> Any:
     """List saved sessions, newest first, excluding the current one — the
     data `load session`/`load summary` already write (CHATS_DIR/*.chat +
     *.summary, one pair per session, named by that session's start
@@ -21625,14 +22577,16 @@ def _sessions_list_entries(limit: int=30) -> Any:
                     try:
                         summary_path = CHATS_DIR / f"{entry['ts']}.summary"
                         header_date = entry.get("date") or entry["ts"]
-                        summary_path.write_text(
-                            f"[Session {header_date}]\nTitle: {title}\n"
+                        _atomic_write_text(
+                            summary_path,
+                            f"[Session {header_date}]\nTitle: {title}\n",
                         )
                     except Exception as e:
                         log(f"SESSION_TITLE_PERSIST_ERROR: {e}")
             entry.pop("needs_title", None)
 
     return entries
+
 
 def _derive_session_title(chat_path: Any) -> Any:
     """Fallback title for a single session with no summary file.
@@ -21699,6 +22653,7 @@ def _derive_session_title(chat_path: Any) -> Any:
             return " ".join(words[:10]).rstrip(",.;:?!")
 
     return "untitled session"
+
 
 def _batch_cloud_titles(chat_paths: Any) -> Any:
     """Generate cloud titles for many sessions in ONE call.
@@ -21769,6 +22724,7 @@ def _batch_cloud_titles(chat_paths: Any) -> Any:
     except Exception:
         return {}
 
+
 def show_last_summary() -> None:
     """Compact 1-line session note. 'load summary' reveals the full bullets."""
     try:
@@ -21793,6 +22749,7 @@ def show_last_summary() -> None:
             )
     except Exception:
         pass
+
 
 # ── MAIN LOOP ─────────────────────────────────────────────────
 def _is_simple_search_query(q: str) -> bool:
@@ -21824,6 +22781,7 @@ def _is_simple_search_query(q: str) -> bool:
             return False
     return True
 
+
 def _looks_like_read_target(raw: str) -> Any:
     """True for something that could plausibly BE a path/filename/bare
     reference ("notes.txt", "~/Desktop/report", "aiengineering.com"),
@@ -21837,7 +22795,9 @@ def _looks_like_read_target(raw: str) -> Any:
     low = f" {raw.lower()} "
     return not any(w in low for w in _READ_TARGET_FILLER_WORDS)
 
+
 # ── Markdown-only skills (npx skills add packages, etc.) ────────────
+
 
 def _find_markdown_skill(name: Any) -> Any:
     """Path to <name>/SKILL.md in the first matching skill directory, or
@@ -21854,6 +22814,7 @@ def _find_markdown_skill(name: Any) -> Any:
             return candidate
     return None
 
+
 def _strip_skill_frontmatter(text: str) -> Any:
     """Drop the YAML frontmatter block (--- ... ---) a SKILL.md starts
     with, returning just the prose body the model should follow."""
@@ -21863,7 +22824,8 @@ def _strip_skill_frontmatter(text: str) -> Any:
             return text[end + 4 :].lstrip("\n")
     return text
 
-def _restore_reload_carry(path: Any | None=None) -> Any:
+
+def _restore_reload_carry(path: Any | None = None) -> Any:
     """Consume the pending reload-carry note and return it, or None.
 
     When master_ai.py live-reloads it writes the operator's in-flight
@@ -21899,6 +22861,7 @@ def _restore_reload_carry(path: Any | None=None) -> Any:
         log(f"AUTO_RELOAD_CARRY_RESTORE_ERROR: {e}")
         return None
 
+
 def _reload_if_code_changed(history: Any, pending_cmd: Any) -> None:
     """If master_ai.py's own file has changed on disk since this process
     started, transparently save+restart (execvp) instead of continuing to
@@ -21928,13 +22891,13 @@ def _reload_if_code_changed(history: Any, pending_cmd: Any) -> None:
         flush=True,
     )
     try:
-        save_session(list(history), silent=True)
-        RESUME_FLAG.write_text(str(CHATS_DIR / f"{SESSION_TS}.chat"))
+        save_session(list(history), silent=True, summarize_timeout=15.0)
+        _atomic_write_text(RESUME_FLAG, str(CHATS_DIR / f"{SESSION_TS}.chat"))
     except Exception as e:
         log(f"AUTO_RELOAD_SAVE_ERROR: {e}")
     try:
         if pending_cmd:
-            _RELOAD_CARRY_FILE.write_text(pending_cmd)
+            _atomic_write_text(_RELOAD_CARRY_FILE, pending_cmd)
         else:
             _RELOAD_CARRY_FILE.unlink(missing_ok=True)
     except Exception as e:
@@ -21955,7 +22918,9 @@ def _reload_if_code_changed(history: Any, pending_cmd: Any) -> None:
         sys.executable, [sys.executable, str(Path.home() / "scripts/master_ai.py")]
     )
 
+
 _AOE_INSTANCE_ID_CACHE = None
+
 
 def _aoe_instance_id() -> Any:
     """This pane's real aoe instance id (hex), for the hook status file and
@@ -22011,6 +22976,7 @@ def _aoe_instance_id() -> Any:
     _AOE_INSTANCE_ID_CACHE = inst
     return inst
 
+
 def _aoe_status(state: Any) -> None:
     """Report our own turn state to aoe, the same way Claude Code's hooks do
     (.claude/settings.json writes 'running'/'idle'/'waiting' into
@@ -22042,6 +23008,7 @@ def _aoe_status(state: Any) -> None:
         (d / "status").write_text(state)
     except Exception:
         pass
+
 
 # ── `schedule ...` REPL commands (2026-09-28) ─────────────────────────────
 # Extracted verbatim out of main()'s inline if-chain. Pure move: this block
@@ -22094,6 +23061,7 @@ def _handle_schedule_cmd(lo: str, cmd: str) -> bool:
         print(f"  {D}example: schedule doctor 02:00 daily{X}")
     return True
 
+
 # ── `hooks` REPL command (2026-09-28) ──────────────────────────────────
 # Extracted verbatim out of main()'s inline if-chain. Pure move.
 def _handle_hooks_cmd(lo: str, cmd: Any) -> bool:
@@ -22136,6 +23104,7 @@ def _handle_hooks_cmd(lo: str, cmd: Any) -> bool:
         print(f"  {W}hooks command error: {e}{X}\n")
     return True
 
+
 # ── `delegate` REPL command (2026-09-28) ──────────────────────────────────
 # Extracted verbatim out of main()'s inline if-chain. Pure move.
 def _handle_delegate_cmd(lo: str, cmd: Any) -> bool:
@@ -22171,6 +23140,7 @@ def _handle_delegate_cmd(lo: str, cmd: Any) -> bool:
         traceback.print_exc()
     return True
 
+
 # ── `mesh` REPL command (2026-09-28) ──────────────────────────────────
 # Extracted verbatim out of main()'s inline if-chain. Pure move.
 def _handle_mesh_cmd(lo: str, cmd: Any) -> bool:
@@ -22200,6 +23170,7 @@ def _handle_mesh_cmd(lo: str, cmd: Any) -> bool:
     except Exception as e:
         print(f"  {R}❌ mesh error: {e}{X}")
     return True
+
 
 # ── `mcp` REPL command (2026-09-28) ──────────────────────────────────
 # Extracted verbatim out of main()'s inline if-chain. Pure move.
@@ -22249,6 +23220,7 @@ def _handle_mcp_cmd(lo: str, cmd: str) -> bool:
         print(f"  {W}mcp command error: {e}{X}\n")
     return True
 
+
 # ── `proposal` REPL command (2026-09-28) ──────────────────────────────────
 # Extracted verbatim out of main()'s inline if-chain. Pure move.
 def _handle_proposal_cmd(lo: str, cmd: Any) -> bool:
@@ -22291,6 +23263,7 @@ def _handle_proposal_cmd(lo: str, cmd: Any) -> bool:
         print(f"  {W}proposal review error: {e}{X}\n")
     return True
 
+
 # ── `project` REPL command (2026-09-28) ──────────────────────────────────
 # Extracted verbatim out of main()'s inline if-chain. Pure move.
 def _handle_project_cmd(lo: str, cmd: Any) -> bool:
@@ -22319,6 +23292,7 @@ def _handle_project_cmd(lo: str, cmd: Any) -> bool:
     else:
         print(f"  {R}❌ Directory not found: {proj}{X}")
     return True
+
 
 # ── `profile` REPL command (2026-09-28) ──────────────────────────────────
 # Extracted verbatim out of main()'s inline if-chain. Pure move.
@@ -22358,10 +23332,33 @@ def _handle_profile_cmd(lo: str, cmd: str) -> bool:
     )
     return True
 
+
 def main() -> None:
+    # 2026-09-29: a buyer who cannot ask "what version am I running?" cannot
+    # file a useful bug report, and pack_for_sale.sh was naming every tarball
+    # after the day it happened to be packed, so two different builds could
+    # ship under the same name. pyproject.toml's [project] version is the
+    # single source; importlib.metadata reads it from the installed
+    # distribution, and the literal is the fallback when running from a
+    # source checkout that was never pip-installed.
+    try:
+        from importlib.metadata import PackageNotFoundError
+        from importlib.metadata import version as _dist_version
+
+        try:
+            __version__ = _dist_version("master-ai-cli")
+        except PackageNotFoundError:
+            __version__ = "0.1.0"
+    except ImportError:  # pragma: no cover - Python < 3.8 only
+        __version__ = "0.1.0"
+
+    if any(arg in ("-v", "--version") for arg in sys.argv[1:]):
+        print(f"master-ai {__version__}")
+        sys.exit(0)
+
     if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
         print(
-            "usage: master-ai [-h] [--setup] [--uninstall] [update]\n\n"
+            "usage: master-ai [-h] [-v] [--setup] [--uninstall] [update]\n\n"
             "Local-first AI agent CLI with vision, voice, MCP integration, "
             "and multi-provider routing.\n\n"
             "Running with no arguments starts the interactive Sensei session.\n"
@@ -22371,6 +23368,7 @@ def main() -> None:
             "commit — every machine symlinking to it updates the same way.\n\n"
             "options:\n"
             "  -h, --help     show this help message and exit\n"
+            "  -v, --version  print the installed version and exit\n"
             "      --setup    run the interactive setup wizard\n"
             "      --uninstall  run the interactive uninstall wizard\n"
             "      update, --update  pull the latest version from git"
@@ -22754,7 +23752,7 @@ def main() -> None:
     # Save on any exit — force-close, terminal close, SIGTERM. Also summarize
     # so the session shows up in `sessions list` / `sessions resume` without
     # repopulating the window next launch.
-    def _exit_save(signum: Any | None=None, frame: Any | None=None) -> None:
+    def _exit_save(signum: Any | None = None, frame: Any | None = None) -> None:
         try:
             _bounded_save_session(GLOBAL_HISTORY)
         except Exception:
@@ -24739,6 +25737,7 @@ def main() -> None:
             log(f"HANDLE_ERROR: {e}")
             print(f"  {R}error: {e}{X}")
 
+
 def _run_with_tui() -> Any:
     """Wrap main() in the full-screen SenseiApp.
     - Stdout/stderr routed to the app's scrollable output buffer.
@@ -24780,7 +25779,7 @@ def _run_with_tui() -> Any:
     _orig_input = builtins.input
     _orig_stdout, _orig_stderr = sys.stdout, sys.stderr
 
-    def _tui_input(prompt: str="") -> Any:
+    def _tui_input(prompt: str = "") -> Any:
         # Print the prompt into the scrollback so user sees what's being asked.
         if prompt:
             try:
@@ -24862,7 +25861,7 @@ def _run_with_tui() -> Any:
             _INTERRUPT_EVENT.set()
             _iq.put(text)
 
-            def _watchdog(_label: Any=lo) -> None:
+            def _watchdog(_label: Any = lo) -> None:
                 for _ in range(25):  # 25 * 0.2s = 5s
                     if _RESTART_STARTED.is_set():
                         return  # graceful path took it — done here
@@ -25010,6 +26009,7 @@ def _run_with_tui() -> Any:
     if worker_err and isinstance(worker_err[0], KeyboardInterrupt):
         sys.exit(99)
 
+
 def _handle_skill_cmd(cmd: str, history: list) -> str:
     """Extracted from `main()` REPL dispatch.
 
@@ -25034,9 +26034,7 @@ def _handle_skill_cmd(cmd: str, history: list) -> str:
         elif _sub == "install":
             if len(_rest) < 2:
                 print(f"  {W}usage: skill install <source> <skill-id>{X}")
-                print(
-                    f"  {D}example: skill install hermes research/web-search-ddgr{X}"
-                )
+                print(f"  {D}example: skill install hermes research/web-search-ddgr{X}")
             else:
                 print(f"  {_sk.install(_rest[0], _rest[1])}")
         elif _sub == "run":
@@ -25052,9 +26050,7 @@ def _handle_skill_cmd(cmd: str, history: list) -> str:
                 re.IGNORECASE | re.DOTALL,
             )
             if not _m:
-                print(
-                    f"  {W}usage: skill run <name> [<json-params>|<session-id>]{X}"
-                )
+                print(f"  {W}usage: skill run <name> [<json-params>|<session-id>]{X}")
                 print(
                     f'  {D}example: skill run google-workspace {{"command": "gmail.search", "args": {{"query": "is:unread", "max": 5}}}}{X}'
                 )
@@ -25087,9 +26083,7 @@ def _handle_skill_cmd(cmd: str, history: list) -> str:
                         )
                         print(f"  {_skill_state_reply(_state, history)}")
                     except Exception as e:
-                        print(
-                            f"  {W}skill run error: {type(e).__name__}: {e}{X}"
-                        )
+                        print(f"  {W}skill run error: {type(e).__name__}: {e}{X}")
         elif _sub == "resume":
             # Distinct from `skill run <name> <session-id>` (same
             # effect) only in that it validates a session id is
@@ -25135,15 +26129,11 @@ def _handle_skill_cmd(cmd: str, history: list) -> str:
                                 log(
                                     f"SKILL_REPL_RESUME: {_state.skill_name} session={_state.session_id} step={_state.current_step}"
                                 )
-                                print(
-                                    f"  {_skill_state_reply(_state, history)}"
-                                )
+                                print(f"  {_skill_state_reply(_state, history)}")
                     except _sr.SkillNotFound as e:
                         print(f"  {W}no such session: {e}{X}")
                     except Exception as e:
-                        print(
-                            f"  {W}skill resume error: {type(e).__name__}: {e}{X}"
-                        )
+                        print(f"  {W}skill resume error: {type(e).__name__}: {e}{X}")
         elif _sub == "audit":
             if not _rest:
                 print(f"  {W}usage: skill audit <name>{X}")
@@ -25225,9 +26215,7 @@ def _handle_skill_cmd(cmd: str, history: list) -> str:
                 # One-shot manual trigger
                 _draft = _sk.propose_auto_skill()
                 if _draft is None:
-                    print(
-                        f"  {D}no strong skill candidate found in recent sessions{X}"
-                    )
+                    print(f"  {D}no strong skill candidate found in recent sessions{X}")
                 else:
                     _d = _draft
                     _transcript_for_save = (
@@ -25240,9 +26228,7 @@ def _handle_skill_cmd(cmd: str, history: list) -> str:
                         f" ({'saved' if _d.approved else 'draft'}){X}\n"
                     )
                     print(f"  low-risk: {_d.low_risk}")
-                    print(
-                        f"  audit: {'PASS' if _d.audit.get('passed') else 'FAIL'}"
-                    )
+                    print(f"  audit: {'PASS' if _d.audit.get('passed') else 'FAIL'}")
                     for r in _d.audit.get("reasons", []):
                         print(f"    ✗ {r}")
                     for w in _d.audit.get("warnings", [])[:3]:
@@ -25270,7 +26256,6 @@ def _handle_skill_cmd(cmd: str, history: list) -> str:
             )
     except Exception as e:
         print(f"  {W}skill command error: {e}{X}\n")
-
 
 
 def _handle_plan(history: list, user_text: str) -> str:
@@ -25332,9 +26317,7 @@ def _handle_plan(history: list, user_text: str) -> str:
             merger=_mg,
             fallback=_fb,
             max_rounds=PLAN_DEBATE_MAX_ROUNDS,
-            live_pin_merger_round=int(
-                os.environ.get("PLAN_DEBATE_PIN_ROUND", "5")
-            ),
+            live_pin_merger_round=int(os.environ.get("PLAN_DEBATE_PIN_ROUND", "5")),
             progress=True,
         )
         plan_reply = _debate.get("plan", "") or ""
@@ -25410,13 +26393,10 @@ def _handle_plan(history: list, user_text: str) -> str:
             f"{BTN_R} 3){X} no  ·  {BTN_C} 4){X} keep talking  ·  "
             f"{BTN_G} A){X} finish in Auto"
         )
-        threading.Thread(
-            target=speak, args=("Plan ready.",), daemon=True
-        ).start()
+        threading.Thread(target=speak, args=("Plan ready.",), daemon=True).start()
     else:
         # Debate produced nothing usable — keep history for context.
         history.append({"role": "user", "content": user_text})
-
 
 
 def _handle_use_skill(cmd: str, lo: str) -> str:
@@ -25452,7 +26432,6 @@ def _handle_use_skill(cmd: str, lo: str) -> str:
     )
 
 
-
 def _handle_done() -> str:
     """Extracted from `main()` REPL dispatch.
 
@@ -25461,9 +26440,7 @@ def _handle_done() -> str:
     arm could be read without reading all the others.
     """
     if not ACTIVE_PROJECT or not ACTIVE_TASK:
-        print(
-            f"  {W}🥷 no selected task to mark done. try `dojo` to see state.{X}"
-        )
+        print(f"  {W}🥷 no selected task to mark done. try `dojo` to see state.{X}")
         return
     if _dojo_mark_done(ACTIVE_PROJECT, ACTIVE_TASK):
         print(f"  {G}✅ done:{X} {ACTIVE_TASK}")
@@ -25485,7 +26462,6 @@ def _handle_done() -> str:
             print(f"  {G}🥷 project complete — no unchecked tasks left.{X}")
     else:
         print(f"  {R}❌ couldn't find that task in PROJECTS.md{X}")
-
 
 
 def _handle_agents(cmd: str) -> str:
@@ -25529,16 +26505,11 @@ def _handle_agents(cmd: str) -> str:
                 result = _sr.run(sub_name, task)
                 import json as _json
 
-                print(
-                    f"\n  {C}{_json.dumps(result, indent=2, default=str)}{X}\n"
-                )
+                print(f"\n  {C}{_json.dumps(result, indent=2, default=str)}{X}\n")
         else:
-            print(
-                f"  {W}usage: agents [list|inspect <name>|run <name> <task>]{X}\n"
-            )
+            print(f"  {W}usage: agents [list|inspect <name>|run <name> <task>]{X}\n")
     except Exception as e:
         print(f"  {W}agents command error: {e}{X}\n")
-
 
 
 def _handle_jobseeker() -> str:
@@ -25580,7 +26551,6 @@ def _handle_jobseeker() -> str:
         print(f"  {W}Job Seeker failed to launch: {e}{X}\n")
 
 
-
 def _handle_chats(lo: str) -> str:
     """Extracted from `main()` REPL dispatch.
 
@@ -25589,9 +26559,7 @@ def _handle_chats(lo: str) -> str:
     arm could be read without reading all the others.
     """
     files = (
-        sorted(
-            CHATS_DIR.glob("*"), key=lambda f: f.stat().st_mtime, reverse=True
-        )
+        sorted(CHATS_DIR.glob("*"), key=lambda f: f.stat().st_mtime, reverse=True)
         if CHATS_DIR.exists()
         else []
     )
@@ -25631,12 +26599,9 @@ def _handle_chats(lo: str) -> str:
                 target.unlink(missing_ok=True)
                 print(f"  {G}✅ Deleted: {target.name}{X}")
             else:
-                print(
-                    f"  {R}No file #{n + 1}. Type 'chats' to see the list.{X}"
-                )
+                print(f"  {R}No file #{n + 1}. Type 'chats' to see the list.{X}")
         except ValueError:
             print(f"  {R}Usage: clear chats <number>  e.g. 'clear chats 2'{X}")
-
 
 
 def _handle_label(history: list) -> str:
@@ -25668,24 +26633,16 @@ def _handle_label(history: list) -> str:
         print(f"  {G}✅ label cleared.{X}")
         return
     if new_name.lower() == "suggest":
-        msgs = [m for m in history if m.get("role") in ("user", "assistant")][
-            -8:
-        ]
+        msgs = [m for m in history if m.get("role") in ("user", "assistant")][-8:]
         if not msgs:
-            print(
-                f"  {Y}not enough context yet — type a few messages first.{X}"
-            )
+            print(f"  {Y}not enough context yet — type a few messages first.{X}")
             return
-        transcript = "\n".join(
-            f"{m['role']}: {m['content'][:200]}" for m in msgs
-        )
+        transcript = "\n".join(f"{m['role']}: {m['content'][:200]}" for m in msgs)
         prompt = (
             f"Give a 2-4 word kebab-case label for this conversation "
             f"(lowercase, hyphens, no punctuation). Output ONLY the label.\n\n{transcript}"
         )
-        suggested = (
-            _ask_cloud_for_label([{"role": "user", "content": prompt}]) or ""
-        )
+        suggested = _ask_cloud_for_label([{"role": "user", "content": prompt}]) or ""
         suggested = suggested.strip().split("\n")[0].strip().lower()
         suggested = re.sub(r"[^a-z0-9\-]+", "-", suggested).strip("-")[:40]
         if suggested:
@@ -25696,7 +26653,6 @@ def _handle_label(history: list) -> str:
         return
     save_thread_label(new_name)
     print(f"  {G}✅ label set to:{X} {BC}{new_name}{X}")
-
 
 
 def _handle_branch(history: list) -> str:
@@ -25721,22 +26677,16 @@ def _handle_branch(history: list) -> str:
         print(f"  {G}✅ label cleared.{X}")
         return
     if new_name.lower() == "suggest":
-        msgs = [m for m in history if m.get("role") in ("user", "assistant")][
-            -8:
-        ]
+        msgs = [m for m in history if m.get("role") in ("user", "assistant")][-8:]
         if not msgs:
             print(f"  {Y}not enough context yet — chat a bit first.{X}")
             return
-        transcript = "\n".join(
-            f"{m['role']}: {m['content'][:200]}" for m in msgs
-        )
+        transcript = "\n".join(f"{m['role']}: {m['content'][:200]}" for m in msgs)
         prompt = (
             f"Give a 2-4 word kebab-case label for this conversation "
             f"(lowercase, hyphens, no punctuation). Output ONLY the label.\n\n{transcript}"
         )
-        suggested = (
-            _ask_cloud_for_label([{"role": "user", "content": prompt}]) or ""
-        )
+        suggested = _ask_cloud_for_label([{"role": "user", "content": prompt}]) or ""
         suggested = re.sub(
             r"[^a-z0-9\-]+",
             "-",
@@ -25750,7 +26700,6 @@ def _handle_branch(history: list) -> str:
         return
     save_thread_label(new_name)
     print(f"  {G}✅ label:{X} {BC}{new_name}{X}")
-
 
 
 def _handle_new(history: list) -> str:
@@ -25803,7 +26752,6 @@ def _handle_new(history: list) -> str:
     )
 
 
-
 def _handle_copy(history: list) -> str:
     """Extracted from `main()` REPL dispatch.
 
@@ -25837,7 +26785,6 @@ def _handle_copy(history: list) -> str:
     else:
         print(f"  {Y}No clipboard tool found (tried xclip, wl-copy, xsel).{X}")
         print(f"  {D}Install with: sudo apt install xclip{X}")
-
 
 
 def _handle_sessions_resume(cmd: str, history: list) -> str:
@@ -25879,7 +26826,6 @@ def _handle_sessions_resume(cmd: str, history: list) -> str:
             print(f"  {R}❌ {e}{X}")
 
 
-
 def _handle_load_summary(history: list) -> str:
     """Extracted from `main()` REPL dispatch.
 
@@ -25893,9 +26839,7 @@ def _handle_load_summary(history: list) -> str:
             print(f"  {Y}No summaries found yet.{X}")
         else:
             content = summaries[0].read_text().strip()
-            bullets = [
-                l for l in content.splitlines() if l.lstrip().startswith("•")
-            ]
+            bullets = [l for l in content.splitlines() if l.lstrip().startswith("•")]
             trimmed = "\n".join(bullets[-2:]) if len(bullets) >= 2 else content
             history.append(
                 {
@@ -25909,14 +26853,11 @@ def _handle_load_summary(history: list) -> str:
                     "content": "Got it — I have your last session's unfinished items and next steps. What would you like to continue?",
                 }
             )
-            print(
-                f"  {G}✅ Last session context loaded (unfinished + next).{X}"
-            )
+            print(f"  {G}✅ Last session context loaded (unfinished + next).{X}")
             print(f"  {D}{trimmed[:300]}{X}")
             _request_auto_save(history)
     except Exception as e:
         print(f"  {R}❌ {e}{X}")
-
 
 
 def _handle_copy_chat(history: list) -> str:
@@ -25940,7 +26881,7 @@ def _handle_copy_chat(history: list) -> str:
         ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         out_path = CHATS_DIR / f"copy-{ts}.md"
         header = f"# Sensei chat — {_fmt_ampm()}\n\n"
-        out_path.write_text(header + transcript)
+        _atomic_write_text(out_path, header + transcript)
         print(f"  {G}✅ chat saved → {out_path}{X}")
         print(f"  {D}   {len(turns)} turns · {len(transcript)} chars{X}")
         # Secondary: best-effort clipboard copy via xclip. Silent if
@@ -25960,7 +26901,6 @@ def _handle_copy_chat(history: list) -> str:
         print(f"  {R}copy chat error: {e}{X}")
 
 
-
 def _handle_cycle() -> str:
     """Extracted from `main()` REPL dispatch.
 
@@ -25970,9 +26910,7 @@ def _handle_cycle() -> str:
     """
     _CYCLE_ORDER = ("plan", "review", "auto")
     old_mode = MODE if MODE in _CYCLE_ORDER else "plan"
-    new_mode = _CYCLE_ORDER[
-        (_CYCLE_ORDER.index(old_mode) + 1) % len(_CYCLE_ORDER)
-    ]
+    new_mode = _CYCLE_ORDER[(_CYCLE_ORDER.index(old_mode) + 1) % len(_CYCLE_ORDER)]
     globals()["MODE"] = new_mode
     save_mode(new_mode)
     _HANDSHAKE = {
@@ -25996,7 +26934,6 @@ def _handle_cycle() -> str:
             _SENSEI_APP.set_mode(new_mode)
         except Exception:
             pass
-
 
 
 def _handle_mode_plan(lo: str) -> str:
@@ -26037,7 +26974,6 @@ def _handle_mode_plan(lo: str) -> str:
             pass
 
 
-
 def _handle_mode_connected() -> str:
     """Extracted from `main()` REPL dispatch.
 
@@ -26055,30 +26991,19 @@ def _handle_mode_connected() -> str:
     )
     print(f"  {W}What this gives you:{X}")
     print("    · Groq Llama 3.3 70B for default asks — ~0.3 second replies.")
-    print(
-        "    · DeepSeek-R1 for reasoning — closest free path to top-tier quality."
-    )
-    print(
-        "    · `reason:` for careful DeepSeek-R1 reasoning with local deep fallback."
-    )
+    print("    · DeepSeek-R1 for reasoning — closest free path to top-tier quality.")
+    print("    · `reason:` for careful DeepSeek-R1 reasoning with local deep fallback.")
     print("    · Gemini 2.0 Flash for vision + web-aware questions.")
     print(f"  {W}The trade:{X}")
-    print(
-        "    · Needs internet. If it drops, Sensei falls back to your local models."
-    )
+    print("    · Needs internet. If it drops, Sensei falls back to your local models.")
     print("    · Cloud prompts leave your box. Providers may log them.")
-    print(
-        "    · Cloud keys can hit daily free-tier quotas — rare, but it happens."
-    )
+    print("    · Cloud keys can hit daily free-tier quotas — rare, but it happens.")
     print(f"  {W}Force local anytime:{X}")
     print(
         f"    · {BC}local:{X} <message>   → this one goes to your machine, not the cloud."
     )
-    print(
-        f"    · {BC}private:{X} <message> → same, logged as privacy-intended."
-    )
+    print(f"    · {BC}private:{X} <message> → same, logged as privacy-intended.")
     print()
-
 
 
 def _handle_mode_local() -> str:
@@ -26126,7 +27051,6 @@ def _handle_mode_local() -> str:
     print()
 
 
-
 def _handle_model(cmd: str, lo: str) -> str:
     """Extracted from `main()` REPL dispatch.
 
@@ -26169,7 +27093,6 @@ def _handle_model(cmd: str, lo: str) -> str:
             print(f"  {msg}")
 
 
-
 def _handle_security() -> str:
     """Extracted from `main()` REPL dispatch.
 
@@ -26177,9 +27100,7 @@ def _handle_security() -> str:
     2026-09-29 because that function had grown to 2576 lines holding 169 dispatch arms, and no
     arm could be read without reading all the others.
     """
-    print(
-        f"  {C}Scanning sensei's own dependencies (not the whole system)...{X}"
-    )
+    print(f"  {C}Scanning sensei's own dependencies (not the whole system)...{X}")
     result = run_security_audit()
     if not result["ok"]:
         print(f"  {R}audit failed: {result['error']}{X}")
@@ -26211,7 +27132,6 @@ def _handle_security() -> str:
                 print(f"  {Y}?{X} {name} — {D}{reason[:120]}{X}")
 
 
-
 def _handle_tutor(cmd: str) -> str:
     """Extracted from `main()` REPL dispatch.
 
@@ -26227,9 +27147,7 @@ def _handle_tutor(cmd: str) -> str:
         _rest = _parts[2:]
         if _sub in ("", "start"):
             _r = _tutor.start_learning()
-            print(
-                f"  {G if _r['status'] == 'created' else Y}{_r['message']}{X}"
-            )
+            print(f"  {G if _r['status'] == 'created' else Y}{_r['message']}{X}")
         elif _sub == "next":
             _r = _tutor.next_lesson()
             if _r["status"] == "lesson":
@@ -26312,9 +27230,7 @@ def _handle_tutor(cmd: str) -> str:
                     print(f"  {Y}no current lesson found.{X}")
                 else:
                     _chunks = _r.get("tts_chunks", [])
-                    print(
-                        f"\n  {C}Reading {_r['title']} ({len(_chunks)} chunks)...{X}"
-                    )
+                    print(f"\n  {C}Reading {_r['title']} ({len(_chunks)} chunks)...{X}")
                     for i in range(len(_chunks)):
                         _rr = _tutor.read_aloud(_r, chunk_index=i)
                         print(f"  {G}chunk {i + 1}/{len(_chunks)} spoken.{X}")
@@ -26337,7 +27253,6 @@ def _handle_tutor(cmd: str) -> str:
         print(f"  {W}tutor command error: {e}{X}\n")
 
 
-
 def _handle_tinyfish(cmd: str, lo: str) -> str:
     """Extracted from `main()` REPL dispatch.
 
@@ -26352,9 +27267,7 @@ def _handle_tinyfish(cmd: str, lo: str) -> str:
         import tinyfish_client as _tf
 
         if not _tf.has_key():
-            print(
-                f"  {Y}TinyFish API key not found. Run the TinyFish setup first.{X}"
-            )
+            print(f"  {Y}TinyFish API key not found. Run the TinyFish setup first.{X}")
             return
         if lo in ("tinyfish", "tinyfish status", "tf", "tf status"):
             try:
@@ -26379,9 +27292,7 @@ def _handle_tinyfish(cmd: str, lo: str) -> str:
                 print(f"  {R}TinyFish search failed: {e}{X}")
             return
         if sub in ("fetch", "f"):
-            urls = [
-                u.strip() for u in rest.split() if u.strip().startswith("http")
-            ]
+            urls = [u.strip() for u in rest.split() if u.strip().startswith("http")]
             if not urls:
                 print(f"  {Y}usage: tinyfish fetch <url> [<url> ...]{X}")
                 return
