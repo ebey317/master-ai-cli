@@ -12,7 +12,18 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_NAME="$(basename "$SCRIPT_DIR")"
-VERSION="${VERSION:-$(date +%Y%m%d)}"
+# 2026-09-29: the tarball is named after the release version in
+# pyproject.toml [project], not the day it happened to be packed -- two
+# different builds could otherwise ship under the same filename, and a
+# buyer could not tell what they installed. `VERSION=1.2.3 bash
+# pack_for_sale.sh` still wins, for hotfix builds off a different tag.
+if [ -n "${VERSION:-}" ]; then
+  : # caller overrode it; leave it alone
+else
+  _PYPROJECT_VERSION="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$SCRIPT_DIR/pyproject.toml" | head -1)"
+  VERSION="${_PYPROJECT_VERSION:-$(date +%Y%m%d)}"
+  unset _PYPROJECT_VERSION
+fi
 DIST_DIR="$SCRIPT_DIR/dist"
 STAGE_DIR="$DIST_DIR/stage/master-ai-$VERSION"
 OUTPUT="$DIST_DIR/master-ai-v$VERSION.tar.gz"
