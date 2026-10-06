@@ -18,9 +18,12 @@ Gate:
           critique) + one re-judge; if still failing, the plan is annotated
           with a flag banner so the operator sees it before approving.
 
-Fail-open always: missing key, network error, API error -> gate reports
-indeterminate and the plan flows exactly as before. This gate may flag a plan;
-it never blocks the operator from approving one.
+2026-10-05 owner decision — judge failures now FAIL CLOSED (consistent with
+the round-1 fail-closed safety gates): missing key, network error, API
+error -> gate="blocked", planning halts, nothing flows to approval. Only an
+empty plan or an explicit PLAN_JEV_GATE=off skips without a verdict. A
+judged-and-flagged plan still flows to approval with a ⚠ banner; only the
+never-judged case blocks.
 
 Env knobs:
   PLAN_JEV_GATE          on|off      (default on)
@@ -196,10 +199,12 @@ def _revise_prompt(task: str, plan: str, failing: list[str]) -> str:
 
 
 def run_jev_gate(task: str, plan: str, revise_fn=None) -> dict:
-    """Entry point. Never raises; never blocks. Returns a report dict:
+    """Entry point. Never raises; blocks (gate="blocked") when the judge
+    cannot run — fail-closed, 2026-10-05 owner decision. Returns a report dict:
 
-    { 'passed': True|False|None (None = indeterminate/fail-open),
-      'gate': 'pass'|'flagged'|'skipped',
+    { 'passed': True|False|None (None = not run: empty plan / disabled;
+      judge failures fail CLOSED -> passed=False, gate="blocked"),
+      'gate': 'pass'|'flagged'|'skipped'|'blocked',
       'ready','risky','concrete','on_task': float|None,
       'revised': bool,
       'annotated_plan': str,   # plan, possibly with banner prepended
@@ -225,13 +230,29 @@ def run_jev_gate(task: str, plan: str, revise_fn=None) -> dict:
         progress.append("[jev gate] disabled (PLAN_JEV_GATE=off)")
         return report
     if not jev_api_key():
-        progress.append("[jev gate] skipped — no OPENROUTER_API_KEY")
+        progress.append("[jev gate] BLOCKED - no OPENROUTER_API_KEY (fail-closed)")
+        report["passed"] = False
+        report["gate"] = "blocked"
+        report["annotated_plan"] = _annotate(
+            plan,
+            [
+                "[jev gate] BLOCKED - no API key; plan cannot be judged. Fix the key and retry."
+            ],
+        )
         return report
 
     state = {"task": (task or "")[:8000], "plan": (plan or "")[:24000]}
     probs = ask_jev_nouls(state)
     if probs is None:
-        progress.append("[jev gate] skipped — Jev call failed (fail-open)")
+        progress.append("[jev gate] BLOCKED - Jev call failed (fail-closed)")
+        report["passed"] = False
+        report["gate"] = "blocked"
+        report["annotated_plan"] = _annotate(
+            plan,
+            [
+                "[jev gate] BLOCKED - judge unreachable; plan cannot be judged. Retry when the judge is back."
+            ],
+        )
         return report
     for k in _DIMENSIONS:
         report[k] = probs.get(k)
@@ -272,8 +293,7 @@ def run_jev_gate(task: str, plan: str, revise_fn=None) -> dict:
     # part of the same "Ctrl+C does nothing in plan mode" gap fixed in
     # run_plan_debate() (sensei_reasoning_loop.py) the same day. Skip the
     # optional retry when the user already asked to stop rather than making
-    # them wait through one more blocking call for a gate that's fail-open
-    # anyway.
+    # them wait through one more blocking call they chose to abandon.
     try:
         import master_ai as _master_ai_interrupt_check
 
@@ -329,13 +349,22 @@ def run_jev_gate(task: str, plan: str, revise_fn=None) -> dict:
                     ],
                 )
                 return report
-            # re-judge failed (network etc.) — flag the revised text as-is
+            # 2026-10-05 fail-closed: re-judge failed (network etc.) — the
+            # revised plan has NO gate verdict, so it cannot flow to
+            # approval. Loud alarm + halt, same as the round-1 gate pattern.
             report["revised"] = True
+            report["passed"] = False
+            report["gate"] = "blocked"
+            progress.append(
+                "[jev gate] BLOCKED - re-judge call failed after revise "
+                "(fail-closed). No verdict on the revised plan."
+            )
             report["annotated_plan"] = _annotate(
                 revised,
                 [
-                    "⚠ [jev gate] FLAGGED — one revise round ran but re-check "
-                    "could not complete (fail-open). Review before approving."
+                    "[jev gate] BLOCKED - re-judge call failed after revise; "
+                    "the revised plan has no gate verdict. Fix the judge "
+                    "and retry; nothing was approved."
                 ],
             )
             return report
@@ -477,21 +506,51 @@ def _selftest() -> int:
         and out["annotated_plan"].startswith("⚠ [jev gate] FLAGGED"),
     )
 
-    # 5. missing key -> fail-open skip
+    # 5. missing key -> fail-closed block
     real_key = g.jev_api_key
     g.jev_api_key = lambda: None
     out = g.run_jev_gate("t", "plan", revise_fn=None)
     g.jev_api_key = real_key
-    check("fail-open-key", out["passed"] is None and out["gate"] == "skipped")
+    check("fail-closed-key", out["passed"] is False and out["gate"] == "blocked")
 
-    # 6. network failure -> fail-open
+    # 6. network failure -> fail-closed
     def _boom(payload, key, timeout=45):
         raise urllib.error.URLError("no net")
 
     g._http_decisions = _boom
     g.jev_api_key = lambda: "k"
     out = g.run_jev_gate("t", "plan", revise_fn=None)
-    check("fail-open-net", out["passed"] is None and out["gate"] == "skipped")
+    check("fail-closed-net", out["passed"] is False and out["gate"] == "blocked")
+
+    # 6b. flag -> revise ok -> RE-JUDGE failure -> fail-closed block
+    calls2 = {"n": 0}
+
+    def _revise_boom(payload, key, timeout=45):
+        if calls2["n"] == 0:
+            calls2["n"] += 1
+            return {
+                "answers": {
+                    n: {"noul": p}
+                    for n, p in {
+                        "ready": 0.30,
+                        "risky": 0.10,
+                        "concrete": 0.5,
+                        "on_task": 0.5,
+                    }.items()
+                }
+            }
+        raise urllib.error.URLError("re-judge net gone")
+
+    g._http_decisions = _revise_boom
+    g.jev_api_key = lambda: "k"
+    out = g.run_jev_gate("t", "bad plan", revise_fn=lambda p: "revised plan")
+    check(
+        "fail-closed-rejudge",
+        out["revised"] is True
+        and out["passed"] is False
+        and out["gate"] == "blocked"
+        and "[jev gate] BLOCKED" in out["annotated_plan"],
+    )
 
     # 7. env kill-switch
     os.environ["PLAN_JEV_GATE"] = "off"

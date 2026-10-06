@@ -15,6 +15,13 @@ harvest.cache
 # Package output
 master-ai-v*.tar.gz
 dist/
+# 2026-09-29: `build/` was missing here. `pip wheel .` / `pip install -e .`
+# leaves a full second copy of the source tree in build/lib/, and ruff's
+# default excludes cover `_build` but NOT `build` -- so a stale
+# build/lib/master_ai.py got linted (3,171 phantom F405 errors) and a
+# plain `git add -A` would have committed a duplicate of the monolith.
+build/
+*.egg-info/
 
 # Test artifacts
 .coverage

@@ -39,6 +39,13 @@ dev = [
     # server surface against the real SDK; CI installs .[dev] and
     # would otherwise collect-error on the missing module.
     "mcp>=1.2.0",
+    # The type gate (tools/mypy_gate.py) is a `language: system`
+    # pre-commit hook, so it runs against whatever interpreter is on
+    # PATH rather than a hook-private venv. That means mypy has to be a
+    # real declared dependency of the dev extra or the gate cannot run
+    # in CI at all. Pinned to the exact rev the old mirrors-mypy hook
+    # used, so results do not shift when PyPI ships a new mypy.
+    "mypy==1.10.0",
 ]
 
 [project.scripts]

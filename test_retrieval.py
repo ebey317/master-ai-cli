@@ -87,7 +87,7 @@ def _embed_with_model(index):
     with retrieval._idx.connect() as conn:
         rows = conn.execute("SELECT id, body FROM docs").fetchall()
         vectors = embeddings.embed_many([body for _, body in rows], batch=8)
-        for (rowid, _body), vector in zip(rows, vectors):
+        for (rowid, _body), vector in zip(rows, vectors, strict=True):
             if vector is None:
                 continue
             conn.execute(

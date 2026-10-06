@@ -28,7 +28,8 @@ import unittest
 os.environ["SENSEI_TUI"] = "0"
 sys.path.insert(0, os.path.expanduser("~/scripts"))
 
-import master_ai  # noqa: E402
+import dispatch  # noqa: E402
+import master_ai
 import router  # noqa: E402
 
 
@@ -111,9 +112,15 @@ class SystemQueryRouting(RouterGoldenBase):
         self.assertEqual(d["route"], "deterministic_intent")
         self.assertIn("synth_reply", d)
         self.assertTrue(d["synth_reply"])
+        # _deterministic_intent_to_directive's "where is"/"find" branch
+        # (routing.py) has always emitted RUNTERM: (an interactive find),
+        # not RUN:/READ: -- this assertion was simply stale, unrelated to
+        # the 2026-10-05 monolith split.
         self.assertTrue(
-            "RUN:" in d["synth_reply"] or "READ:" in d["synth_reply"],
-            f"synth_reply missing RUN:/READ: directive: {d['synth_reply']!r}",
+            "RUN:" in d["synth_reply"]
+            or "READ:" in d["synth_reply"]
+            or "RUNTERM:" in d["synth_reply"],
+            f"synth_reply missing RUN:/READ:/RUNTERM: directive: {d['synth_reply']!r}",
         )
 
     def test_port_check_short_circuits(self):
@@ -263,7 +270,13 @@ class HarvestRecordedOnDeterministicShortCircuit(RouterGoldenBase):
     def test_handle_records_harvest_for_system_query_route(self):
         import inspect
 
-        src = inspect.getsource(master_ai.handle)
+        import orchestration
+
+        # 2026-10-05 monolith split (HANDOFF.md) moved handle()'s real body
+        # into orchestration.py; master_ai.handle is now a thin delegate
+        # wrapper (inspecting it would only ever find the one-line
+        # delegation, never the route branch this test exists to guard).
+        src = inspect.getsource(orchestration.handle)
         # The "system_query" route name itself was retired in commit
         # aad2762 and its behavior reintroduced as "deterministic_intent"
         # (commit 953f31a). We look for the harvest.record call appearing
@@ -302,7 +315,7 @@ class RuntermBlockedFeedbackPinned(RouterGoldenBase):
     def test_runterm_loop_consults_last_blocked_action(self):
         import inspect
 
-        src = inspect.getsource(master_ai.process_reply)
+        src = inspect.getsource(dispatch.process_reply)
         # Both RUN and RUNTERM branches must consume _LAST_BLOCKED_ACTION
         # through _append_tool_blocked_feedback. The helper itself is the
         # consumer; the loop calls it.

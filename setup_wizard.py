@@ -418,6 +418,64 @@ def _interactive_github_setup(token: str) -> dict:
     return keys
 
 
+PROFILE_FILE = Path.home() / ".master_ai_profile.json"
+
+
+def _setup_operator_profile() -> None:
+    """Collect the operator's name/email into ~/.master_ai_profile.json.
+
+    Added 2026-09-29. `master_ai._operator_identity()` builds the outbound HTTP
+    User-Agent from this file, and `master_ai._default_location()` already read
+    `personal.city` / `personal.state` from it. Until now nothing in the setup
+    path ever wrote it, so on a clean install the agent identified itself to
+    every third-party API as a bare "MasterAI/1.8" with no operator attached.
+
+    Only the two fields the agent actually reads are asked for. Optional at
+    every prompt: a blank answer, a Ctrl-C, or a read-only home all leave the
+    file absent, and every consumer already degrades cleanly when it is.
+    """
+    if PROFILE_FILE.exists():
+        return
+    try:
+        _print(
+            f"\n{C['bold']}One quick thing — how should the agent address you?{C['reset']}"
+        )
+        _print("This goes into the User-Agent header the agent sends to search")
+        _print("and model APIs, and into prompts that need your project context.")
+        _print("Press Enter to skip — everything works fine without it.\n")
+        first = _input("  First name: ")
+        if not first:
+            _print(
+                f"  {C['cyan']}Skipped. Run 'master-ai --setup' later to add it.{C['reset']}"
+            )
+            return
+        email = _input("  Email (optional, used only for that header): ")
+        personal: dict = {"first_name": first.strip()}
+        if email.strip():
+            personal["email"] = email.strip()
+        PROFILE_FILE.write_text(
+            json.dumps(
+                {
+                    "_note": "Operator profile for Master AI. Written by the "
+                    "first-run wizard. Edit or delete freely.",
+                    "_schema": "v2",
+                    "personal": personal,
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+        try:
+            PROFILE_FILE.chmod(0o600)
+        except OSError:
+            pass
+        _print(f"  {C['green']}✓{C['reset']} Saved to {PROFILE_FILE}")
+    except (KeyboardInterrupt, EOFError):
+        _print(f"\n  {C['cyan']}Skipped.{C['reset']}")
+    except OSError as e:
+        _print(f"  {C['cyan']}Could not write profile ({e}); continuing.{C['reset']}")
+
+
 def _run_manual_setup() -> dict:
     _print(f"\n{C['bold']}Manual setup mode.{C['reset']}")
     _print("You can re-run this anytime with: master-ai --setup\n")
@@ -426,6 +484,7 @@ def _run_manual_setup() -> dict:
     keys = _setup_telegram(keys)
     keys = _manual_key_collection(keys)
     _write_keys(keys)
+    _setup_operator_profile()
     SETUP_DONE_FILE.touch()
     _print(
         f"\n{C['green']}✓ Manual setup saved.{C['reset']} {C['cyan']}No GitHub AI was used.{C['reset']}"

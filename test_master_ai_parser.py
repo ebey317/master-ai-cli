@@ -785,23 +785,38 @@ class DirectiveParserTests(unittest.TestCase):
         self.assertTrue(meta["whole_file_requested"])
 
     def test_auto_context_slicer_finds_cloud_deep_routing(self):
-        # The slicer should pull the handle() and cloud_deep regions of
-        # master_ai.py when asked about cloud_deep routing. The exact
-        # tuples in the fallback chain have changed as providers were
-        # disabled (fireworks/groq/gemini), so pin the structural
-        # invariants, not specific tuple strings.
+        # The slicer should pull the handle() region of master_ai.py and the
+        # cloud_deep region of orchestration.py when asked about each. Two
+        # separate calls, not one combined query: 2026-10-05 monolith split
+        # (HANDOFF.md) moved orchestrate() -- and the decision["route"] ==
+        # "cloud_deep" branch inside it -- out of master_ai.py into
+        # orchestration.py, but master_ai.py's own (unrelated)
+        # _route_history_budget() still mentions the literal string
+        # "cloud_deep" in a comment. A single query naming both files hits
+        # that incidental match on master_ai.py first and exhausts
+        # _AUTO_CONTEXT_MAX_FILES (2) before orchestration.py's real
+        # "cloud_deep" branch gets a turn -- not a split regression, just
+        # this test's combined-query shape colliding with a pre-existing
+        # cap. The exact tuples in the fallback chain have changed as
+        # providers were disabled (fireworks/groq/gemini), so pin the
+        # structural invariants, not specific tuple strings.
         inject_ctx, meta = master_ai.auto_inject_context(
-            "deep: walk handle() in master_ai.py and explain how the "
-            "cloud_deep route now picks between deepseek-r1 and qwen3.5:cloud"
+            "deep: walk handle() in master_ai.py"
         )
         self.assertIn("master_ai.py @ handle", inject_ctx)
         self.assertRegex(inject_ctx, r"\b\d+: def handle\(")
-        self.assertIn("master_ai.py @ cloud_deep", inject_ctx)
-        self.assertRegex(inject_ctx, r'\b\d+:.*decision\["route"\] == "cloud_deep"')
-        # The fallback chain should mention openrouter (the live lane)
-        self.assertIn("openrouter", inject_ctx)
         self.assertNotIn("master_ai.py @ master_ai", inject_ctx)
         self.assertEqual(meta["big_file_no_symbol_match"], [])
+
+        inject_ctx2, meta2 = master_ai.auto_inject_context(
+            "deep: explain how the cloud_deep route in orchestration.py "
+            "now picks between deepseek-r1 and qwen3.5:cloud"
+        )
+        self.assertIn("orchestration.py @ cloud_deep", inject_ctx2)
+        self.assertRegex(inject_ctx2, r'\b\d+:.*decision\["route"\] == "cloud_deep"')
+        # The fallback chain should mention openrouter (the live lane)
+        self.assertIn("openrouter", inject_ctx2)
+        self.assertEqual(meta2["big_file_no_symbol_match"], [])
 
     def test_extract_target_symbols_skips_directive_verbs(self):
         # ALL_CAPS English/instruction words like READ, CREATE, EDIT must NOT

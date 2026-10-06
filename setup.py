@@ -24,7 +24,6 @@ setup(
         "harvest",
         "hooks",
         "iprice",
-        "loop_fsm",
         "master_ai",
         "observability",
         "prewarm_master_ai",
@@ -57,8 +56,52 @@ setup(
         "verifiers",
         "whereisit",
         "delegate_runner",
+        # 2026-09-29: every module below is imported by code already listed
+        # above but was missing here, so `pip install .` produced a tree that
+        # raised ModuleNotFoundError on import. `keychain_kv` and
+        # `perpetual_review` are hard module-level imports (gate, master_ai,
+        # setup_wizard) and broke a clean install outright. The rest are
+        # imported lazily inside functions, so they failed only on the feature
+        # that needed them -- a quieter and more confusing failure. Found by
+        # walking the AST of every packaged module for local imports that
+        # resolved to a file in this repo but appeared in neither list.
+        "action_validation",
+        "aies_tutor",
+        "doc_reader",
+        "free_model_picker",
+        "hardware_model",
+        "keychain_kv",
+        "perpetual_review",
+        "plan_jev_gate",
+        "plan_slots",
+        "retrieval",
+        "routing",
+        "runtime_state",
+        "validation_gate",
+        "session_store",
+        "dispatch",
+        "context",
+        "sensei_mcp_client",
+        "skill_improve_helpers",
+        "system_capability_scan",
+        "telegram_client",
+        "tinyfish_client",
+        "embeddings",
+        "learning_loop",
+        "skill_author",
+        "skill_marketplace",
+        "session_harvester",
+        "orchestration",
     ],
-    packages=["sensei_clean", "sensei_clean.adapters"],
+    # `scripts` is a real package (has __init__.py) and `master_ai` imports it
+    # at module level, so it has to be installed as a package -- it cannot be
+    # expressed in py_modules. `scripts.tools` has no __init__.py, so it is
+    # intentionally not listed; naming it would make the build fail.
+    packages=[
+        "scripts",
+        "sensei_clean",
+        "sensei_clean.adapters",
+    ],
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",

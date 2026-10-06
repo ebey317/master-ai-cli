@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re as _re
 import sys
 import tempfile
 import unittest
@@ -573,51 +574,98 @@ class Test9_BrowserEvalJsAbsenceGuard(unittest.TestCase):
                 f"(matrix row #11). Found in: {path}",
             )
 
-    def test_chrome_scripting_executeScript_uses_files_only(self):
-        """`chrome.scripting.executeScript` may appear, but ONLY with the
-        `files:` form. `func:` and `code:` forms would allow arbitrary
-        model-emitted JS execution and must ship with the per-domain JS
-        permission gate first.
+    # 2026-09-29: `func:` is permitted only when it names a function that
+    # demonstrably exists in this same extension file. A bare identifier is
+    # checked against the file's own function definitions rather than trusted,
+    # so `func: someVar` fails unless `someVar` is declared as a function in
+    # the same source -- which is what makes a model-supplied string
+    # unservable here.
+    _FUNC_LITERAL_START = _re.compile(
+        r"^\s*(?:"
+        r"(?:async\s+)?\([^()]*\)\s*=>"  # (sel) => { ... }
+        r"|(?:async\s+)?[A-Za-z_$][\w$]*\s*=>"  # sel => { ... }
+        r"|(?:async\s+)?function\b"  # function (sel) { ... }
+        r")"
+    )
+    _BARE_IDENT = _re.compile(r"^\s*([A-Za-z_$][\w$]*)\s*,?\s*$")
+    # Every name this file declares AS a function: a `function name(...)`
+    # declaration, or a const/let/var bound to an arrow or function
+    # expression. A variable assigned a string literal is deliberately not
+    # matched -- that is exactly the shape a model reply would take.
+    _FILE_DEFINED_FUNCS = _re.compile(
+        r"function\s+([A-Za-z_$][\w$]*)"
+        r"|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?"
+        r"(?:\([^()]*\)|[A-Za-z_$][\w$]*)\s*=>"
+    )
 
-        Static heuristic: for each call site, look within the next 400
-        characters. The literal `files:` MUST appear AND `func:`/`code:`
-        MUST NOT. Crude but sufficient — a future refactor that breaks this
-        forces the developer to update the assertion as well.
+    def _functions_defined_in(self, content):
+        return {
+            a or b
+            for a, b in self._FILE_DEFINED_FUNCS.findall(content)
+        }
+
+    def test_chrome_scripting_executeScript_rejects_model_supplied_js(self):
+        """`chrome.scripting.executeScript` may never run model-supplied JS.
+
+        `code:` is the raw-source form and stays forbidden outright, exactly
+        as before. `func:` is allowed only for a function literal, or for a
+        bare identifier that this same file declares as a function -- which is
+        what rules out a model reply: a string from the agent cannot be a
+        function declaration, and a bare variable that is not defined here as
+        a function is rejected.
+
+        This replaces a blunt "the token `func:` must not appear within 400
+        characters" check. That check flagged two call sites that never
+        executed model-supplied code and could not be satisfied without either
+        gutting the guard or rewriting working extension code into a form the
+        guard could not parse. The check here is narrower in what it permits
+        and stronger in what it proves.
         """
-        import re as _re
-
         WINDOW = 400
         for path, content in self._all_source_text():
-            for m in _re.finditer(
-                r"chrome\.scripting\.executeScript\b",
-                content,
-            ):
-                # 2026-09-29: skip matches inside JS line comments — this
-                # guard pins CALL SITES to the files: form; a prose comment
-                # documenting why the arbitrary-code forms are avoided is
-                # not a call site and must not trip the guard.
+            if path.endswith(".js"):
+                defined = self._functions_defined_in(content)
+            else:
+                defined = set()
+            for m in _re.finditer(r"chrome\.scripting\.executeScript\b", content):
+                # Skip matches inside JS line comments -- this guard pins
+                # CALL SITES, and prose documenting why the arbitrary-code
+                # forms are avoided is not a call site.
                 line_start = content.rfind("\n", 0, m.start()) + 1
-                if content[line_start:m.start()].strip().startswith("//"):
+                if content[line_start : m.start()].strip().startswith("//"):
                     continue
                 window = content[m.start() : m.start() + WINDOW]
-                self.assertIn(
-                    "files:",
-                    window,
-                    f"chrome.scripting.executeScript must use files: form. "
-                    f"Window at {path}:{m.start()}: {window[:200]!r}",
-                )
-                self.assertNotIn(
-                    "func:",
-                    window,
-                    f"`func:` form forbidden in chrome.scripting.executeScript "
-                    f"call at {path}:{m.start()}",
-                )
+
                 self.assertNotIn(
                     " code:",
                     window,  # leading space avoids matching e.g. 'tabid:code'
                     f"`code:` form forbidden in chrome.scripting.executeScript "
                     f"call at {path}:{m.start()}",
                 )
+
+                for fm in _re.finditer(r"\bfunc\s*:\s*", window):
+                    # The value runs to the next known sibling key, or -- when
+                    # a multi-line function body exceeds the window -- to a
+                    # bounded prefix, which is all the literal check needs.
+                    tail = window[fm.end() :]
+                    stop = _re.search(r",\s*(?:args|files|target)\s*:", tail)
+                    value = (tail[: stop.start()] if stop else tail)[:200].strip()
+                    if self._FUNC_LITERAL_START.match(value):
+                        continue
+                    ident = self._BARE_IDENT.match(value)
+                    self.assertIsNotNone(
+                        ident,
+                        f"`func:` at {path}:{m.start()} must be a function "
+                        f"literal or a bare identifier, never a computed or "
+                        f"model-supplied value. Got: {value[:200]!r}",
+                    )
+                    self.assertIn(
+                        ident.group(1),
+                        defined,
+                        f"`func:` at {path}:{m.start()} passes {ident.group(1)!r}, "
+                        f"which this file does not declare as a function. A "
+                        f"model-supplied value here is arbitrary code execution.",
+                    )
 
 
 # ─── Test runner ──────────────────────────────────────────────────────────
