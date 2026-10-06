@@ -75,6 +75,12 @@ setup(
         "plan_jev_gate",
         "plan_slots",
         "retrieval",
+        "routing",
+        "runtime_state",
+        "validation_gate",
+        "session_store",
+        "dispatch",
+        "context",
         "sensei_mcp_client",
         "skill_improve_helpers",
         "system_capability_scan",
@@ -85,6 +91,7 @@ setup(
         "skill_author",
         "skill_marketplace",
         "session_harvester",
+        "orchestration",
     ],
     # `scripts` is a real package (has __init__.py) and `master_ai` imports it
     # at module level, so it has to be installed as a package -- it cannot be

@@ -114,7 +114,11 @@ class Phase55PlanBlockSchemaTests(unittest.TestCase):
         self.assertIsNone(_parse_plan_block(reply))
 
     def test_schema_teaching_present_in_modelfile(self):
-        with (REPO / "master_ai.py").open(encoding="utf-8") as f:
+        # 2026-10-05: the orchestration/REPL loop (and the system-prompt
+        # schema teaching it emits) moved out of master_ai.py into
+        # orchestration.py during the monolith split (see HANDOFF.md).
+        # master_ai.py now only carries a thin delegate wrapper.
+        with (REPO / "orchestration.py").open(encoding="utf-8") as f:
             src = f.read()
         self.assertIn("PLAN-BLOCK STRUCTURED SCHEMA", src)
         # 2026-09-29: the schema teaching moved from double-quoted strings

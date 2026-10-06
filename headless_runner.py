@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,19 @@ import subagent_registry
 import typed_actions
 
 HEADLESS_DEFAULT_MAX_TURNS = 10
+
+
+HEADLESS_SYSTEM_PROMPT = (
+    "You are Master AI running headless: complete the user's task by emitting "
+    "tool directives, one per line, and nothing else. Available directives:\n"
+    "  READ: <path>            Read a file; its content is returned to you.\n"
+    "  RUN: <shell command>    Run a shell command. Use this to create or modify "
+    "files (e.g. RUN: printf 'hello' > /tmp/out.txt) or to inspect the system.\n"
+    "Rules: one directive per line, no prose, no markdown fences. "
+    "Keep commands non-interactive and safe (never rm -rf, sudo, mkfs, dd). "
+    "After each tool result, emit the next directive; when the task is complete, "
+    "reply with a brief summary and no directives."
+)
 
 
 def _load_text(path: str) -> str:
@@ -67,10 +81,16 @@ def _edit_file(target: str, old: str, new: str) -> str:
 def _run_shell(command: str, *, allow_destructive: bool = False) -> str:
     # Very basic safety gate; in a real deployment this should reuse
     # master_ai's confirm_run / approval_queue path.
-    dangerous = {"rm", "sudo", "mkfs", "dd", "format", ":(){"}
+    # NOTE: dangerous tokens match on word boundaries, not substrings --
+    # a plain substring check false-positives on innocent paths
+    # (e.g. "rm" inside "/tmp/norm_probe.txt").
     lowered = command.lower()
-    if not allow_destructive and any(d in lowered for d in dangerous):
-        return f"Blocked command (dangerous): {command}"
+    if not allow_destructive:
+        if ":(){" in lowered.replace(" ", ""):
+            return f"Blocked command (dangerous): {command}"
+        words = set(re.findall(r"[a-z0-9_]+", lowered))
+        if words & {"rm", "sudo", "mkfs", "dd", "format"}:
+            return f"Blocked command (dangerous): {command}"
     try:
         result = os.popen(command).read()
         return f"Output of `{command}`:\n{result}"
@@ -78,23 +98,58 @@ def _run_shell(command: str, *, allow_destructive: bool = False) -> str:
         return f"Error running `{command}`: {e}"
 
 
-def _execute_action(action: dict[str, Any]) -> str:
-    kind = action.get("type")
+def _normalize_action(action: Any) -> dict[str, Any]:
+    """Normalize a parsed action to the legacy dict shape.
+
+    typed_actions.parse_reply() returns TypedAction dataclass instances
+    (fields kind/target/create_content/edit_old/edit_new, kind uppercased)
+    while the legacy fallback parser returns plain dicts
+    (type/target/content/old/new/command, type lowercased). Without
+    normalization _execute_action crashes with AttributeError on action.get().
+    Accepts both shapes.
+    """
+    if isinstance(action, dict):
+        return action
+    to_dict = getattr(action, "to_dict", None)
+    if callable(to_dict):
+        d = to_dict()
+    else:
+        d = dict(getattr(action, "__dict__", {}) or {})
+    if not isinstance(d, dict):
+        return {"type": "unknown"}
+    kind = str(d.get("kind", d.get("type", ""))).upper()
+    target = d.get("target", "")
+    return {
+        "type": kind.lower(),
+        "target": target,
+        "content": d.get("content", d.get("create_content", "")),
+        "old": d.get("old", d.get("edit_old", d.get("find", ""))),
+        "new": d.get("new", d.get("edit_new", d.get("replace", ""))),
+        "command": d.get("command", "")
+        or (target if kind in ("RUN", "RUNTERM") else ""),
+        "name": d.get("name", "") or (target if kind == "SUBAGENT" else ""),
+        "task": d.get("task", ""),
+    }
+
+
+def _execute_action(action: Any) -> str:
+    d = _normalize_action(action)
+    kind = d.get("type")
     if kind == "read":
-        return _read_file(action.get("target", ""))
+        return _read_file(d.get("target", ""))
     if kind == "create":
-        return _create_file(action.get("target", ""), action.get("content", ""))
+        return _create_file(d.get("target", ""), d.get("content", ""))
     if kind == "edit":
         return _edit_file(
-            action.get("target", ""),
-            action.get("old", action.get("find", "")),
-            action.get("new", action.get("replace", "")),
+            d.get("target", ""),
+            d.get("old", ""),
+            d.get("new", ""),
         )
     if kind in ("run", "runterm"):
-        return _run_shell(action.get("command", ""))
+        return _run_shell(d.get("command", ""))
     if kind == "subagent":
-        name = action.get("name", "")
-        task = action.get("task", "")
+        name = d.get("name", "")
+        task = d.get("task", "")
         try:
             result = subagent_registry.run(name, task)
             return f"Subagent `{name}` result: {json.dumps(result)}"
@@ -170,6 +225,10 @@ class HeadlessRunner:
 
     def run(self) -> str:
         task = self._load_task()
+        # The model cannot emit parseable directives unless it is taught the
+        # format: without this system prompt it emits markdown prose, zero
+        # actions parse, and the loop silently no-ops.
+        self.history.append({"role": "system", "content": HEADLESS_SYSTEM_PROMPT})
         self.history.append({"role": "user", "content": task})
 
         for _ in range(self.max_turns):
