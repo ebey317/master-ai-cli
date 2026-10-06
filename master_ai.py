@@ -124,8 +124,6 @@ _sys.modules[__name__].__class__ = _MasterAIModule
 # `@runtime_host.bound(_sys.modules[__name__])` so those modules can find
 # THIS instance's globals even when stt_server.py loaded this exact file
 # under a different module name for per-lane isolation.
-import runtime_host
-
 import atexit
 import base64
 import concurrent.futures
@@ -153,6 +151,7 @@ from typing import Any
 import approval_queue
 import orchestration as _orchestration_mod  # noqa: E402 — after sensei_tables
 import perpetual_review
+import runtime_host
 from sensei_tables import (  # noqa: F401
     _A_APPEAR,
     _A_AUTO,
@@ -4733,7 +4732,10 @@ def _model_rejects_think(model: Any) -> bool:
 
 
 def ask_local(
-    messages: Any, model: Any | None = None, image_path: Any | None = None
+    messages: Any,
+    model: Any | None = None,
+    image_path: Any | None = None,
+    options: Any | None = None,
 ) -> Any:
     model = model or MODELS["master"]
     log(f"LOCAL [{model}]")
@@ -4742,13 +4744,16 @@ def ask_local(
     # num_ctx + timeout matched to ask_local_stream — see that function
     # for reasoning. Keeps non-streaming calls (briefings, memory recall)
     # from blocking the input loop for minutes on CPU.
+    payload_options: dict[str, Any] = {"num_ctx": LOCAL_NUM_CTX}
+    if options:
+        payload_options.update(options)
     payload = {
         "model": model,
         "messages": messages,
         "stream": False,
         "keep_alive": "60s" if model == MODELS.get("vision") else "30m",
         "think": "medium",
-        "options": {"num_ctx": LOCAL_NUM_CTX},
+        "options": payload_options,
     }
     # 2026-09-24: "think": "medium" is hardcoded above, but not every pulled
     # model supports thinking — Ollama answers "X does not support thinking"
@@ -20906,8 +20911,7 @@ if __name__ == "__main__":
         if any(arg in _CLI_FLAGS for arg in _argv):
             main()
         elif any(
-            arg in _HEADLESS_FLAGS
-            or arg.startswith(("--task=", "--task-file="))
+            arg in _HEADLESS_FLAGS or arg.startswith(("--task=", "--task-file="))
             for arg in _argv
         ):
             import headless_runner

@@ -34,7 +34,6 @@ import json
 import os
 import re
 import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -108,6 +107,60 @@ def _runtime_host():
 
 
 _ma = _runtime_host
+
+
+# 2026-10-06: SCREENSHOT directive support (ported from parked branch
+# feat/screenshot-vision-directive — see the scan block inside
+# process_reply for the full story).
+_SCREENSHOT_DEFAULT_QUESTION = (
+    "Describe what you see in this screenshot in detail: windows, "
+    "overlays, applications, visible text, and UI elements."
+)
+
+
+def _capture_and_describe_screen(question: str) -> str:
+    """Capture the local desktop and answer `question` about it via the
+    local vision model (_ma().MODELS["vision"]). The missing link between
+    SCREENSHOT: and actual vision. gnome-screenshot is tried first, scrot
+    is the fallback; neither is hardcoded as the only option since either
+    can be absent on a different machine this repo runs on."""
+    import shutil
+
+    _ma_obj = _ma()
+    tmp_path = f"/tmp/master_ai_screenshot_{int(time.time())}.png"
+    capture_cmds = [
+        ["gnome-screenshot", "-f", tmp_path],
+        ["scrot", tmp_path],
+    ]
+    captured = False
+    last_err = ""
+    for cmd in capture_cmds:
+        if not shutil.which(cmd[0]):
+            continue
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            if result.returncode == 0 and os.path.isfile(tmp_path):
+                captured = True
+                break
+            last_err = result.stderr.strip() or f"exit {result.returncode}"
+        except Exception as e:
+            last_err = str(e)
+    if not captured:
+        return f"Screenshot capture failed: {last_err or 'no screenshot tool available (tried gnome-screenshot, scrot)'}"
+    try:
+        # Cap output so CPU-only vision doesn't hold the chat turn for minutes.
+        description = _ma_obj.ask_local(
+            [{"role": "user", "content": question}],
+            model=_ma_obj.MODELS.get("vision"),
+            image_path=tmp_path,
+            options={"num_predict": 250},
+        )
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+    return description or "Vision model returned no description of the screenshot."
 
 
 def _parse_run_skill_payload(payload: Any) -> Any:
@@ -1121,6 +1174,20 @@ def process_reply(
             if _real_directive(l, "SEARCH")
         )
         if q
+    ]
+
+    # 2026-10-06: SCREENSHOT: [optional question] — capture the local
+    # DESKTOP (not a browser tab — that's BROWSER_SCREENSHOT, which needs
+    # the Chrome extension side panel and only sees web content) and
+    # describe it via the local vision model. Ported from the parked
+    # feat/screenshot-vision-directive branch (built 2026-09-17 after a
+    # live session where the model, asked to look at the screen, could
+    # only improvise ad-hoc RUN: commands and never actually saw the
+    # image — no working path from "screenshot" to "vision").
+    screenshot_requests = [
+        _extract_directive(l, "SCREENSHOT") or _SCREENSHOT_DEFAULT_QUESTION
+        for l in lines
+        if _real_directive(l, "SCREENSHOT")
     ]
 
     # 2026-09-02: TASK_ADD: <text> / TASK_DONE: <text or number> — built
@@ -2798,6 +2865,35 @@ def process_reply(
             )
             _ma().log(
                 f"CHAIN_SUBAGENT_FEEDBACK: {len(sub_feedback)} subagent result(s)"
+            )
+            return None
+
+    # 2026-10-06: SCREENSHOT: requests — capture desktop + local vision,
+    # feed the description back into the conversation (same feedback-loop
+    # shape as SUBAGENT above). Runs BEFORE the subagent check would be
+    # equally fine; kept after it so heavier delegation preempts eyes.
+    if screenshot_requests:
+        screenshot_feedback = []
+        for question in screenshot_requests[:3]:
+            print(f"  {BC}[screenshot: {question[:60]}...]{X}")
+            try:
+                description = _capture_and_describe_screen(question)
+            except Exception as e:
+                description = f"screenshot vision call failed: {e}"
+            screenshot_feedback.append(f"[SCREENSHOT RESULT]\n{description}")
+        if screenshot_feedback:
+            history.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "\n\n".join(screenshot_feedback)
+                        + "\n\nThe screenshot description above is now part of the context. "
+                        "Answer the user's question using it."
+                    ),
+                }
+            )
+            _ma().log(
+                f"CHAIN_SCREENSHOT_FEEDBACK: {len(screenshot_feedback)} screenshot result(s)"
             )
             return None
 

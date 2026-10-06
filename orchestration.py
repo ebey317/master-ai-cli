@@ -11,7 +11,6 @@ import hashlib
 import platform
 import re
 import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -1720,6 +1719,7 @@ def handle(
         "CREATE: <filepath>\n<<<CONTENT\n<content>\n>>>CONTENT\n"
         "EDIT: <filepath>\n<<<FIND\n<text>\n>>>FIND\n<<<REPLACE\n<text>\n>>>REPLACE\n"
         "SEARCH: <query>                          — live web lookup (Gemini grounding, Brave, Serper, Wikipedia, DDG). No browser tab needed, always works even if Chrome isn't open.\n"
+        "SCREENSHOT: [optional question]          — capture the LOCAL DESKTOP (all windows/overlays, not just a browser tab) and describe it via the local vision model. Use for 'what's on my screen', 'look at this window', UI questions about the desktop. An optional question focuses the description (e.g. SCREENSHOT: what error is shown?).\n"
         "BROWSER_CLICK: <css-selector>            — click an element on the active browser tab\n"
         "BROWSER_FILL: <css-selector> :: <value>  — type text into a form field (separator :: or => or :=)\n"
         "BROWSER_UPLOAD_FILE: <css-selector or ref> :: <absolute path> — upload a local file into a file input\n"
