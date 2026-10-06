@@ -1,10 +1,12 @@
 """
 Model switching logic with reasoning effort integration.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+
+from sensei import agent  # type: ignore[attr-defined]
 
 from scripts.model_reasoning import (
     ModelSwitchRequest,
@@ -12,7 +14,6 @@ from scripts.model_reasoning import (
     apply_reasoning_effort,
     run_model_picker_with_reasoning,
 )
-from sensei import config, agent  # type: ignore[attr-defined]
 
 
 @dataclass
@@ -20,9 +21,9 @@ class SwitchResult:
     success: bool
     model: str
     provider: str
-    reasoning_effort: Optional[ReasoningEffort] = None
+    reasoning_effort: ReasoningEffort | None = None
     message: str = ""
-    error: Optional[str] = None
+    error: str | None = None
 
 
 async def switch_model(request: ModelSwitchRequest) -> SwitchResult:
@@ -74,9 +75,16 @@ async def handle_model_command(args: list[str]) -> SwitchResult:
     parser = argparse.ArgumentParser(prog="/model", add_help=False)
     parser.add_argument("model", nargs="?")
     parser.add_argument("--provider")
-    parser.add_argument("--global", dest="scope", action="store_const", const="global", default="session")
+    parser.add_argument(
+        "--global",
+        dest="scope",
+        action="store_const",
+        const="global",
+        default="session",
+    )
     parser.add_argument("--once", dest="scope", action="store_const", const="once")
     from scripts.model_reasoning import add_reasoning_arg
+
     add_reasoning_arg(parser)
 
     try:
@@ -94,7 +102,9 @@ async def handle_model_command(args: list[str]) -> SwitchResult:
         request = ModelSwitchRequest(
             model="",
             provider=parsed.provider,
-            reasoning_effort=ReasoningEffort.parse(parsed.reasoning) if parsed.reasoning else None,
+            reasoning_effort=ReasoningEffort.parse(parsed.reasoning)
+            if parsed.reasoning
+            else None,
             scope=parsed.scope,
             explicit_provider=bool(parsed.provider),
         )
@@ -103,7 +113,9 @@ async def handle_model_command(args: list[str]) -> SwitchResult:
         request = ModelSwitchRequest(
             model=parsed.model,
             provider=parsed.provider,
-            reasoning_effort=ReasoningEffort.parse(parsed.reasoning) if parsed.reasoning else None,
+            reasoning_effort=ReasoningEffort.parse(parsed.reasoning)
+            if parsed.reasoning
+            else None,
             scope=parsed.scope,
             explicit_provider=bool(parsed.provider),
         )

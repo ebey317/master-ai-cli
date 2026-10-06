@@ -211,9 +211,9 @@ class StdioMcpClient:
     def _read_loop(self) -> None:
         """Parse both newline-delimited JSON and framed
         `Content-Length: N\\r\\n\\r\\n{...}` responses."""
-        assert (
-            self.proc is not None and self.proc.stdout is not None
-        ), "_read_loop runs on a thread start() spawns after self.proc is set"
+        assert self.proc is not None and self.proc.stdout is not None, (
+            "_read_loop runs on a thread start() spawns after self.proc is set"
+        )
         f = self.proc.stdout
         try:
             while True:
@@ -261,9 +261,9 @@ class StdioMcpClient:
             msg["params"] = params
         if not notify:
             msg["id"] = msg_id
-        assert (
-            self.proc is not None and self.proc.stdin is not None
-        ), "_rpc requires start() to have been called first"
+        assert self.proc is not None and self.proc.stdin is not None, (
+            "_rpc requires start() to have been called first"
+        )
         try:
             self.proc.stdin.write(json.dumps(msg) + "\n")
             self.proc.stdin.flush()

@@ -60,6 +60,10 @@ LOG_PATH = SKILLS_ROOT / "marketplace.log"
 # confirmed identical name/description YAML-frontmatter shape).
 DEFAULT_SOURCES = {
     "hermes": {"path": str(Path.home() / ".hermes" / "skills"), "kind": "dir"},
+    "opencode": {
+        "path": str(Path.home() / ".config" / "opencode" / "skills"),
+        "kind": "dir",
+    },
 }
 
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
@@ -294,7 +298,6 @@ def _audit_dir(skill_dir: Path) -> AuditResult:
 
     recipe_path = skill_dir / "recipe.py"
     has_recipe = recipe_path.exists()
-
     reasons, warnings = [], []
     scanned = 0
     for f in sorted(skill_dir.rglob("*")):
@@ -351,6 +354,15 @@ def _audit_dir(skill_dir: Path) -> AuditResult:
         scanned_files=scanned,
         has_recipe=has_recipe,
     )
+
+
+def validate_skill_dir(skill_dir: Path) -> AuditResult:
+    """Audit any skill directory (temp or installed). Public API for
+    skill_author / auto-author to audit drafts before copying them into
+    ~/.master_ai_skills/."""
+    if not skill_dir.is_dir():
+        return AuditResult(passed=False, reasons=[f"not a directory: {skill_dir}"])
+    return _audit_dir(skill_dir)
 
 
 def audit_skill(source_name: str, skill_id: str) -> AuditResult:

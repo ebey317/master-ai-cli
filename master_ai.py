@@ -58,6 +58,14 @@
 # Full canonical profile + quotes + voice rules: ~/.sensei_behavior.md
 # ────────────────────────────────────────────────────────────
 
+# PEP 563. Every annotation in this module is therefore a string that is never
+# evaluated at `def` time. This is what makes it safe to annotate a module this
+# size: without it, a single forward reference or a name defined further down
+# the file raises NameError at import and takes the whole agent down. Nothing
+# here introspects annotations at runtime (no get_type_hints, no
+# inspect.signature on our own callables), so making them lazy costs nothing.
+from __future__ import annotations
+
 import atexit
 import base64
 import concurrent.futures
@@ -85,6 +93,7 @@ from typing import Any
 
 import approval_queue
 import perpetual_review
+from sensei_tables import *  # noqa: F401,F403
 from url_grounding import resolve_open_target_url
 
 try:
@@ -243,7 +252,16 @@ try:
         "skill install ",
         "skill audit ",
         "skill improve ",
-        # MCP client catalog (2026-09-01)
+        "skill create ",
+        "skill auto-author",
+        # AI Engineering from Scratch tutor (2026-09-28)
+        "tutor start",
+        "tutor next",
+        "tutor guide ",
+        "tutor quiz ",
+        "tutor record ",
+        "tutor speak ",
+        # MCP client catalog (2026-09-01) — Sensei consuming other MCP servers
         "mcp",
         "mcp list",
         "mcp add ",
@@ -258,7 +276,7 @@ try:
         "activity cancel",
     ]
 
-    def _completer(text, state):
+    def _completer(text: Any, state: Any) -> Any:
         matches = [c for c in _COMPLETIONS if c.startswith(text)]
         return matches[state] if state < len(matches) else None
 
@@ -277,27 +295,11 @@ except ImportError:
 _INTERRUPT_EVENT = threading.Event()
 
 # ── STALL WATCHDOG (2026-09-28) ───────────────────────────────
-# Elijah: "fix it to where it can have industry standard and production
-# ready framework... there's open code that shows you how to fix this."
-# Ported from Hermes's gateway/session_stall.py (github.com/NousResearch/
-# hermes-agent, checked live in ~/.hermes/hermes-agent): a genuine
-# "seconds since last real activity" watchdog, not a proxy like turn
-# duration -- a legitimately slow-but-working turn looks identical to a
-# stuck one under a naive timer. Everything fixed earlier tonight (plan
-# debate's per-round interrupt check, the activity command) patched ONE
-# specific hang point at a time. This is the general safety net underneath
-# all of them: whatever the current or a FUTURE hang turns out to be, if
-# nothing marks real progress for _STALL_TIMEOUT_S seconds while a turn is
-# in flight, the user gets told plainly instead of staring at a silent
-# screen. Mirrors Hermes's own notify-once-then-latch-until-clear shape.
-_STALL_TIMEOUT_S = float(os.environ.get("MASTER_AI_STALL_TIMEOUT_S", "90"))
 _LAST_ACTIVITY_TS = time.time()
 _ACTIVITY_LOCK = threading.Lock()
 _STALL_NOTIFIED = False
-_TURN_DEPTH = 0  # >0 while a turn is actively running; nests for handle_loop_task
 
-
-def _mark_activity():
+def _mark_activity() -> None:
     """Call from anywhere real progress just happened (a token streamed, a
     RUN finished, a cloud call returned, a debate round completed). Clears
     any prior stall notice — new progress ends that stall episode."""
@@ -306,8 +308,7 @@ def _mark_activity():
         _LAST_ACTIVITY_TS = time.time()
         _STALL_NOTIFIED = False
 
-
-def _stall_watchdog_loop():
+def _stall_watchdog_loop() -> None:
     """Background daemon, started once. Fires at most one notice per stall
     episode; a fresh _mark_activity() call re-arms it for the next one."""
     while True:
@@ -333,15 +334,13 @@ def _stall_watchdog_loop():
         except Exception:
             pass
 
-
-def _start_stall_watchdog():
+def _start_stall_watchdog() -> None:
     if globals().get("_STALL_WATCHDOG_STARTED"):
         return
     globals()["_STALL_WATCHDOG_STARTED"] = True
     threading.Thread(target=_stall_watchdog_loop, daemon=True).start()
 
-
-def _tracks_turn_activity(fn):
+def _tracks_turn_activity(fn: Any) -> Any:
     """Decorator: mark activity on entry and track turn-in-progress depth
     for the whole call, including every internal return/exception path --
     without touching a single line inside the wrapped function. Applied to
@@ -349,7 +348,7 @@ def _tracks_turn_activity(fn):
     internally."""
 
     @functools.wraps(fn)
-    def _wrapper(*args, **kwargs):
+    def _wrapper(*args, **kwargs) -> Any:
         globals()["_TURN_DEPTH"] = globals().get("_TURN_DEPTH", 0) + 1
         _mark_activity()
         try:
@@ -359,8 +358,7 @@ def _tracks_turn_activity(fn):
 
     return _wrapper
 
-
-def _drain_stale_tui_input(reason=""):
+def _drain_stale_tui_input(reason: str="") -> None:
     """Discard anything sitting in the TUI's type-ahead queue.
 
     2026-09-27: root-caused live — Elijah hit Ctrl+C repeatedly during a
@@ -386,7 +384,6 @@ def _drain_stale_tui_input(reason=""):
         pass
     if dropped:
         log(f"DRAINED_STALE_TUI_INPUT [{reason}]: {dropped!r}")
-
 
 # 2026-08-31: kick/new/clear/refresh all queue through the same _iq the
 # worker's main() loop reads with a blocking input()/queue.get() — if
@@ -417,8 +414,7 @@ try:
 except Exception:
     os.environ.setdefault("SENSEI_MOUSE", "1")
 
-
-def _ensure_sensei_app():
+def _ensure_sensei_app() -> Any:
     """Lazily create the SenseiApp when TUI mode is actually entered."""
     global _SENSEI_APP, _SENSEI_ENABLED
     if _SENSEI_APP is not None:
@@ -448,17 +444,7 @@ def _ensure_sensei_app():
         log(f"SENSEI_TUI_INIT_ERROR: {_e}")
     return _SENSEI_APP
 
-
 # ── PROFILE-AWARE PATHS ──────────────────────────────────────
-# If ~/.master_ai_active_profile exists AND names a profile dir under
-# ~/.master_ai_profiles/<name>/, all personal state (memory, chats,
-# tasks, approved commands, cache) rebases there. Otherwise the
-# legacy global paths in $HOME are used (backward-compat).
-#
-# KEYS_FILE stays global on purpose — keys are a SHARED resource
-# across profiles (per profile.json's "keys": true sharing flag).
-# If a future profile wants private keys, that's a later toggle.
-_ACTIVE_PROFILE_FILE = Path.home() / ".master_ai_active_profile"
 
 # 2026-09-01 (Phase 3.2): _ACTIVE_PROFILE_FILE used to be read-only -- every
 # _pfile()-routed path below (chats/memory/tasks/approvals/perms/cache) has
@@ -508,8 +494,7 @@ else:
     _PROFILE_ROOT = Path.home()  # legacy / default profile
     _PROFILE_NAME = ""
 
-
-def _activate_profile(name):
+def _activate_profile(name: Any) -> bool:
     """Create (if new) + persist `name` as the active profile. Shared by
     the --profile argv path above and the in-session `profile <name>`
     command so the two can't drift out of sync."""
@@ -525,8 +510,7 @@ def _activate_profile(name):
     _PROFILE_ROOT = Path.home() / ".master_ai_profiles" / name
     return True
 
-
-def _list_profiles():
+def _list_profiles() -> Any:
     """Return sorted profile names under ~/.master_ai_profiles/, plus
     'default' always first."""
     root = Path.home() / ".master_ai_profiles"
@@ -535,8 +519,7 @@ def _list_profiles():
     )
     return ["default"] + names
 
-
-def _pfile(name):
+def _pfile(name: Any) -> Any:
     """Per-profile dotfile path.
     For the legacy/default profile, uses ~/.master_ai_<name>.
     For a named profile, uses ~/.master_ai_profiles/<profile>/<name> (no dot prefix)."""
@@ -544,9 +527,7 @@ def _pfile(name):
         return _PROFILE_ROOT / name
     return Path.home() / (".master_ai_" + name)
 
-
 # ── CONFIG ───────────────────────────────────────────────────
-KEYS_FILE = Path.home() / ".master_ai_keys"  # SHARED across profiles
 CHATS_DIR = _PROFILE_ROOT / ("chats" if _PROFILE_NAME else ".master_ai_chats")
 MEMORY_FILE = _pfile("memory")
 TASKS_FILE = _pfile("tasks")
@@ -557,34 +538,10 @@ LAST_CREATED_FILE = _pfile("last_created")
 LAST_ACTION_FILE = _pfile("last_action.json")
 HINTS_FILE = _pfile("hints_off")
 TUTORIAL_FILE = _pfile("tutorial_done")
-OLLAMA_URL = "http://localhost:11434"
-# 2026-09-26: was a bare hardcoded 4096 in 3 separate payload dicts below.
-# Real, documented reason to cap it at all (see ask_local_stream's own
-# docstring): a CPU box takes minutes to first-token on long history at
-# the model's real default window (often 32k+). But "capped for CPU
-# speed" and "hardcoded forever with no way to change it" are different
-# things -- this box's actual RAM tier is what justifies 4096 today, not
-# a law of nature, and a future RAM upgrade shouldn't need another code
-# edit to lift it (same self-heals-once-the-real-blocker-is-fixed pattern
-# as tonight's Fireworks fix). Env override, same shape as
-# MASTER_AI_LOCAL_MODEL.
-LOCAL_NUM_CTX = int(os.environ.get("MASTER_AI_LOCAL_NUM_CTX", "4096"))
-# Per-request Ollama urlopen budget. Defaults to 600s for TUI Plan-mode runs.
-# stt_server.api_handle clamps this to ~110s (under _API_HANDLE_LOCK_TIMEOUT_S)
-# via the patch() mechanism so a wedged /chat inference cannot outlast the
-# dispatch lock — keeps cloud lanes and follow-up requests from sitting
-# behind an 8-minute runaway. See stt_server.py:_API_HANDLE_LOCK_TIMEOUT_S.
-LOCAL_REQUEST_TIMEOUT_OVERRIDE = None
 
-
-def _local_request_timeout(default=600):
+def _local_request_timeout(default: int=600) -> Any:
     v = LOCAL_REQUEST_TIMEOUT_OVERRIDE
     return v if isinstance(v, (int, float)) and v > 0 else default
-
-
-PIPER_MODEL = Path.home() / "scripts/voices/en_US-lessac-medium.onnx"
-LOG_FILE = Path.home() / "scripts/master.log"
-WHISPER_MODEL = "base"
 
 # Make sure a named profile's directory skeleton exists so reads don't 404
 if _PROFILE_NAME:
@@ -595,12 +552,8 @@ if _PROFILE_NAME:
         pass
 
 # ── MODE / PLAN STATE ────────────────────────────────────────
-MODE_FILE = (
-    Path.home() / ".master_ai_mode"
-)  # persists last-selected mode across sessions
 
-
-def _load_saved_mode():
+def _load_saved_mode() -> Any:
     """Read persisted mode from disk. Returns 'plan' (default) if missing,
     unreadable, or not one of the three valid modes."""
     try:
@@ -609,8 +562,7 @@ def _load_saved_mode():
     except Exception:
         return "plan"
 
-
-def save_mode(mode):
+def save_mode(mode: Any) -> None:
     """Persist current mode so reopening Sensei restores it.
     Silently skips if write fails — don't let filesystem issues crash."""
     if mode not in ("plan", "review", "auto"):
@@ -620,13 +572,7 @@ def save_mode(mode):
     except Exception:
         pass
 
-
 MODE = _load_saved_mode()  # Plan is the default if no file exists. Review = per-command confirm; Auto = flow-through.
-LAST_ROUTE = ""  # route used by the most recent handle() — for Review's "who" line
-LAST_MODEL = ""  # model name used by the most recent handle() — for Review's "who" line
-PENDING_PLAN_TEXT = ""
-PENDING_PLAN_REQUEST = ""
-PENDING_USER_NOTE = ""
 
 # 2026-09-13: live-code-reload detector. Reproduced repeatedly the same
 # night: a real bug got fixed and committed, but whichever session Elijah
@@ -642,30 +588,10 @@ PENDING_USER_NOTE = ""
 # whether launched via the direct path or the ~/scripts/master_ai.py
 # symlink to this same file.
 _STARTUP_CODE_MTIME = os.path.getmtime(os.path.abspath(__file__))
-_RELOAD_CARRY_FILE = Path.home() / ".master_ai_reload_carry"
-# 2026-09-07: continuation feature — set when a cloud reply's finish_reason
-# comes back "length" (cut off at max_tokens). Holds what's needed to
-# re-prompt the SAME model to pick up exactly where it stopped: the
-# messages that were actually sent (system+history+user turn), the partial
-# reply text so far, and which model/provider answered it.
-PENDING_CONTINUATION = None
 _NEXT_TURN_CONTEXT_POLICY = None  # one-turn override consumed by main() loop
 _NEXT_TURN_RESET_HISTORY = False
 _NEXT_TURN_MARKER = ""
-_THINKING_T0 = 0.0
-_LAST_MEMORY_SLICE_HASH = ""
-_LAST_MEMORY_SLICE_AT_S = 0.0
-_LAST_DENIED_ACTION: dict[str, Any] = {}
-_LAST_BLOCKED_ACTION: dict[
-    str, Any
-] = {}  # safeguard-blocked directive; consumed in process_reply to feed the BLOCKED back to the LLM next turn
-_LAST_HOOK_BLOCK: dict[
-    str, Any
-] = {}  # P1.4: hook-blocked action (CREATE/EDIT); consumed in process_reply's action_failed branch to feed [HOOK BLOCKED] back
 HINTS = 0 if HINTS_FILE.exists() else 1
-ACTIVE_PROJECT = ""
-_SETTINGS = Path.home() / ".master_ai_settings"
-TTS_ENABLED = "TTS_OFF" not in (_SETTINGS.read_text() if _SETTINGS.exists() else "")
 
 # Default local model — HARDWARE-BASED (2026-09-24, Elijah's rule):
 # never hardcode a model name. The right local model is a function of the
@@ -728,21 +654,6 @@ MODEL_MENU = [
     ("poolside-xs", "☁ KEY  · Poolside — Laguna XS 2.1 · fast + cheap"),
 ]
 
-CLOUD_MODEL_KEYS = {
-    "opencode": "opencode",
-    "nvidia": "nvidia",
-    "nemotron": "openrouter",
-    "hermes-405b": "openrouter",
-    "openrouter": "openrouter",
-    "kimi-k2": "opencode",
-    "kimi-k2.6": "opencode",
-    "kimi-k3": "opencode",
-    "opencode-go": "opencode_go",
-    "glm-5.3-flash": "opencode_go",
-    "poolside-s": "poolside",
-    "poolside-xs": "poolside",
-}
-CLOUD_MODEL_NAMES = frozenset(CLOUD_MODEL_KEYS)
 MODEL_COMMAND_ALIASES = {
     "auto": None,
     "smart": None,
@@ -776,87 +687,13 @@ MODEL_COMMAND_ALIASES = {
 PINNED_MODEL = None  # set by 'model' command to override auto-routing
 
 # ── PLAN DEBATE (brainstorm mode) ─────────────────────────────
-# Plan mode is now a merge-to-consensus multi-agent debate: two models
-# brainstorm a plan together and converge on ONE plan instead of arguing
-# forever. See ~/master-ai-cli/BRAINSTORM_MODE.md for the design.
-#   planner_a = proposer/reviser   planner_b = critic   merger = unifier
-# ONE paid planner (Moonshot kimi-k2.7-code on Ollama Cloud) — paid models
-# burn session limits fast, so the second planner is the free Nemotron
-# Ultra 550B (OpenRouter). The merger/verdict slot stays on a free
-# instruction-follower (minimax-m3:free) because reasoning models
-# monologue and won't emit a clean "build it" verdict. Override via env.
-PLAN_DEBATE_PLANNER_A = os.environ.get(
-    "PLAN_DEBATE_PLANNER_A", "ollama-cloud::kimi-k2.7-code"
-)
-PLAN_DEBATE_PLANNER_B = os.environ.get(
-    "PLAN_DEBATE_PLANNER_B", "nvidia/nemotron-3-ultra-550b-a55b:free"
-)
-PLAN_DEBATE_MERGER = os.environ.get("PLAN_DEBATE_MERGER", "minimax/minimax-m3:free")
-PLAN_DEBATE_FALLBACK = os.environ.get(
-    "PLAN_DEBATE_FALLBACK", "opencode::mimo-v2.5-free"
-)
-PLAN_DEBATE_MAX_ROUNDS = int(os.environ.get("PLAN_DEBATE_MAX_ROUNDS", "6"))
 
 # ── AUTO-SAVE STATE ───────────────────────────────────────────
-GLOBAL_HISTORY: list[Any] = []  # shared reference for signal handlers
 CHARS_SINCE_SAVE = 0  # chars accumulated since last auto-save
-CHARS_SINCE_REMIND = 0  # chars accumulated since last drift reminder
-AUTO_SAVE_THRESHOLD = 10000  # update session file every ~10000 chars (was 3000)
-AUTO_SAVE_EVERY_TURN = True
-# Drift-reminder: if the user rolls past this many chars without touching the
-# active project label, Sensei injects a gentle 'hey, you were on X' reminder.
-DRIFT_REMINDER_CHARS = 3000
-SESSION_TS = int(time.time())  # fixed for entire session — overwrites same file
 _SAVE_LOCK = threading.Lock()
 _AUTOSAVE_LOCK = threading.Lock()
 
 # ── ORCHESTRATOR STATE ────────────────────────────────────────
-# 2026-09-25 (Elijah): "i want it to be 95% of the model's real window."
-# CONTEXT_WATERMARK was a hardcoded 120000 chars (bumped 60k→120k on
-# 2026-04-19 as a band-aid for a LOCAL ollama freeze). It ignored which
-# model was actually answering: nemotron-3-ultra-550b:free alone serves
-# 1,000,000 context tokens on OpenRouter, so the agent was throwing away
-# ~7/8 of a window it had paid for, while grok-4.20 (2M) and the 128k
-# local qwen2.5vl were all measured against the same 120k.
-#
-# Real fix: derive the watermark from the ACTIVE model's own context
-# window (OpenRouter's /models payload already carries context_length —
-# it was being discarded at catalog build time), at 95% of that window,
-# converted tokens → chars. The floor preserves the original freeze
-# guard for local/slow lanes so the April 2026 regression cannot return.
-# REMOVED: CONTEXT_WATERMARK = 120000  # fallback only — see _context_watermark()
-CHARS_PER_TOKEN = 3.6  # conservative English/code average; safety margin
-CONTEXT_FILL_RATIO = 0.95  # Elijah: 95% of the model's real window
-CONTEXT_WATERMARK_FLOOR = 60000  # never below the pre-fix local guard
-_WATERMARK_HEADROOM = 0  # mutable headroom added when operator picks "keep going"
-FREE_SUFFIX = ":free"  # OpenRouter marks free tiers with this suffix
-# Per-lane context windows (tokens) for providers whose catalogs don't
-# publish context_length. Ollama's /api/show reports the true value at
-# runtime; these are the documented defaults until then.
-PROVIDER_CONTEXT_TOKENS = {
-    "ollama": 128000,
-    "local": 128000,
-    "opencode_go": 262144,
-    "opencode-zen": 262144,
-    "opencode": 262144,
-    "poolside": 262144,
-    "poolside-s": 262144,
-    "poolside-xs": 262144,
-    "laguna": 262144,
-    "laguna-s": 262144,
-    "laguna-xs": 262144,
-    "laguna-s-2.1": 262144,
-    "laguna-xs-2.1": 262144,
-    "laguna-xs-2.1-free": 262144,
-    "gemini": 1000000,
-    "cerebras": 131072,
-    "openrouter": 128000,
-    "deepseek": 65536,
-}
-BEHAVIOR_FILE = Path.home() / ".sensei_behavior.md"
-RESUME_FLAG = Path.home() / ".master_ai_resume"
-RESUME_FLAG_MAX_AGE = 600  # seconds; stale resume flags must not revive old sessions
-MAX_CONTINUATION_TURNS = 60  # operator-requested ceiling for long audit/task chains  # 2026-09-11: was hardcoded 60 — operator hit the cap on long audits
 
 # 2026-09-23: turn-level watchdog. handle()'s own continuation loop
 # (_continue_model_turn, repair turns, the "no matter what an answer"
@@ -874,21 +711,10 @@ MAX_CONTINUATION_TURNS = 60  # operator-requested ceiling for long audit/task ch
 # incident again, just at the chat-turn layer instead of the task-queue
 # layer.
 AUTO_NUDGE_STREAK = 0
-AUTO_NUDGE_MAX = 3
 
 # ── DOJO GATE STATE (written by dojo_gate.sh before launch) ──
-ACTIVE_PROJECT_FILE = Path.home() / ".master_ai_active_project"
-ACTIVE_TASK_FILE = Path.home() / ".master_ai_active_task"
-ACTIVE_MODEL_FILE = Path.home() / ".master_ai_active_model"
-ACTIVE_TASK = ""
-# Per-chain counter: bumped in _sudo_handoff on Enter ack. End-of-chain
-# checks it to decide whether the turn earned an auto mark-done on the
-# pinned ACTIVE_TASK. Reset at the top of process_reply().
-_CHAIN_SUDO_ACKS = 0
-PROJECTS_MD_FILE = Path.home() / "scripts" / "PROJECTS.md"
 
-
-def _load_active_from_gate():
+def _load_active_from_gate() -> None:
     """Pull project + task + model set by dojo_gate.sh into globals.
     Empty model file = auto-router stays active (PINNED_MODEL untouched)."""
     try:
@@ -913,7 +739,6 @@ def _load_active_from_gate():
     except Exception:
         pass
 
-
 _load_active_from_gate()
 
 # ── PROJECTS.md task-board helpers ──
@@ -921,8 +746,7 @@ _load_active_from_gate()
 # the "## Project Boards" section of PROJECTS.md. Sensei edits them in place
 # when a task is marked done.
 
-
-def _dojo_unchecked(project):
+def _dojo_unchecked(project: Any) -> Any:
     """Return list of unchecked task strings for the given project name."""
     if not project or not PROJECTS_MD_FILE.exists():
         return []
@@ -944,13 +768,11 @@ def _dojo_unchecked(project):
                 out.append(m.group(1))
     return out
 
-
-def _dojo_next_task(project):
+def _dojo_next_task(project: Any) -> Any:
     tasks = _dojo_unchecked(project)
     return tasks[0] if tasks else ""
 
-
-def _dojo_mark_done(project, task):
+def _dojo_mark_done(project: Any, task: str) -> Any:
     """Flip the first '- [ ] <task>' → '- [x] <task>' under the project. Returns True if found."""
     if not project or not task or not PROJECTS_MD_FILE.exists():
         return False
@@ -981,41 +803,34 @@ def _dojo_mark_done(project, task):
             return False
     return changed
 
-
-def load_behavior():
+def load_behavior() -> Any:
     """Read ~/.sensei_behavior.md into the system prompt. Returns empty string if missing."""
     try:
         return BEHAVIOR_FILE.read_text().strip()
     except Exception:
         return ""
 
-
 # ── THREAD LABEL (editable chat-thread locator on top rule line) ──
-THREAD_FILE = Path.home() / ".master_ai_thread"
 
-
-def load_thread_label():
+def load_thread_label() -> Any:
     try:
         return THREAD_FILE.read_text().strip()
     except Exception:
         return ""
 
-
-def save_thread_label(name):
+def save_thread_label(name: Any) -> None:
     try:
         THREAD_FILE.write_text((name or "").strip())
     except Exception:
         pass
 
-
-def _term_cols():
+def _term_cols() -> Any:
     try:
         return shutil.get_terminal_size((80, 24)).columns
     except Exception:
         return 80
 
-
-def print_thread_box_top():
+def print_thread_box_top() -> None:
     """Top rule of input frame — label sits BOTTOM-LEFT (inside the rule)."""
     cols = _term_cols()
     label = load_thread_label()
@@ -1025,27 +840,23 @@ def print_thread_box_top():
     line = "┌──" + tag + "─" * (right - 3) + "┐"
     print(f"{BC}{line[:cols]}{X}")
 
-
-def print_thread_box_bottom():
+def print_thread_box_bottom() -> None:
     """Closing rule with └ ┘ corners — drawn right after input is captured."""
     cols = _term_cols()
     line = "└" + "─" * (cols - 2) + "┘"
     print(f"{BC}{line[:cols]}{X}")
 
-
-def print_legend():
+def print_legend() -> None:
     """Plain legend line — TYPE these commands at the prompt."""
     print(
         f"  {D}⌨ type:{X}  {BC}hub{X} · {BC}help{X} · {BC}tips{X} · {BC}model{X} · {BC}mode plan{X} · {BC}chats{X} · {BC}tts{X} · {BC}e{X}=edit label · {BC}x{X}=exit"
     )
 
-
 # ── Auto-label: after N exchanges, suggest a label if none is set ──
 _AUTO_LABEL_LOCK = threading.Lock()
 _AUTO_LABEL_TRIED = False  # per-session flag so we only auto-fire once
 
-
-def _ask_cloud_for_label(messages):
+def _ask_cloud_for_label(messages: Any) -> Any:
     """Try whichever cloud key is actually live, not a single hardcoded
     provider — groq's key in the keychain has been a dead placeholder for
     months, which silently broke auto-labeling (AUTO_LABEL_ERROR, never
@@ -1071,8 +882,7 @@ def _ask_cloud_for_label(messages):
             continue
     return None
 
-
-def _auto_label_bg(history_snapshot):
+def _auto_label_bg(history_snapshot: Any) -> None:
     """Background: generate a kebab-case label from recent exchanges, save it."""
     global _AUTO_LABEL_TRIED
     try:
@@ -1126,8 +936,7 @@ def _auto_label_bg(history_snapshot):
     except Exception as e:
         log(f"AUTO_LABEL_ERROR: {e}")
 
-
-def maybe_auto_label(history):
+def maybe_auto_label(history: Any) -> None:
     """Fire auto-label suggestion once per session after 3+ user messages.
     Only runs if no label is already set and we haven't tried yet."""
     global _AUTO_LABEL_TRIED
@@ -1140,7 +949,6 @@ def maybe_auto_label(history):
         _AUTO_LABEL_TRIED = True
     # run in background so we don't block the prompt
     threading.Thread(target=_auto_label_bg, args=(list(history),), daemon=True).start()
-
 
 # ── QUERY QUEUE (up to 3 live) ───────────────────────────────
 # User types Q1, Q2, Q3 while Sensei is still answering Q1 — each queues.
@@ -1165,8 +973,7 @@ _TMUX_LAST_CLIENT_DIMS = ""
 # flag. Confirm prompts wrap themselves via @_awaiting_confirm.
 _CONFIRM_IQ: queue.Queue[Any] = queue.Queue()
 
-
-def _CHOICE_IQ_PUT(key):
+def _CHOICE_IQ_PUT(key: Any) -> None:
     """Resolve a single key press against the armed choice and post the result
     to the confirm queue, reading the state dict exactly once. No-ops when the
     key is not a live answer, so a press can never inject an unvalidated value
@@ -1178,7 +985,6 @@ def _CHOICE_IQ_PUT(key):
     if resolved is None:
         return
     _CONFIRM_IQ.put(str(resolved) + "\n")
-
 
 # Single-key choice state (2026-09-25). _AWAITING_CONFIRM marks a whole
 # confirm FUNCTION, which is too coarse: several confirms have more than one
@@ -1194,14 +1000,13 @@ _CHOICE_STATE: dict = {"codes": {}, "aliases": {}}
 _AWAITING_CHOICE = threading.Event()
 _AWAITING_CONFIRM = threading.Event()
 
-
-def _awaiting_confirm(fn):
+def _awaiting_confirm(fn: Any) -> Any:
     """Mark a function as a confirm prompt — its lifetime sets _AWAITING_CONFIRM
     so the TUI routes typed input to _CONFIRM_IQ instead of the normal query
     queue. try/finally guarantees the flag clears on any exit path (return,
     exception, sys.exit)."""
 
-    def _wrap(*args, **kwargs):
+    def _wrap(*args, **kwargs) -> Any:
         _AWAITING_CONFIRM.set()
         try:
             return fn(*args, **kwargs)
@@ -1212,7 +1017,6 @@ def _awaiting_confirm(fn):
     _wrap.__doc__ = fn.__doc__
     _wrap.__wrapped__ = fn
     return _wrap
-
 
 # ── LOAD KEYS ────────────────────────────────────────────────
 # ~/.master_ai_keys is a symlink to the canonical keychain
@@ -1234,8 +1038,7 @@ def _awaiting_confirm(fn):
 from keychain_kv import _looks_like_real_key
 from keychain_kv import parse_kv_keys as _parse_kv_keys
 
-
-def load_keys():
+def load_keys() -> Any:
     try:
         text = KEYS_FILE.read_text()
     except Exception:
@@ -1246,9 +1049,7 @@ def load_keys():
     except Exception:
         return _parse_kv_keys(text)
 
-
 KEYS = load_keys()
-
 
 # ── SEND_EMAIL — model emits SEND_EMAIL: directive, dispatcher calls
 # send_email_via_smtp. Polish/template happens at the model layer via
@@ -1257,7 +1058,7 @@ KEYS = load_keys()
 # Per feedback_improve_before_add (2026-05-17) — addition justified because
 # the existing surface genuinely lacks send capability and this is
 # connector tissue between voice-in (Whisper), model writing, and SMTP.
-def _send_email_log(record):
+def _send_email_log(record: Any) -> None:
     """Append one JSON line to ~/.master_ai_email_log.jsonl. Best-effort."""
     try:
         from datetime import datetime as _dt
@@ -1272,10 +1073,9 @@ def _send_email_log(record):
         except Exception:
             pass
 
-
 # ── telegram_client interface ─────────────────────────────────
 # Lazy import so Sensei starts fine even if telegram_client.py is missing.
-def send_telegram_message(chat_id, text, silent=False):
+def send_telegram_message(chat_id: Any, text: Any, silent: bool=False) -> Any:
     try:
         import telegram_client as _tc
 
@@ -1289,37 +1089,7 @@ def send_telegram_message(chat_id, text, silent=False):
             "message_id": None,
         }
 
-
-# Multi-provider SMTP routing — Gmail / AOL / Outlook. Provider picked from
-# sender domain. Each provider has its own app-password slot in
-# ~/.master_ai_keys. Per feedback_improve_before_add — orchestration of
-# existing capability (Elijah's three real email accounts), not duplication.
-_EMAIL_PROVIDERS = {
-    "gmail": {
-        "host": "smtp.gmail.com",
-        "port": 465,
-        "ssl": True,
-        "key": "gmail_app_password",
-        "domains": ("gmail.com", "googlemail.com"),
-    },
-    "aol": {
-        "host": "smtp.aol.com",
-        "port": 465,
-        "ssl": True,
-        "key": "aol_app_password",
-        "domains": ("aol.com", "verizon.net", "yahoo.com"),
-    },
-    "outlook": {
-        "host": "smtp-mail.outlook.com",
-        "port": 587,
-        "ssl": False,  # STARTTLS
-        "key": "outlook_app_password",
-        "domains": ("outlook.com", "hotmail.com", "live.com", "msn.com"),
-    },
-}
-
-
-def _email_provider_for_sender(sender):
+def _email_provider_for_sender(sender: str) -> Any:
     """Return provider name for a sender address by domain match. Defaults to gmail."""
     domain = (sender.split("@", 1)[-1] if "@" in sender else "").lower()
     for name, cfg in _EMAIL_PROVIDERS.items():
@@ -1327,8 +1097,7 @@ def _email_provider_for_sender(sender):
             return name
     return "gmail"
 
-
-def send_email_via_smtp(to, subject, body, *, attach=None, sender=None):
+def send_email_via_smtp(to: Any, subject: Any, body: Any, *, attach: Any | None=None, sender: Any | None=None) -> dict:
     """Send one email via Gmail/AOL/Outlook SMTP using the provider-appropriate
     app-password from ~/.master_ai_keys. Provider routed from sender domain.
     Returns {ok, error, recipient, provider}.
@@ -1437,44 +1206,18 @@ def send_email_via_smtp(to, subject, body, *, attach=None, sender=None):
         )
         return {"ok": False, "error": err, "recipient": to, "provider": provider}
 
-
 # ── COLORS — matches brand.sh (visible on light + dark terminals) ──
-G = "\033[92m"  # bright green
-C = "\033[96m"  # bright cyan
-Y = "\033[33m"  # yellow
-R = "\033[91m"  # bright red
-M = "\033[95m"  # bright magenta
-W = "\033[1m"  # bold (readable on any background)
-D = "\033[0m"  # terminal default (black on light bg, white on dark)
-X = "\033[0m"  # reset
-BOLD = "\033[1m"
-BC = "\033[1;34m"  # bold blue  — banner + INFO lines
-BG = "\033[1;32m"  # bold green — banner accent + AI VOICE (conversational prose)
-BW = "\033[97m"  # bright white — banner labels
-BY = "\033[1;33m"  # bold yellow — PLAN / numbered steps / RUN: EDIT: CREATE:
-BO = "\033[38;5;208m"  # orange — CAUTION / warnings / destructive-command previews
-AMBER = "\033[38;2;199;118;26m"  # darker amber (#c7761a) — secondary yellow for footer hints / legend (distinct from BY/Y)
-DIMB = "\033[2;34m"  # dim blue — SOURCES / URLs / reference footers
-BM = "\033[1;35m"  # bold magenta — YOUR input (distinct from AI cyan)
-
-# Background-color buttons — black text on color bg, visible on ANY terminal
-BTN_G = "\033[42m\033[30m"  # green  bg + black text
-BTN_Y = "\033[43m\033[30m"  # yellow bg + black text
-BTN_R = "\033[41m\033[30m"  # red    bg + black text
-BTN_C = "\033[46m\033[30m"  # cyan   bg + black text
-
 
 # ── LOGGING ──────────────────────────────────────────────────
-def _fmt_ampm(dt=None, seconds=False):
+def _fmt_ampm(dt: Any | None=None, seconds: bool=False) -> Any:
     dt = dt or datetime.now()
     fmt = "%Y-%m-%d %I:%M:%S %p" if seconds else "%Y-%m-%d %I:%M %p"
     return dt.strftime(fmt)
 
-
-def _normalize_visible_time(text):
+def _normalize_visible_time(text: Any) -> Any:
     """Convert legacy visible 24-hour timestamps to 12-hour AM/PM."""
 
-    def repl(m):
+    def repl(m: Any) -> Any:
         try:
             dt = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M")
             return _fmt_ampm(dt)
@@ -1485,8 +1228,7 @@ def _normalize_visible_time(text):
         r"\b(\d{4}-\d{2}-\d{2} [0-2]\d:[0-5]\d)\b(?!\s*(?:AM|PM))", repl, text or ""
     )
 
-
-def log(msg):
+def log(msg: Any) -> None:
     ts = _fmt_ampm(seconds=True)
     try:
         with open(LOG_FILE, "a") as f:
@@ -1494,8 +1236,7 @@ def log(msg):
     except Exception:
         pass
 
-
-def _resolve_default_local_model():
+def _resolve_default_local_model() -> Any:
     """Hardware-based local default (2026-09-24, Elijah's rule): the model
     follows the machine — RAM tier + what the user actually pulled — never
     a hardcoded name. Explicit MASTER_AI_LOCAL_MODEL env wins outright
@@ -1517,11 +1258,9 @@ def _resolve_default_local_model():
         log(f"HARDWARE_PICK_ERROR: {e} — falling back to {DEFAULT_LOCAL_MODEL}")
     return DEFAULT_LOCAL_MODEL
 
-
 _resolve_default_local_model()
 
-
-def _clear_runtime_cache(reason="startup"):
+def _clear_runtime_cache(reason: str="startup") -> Any:
     """Clear exact-response cache for a fresh run; harvest memory stays intact."""
     try:
         existed = CACHE_FILE.exists()
@@ -1532,8 +1271,7 @@ def _clear_runtime_cache(reason="startup"):
         log(f"CACHE_CLEAR_ERROR [{reason}]: {e}")
         return False
 
-
-def _tmux_current_session_name():
+def _tmux_current_session_name() -> Any:
     if not os.environ.get("TMUX") or not shutil.which("tmux"):
         return ""
     try:
@@ -1548,8 +1286,7 @@ def _tmux_current_session_name():
     except Exception:
         return ""
 
-
-def _tmux_latest_client_dims():
+def _tmux_latest_client_dims() -> Any:
     """Return latest client dims as 'WxH', else ''."""
     if not os.environ.get("TMUX") or not shutil.which("tmux"):
         return ""
@@ -1600,8 +1337,7 @@ def _tmux_latest_client_dims():
         pass
     return ""
 
-
-def _tmux_resize_to_client(kill_others=False, preferred_dims=""):
+def _tmux_resize_to_client(kill_others: bool=False, preferred_dims: str="") -> Any:
     """Keep Sensei tmux window matched to the latest attached client."""
     global _TMUX_LAST_CLIENT_DIMS
     if not os.environ.get("TMUX") or not shutil.which("tmux"):
@@ -1650,8 +1386,7 @@ def _tmux_resize_to_client(kill_others=False, preferred_dims=""):
             log(f"RESIZE_ERROR: {e}")
             return None
 
-
-def _tmux_install_auto_resize_hooks():
+def _tmux_install_auto_resize_hooks() -> Any:
     """Install tmux hooks so attach/resize events keep window dimensions synced."""
     if not os.environ.get("TMUX") or not shutil.which("tmux"):
         return False
@@ -1681,8 +1416,7 @@ def _tmux_install_auto_resize_hooks():
         ok = ok or (r.returncode == 0)
     return ok
 
-
-def _tmux_auto_resize_loop():
+def _tmux_auto_resize_loop() -> None:
     """Background watcher: keep tmux window in sync with client size changes."""
     while not _TMUX_RESIZE_STOP.is_set():
         try:
@@ -1694,8 +1428,7 @@ def _tmux_auto_resize_loop():
         _TMUX_RESIZE_PULSE.wait(timeout=1.0)
         _TMUX_RESIZE_PULSE.clear()
 
-
-def _start_tmux_auto_resize_watcher():
+def _start_tmux_auto_resize_watcher() -> bool:
     global _TMUX_RESIZE_THREAD
     if not os.environ.get("TMUX") or not shutil.which("tmux"):
         return False
@@ -1708,13 +1441,11 @@ def _start_tmux_auto_resize_watcher():
     _TMUX_RESIZE_PULSE.set()
     return True
 
-
-def _nudge_tmux_auto_resize():
+def _nudge_tmux_auto_resize() -> None:
     if os.environ.get("TMUX"):
         _TMUX_RESIZE_PULSE.set()
 
-
-def _clear_tmux_scrollback(reason="refresh"):
+def _clear_tmux_scrollback(reason: str="refresh") -> None:
     """Clear tmux history so old visual context is gone after fresh starts."""
     if not os.environ.get("TMUX"):
         return
@@ -1724,16 +1455,14 @@ def _clear_tmux_scrollback(reason="refresh"):
     except Exception as e:
         log(f"TMUX_CLEAR_HISTORY_ERROR [{reason}]: {e}")
 
-
-def _remember_created_file(filepath):
+def _remember_created_file(filepath: Any) -> None:
     try:
         p = Path(os.path.expanduser(filepath)).resolve()
         LAST_CREATED_FILE.write_text(str(p))
     except Exception as e:
         log(f"LAST_CREATED_WRITE_ERROR: {e}")
 
-
-def _remember_last_action(kind, command="", path=""):
+def _remember_last_action(kind: Any, command: str="", path: str="") -> None:
     try:
         LAST_ACTION_FILE.write_text(
             json.dumps(
@@ -1751,8 +1480,7 @@ def _remember_last_action(kind, command="", path=""):
     except Exception as e:
         log(f"LAST_ACTION_WRITE_ERROR: {e}")
 
-
-def _load_last_action(max_age_s=300):
+def _load_last_action(max_age_s: int=300) -> Any:
     try:
         data = json.loads(LAST_ACTION_FILE.read_text())
         if int(time.time()) - int(data.get("ts", 0)) <= max_age_s:
@@ -1761,9 +1489,8 @@ def _load_last_action(max_age_s=300):
         pass
     return {}
 
-
-def _latest_created_file():
-    def _preview_rank(p):
+def _latest_created_file() -> Any:
+    def _preview_rank(p: Any) -> Any:
         name = p.name.lower()
         if name.startswith(("carryover_", "copy-", "session-")) or "summary" in name:
             return -1
@@ -1794,8 +1521,7 @@ def _latest_created_file():
         return None
     return max(candidates, key=lambda p: (_preview_rank(p), p.stat().st_mtime))
 
-
-def _open_file_preview(path=None):
+def _open_file_preview(path: Any | None=None) -> bool:
     p = Path(os.path.expanduser(str(path))) if path else _latest_created_file()
     if not p or not p.exists():
         print(f"  {Y}No created file found to preview yet.{X}")
@@ -1812,54 +1538,7 @@ def _open_file_preview(path=None):
         log(f"PREVIEW_ERROR: {e}")
         return False
 
-
-ATTACHMENT_MAX_CHARS = 140000
-_ATTACHMENT_SUFFIXES = {
-    ".txt",
-    ".md",
-    ".markdown",
-    ".csv",
-    ".json",
-    ".jsonc",
-    ".xml",
-    ".html",
-    ".htm",
-    ".css",
-    ".js",
-    ".jsx",
-    ".ts",
-    ".tsx",
-    ".py",
-    ".sh",
-    ".bash",
-    ".zsh",
-    ".yaml",
-    ".yml",
-    ".toml",
-    ".ini",
-    ".conf",
-    ".log",
-    ".sql",
-}
-# Dotfiles like ~/.bashrc, ~/.zshrc, ~/.profile, ~/.master_ai_tasks have no real
-# extension but are plainly text. Allow them through after a binary sniff.
-_ATTACHMENT_DOTFILE_SUFFIXES = {
-    "",
-    ".bashrc",
-    ".zshrc",
-    ".profile",
-    ".bash_profile",
-    ".bash_login",
-    ".bash_logout",
-    ".zprofile",
-    ".zlogin",
-    ".zlogout",
-    ".vimrc",
-    ".nanorc",
-}
-
-
-def _attach_text_file(path, history):
+def _attach_text_file(path: Any, history: list) -> bool:
     p = Path(os.path.expanduser(str(path))).expanduser()
     if not p.exists() or not p.is_file():
         print(f"  {R}attachment not found: {p}{X}")
@@ -1871,8 +1550,20 @@ def _attach_text_file(path, history):
         print(f"  {D}reason: {_why}{X}")
         return False
     suffix = p.suffix.lower()
+
+    # Documents are binary by design, so the checks below would reject every
+    # .docx, .xlsx, and .pdf with "does not look like a text file" and tell
+    # the user to convert it by hand -- using software already installed.
+    # Route recognized document types to the document reader instead. The
+    # READ fence above still runs first, so this does not widen what can be
+    # read; it only changes what "reading" means for these extensions.
+    import doc_reader as _doc
+
+    is_doc = _doc.is_document(p)
+
     if (
-        suffix not in _ATTACHMENT_SUFFIXES
+        not is_doc
+        and suffix not in _ATTACHMENT_SUFFIXES
         and suffix not in _ATTACHMENT_DOTFILE_SUFFIXES
     ):
         # Reject obvious binaries, but allow extensionless/dotfile text files.
@@ -1897,7 +1588,16 @@ def _attach_text_file(path, history):
             )
             return False
     try:
-        content = p.read_text(errors="replace")
+        if is_doc:
+            content = _doc.read_document(p, max_chars=ATTACHMENT_MAX_CHARS)
+            # read_document reports failure as text, never by raising, so the
+            # model can never mistake a failed extraction for an empty
+            # document. Surface it to the user too -- a silent failure here
+            # would look like a successful read of a blank file.
+            if content.startswith("[") and "could not read" in content[:120]:
+                print(f"  {Y}document not readable: {content[:200]}{X}")
+        else:
+            content = p.read_text(errors="replace")
     except Exception as e:
         print(f"  {R}attachment read failed: {e}{X}")
         return False
@@ -1923,58 +1623,7 @@ def _attach_text_file(path, history):
     )
     return True
 
-
-_DESKTOP_APP_ALIASES = {
-    "libreoffice": ["libreoffice"],
-    "libre office": ["libreoffice"],
-    "writer": ["libreoffice", "--writer"],
-    "libreoffice writer": ["libreoffice", "--writer"],
-    "calc": ["libreoffice", "--calc"],
-    "libreoffice calc": ["libreoffice", "--calc"],
-    "impress": ["libreoffice", "--impress"],
-    "libreoffice impress": ["libreoffice", "--impress"],
-    "files": ["xdg-open", str(Path.home())],
-    "file manager": ["xdg-open", str(Path.home())],
-}
-_DESKTOP_APP_COMMANDS = {
-    "xdg-open",
-    "gio",
-    "libreoffice",
-    "soffice",
-    "google-chrome",
-    "chrome",
-    "chromium",
-    "chromium-browser",
-    "firefox",
-    "nautilus",
-    "discord",
-    "gtk-launch",
-}
-_DESKTOP_DOC_SUFFIXES = {
-    ".odt",
-    ".ods",
-    ".odp",
-    ".doc",
-    ".docx",
-    ".xls",
-    ".xlsx",
-    ".ppt",
-    ".pptx",
-    ".pdf",
-    ".html",
-    ".htm",
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".webp",
-    ".gif",
-    ".svg",
-    ".txt",
-    ".md",
-}
-
-
-def _spawn_detached_new_pgroup(argv):
+def _spawn_detached_new_pgroup(argv: Any) -> Any:
     """Launch argv as a new process-group leader (stdout/stderr to
     /dev/null), without detaching it from the controlling session.
 
@@ -2012,8 +1661,7 @@ def _spawn_detached_new_pgroup(argv):
     finally:
         os.close(devnull_fd)
 
-
-def _launch_desktop_argv(argv, label="desktop app"):
+def _launch_desktop_argv(argv: Any, label: str="desktop app") -> Any:
     try:
         _spawn_detached_new_pgroup(argv)
         print(
@@ -2037,8 +1685,7 @@ def _launch_desktop_argv(argv, label="desktop app"):
             error=str(e),
         )
 
-
-def launch_desktop_app_safely(app_name):
+def launch_desktop_app_safely(app_name: Any) -> Any:
     """Capability registry executor for desktop.launch_app.
 
     Routes around confirm_run's run_command path because bash + backgrounded
@@ -2064,8 +1711,7 @@ def launch_desktop_app_safely(app_name):
         )
     return _launch_desktop_argv([app_name], label=app_name)
 
-
-def notify_desktop(args=None):
+def notify_desktop(args: Any | None=None) -> Any:
     """Capability registry executor for desktop.notify.
 
     Calls the verified wrapper ~/scripts/sensei-notify.sh which sets
@@ -2161,8 +1807,7 @@ def notify_desktop(args=None):
             error=str(e),
         )
 
-
-def _desktop_launch_from_command(cmd):
+def _desktop_launch_from_command(cmd: Any) -> Any:
     """Return argv for GUI/browser/app commands that must not be wrapped in a terminal."""
     try:
         parts = shlex.split(cmd or "")
@@ -2189,8 +1834,7 @@ def _desktop_launch_from_command(cmd):
         args.append(os.path.expanduser(p))
     return [first, *args]
 
-
-def _resolve_discord_launch_argv():
+def _resolve_discord_launch_argv() -> None:
     """Best-effort launcher for Discord across package variants."""
     if shutil.which("discord"):
         return ["discord"]
@@ -2212,7 +1856,6 @@ def _resolve_discord_launch_argv():
     if shutil.which("xdg-open"):
         return ["xdg-open", "discord://"]
     return None
-
 
 def _app_name_matches(app_name: str, candidate: str) -> bool:
     """True if app_name plausibly refers to the same app as `candidate`
@@ -2249,8 +1892,7 @@ def _app_name_matches(app_name: str, candidate: str) -> bool:
         return True
     return False
 
-
-def _resolve_installed_app_launch_argv(app_name):
+def _resolve_installed_app_launch_argv(app_name: str) -> None:
     """Find a real installed app's actual launch command via its .desktop
     file's Exec= line — same real lookup _check_app_installed() uses,
     parsed into a clean subprocess argv instead of a display string.
@@ -2307,16 +1949,7 @@ def _resolve_installed_app_launch_argv(app_name):
             return (argv, f.stem)
     return None
 
-
-_OPEN_ANYWHERE_RE = re.compile(
-    r"\bopen(?:ing)?\s+(?:up\s+)?(?:the\s+|my\s+)?"
-    r"([a-z0-9][a-z0-9 _-]{1,40}?)"
-    r"(?=[.?!,]|\s+(?:up|now|please|for me|for you|on this|on my)\b|$)",
-    re.IGNORECASE,
-)
-
-
-def _try_desktop_open_intent(user_text):
+def _try_desktop_open_intent(user_text: str) -> Any:
     """Deterministic launcher for browser URLs, local documents, and GUI apps.
 
     Terminal is for shells and TTY apps. xdg-open/LibreOffice/browser launches
@@ -2379,7 +2012,6 @@ def _try_desktop_open_intent(user_text):
     ):
         return (["xdg-open", str(expanded)], str(expanded))
     return _resolve_installed_app_launch_argv(target)
-
 
 def _check_app_installed(app_name: str) -> dict:
     """Check whether app_name is actually installed, using real package-
@@ -2458,16 +2090,7 @@ def _check_app_installed(app_name: str) -> dict:
         "detail": f"no dpkg/flatpak/snap package or .desktop entry matched {app_name!r}",
     }
 
-
-_APP_INSTALLED_RE = re.compile(
-    r"^(?:is|do i have|did i (?:already )?(?:download|install)|check if)\s+"
-    r"(?:i\s+(?:already\s+)?have\s+)?(.+?)\s+(?:already\s+)?"
-    r"(?:installed|downloaded|on (?:this|my)\s+(?:computer|machine|pc|box|system))\??[\s.!?]*$",
-    re.IGNORECASE,
-)
-
-
-def _try_ground_app_installed_intent(user_text, history):
+def _try_ground_app_installed_intent(user_text: str, history: list) -> Any:
     """Ground an 'is X installed?' question in a real dpkg/flatpak/snap/
     .desktop-file check instead of letting the model guess plausible
     binary names and wrongly conclude something's missing. Same shape as
@@ -2526,14 +2149,7 @@ def _try_ground_app_installed_intent(user_text, history):
     )
     return None
 
-
-_DOWNLOAD_INSTALL_RE = re.compile(
-    r"^(?:download|install|get)\s+(?:me\s+)?(?:the\s+)?(?:a\s+)?(.+?)[\s.!?]*$",
-    re.IGNORECASE,
-)
-
-
-def _try_ground_download_install_intent(user_text, history):
+def _try_ground_download_install_intent(user_text: str, history: list) -> bool:
     """Force a real web search before the model responds to a 'download/
     install <app>' request, instead of letting it assert what an
     unfamiliar proper noun is from parametric memory. Unlike the other
@@ -2597,20 +2213,7 @@ def _try_ground_download_install_intent(user_text, history):
     log(f"DOWNLOAD_GROUNDING: {app_name}")
     return True
 
-
-_GOOGLE_WORKSPACE_BARE_NAV_RE = re.compile(
-    r"^(?:go to|open|check|show me)\s+(?:my\s+)?google\s+(drive|gmail|mail|calendar)\s*[.!?]*$",
-    re.IGNORECASE,
-)
-_GOOGLE_WORKSPACE_BARE_NAV_COMMAND = {
-    "drive": ("drive.search", {"query": "", "max": 20}),
-    "gmail": ("gmail.search", {"query": "", "max": 10}),
-    "mail": ("gmail.search", {"query": "", "max": 10}),
-    "calendar": ("calendar.list", {"max": 10}),
-}
-
-
-def _try_google_workspace_bare_nav_intent(user_text):
+def _try_google_workspace_bare_nav_intent(user_text: str) -> Any:
     """Deterministic catch for a bare 'go to/open Google Drive/Gmail/
     Calendar' with no further detail — same idiom as
     _try_desktop_open_intent() just above: catch a known-ambiguous shape
@@ -2640,8 +2243,7 @@ def _try_google_workspace_bare_nav_intent(user_text):
         f"RUN_SKILL: google-workspace {json.dumps({'command': command, 'args': args})}"
     )
 
-
-def _show_activity(limit=20):
+def _show_activity(limit: int=20) -> None:
     """List recent agent loop activities from the audit log.
 
     Reads LOOP-START / LOOP-END / VERIFY_ON_STOP_NUDGE lines from
@@ -2726,8 +2328,7 @@ def _show_activity(limit=20):
     print(f"{BC}  ╚{'═' * 78}╝{X}")
     print(f"  {D}Cancel a running activity: 'activity cancel'{X}\n")
 
-
-def _cancel_activity():
+def _cancel_activity() -> None:
     """Signal the shared interrupt event to stop the current agent loop.
 
     Only claims success if the audit log shows a LOOP-START without a
@@ -2788,11 +2389,7 @@ def _cancel_activity():
     print(f"  {G}✅ Sent cancel signal to running activity:{X} {C}{task[:60]}{X}")
     print(f"  {D}It will stop at the next safe checkpoint.{X}\n")
 
-
-_SHOW_ACTIVITY_LIMIT = 20
-
-
-def _show_recent_log(lines=80):
+def _show_recent_log(lines: int=80) -> None:
     try:
         raw = LOG_FILE.read_text(errors="replace").splitlines()
     except Exception as e:
@@ -2804,12 +2401,9 @@ def _show_recent_log(lines=80):
         print(f"  {D}{line}{X}")
     print(f"{C}  ─────────────────────────────{X}\n")
 
-
-_CLOUD_CIRCUITS: dict[str, float] = {}
 _NETWORK_DOWN_UNTIL = 0.0
 
-
-def _cloud_allowed(provider):
+def _cloud_allowed(provider: Any) -> bool:
     global _NETWORK_DOWN_UNTIL
     now = time.time()
     if now < _NETWORK_DOWN_UNTIL:
@@ -2821,13 +2415,11 @@ def _cloud_allowed(provider):
         return False
     return True
 
-
-def _cloud_trip(provider, reason, seconds=30):
+def _cloud_trip(provider: Any, reason: Any, seconds: int=30) -> None:
     _CLOUD_CIRCUITS[provider] = time.time() + seconds
     log(f"CLOUD_CIRCUIT [{provider}]: {reason} for {seconds}s")
 
-
-def _cloud_trip_network(reason, seconds=60):
+def _cloud_trip_network(reason: Any, seconds: int=60) -> None:
     global _NETWORK_DOWN_UNTIL
     # 2026-09-27: this is the GLOBAL circuit -- _cloud_allowed() checks it
     # before every single provider, so tripping it blocks all of them at
@@ -2853,8 +2445,7 @@ def _cloud_trip_network(reason, seconds=60):
     _NETWORK_DOWN_UNTIL = time.time() + seconds
     log(f"CLOUD_NETWORK_DOWN: {reason} for {seconds}s")
 
-
-def _network_error(e):
+def _network_error(e: Any) -> Any:
     text = str(e).lower()
     # urllib wraps a socket.timeout / TimeoutError as URLError in its
     # exception chain (e.reason), but the outer exception can also be a
@@ -2884,8 +2475,7 @@ def _network_error(e):
         )
     return False
 
-
-def _matches_terms(text, words, terms):
+def _matches_terms(text: Any, words: Any, terms: Any) -> Any:
     """True when a term set contains either exact words or phrases."""
     if not terms:
         return False
@@ -2893,8 +2483,7 @@ def _matches_terms(text, words, terms):
     phrase = [t for t in terms if " " in t]
     return bool(words & single) or any(p in text for p in phrase)
 
-
-def _web_search_package_available():
+def _web_search_package_available() -> tuple:
     """DuckDuckGo package probe. Supports both the old and new package names."""
     try:
         import importlib
@@ -2911,8 +2500,7 @@ def _web_search_package_available():
     except Exception:
         return False, ""
 
-
-def _web_dns_ready():
+def _web_dns_ready() -> bool:
     """Cheap DNS probe so search failures can explain network issues plainly."""
     for host in (
         "api.duckduckgo.com",
@@ -2926,193 +2514,9 @@ def _web_dns_ready():
             continue
     return False
 
-
 # ── ROUTER ───────────────────────────────────────────────────
-CODE_WORDS = {
-    "code",
-    "python",
-    "bash",
-    "javascript",
-    "js",
-    "script",
-    "debug",
-    "function",
-    "class",
-    "error",
-    "fix",
-    "bug",
-    "write",
-    "program",
-    "def",
-    "import",
-    "html",
-    "css",
-}
-# Alter/mutate intent — verbs that imply changing a file or system state.
-# In peacetime these route to the deep reasoning lane (DeepSeek-R1) because
-# altering things reliably needs careful thought — Groq is the chat lane.
-ALTER_WORDS = {
-    "edit",
-    "modify",
-    "refactor",
-    "patch",
-    "rewrite",
-    "replace",
-    "rename",
-    "install",
-    "uninstall",
-    "configure",
-    "setup",
-    "create",
-    "delete",
-    "remove",
-    "build",
-    "generate",
-    "make",
-    "update",
-    "upgrade",
-    "migrate",
-}
-VISION_WORDS = {
-    "image",
-    "photo",
-    "picture",
-    "see",
-    "show",
-    "look",
-    "describe",
-    "what is this",
-    "analyze this",
-    "read this",
-    "whats in",
-}
-WEB_WORDS = {
-    "latest",
-    "today",
-    "current",
-    "news",
-    "search",
-    "find",
-    "download",
-    "who is",
-    "what is happening",
-    "price",
-    "weather",
-    "2024",
-    "2025",
-    "2026",
-    "recently",
-}
-COMPLEX_WORDS = {
-    "explain",
-    "analyze",
-    "compare",
-    "difference",
-    "pros",
-    "cons",
-    "plan",
-    "strategy",
-    "why",
-    "how does",
-    "what causes",
-    "in depth",
-    "detailed",
-    "thorough",
-    "research",
-    "summarize",
-    "write a report",
-    "essay",
-    "deep dive",
-}
-# Phrases that signal a multi-step request even when it doesn't look like a
-# big build. The agent loop's plan/execute/critique cycle is the right home for
-# anything that spans more than a single round-trip; routing it there gives
-# the user the "never drops off mid-task" guarantee that plain handle() does
-# not provide.
-_MULTI_STEP_PHRASES = (
-    # 2026-09-27: was only "and then" plus specific "then <verb>" combos
-    # (return/give/summarize/report/list/print/save) -- missed ordinary
-    # multi-step instructions using any other verb, e.g. "build X, then
-    # wire it into Y, then test it" matched nothing at all. A bare " then "
-    # is safe to add now that _looks_multi_step checks _looks_like_question
-    # first -- a genuine question ("what happens then?") is already routed
-    # away before phrase matching runs, so this can't reintroduce the
-    # over-triggering that was just fixed.
-    " then ",
-    " and then ",
-    " after that ",
-    " next, ",
-    " next step",
-    " step by step",
-    "step 1",
-    "step 2",
-    "step 3",
-    "first, ",
-    "first thing",
-    "finally, ",
-    " in order: ",
-    " in sequence",
-    " one by one",
-    "1. ",
-    "2. ",
-    "3. ",
-    "a, b, c,",
-    "a, b, and c",
-    "for each ",
-    "for every ",
-    "for all ",
-    " for each of",
-    " for all of",
-    "all of the ",
-    "all of these ",
-    "all the ",
-    "walk me through",
-    "go through",
-    "make sure to",
-    "make sure all",
-    "verify that",
-    "verify each",
-    "check that",
-    "check each",
-    "confirm that",
-    "then return",
-    "then give me",
-    "then summarize",
-    "then report",
-    "then list",
-    "then print",
-    "then save",
-)
 
-
-# 2026-09-27: the phrase list above never distinguished a QUESTION about a
-# process ("walk me through how X works", "explain step by step") from an
-# INSTRUCTION to actually perform a sequenced task -- "step by step",
-# "walk me through", "make sure to", "verify that" are all completely
-# ordinary question phrasing. Elijah, live: "the question I ask it isn't
-# required to drop into plan mode." A question wants an answer, not a
-# persistent multi-step execution loop -- these markers say "this is a
-# request for information," and win regardless of phrase matches above.
-_QUESTION_MARKERS = ("?",)
-_QUESTION_LEAD_WORDS = (
-    "how ",
-    "what ",
-    "why ",
-    "when ",
-    "where ",
-    "who ",
-    "which ",
-    "can you explain",
-    "could you explain",
-    "do you know",
-    "does it",
-    "is it",
-    "are there",
-    "explain ",
-)
-
-
-def _looks_like_question(text):
+def _looks_like_question(text: Any) -> Any:
     low = (text or "").strip().lower()
     if not low:
         return False
@@ -3120,41 +2524,7 @@ def _looks_like_question(text):
         return True
     return any(low.startswith(w) for w in _QUESTION_LEAD_WORDS)
 
-
-# 2026-09-27: root-caused live -- Elijah asked Sensei to build a voice
-# bridge, it laid out a real 4-step plan, then ended the turn on "Ready
-# for Step 1 -- auditing the learn skill..." and just stopped. His next
-# message was "yes, let's build it out" -- short, no multi-step language
-# in it at all, so _looks_multi_step (below) never routed it through the
-# persistent agent loop. The heuristic only ever looked at the CURRENT
-# message; it had no idea the ASSISTANT'S OWN prior reply had just
-# committed to a numbered plan that a short "yes" was approving. A short
-# affirmation confirming an already-announced plan needs the same
-# persistence guarantee as the original multi-step request did.
-_PLAN_APPROVAL_PHRASES = (
-    "yes",
-    "yep",
-    "yeah",
-    "yup",
-    "go ahead",
-    "go for it",
-    "do it",
-    "proceed",
-    "sounds good",
-    "lets build it",
-    "let us build it",
-    "build it",
-    "lets do it",
-    "let us do it",
-    "confirmed",
-    "approved",
-    "sure",
-    "okay",
-    "ok",
-)
-
-
-def _looks_like_plan_approval(text):
+def _looks_like_plan_approval(text: Any) -> Any:
     """True for a short reply that APPROVES a plan rather than describing
     one -- "yes", "let's build it out", "go ahead" -- never true for
     anything long enough to plausibly be its own real instruction."""
@@ -3164,8 +2534,7 @@ def _looks_like_plan_approval(text):
         return False
     return any(f" {phrase} " in low for phrase in _PLAN_APPROVAL_PHRASES)
 
-
-def _assistant_just_proposed_a_plan(history):
+def _assistant_just_proposed_a_plan(history: Any) -> Any:
     """True when the most recent assistant turn committed to a numbered
     plan and is waiting on approval before proceeding -- matches this
     codebase's own plan-mode output shape and the ad-hoc "here's my plan /
@@ -3194,8 +2563,7 @@ def _assistant_just_proposed_a_plan(history):
         return numbered_lines >= 2
     return False
 
-
-def _looks_multi_step(text, history=None):
+def _looks_multi_step(text: Any, history: Any | None=None) -> bool:
     """Cheap heuristic: does this request span multiple steps?
 
     Returns True when the request language contains multi-step sequencing
@@ -3224,242 +2592,7 @@ def _looks_multi_step(text, history=None):
         return True
     return False
 
-
-REASONING_WORDS = {
-    "think",
-    "reason",
-    "logic",
-    "proof",
-    "math",
-    "calculate",
-    "step by step",
-    "walk me through",
-    "figure out",
-    "solve",
-    "puzzle",
-    "hypothesis",
-}
-# Scrappy = the off-grid specialist fine-tune. Auto-activates WHEN any
-# ollama-installed model has 'scrappy' in its name. No config needed —
-# the moment the buyer pulls scrappy:13b, survival questions route there.
-SURVIVAL_WORDS = {
-    "survival",
-    "survive",
-    "off-grid",
-    "offgrid",
-    "bushcraft",
-    "apocalypse",
-    "apocalyptic",
-    "shelter",
-    "tent",
-    "fire",
-    "forage",
-    "trap",
-    "snare",
-    "hunt",
-    "purify",
-    "water filter",
-    "rain catchment",
-    "compost",
-    "homestead",
-    "permaculture",
-    "solar",
-    "battery",
-    "generator",
-    "hand pump",
-    "well",
-    "latrine",
-    "outhouse",
-    "preserve",
-    "canning",
-    "smoking",
-    "curing",
-    "dehydrate",
-    "jerky",
-    "root cellar",
-    "tarp",
-    "hut",
-    "cabin",
-    "log",
-    "wattle",
-    "daub",
-    "earthbag",
-    "cob",
-    "adobe",
-    "first aid",
-    "splint",
-    "wound",
-    "remedy",
-    "herb",
-    "medicinal",
-    "plant id",
-    "scrap",
-    "salvage",
-    "repurpose",
-    "fix broken",
-    "rebuild",
-    "from scratch",
-    "grid down",
-    "no power",
-    "off the grid",
-    "doomsday",
-    "prepper",
-    "prep",
-}
-# Tool-required intents — phrases that ask Sensei to TOUCH state (memory,
-# files, project, commands). Cloud lanes are text-only; they refuse or
-# fabricate when handed these. Matched as substrings (not word-set) so
-# multi-word intents like "refresh your memory" don't get tokenized away.
-TOOL_REQUIRED_PHRASES = (
-    "refresh your memory",
-    "refresh memory",
-    "master update",
-    "update master ai",
-    "update master-ai",
-    "update sensei",
-    "sensei update",
-    "update my project",
-    "update the project",
-    "update project",
-    "save the conversation",
-    "save this conversation",
-    "save this chat",
-    "write to ",
-    "write a file",
-    "edit the file",
-    "edit this file",
-    "create the file",
-    "create a file",
-    "create one complete",
-    "create and run",
-    "make a script",
-    "write a script",
-    "make a video",
-    "create a video",
-    "generate a video",
-    "make a clip",
-    "create a clip",
-    "generate a clip",
-    "make a movie",
-    "create a movie",
-    "generate a movie",
-    "make a screen",
-    "create a screen",
-    "generate a screen",
-    "make a credit screen",
-    "create a credit screen",
-    "matrix credit screen",
-    "matrix credits",
-    "credit roll",
-    "complete bash script",
-    "bash script at",
-    "script at /",
-    "script at ~",
-    "chmod +x",
-    "verify it exists",
-    "delete the file",
-    "run this",
-    "run the command",
-    "execute this",
-    "execute the",
-)
-
-_CODE_SYNTHESIS_VERBS = {
-    "make",
-    "build",
-    "create",
-    "generate",
-    "write",
-    "code",
-    "program",
-    "draw",
-    "animate",
-    "render",
-    "simulate",
-    "design",
-}
-_CODE_SYNTHESIS_ARTIFACT_WORDS = {
-    "animation",
-    "effect",
-    "screen",
-    "screensaver",
-    "credit",
-    "credits",
-    "roll",
-    "game",
-    "toy",
-    "demo",
-    "dashboard",
-    "interface",
-    "ui",
-    "visual",
-    "visualizer",
-    "simulation",
-    "simulator",
-    "scene",
-    "sprite",
-    "terminal",
-    "ascii",
-    "curses",
-    "tui",
-    "cli",
-    "browser",
-    "web",
-    "webpage",
-    "page",
-    "canvas",
-    "html",
-    "script",
-    "tool",
-    "app",
-    "program",
-    "video",
-    "clip",
-    "movie",
-    "intro",
-    "outro",
-    "logo",
-    "title",
-    "particles",
-}
-_NON_CODE_SYNTHESIS_HINTS = {
-    "joke",
-    "story",
-    "poem",
-    "song",
-    "recipe",
-    "list",
-    "plan",
-    "summary",
-    "report",
-    "email",
-    "message",
-    "caption",
-    "name",
-    "names",
-}
-
-_TERMINAL_VISUAL_BARE_REQUESTS = {
-    "matrix rain",
-    "matrix-rain",
-    "matrix rain please",
-    "matrix animation",
-    "matrix animation please",
-    "matrix terminal",
-    "matrix terminal please",
-    "matrix screensaver",
-    "matrix screensaver please",
-    "terminal rain",
-    "terminal animation",
-    "terminal screensaver",
-}
-_TERMINAL_VISUAL_ACTION_RE = re.compile(
-    r"\b(run|start|launch|open|show|play|do|make|create|generate|render|"
-    r"animate|display|pull\s+up)\b"
-)
-
-
-def _looks_terminal_visual_request(text):
+def _looks_terminal_visual_request(text: Any) -> bool:
     """True when the user is asking for terminal-native visual work."""
     low = (text or "").strip().lower()
     if not low or len(low) > 180:
@@ -3508,8 +2641,7 @@ def _looks_terminal_visual_request(text):
         or len(re.findall(r"[a-z0-9']+", low)) <= 5
     )
 
-
-def _looks_code_synthesis_request(stripped_low):
+def _looks_code_synthesis_request(stripped_low: Any) -> bool:
     words = set(re.findall(r"[a-z0-9_-]+", stripped_low or ""))
     if not (words & _CODE_SYNTHESIS_VERBS):
         return False
@@ -3527,23 +2659,7 @@ def _looks_code_synthesis_request(stripped_low):
         )
     )
 
-
-PRODUCT_UPDATE_COMMANDS = {
-    "update",
-    "upgrade",
-    "master update",
-    "update master",
-    "update master ai",
-    "update master-ai",
-    "sensei update",
-    "update sensei",
-}
-
-ROUTER_METRICS_FILE = Path.home() / ".master_ai_router_metrics.jsonl"
-ROUTER_METRICS_MAX_SCAN = 500
-
-
-def _router_metric(kind, **fields):
+def _router_metric(kind: Any, **fields) -> None:
     """Append a compact router/feedback event. Best-effort only."""
     try:
         entry = {"ts": int(time.time()), "kind": kind}
@@ -3553,8 +2669,7 @@ def _router_metric(kind, **fields):
     except Exception:
         pass
 
-
-def _router_recent_events(limit=ROUTER_METRICS_MAX_SCAN):
+def _router_recent_events(limit: Any=ROUTER_METRICS_MAX_SCAN) -> Any:
     try:
         if not ROUTER_METRICS_FILE.exists():
             return []
@@ -3569,9 +2684,8 @@ def _router_recent_events(limit=ROUTER_METRICS_MAX_SCAN):
             continue
     return out
 
-
-def _router_model_stats(model, task_type=None):
-    def scan(match_task):
+def _router_model_stats(model: Any, task_type: Any | None=None) -> dict | tuple:
+    def scan(match_task: Any) -> tuple:
         calls = failures = 0
         total_latency = 0.0
         for e in _router_recent_events():
@@ -3596,8 +2710,7 @@ def _router_model_stats(model, task_type=None):
         "avg_latency_s": total_latency / calls,
     }
 
-
-def _router_perf_bonus(model, task_type):
+def _router_perf_bonus(model: Any, task_type: Any) -> Any:
     """Small score adjustment from observed outcomes.
 
     Rule fit still dominates. This only nudges close calls and lets repeated
@@ -3621,8 +2734,7 @@ def _router_perf_bonus(model, task_type):
         bonus += 3
     return max(-45.0, min(15.0, bonus))
 
-
-def _rank_route_candidates(candidates):
+def _rank_route_candidates(candidates: Any) -> Any:
     ranked = []
     for cand in candidates:
         c = dict(cand)
@@ -3634,8 +2746,7 @@ def _rank_route_candidates(candidates):
     ranked.sort(key=lambda x: x["score"], reverse=True)
     return ranked
 
-
-def _choose_route(candidates, reason_prefix="scored"):
+def _choose_route(candidates: Any, reason_prefix: str="scored") -> Any:
     ranked = _rank_route_candidates(candidates)
     picked = ranked[0]
     decision = {k: picked[k] for k in ("route", "model") if k in picked}
@@ -3654,8 +2765,7 @@ def _choose_route(candidates, reason_prefix="scored"):
     ]
     return decision
 
-
-def format_router_stats():
+def format_router_stats() -> Any:
     events = _router_recent_events(limit=ROUTER_METRICS_MAX_SCAN)
     model_rows = {}
     exec_ok = exec_total = 0
@@ -3686,8 +2796,7 @@ def format_router_stats():
         lines.append(f"   execution : {exec_ok}/{exec_total} ok")
     return "\n".join(lines)
 
-
-def _scrappy_model_present():
+def _scrappy_model_present() -> Any:
     """Return Ollama tag of the first 'scrappy' model pulled, else ''.
     Cached for 60s like _have_14b so orchestrator calls don't thrash."""
     import time as _t
@@ -3717,13 +2826,49 @@ def _scrappy_model_present():
     globals()["_SCRAPPY_TS"] = now
     return tag
 
-
-WEATHER_WORDS = {"weather", "forecast", "temperature", "humidity"}
-
 _DEFAULT_LOCATION_CACHE = None
 
+def _operator_first_name() -> str:
+    """The operator's first name, or '' when no profile is present.
 
-def _default_location():
+    Used anywhere a prompt or user-facing string would otherwise have to
+    hardcode a particular person's name. An empty result is the honest answer
+    on a fresh install, and callers phrase around it rather than inventing one.
+    """
+    try:
+        with open(os.path.expanduser("~/.master_ai_profile.json")) as f:
+            return (json.load(f).get("personal", {}).get("first_name") or "").strip()
+    except Exception:
+        return ""
+
+
+def _operator_identity() -> Any:
+    """'First Name; contact email' for outbound HTTP User-Agent headers.
+
+    Reads `personal.first_name` / `personal.email` from the same
+    ~/.master_ai_profile.json that `_default_location()` already uses, and
+    degrades to a bare product token when no profile exists.
+
+    Why this exists (2026-09-29): the header used to be a hardcoded literal,
+    `"MasterAI/1.8 (Elijah; contact you@example.com)"`, at every call site. That
+    shipped the original author's name to Wikipedia, arXiv, and every other
+    third party on every request from a stranger's install, and the contact
+    address was a placeholder nobody could reply to. An outbound identifier has
+    to come from the operator's own config or not be sent at all.
+    """
+    name, email = _operator_first_name(), ""
+    try:
+        with open(os.path.expanduser("~/.master_ai_profile.json")) as f:
+            email = (json.load(f).get("personal", {}).get("email") or "").strip()
+    except Exception:
+        pass
+    if not name and not email:
+        return "MasterAI/1.8"
+    parts = [p for p in (name, f"contact {email}" if email else "") if p]
+    return "MasterAI/1.8 (" + "; ".join(parts) + ")"
+
+
+def _default_location() -> Any:
     """'City, ST' from the operator's on-disk profile (~/.master_ai_profile.json),
     for location-dependent web queries (weather, etc.) that don't name a place.
     That file is scoped for job-application ATS forms, but city/state is a
@@ -3745,8 +2890,7 @@ def _default_location():
     _DEFAULT_LOCATION_CACHE = loc
     return loc
 
-
-def detect_route(text, has_image=False):
+def detect_route(text: str, has_image: bool=False) -> tuple:
     global PINNED_MODEL
     t = text.lower()
     words = set(t.split())
@@ -3782,89 +2926,12 @@ def detect_route(text, has_image=False):
         return "local", MODELS["qwen3"], "complex → qwen3.5:cloud (397B)"
     return "local", MODELS["master"], f"general → {MODELS['master']}"
 
-
 # ── SMART ORCHESTRATOR ───────────────────────────────────────
 # Returns a decision dict instead of dispatching a model directly.
 # Possible routes: local | cloud_fast | cloud_vision | acknowledgment | ask_user | recall_memory | save_refresh
 # First match wins.
 
-_RECALL_TRIGGERS = (
-    "remember",
-    "recall",
-    "what did we",
-    "earlier you",
-    "before we",
-    "last time",
-    "previously",
-    "you said",
-    "we talked about",
-)
-_PRONOUNS_NEED_ANTECEDENT = {"it", "this", "that", "them", "those", "these"}
-
-_ACTION_VERBS = {
-    "do",
-    "run",
-    "fix",
-    "delete",
-    "remove",
-    "edit",
-    "change",
-    "update",
-    "install",
-    "start",
-    "stop",
-    "restart",
-    "kill",
-    "try",
-}
-
-_GREETINGS = {
-    "hi",
-    "hello",
-    "hey",
-    "yo",
-    "sup",
-    "howdy",
-    "hola",
-    "thanks",
-    "thank",
-    "thx",
-    "ty",
-    "ok",
-    "okay",
-    "k",
-    "cool",
-    "nice",
-    "great",
-    "good",
-    "yes",
-    "yep",
-    "yeah",
-    "y",
-    "no",
-    "nope",
-    "nah",
-    "n",
-    "bye",
-    "goodbye",
-    "cya",
-    "later",
-}
-
-_ACKNOWLEDGMENT_RESPONSES = {
-    "nice": "Okay.",
-    "ok": "Okay.",
-    "okay": "Okay.",
-    "cool": "Okay.",
-    "thanks": "You're welcome.",
-    "thank you": "You're welcome.",
-    "thx": "You're welcome.",
-    "ty": "You're welcome.",
-    "got it": "Okay.",
-}
-
-
-def _acknowledgment_short_circuit(text):
+def _acknowledgment_short_circuit(text: Any) -> Any:
     low = (text or "").strip().lower()
     if not low or "\n" in low or ":" in low or "/" in low:
         return ""
@@ -3873,8 +2940,7 @@ def _acknowledgment_short_circuit(text):
         return ""
     return _ACKNOWLEDGMENT_RESPONSES.get(normalized, "")
 
-
-def _is_tool_required(stripped_low):
+def _is_tool_required(stripped_low: Any) -> bool:
     if _looks_terminal_visual_request(stripped_low):
         return True
     if any(p in stripped_low for p in TOOL_REQUIRED_PHRASES):
@@ -3893,85 +2959,7 @@ def _is_tool_required(stripped_low):
         return True
     return False
 
-
-# _is_system_state_question identifies "where is X / what's on port N /
-# is X running" requests so the retry-on-prose nudge in handle() can prompt
-# the model to emit a RUN:/READ: directive when it answered in prose.
-_FILE_INTENT_PATTERNS = [
-    re.compile(
-        r"^where(?:\s+is|\s+are|\s+was|\s+were|'s|s)\s+(?:the\s+|my\s+|a\s+|an\s+|some\s+)?(.+)$"
-    ),
-    re.compile(r"^find(?:\s+me)?\s+(?:the\s+|my\s+|a\s+|an\s+|some\s+)?(.+)$"),
-    re.compile(r"^locate\s+(?:the\s+|my\s+|a\s+|an\s+)?(.+)$"),
-    re.compile(r"^do\s+i\s+have\s+(?:a\s+|an\s+|any\s+)?(.+)$"),
-    re.compile(r"^show\s+me\s+(?:the\s+|my\s+|a\s+|an\s+)?(.+?)(?:\s+please)?$"),
-]
-
-_FILE_LOCAL_CONTEXT_PHRASES = (
-    "on my computer",
-    "on this computer",
-    "on my machine",
-    "on this machine",
-    "on my system",
-    "on disk",
-    "on the disk",
-    "in my files",
-    "in files",
-    "in my folders",
-    "in folders",
-    "in my directory",
-    "in my directories",
-    "in my home",
-    "under ~",
-    "under /home",
-    "in desktop",
-    "in downloads",
-    "in documents",
-    "in scripts",
-    "file path",
-    "path to",
-)
-
-_FILEISH_WORD_HINTS = {
-    "file",
-    "files",
-    "folder",
-    "folders",
-    "dir",
-    "directory",
-    "directories",
-    "path",
-    "paths",
-    "readme",
-    "license",
-    "makefile",
-    "dockerfile",
-    "requirements",
-    "pyproject",
-    "package.json",
-    "config",
-    "settings",
-    "log",
-    "logs",
-    "script",
-    "scripts",
-    "desktop",
-    "downloads",
-    "documents",
-    "templates",
-}
-
-_AUTO_CONTEXT_FILE_ALIASES = {
-    # Users ask for the "Codex md" handoff, but the repo's real handoff file
-    # is still named CLAUDE.md for cross-agent continuity.
-    "codex.md": "CLAUDE.md",
-    "codes.md": "CLAUDE.md",
-    "codex_memory.md": "CLAUDE.md",
-    "codex-memory.md": "CLAUDE.md",
-}
-
-
-def _find_auto_context_file(fname, search_dirs):
+def _find_auto_context_file(fname: Any, search_dirs: Any) -> Any:
     names = [fname]
     alias = _AUTO_CONTEXT_FILE_ALIASES.get((fname or "").lower())
     if alias and alias not in names:
@@ -3994,8 +2982,7 @@ def _find_auto_context_file(fname, search_dirs):
                 continue
     return None
 
-
-def _local_text_target_candidates(raw):
+def _local_text_target_candidates(raw: Any) -> Any:
     target = (raw or "").strip().strip("'\"`")
     if not target:
         return []
@@ -4034,8 +3021,7 @@ def _local_text_target_candidates(raw):
             out.append(c)
     return out
 
-
-def _resolve_local_text_target(raw, search_dirs=None):
+def _resolve_local_text_target(raw: Any, search_dirs: Any | None=None) -> Any:
     search_dirs = search_dirs or [
         Path.home() / "scripts",
         Path(os.getcwd()),
@@ -4051,8 +3037,7 @@ def _resolve_local_text_target(raw, search_dirs=None):
             return found
     return None
 
-
-def _normalize_file_target(target):
+def _normalize_file_target(target: Any) -> Any:
     target = (target or "").strip().rstrip(".!?,")
     target = re.sub(
         r"\s+(?:located|saved|stored|kept)\s+(?:on\s+)?(?:my|the)?\s*"
@@ -4067,12 +3052,10 @@ def _normalize_file_target(target):
     ).strip()
     return target
 
-
-def _has_local_file_context(low_text):
+def _has_local_file_context(low_text: Any) -> Any:
     return any(p in (low_text or "") for p in _FILE_LOCAL_CONTEXT_PHRASES)
 
-
-def _looks_path_or_filename(target):
+def _looks_path_or_filename(target: Any) -> bool:
     t = (target or "").strip()
     low_t = t.lower()
     if not t:
@@ -4090,15 +3073,10 @@ def _looks_path_or_filename(target):
         return True
     return False
 
-
-def _file_query_is_local_machine_intent(low_text, target):
+def _file_query_is_local_machine_intent(low_text: Any, target: Any) -> Any:
     return _has_local_file_context(low_text) or _looks_path_or_filename(target)
 
-
-_DIRECTIVE_NAMES = ("RUN", "RUNTERM", "READ", "CREATE", "EDIT", "REMEMBER")
-
-
-def _reply_has_directive(reply):
+def _reply_has_directive(reply: str) -> bool:
     """True if the reply contains a non-backticked RUN/RUNTERM/READ/CREATE/EDIT
     directive — same parity check process_reply uses, so the result matches
     what the dispatcher would actually execute.
@@ -4115,8 +3093,7 @@ def _reply_has_directive(reply):
                     return True
     return False
 
-
-def _desktop_launch_short_circuit(text, low, words):
+def _desktop_launch_short_circuit(text: Any, low: Any, words: Any) -> Any:
     """Match 'open/launch/start <app>' for apps in the capability registry's
     DESKTOP_APP_ALLOWLIST. Returns a synth reply with a RUN: directive that
     bypasses the LLM, so cloud models can't refuse the launch with
@@ -4172,8 +3149,7 @@ def _desktop_launch_short_circuit(text, low, words):
         f"RUN: {app} &"
     )
 
-
-def _is_system_state_question(low):
+def _is_system_state_question(low: str) -> Any:
     """Lightweight classifier — true if the user is asking a system-state Q
     (file/process/port/service status, installed package, file listing,
     file-open). Used by retry-on-prose to know when a directive-less reply
@@ -4233,8 +3209,7 @@ def _is_system_state_question(low):
     )
     return any(t.startswith(k) for k in starts)
 
-
-def _is_generative_video_request(stripped_low):
+def _is_generative_video_request(stripped_low: Any) -> bool:
     return bool(
         re.search(r"\b(create|make|generate)\b.*\b(video|clip|movie)\b", stripped_low)
         and not any(
@@ -4255,68 +3230,12 @@ def _is_generative_video_request(stripped_low):
         )
     )
 
-
-def _video_quality_anchor():
+def _video_quality_anchor() -> Any:
     return Path("/home/user/Desktop/rabbit_hop.mp4")
 
-
-# App-shape detection: text that mentions building/making + concrete tech.
-# Used to disambiguate "show me my pictures" (real vision request) vs.
-# "build a slideshow app for my pictures" (app build that mentions pics
-# but doesn't have one attached). Without this guard, the vision route
-# below burns 5+ minutes on llava generating nonsense for the app case.
-_APP_SHAPE_WORDS = {
-    "app",
-    "application",
-    "script",
-    "tool",
-    "program",
-    "software",
-    "build",
-    "make",
-    "create",
-    "develop",
-    "generate",
-    "write",
-    "save",
-    "install",
-    "uninstall",
-    "python",
-    "html",
-    "javascript",
-    "tkinter",
-    "browser",
-    "file",
-    "folder",
-    "directory",
-}
-
-
-def _looks_app_shaped(low, word_set):
+def _looks_app_shaped(low: Any, word_set: Any) -> Any:
     """True if the text looks like an app-build request (vs. a vision question)."""
     return len(word_set & _APP_SHAPE_WORDS) >= 2
-
-
-# Lookbehind (not \b) so leading / and ~ in absolute/home paths still match.
-_IMAGE_PATH_RE = re.compile(
-    r"(?<![A-Za-z0-9])[~/.\w\-]+\.(?:png|jpe?g|gif|webp|bmp|tiff?)\b",
-    re.I,
-)
-_VISION_INTENT_RE = re.compile(
-    r"\b(?:describe|caption|analyze|annotate|ocr|read|what(?:'s| is)\s+in|show\s+me|look\s+at)\s+"
-    r"(?:this|that|the|my|a|an|these|those)?\s*"
-    r"(?:image|photo|picture|screenshot|snapshot|thumbnail)s?\b",
-    re.I,
-)
-# Negation guard for vision: "don't describe the image" / "no need to look
-# at the screenshot" / "without showing me the picture" must NOT fire vision.
-# Looks back from the matched verb for any negation token.
-_VISION_NEGATION_RE = re.compile(
-    r"\b(?:don'?t|do\s+not|doesn'?t|didn'?t|never|no\s+need\s+to|without|skip(?:ping)?|won'?t|cannot|can'?t|isn'?t|aren'?t)\b",
-    re.I,
-)
-_VISION_NEGATION_LOOKBACK = 40
-
 
 def _is_explicit_vision_request(text: str) -> bool:
     """Vision routes need an image-extension path or a verb+vision-noun phrase.
@@ -4336,8 +3255,7 @@ def _is_explicit_vision_request(text: str) -> bool:
         return True
     return False
 
-
-def _vision_vs_app_question(stripped):
+def _vision_vs_app_question(stripped: Any) -> str:
     """Clarifying question when vision words appear without an image attached
     AND the request looks app-shaped. Uses 1/2/3/4 to match Sensei's existing
     button conventions — Elijah hit the (a/b/c/d) confusion 2026-04-24 when
@@ -4352,8 +3270,7 @@ def _vision_vs_app_question(stripped):
         "  4) something else — explain"
     )
 
-
-def _is_ambiguous(stripped, words, history):
+def _is_ambiguous(stripped: str, words: Any, history: Any) -> Any:
     low = stripped.lower()
     prior_assistant = [m for m in history if m.get("role") == "assistant"]
     first = words[0].lower().strip(".,!?") if words else ""
@@ -4403,8 +3320,7 @@ def _is_ambiguous(stripped, words, history):
 
     return None
 
-
-def _clarifying_question(stripped, reason):
+def _clarifying_question(stripped: str, reason: str) -> Any:
     if reason.startswith("pronoun"):
         return f"Which one? I don't have a recent reference for '{stripped.split()[0]}' — tell me what you mean."
     if reason.startswith("action verb"):
@@ -4417,8 +3333,7 @@ def _clarifying_question(stripped, reason):
         return "I'd rather not guess between options. Which one do you want?"
     return "I'm not sure what you're asking — rephrase?"
 
-
-def _memory_recall_payload(user_text):
+def _memory_recall_payload(user_text: str) -> Any:
     """Explicit recall triggers pull a memory snippet. Returns str or None."""
     low = user_text.lower()
     # 2026-09-02: same missing-length-guard bug as _is_ambiguous's "which
@@ -4444,7 +3359,6 @@ def _memory_recall_payload(user_text):
     # Return the last 800 chars of memory — most recent session summaries live at the end
     return mem[-800:]
 
-
 def _project_keywords() -> list:
     """Keywords that mean 'still on the current project':
        - tokens from the active thread label (hyphen-split)
@@ -4455,7 +3369,7 @@ def _project_keywords() -> list:
     seen = set()
     out = []
 
-    def add(w):
+    def add(w: str) -> None:
         w = w.lower().strip(".,!?:;\"'()[]")
         if len(w) >= 3 and w.isalpha() and w not in seen:
             seen.add(w)
@@ -4490,8 +3404,7 @@ def _project_keywords() -> list:
 
     return out
 
-
-def _maybe_drift_reminder(history_ref) -> None:
+def _maybe_drift_reminder(history_ref: Any) -> None:
     """Fire a drift reminder only when recent user messages miss EVERY
     project keyword. Silent if we're still on-topic (no spam, no waste).
 
@@ -4531,8 +3444,7 @@ def _maybe_drift_reminder(history_ref) -> None:
         f"or 'task add ...' to log a sidetrack task.{X}\n"
     )
 
-
-def _read_run_mode():
+def _read_run_mode() -> str:
     """Which product mode is the user running in?
       stored default — local-first. Cloud is opt-in per-request.
       peacetime      — cloud-first when keys present.
@@ -4548,35 +3460,7 @@ def _read_run_mode():
         pass
     return "apocalypse"
 
-
-_LOCAL_FIND_HINTS = {
-    "file",
-    "folder",
-    "directory",
-    "dir",
-    "repo",
-    "project",
-    "script",
-    "manual",
-    "pdf",
-    "doc",
-    "docx",
-    "txt",
-    "md",
-    "json",
-    "yaml",
-    "yml",
-    "csv",
-    "resume",
-    "résumé",
-    "cv",
-    "certificate",
-    "transcript",
-    "notes",
-}
-
-
-def _clean_intent_object(text):
+def _clean_intent_object(text: Any) -> Any:
     # 2026-09-22: dictated/typed messages routinely carry trailing (sometimes
     # mid-sentence) emoji — real chat log example: "find the handoff doc,
     # it's not a local text file, it's probably a github repo in master ai
@@ -4604,8 +3488,7 @@ def _clean_intent_object(text):
     )
     return cleaned.strip(" '\"")
 
-
-def _looks_like_local_find_target(target):
+def _looks_like_local_find_target(target: Any) -> Any:
     low = str(target or "").lower()
     words = {w for w in re.split(r"[^a-z0-9]+", low) if w}
     return (
@@ -4614,23 +3497,7 @@ def _looks_like_local_find_target(target):
         or low.startswith(("~", "$home"))
     )
 
-
-# 2026-09-22: caught live — "find the handoff doc, it's not a local text
-# file, it's probably a github repo in master ai context." matched the bare
-# "find X" pattern below, and _looks_like_local_find_target waved it through
-# (contains "doc"/"repo" AND a period) even though it's a full multi-clause
-# sentence, not a filename. The whole sentence became a literal `find
-# -iname '*...*'` glob that could never match anything — the real question
-# never reached the model. A genuine filename/keyword target is short and
-# has no sentence structure; reject anything that reads like prose instead
-# so it falls through to the model, which can actually reason about it.
-_PROSE_TARGET_RE = re.compile(
-    r"\b(it'?s|i'?m|i'?ve|that'?s|probably|maybe|which|because|actually)\b",
-    re.IGNORECASE,
-)
-
-
-def _looks_like_prose_not_target(target):
+def _looks_like_prose_not_target(target: str) -> bool:
     if not target:
         return False
     if target.count(",") >= 1:
@@ -4641,48 +3508,19 @@ def _looks_like_prose_not_target(target):
         return True
     return False
 
-
-# 2026-09-21: "list files in X" was treating X as a literal local path with
-# zero check for whether it's actually a cloud-storage service name instead —
-# reproduced live: "list files in my google drive" ran `ls -la 'my google
-# drive'` (a literal directory named that, which doesn't exist) rather than
-# routing to the google-workspace skill that actually talks to Drive. The
-# sibling "find X" pattern right below already guards against exactly this
-# class of mismatch via _looks_like_local_find_target(); this pattern never
-# got the same treatment. Deliberately name-based, not exhaustive — the goal
-# is catching the common, unambiguous cloud-service names people actually
-# say, not building a perfect classifier; anything not caught here still
-# falls through to normal model-driven routing same as before this existed.
-_CLOUD_STORAGE_SERVICE_NAMES = {
-    "google drive",
-    "my drive",
-    "gdrive",
-    "drive",
-    "dropbox",
-    "onedrive",
-    "one drive",
-    "icloud",
-    "icloud drive",
-    "box",
-    "box.com",
-}
-
-
-def _names_cloud_storage_service(target):
+def _names_cloud_storage_service(target: Any) -> Any:
     low = re.sub(r"[?!.]+$", "", str(target or "").strip().lower())
     low = re.sub(r"^(?:my|the|a|an)\s+", "", low)
     return low in _CLOUD_STORAGE_SERVICE_NAMES
 
-
-def _quote_home_path(path_text):
+def _quote_home_path(path_text: Any) -> Any:
     raw = str(path_text or "").strip().strip("'\"")
     if not raw:
         return ""
     expanded = os.path.expandvars(os.path.expanduser(raw))
     return shlex.quote(expanded)
 
-
-def _deterministic_intent_to_directive(user_text):
+def _deterministic_intent_to_directive(user_text: Any) -> Any:
     """Return a RUN:/READ: directive for common local/system intents."""
     text = str(user_text or "").strip()
     if not text:
@@ -4746,8 +3584,7 @@ def _deterministic_intent_to_directive(user_text):
 
     return None
 
-
-def _json_object_from_text(text):
+def _json_object_from_text(text: Any) -> Any:
     raw = str(text or "").strip()
     if not raw:
         return None
@@ -4765,15 +3602,13 @@ def _json_object_from_text(text):
     except Exception:
         return None
 
-
-def _fast_classifier_enabled():
+def _fast_classifier_enabled() -> Any:
     # 2026-08-27: Fast classifier disabled — it uses Ollama and times out at 4s,
     # adding dead latency to every request. The rule-based router handles routing fine.
     flag = os.environ.get("SENSEI_FAST_CLASSIFIER", "0").strip().lower()
     return flag not in {"0", "false", "off", "no"}
 
-
-def _classify_intent_fast(user_text, *, model=None, timeout_s=None):
+def _classify_intent_fast(user_text: Any, *, model: Any | None=None, timeout_s: Any | None=None) -> Any:
     """Use the installed 3B model as a cheap first-pass intent classifier."""
     text = str(user_text or "").strip()
     if not text or len(text) > 800 or not _fast_classifier_enabled():
@@ -4849,8 +3684,7 @@ def _classify_intent_fast(user_text, *, model=None, timeout_s=None):
     )
     return out
 
-
-def _route_from_fast_classifier(user_text):
+def _route_from_fast_classifier(user_text: Any) -> None:
     cls = _classify_intent_fast(user_text)
     if not isinstance(cls, dict):
         return None
@@ -4883,8 +3717,7 @@ def _route_from_fast_classifier(user_text):
             }
     return None
 
-
-def orchestrate(history, user_text, image_path=None):
+def orchestrate(history: Any, user_text: Any, image_path: Any | None=None) -> Any:
     """Pick a route. Returns decision dict with 'route'/'model'/'reason'.
 
     Two product modes (read from ~/.master_ai_run_mode):
@@ -4945,7 +3778,7 @@ def orchestrate(history, user_text, image_path=None):
         and "[BROWSER PAGE CONTEXT]" in _envelope_head
     )
 
-    def _strip_prefix(prefix_len):
+    def _strip_prefix(prefix_len: Any) -> Any:
         """Return user_text with the leading routing prefix removed from
         the user section. When the input is API-wrapped, preserve the
         envelope head (so [BROWSER PAGE CONTEXT] etc. still reach the
@@ -5638,56 +4471,7 @@ def orchestrate(history, user_text, image_path=None):
         )
     return _choose_route(candidates, reason_prefix="local scored")
 
-
-# Time-sensitive / current-events markers. Frozen local models can't know
-# about events after their training cutoff, so Sensei intercepts these and
-# routes to web_search(). Triggers are PHRASE-ONLY — single words like
-# "latest" / "recent" / "currently" fired on casual phrasing (e.g. "my
-# latest project", "currently working on X") so they're excluded. Phrases
-# are unambiguous signals of asking about a specific recent event.
-_TIME_WORDS = frozenset(
-    {
-        "yesterday",
-        "tonight",  # strong on their own
-    }
-)
-_TIME_PHRASES = (
-    "last night",
-    "this morning",
-    "who won",
-    "who's winning",
-    "whos winning",
-    "what happened at",
-    "what happened last",
-    "what happened yesterday",
-    "what happened today",
-    "what happened tonight",
-    "score of",
-    "result of",
-    "results of",
-    "as of today",
-    "as of now",
-    "who is the president",
-    "who is the ceo of",
-    "stock price of",
-    "current stock",
-    "stock market today",
-    "news today",
-    "today's news",
-    "todays news",
-    "latest news",
-    "breaking news",
-    "headlines today",
-    "playoff games",
-    "playoff game tonight",
-    "games tonight",
-    "games today",
-    "game tonight",
-    "game today",
-)
-
-
-def _looks_time_sensitive(low, word_set):
+def _looks_time_sensitive(low: Any, word_set: Any) -> bool:
     """Return True if the query is clearly asking about a recent/current
     event a frozen local model cannot know. Phrase-only to avoid false
     positives on casual single-word use. When in doubt we let the normal
@@ -5701,29 +4485,7 @@ def _looks_time_sensitive(low, word_set):
             return True
     return False
 
-
-_PLACEHOLDER_HOSTS = {
-    "example.com",
-    "example.org",
-    "example.net",
-    "example.edu",
-    "placeholder.com",
-    "yourdomain.com",
-    "your-domain.com",
-    "domain.com",
-    "website.com",
-    "mysite.com",
-    "localhost",
-    "127.0.0.1",
-    "0.0.0.0",
-}
-_PLACEHOLDER_URL_RE = re.compile(
-    r'https?://(?:[^\s<>"\')\]]+)',
-    re.IGNORECASE,
-)
-
-
-def _is_placeholder_url(url):
+def _is_placeholder_url(url: str) -> bool:
     """True for fake/template URLs that must never be presented as sources."""
     if not url:
         return True
@@ -5751,8 +4513,7 @@ def _is_placeholder_url(url):
         return True
     return False
 
-
-def _valid_urls_in_text(text):
+def _valid_urls_in_text(text: Any) -> Any:
     urls = []
     for m in _PLACEHOLDER_URL_RE.finditer(text or ""):
         url = m.group(0).rstrip(".,;:)")
@@ -5760,14 +4521,13 @@ def _valid_urls_in_text(text):
             urls.append(url)
     return urls
 
-
-def _filter_placeholder_links(text):
+def _filter_placeholder_links(text: Any) -> Any:
     """Remove fake/template URLs from search output and require one real URL."""
     if not text:
         return None
     removed = []
 
-    def repl(match):
+    def repl(match: Any) -> Any:
         url = match.group(0).rstrip(".,;:)")
         suffix = match.group(0)[len(url) :]
         if _is_placeholder_url(url):
@@ -5782,8 +4542,7 @@ def _filter_placeholder_links(text):
         return None
     return cleaned
 
-
-def _local_big_brain_model():
+def _local_big_brain_model() -> Any:
     """Name of the biggest pulled local model, if any is >= 14B params —
     a "big brain" bonus route for code/deep/long tasks. Returns None when
     nothing that size is pulled. Cached for one minute so repeated
@@ -5821,26 +4580,9 @@ def _local_big_brain_model():
     globals()["_BIG_BRAIN_TS"] = now
     return best
 
-
 # ── WEB SEARCH ───────────────────────────────────────────────
-# Two engines, preferred in order:
-#   1. GEMINI GROUNDED  — Google Search under the hood via gemini-2.0-flash
-#      tool use. Needs the user's existing Gemini API key (free tier is
-#      enough). Returns a synthesized answer + source URLs — closest thing
-#      to "what you'd see on google.com" without needing a Custom Search
-#      Engine ID.
-#   2. DUCKDUCKGO        — library call, no key needed, works offline-
-#      ready when anyone has internet. Fallback when Gemini has no key or
-#      the request fails.
-_GEMINI_MODEL_CHAIN = (
-    "gemini-2.5-flash",  # newest flash — usually has free quota
-    "gemini-flash-latest",  # alias that Google points at current free tier
-    "gemini-2.0-flash",  # prior-gen fallback
-    "gemini-2.5-flash-lite",  # smaller / cheaper — last resort
-)
 
-
-def gemini_grounded_search(query, timeout=20):
+def gemini_grounded_search(query: Any, timeout: int=20) -> Any:
     """Google-grounded search via Gemini with Google Search tool enabled.
     Returns a formatted string with synthesized answer + source URLs, or
     None if no gemini model in the fallback chain has quota available.
@@ -5915,8 +4657,7 @@ def gemini_grounded_search(query, timeout=20):
         return f"{text}\n\nSources (Google):\n" + "\n".join(sources)
     return text
 
-
-def duckduckgo_search(query, max_results=4):
+def duckduckgo_search(query: Any, max_results: int=4) -> Any:
     """Raw DuckDuckGo results — title + snippet per hit. Returns a
     formatted string or None on error. Handles the 2026-era package
     rename from `duckduckgo_search` → `ddgs` by trying both imports."""
@@ -5956,8 +4697,7 @@ def duckduckgo_search(query, max_results=4):
         log(f"DDG_SEARCH_ERROR: {e}")
         return None
 
-
-def wikipedia_search(query, max_articles=3, timeout=8):
+def wikipedia_search(query: Any, max_articles: int=3, timeout: int=8) -> Any:
     """Wikipedia REST API — no key, no rate limit beyond "be reasonable."
     Returns the top N article summaries with titles + extract + canonical
     URL, or None on failure. Great for factual / encyclopedic queries
@@ -5976,7 +4716,7 @@ def wikipedia_search(query, max_articles=3, timeout=8):
     try:
         req = urllib.request.Request(
             search_url,
-            headers={"User-Agent": "MasterAI/1.8 (Elijah; contact you@example.com)"},
+            headers={"User-Agent": _operator_identity()},
         )
         with urllib.request.urlopen(req, timeout=timeout) as r:
             hits = json.loads(r.read().decode()).get("query", {}).get("search", [])
@@ -5998,7 +4738,7 @@ def wikipedia_search(query, max_articles=3, timeout=8):
             req = urllib.request.Request(
                 sum_url,
                 headers={
-                    "User-Agent": "MasterAI/1.8 (Elijah; contact you@example.com)"
+                    "User-Agent": _operator_identity()
                 },
             )
             with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -6016,8 +4756,7 @@ def wikipedia_search(query, max_articles=3, timeout=8):
             continue
     return "\n".join(lines) if lines else None
 
-
-def ddg_instant_answer(query, timeout=6):
+def ddg_instant_answer(query: Any, timeout: int=6) -> Any:
     """DuckDuckGo Instant Answer API — no key, returns structured answers
     for well-known facts (definitions, people, brands). Often empty for
     news-style queries; that's expected. Acts as a cheap first check
@@ -6031,7 +4770,7 @@ def ddg_instant_answer(query, timeout=6):
     try:
         req = urllib.request.Request(
             url,
-            headers={"User-Agent": "MasterAI/1.8 (Elijah; contact you@example.com)"},
+            headers={"User-Agent": _operator_identity()},
         )
         with urllib.request.urlopen(req, timeout=timeout) as r:
             d = json.loads(r.read().decode())
@@ -6049,8 +4788,7 @@ def ddg_instant_answer(query, timeout=6):
         )
     return None
 
-
-def brave_search(query, max_results=5, timeout=10):
+def brave_search(query: Any, max_results: int=5, timeout: int=10) -> Any:
     """Brave Search API — independent index, often better than DDG for
     news and recent events. Free tier: 2000 queries/month with a signup
     at api.search.brave.com. Returns a formatted string or None if the
@@ -6094,8 +4832,7 @@ def brave_search(query, max_results=5, timeout=10):
             lines.append(f"• {title}: {desc[:200]}\n  {href}")
     return "\n".join(lines) if lines else None
 
-
-def serper_search(query, max_results=5, timeout=10):
+def serper_search(query: Any, max_results: int=5, timeout: int=10) -> Any:
     """Serper — Google results via a simple API. Free tier: 2500 queries
     on signup at serper.dev, no recurring quota. Returns a formatted
     string or None. Keys file field: 'serper'."""
@@ -6141,8 +4878,7 @@ def serper_search(query, max_results=5, timeout=10):
             lines.append(f"• {title}: {snippet[:200]}\n  {link}")
     return "\n".join(lines) if lines else None
 
-
-def firecrawl_fetch(url, timeout=45):
+def firecrawl_fetch(url: str, timeout: int=45) -> Any:
     """Firecrawl — clean markdown from any URL. Different tool than the
     search engines above: instead of a list of snippets, this returns the
     FULL page content of one specific URL, scrubbed of ads/nav/scripts.
@@ -6192,8 +4928,7 @@ def firecrawl_fetch(url, timeout=45):
     header = f"# {title}\n\n{url}\n\n" if title else f"{url}\n\n"
     return header + markdown
 
-
-def wikihow_via_gemini(query, timeout=15):
+def wikihow_via_gemini(query: Any, timeout: int=15) -> Any:
     """WikiHow doesn't have a public API and scraping their site is
     against their ToS. Instead, use Gemini's grounded search with a
     site: filter to pull top WikiHow articles for how-to queries. This
@@ -6212,8 +4947,7 @@ def wikihow_via_gemini(query, timeout=15):
     scoped = f"{query} site:wikihow.com"
     return gemini_grounded_search(scoped)
 
-
-def web_search(query, max_results=4):
+def web_search(query: Any, max_results: int=4) -> Any:
     """Top-level search. Queries several engines in parallel-ish priority,
     blends the best hits. Engines tried:
       1. TinyFish Search          — free/token-efficient web grounding when API key present
@@ -6281,9 +5015,8 @@ def web_search(query, max_results=4):
         "(Gemini, Brave, Serper, Wikipedia, DuckDuckGo, Instant Answer, WikiHow)."
     )
 
-
 # ── DOWNLOAD FILE ────────────────────────────────────────────
-def download_file(url, dest=None):
+def download_file(url: str, dest: Any | None=None) -> Any:
     log(f"DOWNLOAD: {url}")
     if not dest:
         fname = url.split("/")[-1].split("?")[0] or "download"
@@ -6296,9 +5029,8 @@ def download_file(url, dest=None):
         log(f"DOWNLOAD_ERROR: {e}")
         return None
 
-
 # ── LOCAL AI (OLLAMA) ─────────────────────────────────────────
-def _plan_grounding(user_text):
+def _plan_grounding(user_text: str) -> Any:
     """Build a GROUNDING FACTS block to prepend to Plan-mode prompts.
     Pulls three sources: Wikipedia (top article), filesystem (matching
     project files in ~/scripts ~/Desktop ~/off_grid_kit ~/Documents),
@@ -6408,11 +5140,11 @@ def _plan_grounding(user_text):
         return ""
     return (
         "\n\nGROUNDING FACTS (use these to make the plan specific to "
-        "Elijah's actual project, not generic):\n\n" + "\n\n".join(sections) + "\n"
+        f"{_operator_first_name() or 'the operator'}'s actual project, "
+        "not generic):\n\n" + "\n\n".join(sections) + "\n"
     )
 
-
-def _ollama_ps():
+def _ollama_ps() -> Any:
     """Return list of dicts from /api/ps (loaded runners). [] on any error."""
     try:
         with urllib.request.urlopen(f"{OLLAMA_URL}/api/ps", timeout=2) as r:
@@ -6420,8 +5152,7 @@ def _ollama_ps():
     except Exception:
         return []
 
-
-def _ollama_unload_one(name):
+def _ollama_unload_one(name: Any) -> tuple:
     """Tell Ollama to unload `name` by issuing a 0-token generate with
     keep_alive=0. Returns (ok: bool, err: str|None)."""
     body = json.dumps(
@@ -6439,8 +5170,7 @@ def _ollama_unload_one(name):
     except Exception as e:
         return False, str(e)
 
-
-def _ollama_runner_pid(name):
+def _ollama_runner_pid(name: str) -> None | int:
     """Find PID of the runner process for model `name`. None if not found."""
     try:
         out = subprocess.run(
@@ -6455,8 +5185,7 @@ def _ollama_runner_pid(name):
                 return int(parts[0])
     return None
 
-
-def cmd_unload_local_models():
+def cmd_unload_local_models() -> None:
     """User-facing 'unload' / 'cooldown' / 'free memory' command.
     Drains all loaded Ollama runners, prints a green-check report, and
     if any runner stays stuck prints the exact sudo line for Elijah to
@@ -6500,13 +5229,7 @@ def cmd_unload_local_models():
     for n, err in failures:
         print(f"  {R}✗ {n}: {err}{X}")
 
-
-# Few-shot injection toggle. Reads ~/.master_ai_settings each call so
-# `few_shot on|off` flips take effect without a Sensei restart.
-_FEW_SHOT_SETTINGS_FILE = Path.home() / ".master_ai_settings"
-
-
-def _few_shot_enabled():
+def _few_shot_enabled() -> Any:
     try:
         if not _FEW_SHOT_SETTINGS_FILE.exists():
             return False
@@ -6519,8 +5242,7 @@ def _few_shot_enabled():
         return False
     return False
 
-
-def _few_shot_set(on):
+def _few_shot_set(on: Any) -> bool:
     """Write FEW_SHOT=1|0 into ~/.master_ai_settings, preserving other keys."""
     val = "1" if on else "0"
     try:
@@ -6544,8 +5266,7 @@ def _few_shot_set(on):
         log(f"FEWSHOT_SET_ERROR: {e}")
         return False
 
-
-def _inject_few_shot(messages, model):
+def _inject_few_shot(messages: Any, model: Any) -> Any:
     """If FEW_SHOT toggle is on, prepend a system message with top-3
     harvest examples scored against the last user message. No-op on
     toggle-off, missing harvest, no examples, or any error."""
@@ -6575,7 +5296,6 @@ def _inject_few_shot(messages, model):
         log(f"FEWSHOT_INJECT_ERROR: {e}")
         return messages
 
-
 # ── PRIVACY: cloud-send guard for READ-injected private content ─────
 # Source of truth for "private" is harvest._privacy_reason() — same policy
 # that filters harvest entries and few-shot examples. When READ injects a
@@ -6583,7 +5303,6 @@ def _inject_few_shot(messages, model):
 # blocks until the user explicitly approves THIS send via the
 # `privacy approve send` REPL command (one-shot consume).
 _TURN_PRIVATE = False
-_TURN_PRIVATE_REASONS: list[str] = []
 _TURN_PRIVATE_APPROVED = False  # one-shot; consumed by next ask_cloud check
 # Session-wide "always approve" — set via the 'a' choice on the privacy prompt.
 # Deliberately NOT touched by _reset_turn_privacy() (that clears PER-TURN state
@@ -6593,28 +5312,24 @@ _TURN_PRIVATE_APPROVED = False  # one-shot; consumed by next ask_cloud check
 # file-persisted approval like confirm_run's "Always" option.
 _PRIVACY_APPROVED_FOR_SESSION = False
 
-
-def _reset_turn_privacy():
+def _reset_turn_privacy() -> None:
     """Clear per-turn privacy state. Called at handle() entry on each user input."""
     global _TURN_PRIVATE, _TURN_PRIVATE_APPROVED
     _TURN_PRIVATE = False
     _TURN_PRIVATE_APPROVED = False
     _TURN_PRIVATE_REASONS.clear()
 
-
-def _mark_turn_private(reason):
+def _mark_turn_private(reason: Any) -> None:
     """Mark this turn as containing private content. reason is a short label."""
     global _TURN_PRIVATE
     _TURN_PRIVATE = True
     if reason:
         _TURN_PRIVATE_REASONS.append(str(reason))
 
-
-def _is_turn_private():
+def _is_turn_private() -> Any:
     return _TURN_PRIVATE
 
-
-def _privacy_check_path_or_content(path, content=""):
+def _privacy_check_path_or_content(path: str, content: str="") -> Any:
     """Use harvest's privacy policy. Returns the reason string (truthy)
     when path or content trips it, else empty string.
     2026-09-11: howwework.txt and the Sensei source files are framework-level
@@ -6634,14 +5349,12 @@ def _privacy_check_path_or_content(path, content=""):
         log(f"PRIVACY_CHECK_ERROR: {e}")
         return ""
 
-
-def _approve_cloud_send_once():
+def _approve_cloud_send_once() -> None:
     """Set the one-shot approval flag. Consumed by the next allowed cloud send."""
     global _TURN_PRIVATE_APPROVED
     _TURN_PRIVATE_APPROVED = True
 
-
-def _check_cloud_send_allowed():
+def _check_cloud_send_allowed() -> tuple:
     """Returns (ok, reason). When turn is private and not approved, ok=False.
     When approved, the one-shot token is consumed; session-wide approval
     (_PRIVACY_APPROVED_FOR_SESSION) never gets consumed."""
@@ -6656,8 +5369,7 @@ def _check_cloud_send_allowed():
     summary = "; ".join(_TURN_PRIVATE_REASONS[-3:]) or "private content"
     return False, summary
 
-
-def _check_run_output_for_privacy(kind, cmd, output):
+def _check_run_output_for_privacy(kind: Any, cmd: Any, output: Any) -> Any:
     """RUN/RUNTERM exfil guard: when the command string or its captured
     output trips the privacy policy, mark the turn private so the next
     ask_cloud blocks the re-ask. Returns the reason string (truthy when
@@ -6674,15 +5386,9 @@ def _check_run_output_for_privacy(kind, cmd, output):
         log(f"PRIVACY_RUN_CHECK_ERROR: {e}")
     return ""
 
-
 # ── LOCAL "THINK" CAPABILITY (2026-09-24) ─────────────────────────
-# Ollama returns an INSTANT HTTP 400 ("X does not support thinking") when
-# think=medium is sent to a non-thinking model. Cache which models reject
-# it so both ask_local and ask_local_stream skip the field up front.
-_THINK_REJECT_CACHE: dict[str, bool] = {}
 
-
-def _model_rejects_think(model) -> bool:
+def _model_rejects_think(model: Any) -> bool:
     m = (model or "").strip()
     if not m:
         return False
@@ -6713,8 +5419,7 @@ def _model_rejects_think(model) -> bool:
         )
     return rejects
 
-
-def ask_local(messages, model=None, image_path=None):
+def ask_local(messages: Any, model: Any | None=None, image_path: Any | None=None) -> Any:
     model = model or MODELS["master"]
     log(f"LOCAL [{model}]")
     _t0 = time.time()
@@ -6813,71 +5518,8 @@ def ask_local(messages, model=None, image_path=None):
         )
         return None
 
-
 # ── LOCAL AI STREAMING ───────────────────────────────────────
 # ── REPLY LINE CLASSIFIER + REPLY SHAPES ──────────────────────
-# Paints every complete reply line one of four Master AI brand colors
-# based on what shape it is. The AI's stream still streams at the
-# character level; color snaps in at newline boundaries. Lines get one
-# of: PLAN (yellow), INFO (blue), CAUTION (orange), SOURCES (dim blue),
-# or the default VOICE (green).
-#
-# Hooked from ask_local_stream and ask_cloud_stream — both buffer tokens
-# until "\n" and call _paint_line() to wrap the assembled line.
-REPLY_SHAPES_SYSTEM_ADDITION = (
-    "\n\n[REPLY SHAPES]\n"
-    "Start your answer immediately — no preamble, no scratchpad line.\n"
-    "Structure your answer in these shapes so the UI can color-code:\n"
-    "  - PLAN lines: numbered steps ('1.', '2.') or directive lines (read/run/runterm/create/edit, each on its own line at column 0)\n"
-    "  - CAUTION lines: start with '⚠' when something destructive or\n"
-    "    risky is about to happen — rm, force-push, drop, systemctl stop\n"
-    "  - SOURCES lines: when referencing URLs, end reply with a 'Sources:'\n"
-    "    line followed by one URL per line\n"
-    "  - Everything else is plain conversational prose (your voice)\n"
-)
-
-# Local models have no baked-in SYSTEM and the system message is popped
-# before dispatch to preserve KV cache. Without this hint, the model
-# describes file changes in prose instead of emitting directives.
-# Prepended to every local user message — stable bytes so KV cache still
-# benefits across turns.
-LOCAL_DIRECTIVE_HINT = (
-    "[How to respond when the user wants a file created, edited, a command run,\n"
-    "or browser work done.]\n"
-    "Reason in ONE short prose sentence describing the choice. The sentence must contain\n"
-    "NO colon-suffixed directive words at all — those are reserved keywords the parser\n"
-    "matches verbatim. Then on the NEXT LINE, at column 0, emit the directive itself.\n"
-    "Available directive keywords: read, run, runterm, create, edit, ask, done, remember, search,\n"
-    "browser_click, browser_fill, browser_read, browser_nav, browser_screenshot — each followed by a colon,\n"
-    "only on its own line, never inside a sentence.\n\n"
-    "Available directive shapes (use each on its OWN line, never inline in prose):\n"
-    "  - read followed by a colon and a filepath\n"
-    "  - run followed by a colon and a bash command (captured output: ls, git, pytest, apt)\n"
-    "  - runterm followed by a colon and a bash command (visual / animated / TTY scripts)\n"
-    "  - create followed by a colon and a filepath, then a content block bounded by\n"
-    "    triple-less-than CONTENT and triple-greater-than CONTENT markers\n"
-    "  - edit followed by a colon and a filepath, then FIND and REPLACE blocks\n"
-    "  - browser_click followed by a colon and a CSS selector\n"
-    "  - browser_fill followed by a colon, a CSS selector, then ' :: ' (or ' => '),\n"
-    "    then the value to type\n"
-    '  - browser_read followed by a colon and a CSS selector (use "main" for the page)\n'
-    "  - browser_nav followed by a colon and a URL\n"
-    '  - browser_screenshot followed by a colon and "viewport" (default) or "fullpage"\n'
-    "  - done followed by a colon and a one-line summary (ends the agent loop)\n\n"
-    "Pick runterm when the script clears the screen, animates, reads keyboard, or needs\n"
-    "a real TTY. Pick run for everything else. Use browser_* when work is on the active\n"
-    "Chrome tab. For chat or explanation, reply as plain prose with no directive at all.\n\n"
-    "Browser rules: when a [BROWSER PAGE CONTEXT] block is present it is ground truth;\n"
-    "selectors must match elements in it, not invented ones. When a [PREVIOUS ROUND\n"
-    "RESULTS] block is present it is what already happened — do not re-emit completed\n"
-    'actions. If a previous result shows status "rejected" or "denied", pick a different\n'
-    "selector or emit done with what was achieved. Emit done when the work is finished.\n\n"
-    "Result honesty: never state, paraphrase, or imply a command's result before the\n"
-    "dispatcher runs it. Reason about what you're checking, not what the output will be.\n"
-    "Never write 'Result:' or 'Output:' from a guess. The actual machine output is\n"
-    "authoritative once it arrives.\n\n"
-    "User: "
-)
 
 import re as _re_classify
 
@@ -6888,25 +5530,22 @@ _RE_DIRECTIVE = _re_classify.compile(
 _RE_SCRATCH = _re_classify.compile(r"^\s*\[scratchpad:", _re_classify.IGNORECASE)
 _RE_URL = _re_classify.compile(r"https?://\S+")
 
-
 # Per-line typewriter pause between rendered chat lines. Cloud lanes
 # (Groq, OpenRouter) push full replies in <100ms; without a pause the
 # user sees a splash and has to scroll up to read from the top.
 # Set SENSEI_REPLY_LINE_DELAY=0 to disable; raise for a slower typewriter
 # feel. SENSEI_STREAM_DELAY remains supported for older launch scripts.
-def _env_float(name, default):
+def _env_float(name: Any, default: Any) -> float:
     try:
         return float(os.environ.get(name, default))
     except (TypeError, ValueError):
         return float(default)
 
-
-def _env_int(name, default):
+def _env_int(name: Any, default: Any) -> int:
     try:
         return int(os.environ.get(name, default))
     except (TypeError, ValueError):
         return int(default)
-
 
 SENSEI_REPLY_LINE_DELAY = _env_float(
     "SENSEI_REPLY_LINE_DELAY",
@@ -6914,7 +5553,6 @@ SENSEI_REPLY_LINE_DELAY = _env_float(
 )
 SENSEI_REPLY_WRAP = max(30, _env_int("SENSEI_REPLY_WRAP", "70"))
 SENSEI_STREAM_DELAY = SENSEI_REPLY_LINE_DELAY
-
 
 def _paint_line(line: str) -> str:
     """Classify a complete line and return it wrapped in the right ANSI
@@ -6953,8 +5591,7 @@ def _paint_line(line: str) -> str:
     # Default → VOICE (green)
     return f"{BG}{stripped}{X}\n"
 
-
-def _stream_with_color(token_iter):
+def _stream_with_color(token_iter: Any) -> None:
     """Wrap a token generator: buffer until newline, paint line, yield.
     Final partial line (no trailing \\n) gets painted and yielded at end.
     Adds SENSEI_STREAM_DELAY between yielded lines so cloud-fast replies
@@ -6980,8 +5617,7 @@ def _stream_with_color(token_iter):
             if SENSEI_STREAM_DELAY > 0:
                 time.sleep(SENSEI_STREAM_DELAY)
 
-
-def ask_local_stream(messages, model=None, image_path=None):
+def ask_local_stream(messages: Any, model: Any | None=None, image_path: Any | None=None) -> Any:
     """Stream tokens from Ollama directly to terminal. Returns full text.
     Shows a rotating 'thinking' animation until the first token lands.
 
@@ -7042,7 +5678,7 @@ def ask_local_stream(messages, model=None, image_path=None):
         _stream_margin = _reply_margin_for_prefix(f"\n{M}  🥋{X} ")
         _at_line_start = [False]
 
-        def _emit(s):
+        def _emit(s: str) -> None:
             if _at_line_start[0]:
                 sys.stdout.write(_stream_margin)
             sys.stdout.write(s)
@@ -7050,7 +5686,7 @@ def ask_local_stream(messages, model=None, image_path=None):
             sys.stdout.flush()
             _mark_activity()
 
-        def _flush_line(final=False):
+        def _flush_line(final: bool=False) -> None:
             """Print complete lines in line_buf with the right brand color.
             Soft-wraps at SOFT_WRAP columns so the eye sees steady rolling
             progress on slow CPU inference instead of waiting for full
@@ -7200,16 +5836,10 @@ def ask_local_stream(messages, model=None, image_path=None):
         globals()["_THINKING_T0"] = 0.0
         local_thinking_stop(_anim)
 
-
 # ── LOCAL "THINKING" ANIMATION (before first Ollama token arrives) ──
-# Ninja mood — shown while Sensei is actively working (model loading/generating).
-# Loaded from ~/scripts/master_ai_voice.json so Sensei + Pupil share one voice;
-# falls back to built-in list when the file is missing.
-_VOICE_FILE = Path.home() / "scripts/master_ai_voice.json"
 _VOICE_CACHE = None
 
-
-def _load_voice():
+def _load_voice() -> Any:
     global _VOICE_CACHE
     if _VOICE_CACHE is not None:
         return _VOICE_CACHE
@@ -7222,7 +5852,6 @@ def _load_voice():
     _VOICE_CACHE = {}
     return _VOICE_CACHE
 
-
 _DEFAULT_THINKING = [
     "Grinding...",
     "Pushing through...",
@@ -7234,8 +5863,7 @@ _DEFAULT_THINKING = [
 ]
 _LOCAL_THINKING_LINES = _load_voice().get("thinking") or _DEFAULT_THINKING
 
-
-def local_thinking_start():
+def local_thinking_start() -> None:
     """Rotating narrative while Ollama loads/generates. Returns (stop_event, thread) or None.
     In TUI mode the rotation lives in the tip slot (not the scrollback) — the
     TUI refresh loop cycles the line every 1.8s until stop_thinking() fires."""
@@ -7248,7 +5876,7 @@ def local_thinking_start():
     try:
         stop = threading.Event()
 
-        def _run():
+        def _run() -> None:
             i = 0
             while not stop.is_set():
                 line = _LOCAL_THINKING_LINES[i % len(_LOCAL_THINKING_LINES)]
@@ -7273,8 +5901,7 @@ def local_thinking_start():
     except Exception:
         return None
 
-
-def local_thinking_stop(handle):
+def local_thinking_stop(handle: Any) -> None:
     if not handle:
         return
     # TUI-mode handle: tell the app to return the tip slot to idle mode.
@@ -7292,7 +5919,6 @@ def local_thinking_stop(handle):
     except Exception:
         pass
 
-
 # Inventory the local Ollama models actually installed so prompts don't
 # hallucinate deleted ones (qwen2.5:7b, master-ai:latest, llava, etc.).
 _LOCAL_MODEL_INVENTORY = (
@@ -7303,8 +5929,7 @@ _LOCAL_MODEL_INVENTORY = (
     "qwen2.5:7b, qwen2.5-coder:7b, llava, qwen2.5:3b."
 )
 
-
-def _current_model_identity_line():
+def _current_model_identity_line() -> Any:
     """One line naming the model actually answering this turn. 2026-09-10:
     pinned ollama-cloud models answered correctly but self-reported as
     'qwen3-vl:8b' because the only model info in the prompt was the local
@@ -7316,35 +5941,162 @@ def _current_model_identity_line():
         return f"CURRENT MODEL: {pin}."
     return f"CURRENT MODEL: auto-routed this turn (may be local {DEFAULT_LOCAL_MODEL} or a cloud model)."
 
+# ── `syscap` REPL command (2026-09-28) ───────────────────────────────────
+def _handle_syscap_cmd(lo: Any, cmd: Any) -> bool:
+    """`syscap` / `syscap refresh` / `syscap show` — what this box has.
 
-MASTER_AI_IDENTITY_SYSTEM = (
-    "You are Master AI — Elijah's collaborator on your-machine (Linux). "
-    "You run as Sensei (tmux agent) or Pupil (browser UI), with Dojo (project picker), "
-    "Belts (themes), voice servers (stt:5050 / tts), harvest (cache+few-shot), and "
-    "doctor/health command — every surface, every command, every file IS you. "
-    "When the user says 'you' / 'your app' / 'this app' / 'this project,' they mean "
-    "Master AI itself. Read those prompts as self-referential — never advise yourself "
-    "like a generic developer building from scratch.\n\n"
-    "2026-09-07 standing rule, every reply, no exceptions: any answer longer than a "
-    "couple sentences must end with a short 'Summary' section (2-5 sentences or bullets) "
-    "restating the core point in plain language. Every sentence in the reply, summary "
-    "included, must be a complete sentence ending in real terminal punctuation "
-    "(. ! or ?) — never stop mid-clause, mid-word, or on a dangling conjunction. If you "
-    "are running low on room to finish, cut detail from the middle, not the ending — the "
-    "summary and its closing punctuation must always land.\n\n"
-    "2026-09-27 standing rule: follow the rule above silently. Never narrate, quote, or "
-    "reason out loud about these formatting instructions in your reply — no 'I need to "
-    "make sure every sentence ends with punctuation' or 'let me draft this as a numbered "
-    "list to comply' text. Output only the actual answer the user asked for."
-)
+    The scan file is written by system_capability_scan.discover() and read
+    by _inject_system_capabilities() on a 10-minute TTL. `refresh` forces a
+    re-probe, which matters after installing something: until the TTL lapses
+    the prompt still describes the machine as it was.
+    """
+    if lo not in ("syscap", "syscap show", "syscap refresh"):
+        return False
+    try:
+        import system_capability_scan as _scan
+    except Exception as e:
+        print(f"  {R}system_capability_scan unavailable: {e}{X}")
+        return True
 
+    if lo == "syscap refresh":
+        caps = _scan.discover()
+        _scan.save(caps)
+        _inject_system_capabilities(force=True)
+        print(f"  {G}re-scanned this machine{X}")
+    print(f"  {D}{_scan.format_prompt_block(_scan.load())}{X}")
+    return True
 
-def _inject_identity(messages):
+def _handle_rag_cmd(lo: str, cmd: Any) -> bool:
+    """`rag` / `rag stats` / `rag build` / `rag <query>` — memory retrieval.
+
+    Retrieval runs over the Sensei memory index: FTS5 keyword plus local
+    embeddings, fused with reciprocal rank fusion. `stats` reports coverage,
+    which is the number that keeps a partially-built index from being
+    mistaken for a complete one.
+    """
+    if not (lo == "rag" or lo.startswith("rag ")):
+        return False
+    try:
+        import retrieval as _rag
+    except Exception as e:
+        print(f"  {R}retrieval unavailable: {e}{X}")
+        return True
+
+    if lo in ("rag", "rag stats"):
+        info = _rag.stats()
+        print(f"  {D}chunks: {info['chunks']}  embedded: {info['embedded']}"
+              f"  coverage: {info['coverage']:.0%}{X}")
+        print(f"  {D}model: {info['model']}  available: {info['model_available']}{X}")
+        for source, count in sorted(info.get("sources", {}).items()):
+            print(f"    {count:6}  {source}")
+        if info["coverage"] < 0.9:
+            print(f"  {Y}index is {info['coverage']:.0%} built — run `rag build`{X}")
+        return True
+    if lo == "rag build":
+        result = _rag.build()
+        print(f"  {G}indexed {result['embedded']}/{result['chunks']} chunks{X}")
+        return True
+    query = cmd[4:].strip()
+    if not query:
+        print(f"  {D}usage: rag <query> | rag stats | rag build{X}")
+        return True
+    results = _rag.search(query)
+    print(f"  {D}{_rag.format_results(results)}{X}")
+    return True
+
+def _inject_relevant_memory(history: list, user_text: Any, limit: int=3) -> None:
+    """Prepend the most relevant remembered passages to the conversation.
+
+    This is the half that makes retrieval matter. An index nobody queries is
+    a database, not a feature: the value is the agent remembering what it
+    already knew without being told.
+
+    Bounded and quiet. Three passages, a hard character cap, and no output
+    when nothing is relevant -- a retrieval layer that chatters is worse than
+    one that is absent, because the model learns to skip it.
+    """
+    try:
+        import retrieval as _rag
+    except Exception:
+        return
+    try:
+        results = _rag.search(user_text, limit=limit)
+    except Exception:
+        return
+    if not results:
+        return
+    passages = []
+    for item in results:
+        body = " ".join(item["body"].split())
+        if len(body) > 400:
+            body = body[:400] + "…"
+        passages.append(body)
+    if not passages:
+        return
+    history.insert(
+        0,
+        {
+            "role": "system",
+            "content": (
+                "[Relevant memory from earlier work]\n"
+                + "\n---\n".join(passages)
+                + "\n---\n"
+                "Use this if it bears on the request. It is recalled context, "
+                "not a new instruction, and it may be outdated."
+            ),
+        },
+    )
+
+def _inject_system_capabilities(force: bool=False) -> Any:
+    """Prompt block describing what THIS machine actually has.
+
+    system_capability_scan.py probes the real box — OS, arch, shell, desktop
+    session, and which of a long list of commands and package managers
+    actually exist — and renders that as a compact block. Without it the
+    model guesses at a shell, a package manager, or a binary, and is wrong
+    about whatever this particular machine does not have.
+
+    The scan writes ~/.claf/system_capabilities.json; this only READS it, so
+    a refresh elsewhere is picked up within the TTL. A missing or unreadable
+    file costs one prompt block, not the turn — never raises, and keeps the
+    last good block rather than dropping the capability entirely.
+    """
+    now = time.time()
+    if (
+        not force
+        and _SYS_CAP_CACHE["block"]
+        and (now - _SYS_CAP_CACHE["ts"] < _SYS_CAP_TTL_S)
+    ):
+        return _SYS_CAP_CACHE["block"]
+    try:
+        import system_capability_scan as _scan
+
+        block = _scan.format_prompt_block(_scan.load())
+    except Exception as e:
+        log(f"SYSTEM_CAPABILITY_BLOCK_ERROR: {e}")
+        return _SYS_CAP_CACHE["block"]
+    _SYS_CAP_CACHE["ts"] = now
+    _SYS_CAP_CACHE["block"] = block
+    return block
+
+def _system_prefix() -> Any:
+    """Identity plus what this machine has, as one system-prompt head."""
+    parts = [MASTER_AI_IDENTITY_SYSTEM]
+    caps = _inject_system_capabilities()
+    if caps:
+        parts.append("THIS MACHINE (probed, not assumed):\n" + caps)
+    return "\n\n".join(parts)
+
+def _inject_identity(messages: Any) -> Any:
+    prefix = _system_prefix()
     if messages and messages[0].get("role") == "system":
-        merged = MASTER_AI_IDENTITY_SYSTEM + "\n\n" + messages[0].get("content", "")
-        return [{"role": "system", "content": merged}] + list(messages[1:])
-    return [{"role": "system", "content": MASTER_AI_IDENTITY_SYSTEM}] + list(messages)
-
+        return [
+            {
+                "role": "system",
+                "content": prefix + "\n\n" + messages[0].get("content", ""),
+            }
+        ] + list(messages[1:])
+    return [{"role": "system", "content": prefix}] + list(messages)
 
 # 2026-09-07: continuation feature — every direct-provider function just
 # discarded the API's own finish_reason ("length" means the reply was cut
@@ -7353,7 +6105,7 @@ def _inject_identity(messages):
 # via a global the same way _LAST_MODEL already is, rather than changing
 # every _ask_*'s return signature (6+ call sites, all currently return a
 # bare string that other code already depends on).
-def _extract_cloud_reply(resp_json, model=None):
+def _extract_cloud_reply(resp_json: dict, model: Any | None=None) -> tuple:
     """(content, finish_reason) from a standard OpenAI-shaped chat completion
     response. Also stamps globals()['_LAST_FINISH_REASON'] for callers that
     can't easily thread a second return value through (ask_cloud's fn_map).
@@ -7373,19 +6125,7 @@ def _extract_cloud_reply(resp_json, model=None):
         )
     return content, finish_reason
 
-
-# Groq free-tier payload trim (2026-05-16). Every groq call was returning
-# HTTP 413 because the request body exceeded the per-request budget. The
-# char-based heuristic over-counts vs the model tokenizer (~3-4 chars/token),
-# safe in the undertrim direction. Drops oldest non-system messages until
-# the serialized payload is below _GROQ_MAX_INPUT_CHARS. Empirically tunable.
-# NOTE: this trim helps history-laden sessions; on fresh sessions the system
-# message alone can exceed Groq's threshold (sys_chars=81467 observed) and
-# the trim is a no-op there — see Task #8 (slim cloud_fast system prompt).
-_GROQ_MAX_INPUT_CHARS = 22000
-
-
-def _trim_groq_messages(messages, max_chars=_GROQ_MAX_INPUT_CHARS):
+def _trim_groq_messages(messages: Any, max_chars: Any=_GROQ_MAX_INPUT_CHARS) -> Any:
     """Trim oldest non-system messages until total chars <= max_chars.
     Keep the system message (if any) in full, and keep the latest user
     message in full. Char-based, no external dep, safe-undertrim."""
@@ -7399,7 +6139,7 @@ def _trim_groq_messages(messages, max_chars=_GROQ_MAX_INPUT_CHARS):
     )
     latest_user = body.pop(latest_user_idx) if latest_user_idx is not None else None
 
-    def _total(parts):
+    def _total(parts: Any) -> Any:
         return sum(len(m.get("content") or "") for m in parts)
 
     pinned = [m for m in (sys_msg, latest_user) if m]
@@ -7426,8 +6166,7 @@ def _trim_groq_messages(messages, max_chars=_GROQ_MAX_INPUT_CHARS):
             pass
     return out
 
-
-def ask_cloud_groq(messages):
+def ask_cloud_groq(messages: Any) -> Any:
     if not _cloud_allowed("groq"):
         return None
     key = KEYS.get("groq")
@@ -7490,8 +6229,7 @@ def ask_cloud_groq(messages):
             _cloud_trip_network(e, 60)
         return None
 
-
-def _ask_groq(messages, model, label, timeout=60):
+def _ask_groq(messages: Any, model: Any, label: Any, timeout: int=60) -> Any:
     """Generic Groq caller — takes an explicit model id so the live picker
     (any of Groq's models, not just the hardcoded llama-3.3-70b default
     lane in ask_cloud_groq) can dispatch through this instead."""
@@ -7542,8 +6280,7 @@ def _ask_groq(messages, model, label, timeout=60):
             _cloud_trip_network(e, 60)
         return None
 
-
-def _ask_nvidia(messages, model, label, timeout=90):
+def _ask_nvidia(messages: Any, model: Any, label: Any, timeout: int=90) -> Any:
     """Generic NVIDIA NIM caller — takes an explicit model id so the live
     picker (any of NVIDIA's 100+ models, not just the one default lane)
     can dispatch through this instead of a hardcoded model string.
@@ -7603,8 +6340,7 @@ def _ask_nvidia(messages, model, label, timeout=90):
             return None
     return None
 
-
-def _ask_qwen(messages, model, label, timeout=90):
+def _ask_qwen(messages: Any, model: Any, label: Any, timeout: int=90) -> Any:
     """QwenCloud Token Plan direct caller — mirrors _ask_nvidia's shape.
     Only QWEN_TOKENPLAN_API_KEY (the 'sp' key) is ever used here; the 'ws'
     key is tracked in KEYS for visibility but confirmed dead (401) as of
@@ -7656,8 +6392,7 @@ def _ask_qwen(messages, model, label, timeout=90):
             _cloud_trip_network(e, 60)
         return None
 
-
-def ask_cloud_nvidia(messages):
+def ask_cloud_nvidia(messages: Any) -> Any:
     # 2026-08-27: llama-3.1-nemotron-70b-instruct's NIM function was
     # retired (404 "Function ... Not found for account") — verified live
     # against the real /v1/models catalog + a real completion before
@@ -7666,14 +6401,12 @@ def ask_cloud_nvidia(messages):
         messages, "nvidia/nemotron-3-super-120b-a12b", "nemotron-3-super-120b"
     )
 
-
-def ask_cloud_nvidia_nano(messages):
+def ask_cloud_nvidia_nano(messages: Any) -> Any:
     return _ask_nvidia(
         messages, "nvidia/nemotron-3-nano-30b-a3b", "nemotron-3-nano-30b"
     )
 
-
-def _opencode_session_id():
+def _opencode_session_id() -> Any:
     """Return the canonical x-opencode-session value, with env override."""
     val = os.environ.get("OPENCODE_SESSION", "").strip()
     if val:
@@ -7690,8 +6423,7 @@ def _opencode_session_id():
         pass
     return "sensei-bridge"
 
-
-def _ask_opencode_zen(messages, model, label, timeout=60):
+def _ask_opencode_zen(messages: Any, model: Any, label: Any, timeout: int=60) -> Any:
     """Generic OpenCode Zen relay caller — keyless, takes an explicit model id
     so the plan-debate fallback can reach mimo-v2.5-free (a clean
     instruction-follower) instead of only the hardcoded laguna-s-2.1-free.
@@ -7759,8 +6491,7 @@ def _ask_opencode_zen(messages, model, label, timeout=60):
             _cloud_trip_network(e, 60)
         return None
 
-
-def ask_cloud_opencode_free(messages):
+def ask_cloud_opencode_free(messages: Any) -> Any:
     """OpenCode's free Zen relay — keyless (no account, nothing to leak or
     run out of, not subject to any other provider's shared rate limits).
     2026-09-06: 'laguna-s-2.1-free' (and the whole 2026-08-27 free cohort)
@@ -7771,23 +6502,9 @@ def ask_cloud_opencode_free(messages):
         messages, "ling-3.0-flash-fin-free", "ling-3.0-flash-fin-free"
     )
 
-
 # ── OpenCode Go ($10/mo subscription, https://opencode.ai/go) ──
-# Same Zen API shape as the keyless free relay, but:
-#   • requires Authorization: Bearer <key> (OPENCODE_API_KEY in the keychain)
-#   • hits /zen/go/v1 instead of /zen/v1
-#   • serves curated open models (kimi-k3, glm-5.3, minimax-m3, ...) with
-#     generous monthly usage limits
-# Validated-client note: OpenCode asks coding agents to identify themselves
-# via User-Agent and a stable x-opencode-session per conversation — Go
-# traffic monitoring expects it, and Hermes is on their validated list.
-_OPENCODE_GO_MODELS_CACHE = Path.home() / ".master_ai_opencode_go_models_cache.json"
-_OPENCODE_GO_MODELS_TTL = 24 * 3600
-_OPENCODE_ZEN_MODELS_CACHE = Path.home() / ".master_ai_opencode_zen_models_cache.json"
-_OPENCODE_ZEN_MODELS_TTL = 24 * 3600
 
-
-def _opencode_go_key():
+def _opencode_go_key() -> Any:
     """OPENCODE_API_KEY — keychain first (canonical), ~/.hermes/.env as
     fallback, matching the Ollama Cloud lazy-lookup pattern."""
     key = (KEYS.get("opencode_go") or "").strip()
@@ -7816,13 +6533,12 @@ def _opencode_go_key():
         pass
     return ""
 
-
-def _opencode_go_model_catalog():
+def _opencode_go_model_catalog() -> Any:
     """Live model list from https://opencode.ai/zen/go/v1/models, cached to
     disk for a day (public endpoint — works with or without the key)."""
     import time as _time
 
-    def _read_cache():
+    def _read_cache() -> None:
         try:
             _d = json.loads(_OPENCODE_GO_MODELS_CACHE.read_text())
             if _time.time() - float(_d.get("ts", 0)) < _OPENCODE_GO_MODELS_TTL:
@@ -7831,7 +6547,7 @@ def _opencode_go_model_catalog():
             pass
         return None
 
-    def _write_cache(models):
+    def _write_cache(models: Any) -> None:
         try:
             _OPENCODE_GO_MODELS_CACHE.write_text(
                 json.dumps({"ts": _time.time(), "models": models})
@@ -7870,8 +6586,7 @@ def _opencode_go_model_catalog():
         except Exception:
             return []
 
-
-def _opencode_zen_model_catalog():
+def _opencode_zen_model_catalog() -> Any:
     """Live model list from https://opencode.ai/zen/v1/models -- the same
     public, keyless, no-auth-required endpoint the free chat relay itself
     uses (see _ask_opencode_zen), cached to disk for a day like the Go
@@ -7896,7 +6611,7 @@ def _opencode_zen_model_catalog():
     continues), same as never pre-testing OpenRouter's free list either."""
     import time as _time
 
-    def _read_cache():
+    def _read_cache() -> None:
         try:
             _d = json.loads(_OPENCODE_ZEN_MODELS_CACHE.read_text())
             if _time.time() - float(_d.get("ts", 0)) < _OPENCODE_ZEN_MODELS_TTL:
@@ -7905,7 +6620,7 @@ def _opencode_zen_model_catalog():
             pass
         return None
 
-    def _write_cache(models):
+    def _write_cache(models: Any) -> None:
         try:
             _OPENCODE_ZEN_MODELS_CACHE.write_text(
                 json.dumps({"ts": _time.time(), "models": models})
@@ -7941,8 +6656,7 @@ def _opencode_zen_model_catalog():
         except Exception:
             return []
 
-
-def _ask_opencode_go(messages, model, label, timeout=120):
+def _ask_opencode_go(messages: Any, model: Any, label: Any, timeout: int=120) -> Any:
     """OpenCode Go relay — paid $10/mo subscription lane. Authenticated
     via Bearer key; failure paths mirror the Zen free relay (rate-limit
     trips, network-error backoff) so the fallback chain treats it
@@ -8000,8 +6714,7 @@ def _ask_opencode_go(messages, model, label, timeout=120):
             _cloud_trip_network(e, 60)
         return None
 
-
-def ask_cloud_openai(messages):
+def ask_cloud_openai(messages: Any) -> Any:
     if not _cloud_allowed("openai"):
         return None
     key = KEYS.get("openai")
@@ -8022,8 +6735,7 @@ def ask_cloud_openai(messages):
             _cloud_trip_network(e, 60)
         return None
 
-
-def ask_cloud_gemini(messages):
+def ask_cloud_gemini(messages: Any) -> Any:
     if not _cloud_allowed("gemini"):
         return None
     key = KEYS.get("gemini")
@@ -8049,8 +6761,7 @@ def ask_cloud_gemini(messages):
             _cloud_trip_network(e, 60)
         return None
 
-
-def ask_cloud_anthropic(messages):
+def ask_cloud_anthropic(messages: Any) -> Any:
     if not _cloud_allowed("anthropic"):
         return None
     key = KEYS.get("anthropic")
@@ -8085,8 +6796,7 @@ def ask_cloud_anthropic(messages):
             _cloud_trip_network(e, 60)
         return None
 
-
-def ask_cloud_deepseek(messages):
+def ask_cloud_deepseek(messages: Any) -> Any:
     if not _cloud_allowed("deepseek"):
         return None
     key = KEYS.get("deepseek")
@@ -8121,8 +6831,7 @@ def ask_cloud_deepseek(messages):
             _cloud_trip_network(e, 60)
         return None
 
-
-def ask_cloud_fireworks_dsv3(messages):
+def ask_cloud_fireworks_dsv3(messages: Any) -> Any:
     """Fireworks AI → DeepSeek V3.1 (non-reasoning, long-context chat/coder).
 
     Distinct from `ask_cloud_deepseek` (DeepSeek's own API → R1 reasoning).
@@ -8215,8 +6924,7 @@ def ask_cloud_fireworks_dsv3(messages):
             _cloud_trip_network(e, 60)
         return None
 
-
-def _ask_openrouter(messages, model, label, timeout=60):
+def _ask_openrouter(messages: Any, model: Any, label: Any, timeout: int=60) -> Any:
     """Generic OpenRouter caller with token tracking.
 
     2026-08-27: HARD free-only gate. Operator: "we're using only the slash
@@ -8313,8 +7021,7 @@ def _ask_openrouter(messages, model, label, timeout=60):
             _cloud_trip_network(e, 60)
         return None
 
-
-def _ask_poolside(messages, model, label, timeout=90):
+def _ask_poolside(messages: Any, model: Any, label: Any, timeout: int=90) -> Any:
     """Poolside direct (OpenAI-compatible), Laguna agentic-coding models.
     Verified against docs.poolside.ai (2026-09-25) before wiring in: base
     URL, Bearer auth, GET /v1/models catalog support, and the
@@ -8393,8 +7100,7 @@ def _ask_poolside(messages, model, label, timeout=90):
         text = message.get("reasoning_content") or message.get("reasoning") or ""
     return text or None
 
-
-def _ask_cerebras(messages, model, label, timeout=60):
+def _ask_cerebras(messages: Any, model: Any, label: Any, timeout: int=60) -> Any:
     """Generic Cerebras caller with token tracking."""
     provider_key = f"cerebras/{label}"
     if not _cloud_allowed(provider_key):
@@ -8460,31 +7166,26 @@ def _ask_cerebras(messages, model, label, timeout=60):
             _cloud_trip_network(e, 60)
         return None
 
-
-def ask_cloud_cerebras(messages):
+def ask_cloud_cerebras(messages: Any) -> Any:
     return _ask_cerebras(
         messages, "qwen-3-235b-a22b-instruct-2507", "qwen3-235b", timeout=60
     )
 
-
-def ask_cloud_cerebras_llama8b(messages):
+def ask_cloud_cerebras_llama8b(messages: Any) -> Any:
     return _ask_cerebras(messages, "llama3.1-8b", "llama3.1-8b", timeout=30)
 
-
-def ask_cloud_openrouter_405b(messages):
+def ask_cloud_openrouter_405b(messages: Any) -> Any:
     # 2026-09-07: free-only live catalog; hardcoded slug era is over.
     slug = _openrouter_best_free_model()
     return (
         _ask_openrouter(messages, slug, "openrouter-free", timeout=90) if slug else None
     )
 
-
-def ask_cloud_openrouter_gptoss(messages):
+def ask_cloud_openrouter_gptoss(messages: Any) -> Any:
     # 2026-09-07: free-only live catalog.
     return ask_cloud_openrouter_generic(messages)
 
-
-def ask_cloud_openrouter_nemotron(messages):
+def ask_cloud_openrouter_nemotron(messages: Any) -> Any:
     # 2026-09-07: prefer a live nemotron free slug if available, else any free.
     catalog = _openrouter_model_catalog()
     for slug, _, is_free in catalog:
@@ -8495,18 +7196,15 @@ def ask_cloud_openrouter_nemotron(messages):
         _ask_openrouter(messages, slug, "openrouter-free", timeout=60) if slug else None
     )
 
-
-def ask_cloud_openrouter_qwen3coder(messages):
+def ask_cloud_openrouter_qwen3coder(messages: Any) -> Any:
     # 2026-09-07: free-only live catalog.
     return ask_cloud_openrouter_generic(messages)
 
-
-def ask_cloud_openrouter_r1(messages):
+def ask_cloud_openrouter_r1(messages: Any) -> Any:
     # 2026-09-07: OpenRouter /free models only — reasoner lane maps to generic free chain.
     return ask_cloud_openrouter_generic(messages)
 
-
-def ask_cloud_openrouter_generic(messages):
+def ask_cloud_openrouter_generic(messages: Any) -> Any:
     # 2026-09-07: free-only live catalog. Try known-good free slugs in priority
     # order, then any other free slug OpenRouter currently advertises.
     #
@@ -8540,13 +7238,11 @@ def ask_cloud_openrouter_generic(messages):
             break
     return None
 
-
-def ask_cloud_openrouter(messages):
+def ask_cloud_openrouter(messages: Any) -> Any:
     # 2026-09-07: OpenRouter /free models only, from live catalog.
     return ask_cloud_openrouter_generic(messages)
 
-
-def _ollama_cloud_key():
+def _ollama_cloud_key() -> Any:
     """OLLAMA_API_KEY lives in ~/.hermes/.env (NOT the keychain) —
     shared lookup so the picker and the actual caller never drift."""
     key = os.environ.get("OLLAMA_API_KEY", "").strip()
@@ -8574,8 +7270,7 @@ def _ollama_cloud_key():
         pass
     return ""
 
-
-def _ask_ollama_cloud(messages, model, label, timeout=120):
+def _ask_ollama_cloud(messages: Any, model: str, label: Any, timeout: int=120) -> Any:
     """Ollama Cloud (https://ollama.com/v1) — the operator's paid
     subscription. OpenAI-compatible endpoint. Key lives in ~/.hermes/.env
     as OLLAMA_API_KEY (NOT the keychain). Used for plan-debate generation
@@ -8648,8 +7343,7 @@ def _ask_ollama_cloud(messages, model, label, timeout=120):
             _cloud_trip_network(e, 60)
         return None
 
-
-def _ask_claf(messages, timeout=90):
+def _ask_claf(messages: Any, timeout: int=90) -> Any:
     """Route through CLAF (~/projects/claf) — the router this whole stack
     note), running as claf.service. Only for AUTO/unpinned cloud
     escalation: CLAF's provider selection (claf_config.select_provider)
@@ -8676,7 +7370,6 @@ def _ask_claf(messages, timeout=90):
         log(f"CLAF_ERROR: {e}")
         return None
 
-
 # 2026-08-30: hard outer timeout for every cloud call. Every _ask_* /
 # ask_cloud_* function already passes its own timeout= to urlopen(), but
 # on this network that timeout isn't reliable — a connection can go
@@ -8702,31 +7395,10 @@ def _ask_claf(messages, timeout=90):
 _CLOUD_CALL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=32, thread_name_prefix="cloud-call"
 )
-_CLOUD_HARD_TIMEOUT = 150
-# 2026-09-08: ask_local()/ask_local_stream() hit Ollama with only a bare
-# urlopen(timeout=600) — no outer bound. That's the same "connection alive,
-# reads never cumulatively time out" failure mode _call_with_hard_timeout was
-# built to fix for cloud (see the 2026-08-30 note above), just never ported
-# to the local call sites. Reusing the SAME executor+poll wrapper here, with
-# a longer ceiling than cloud's 150s because CPU inference legitimately runs
-# minutes (ask_local/ask_local_stream already raised their own urlopen
-# timeout to 600 for exactly that reason) — this is an outer safety net for
-# when even that legitimately-slow call never comes back, not a tighter cap
-# on ordinary slow-but-working answers.
-_LOCAL_HARD_TIMEOUT = 600
-
-# 2026-09-11: cap on automatic length-limit continuations (see ask_cloud's
-# finish_reason=="length" handling below). 3 extra rounds on top of the
-# first reply = 4 x 8192 max_tokens ~= 32K tokens of answer before ever
-# falling back to asking the operator to type "proceed" — generous for
-# any real task, bounded so a pathological "never actually stops" reply
-# can't loop forever burning calls.
-_MAX_AUTO_CONTINUATIONS = 3
-
 
 def _call_with_hard_timeout(
-    fn, *args, timeout=_CLOUD_HARD_TIMEOUT, cloud_provider=None, **kwargs
-):
+    fn: Any, *args, timeout: Any=_CLOUD_HARD_TIMEOUT, cloud_provider: Any | None=None, **kwargs
+) -> Any:
     future = _CLOUD_CALL_EXECUTOR.submit(fn, *args, **kwargs)
     try:
         # 2026-08-30: poll in ~1s slices instead of one blocking
@@ -8790,42 +7462,7 @@ def _call_with_hard_timeout(
         log(f"CLOUD_CALL_ERROR: {getattr(fn, '__name__', fn)}: {e}")
         return None
 
-
-# 2026-09-03: sensei already had a real cloud fallback chain (below, in
-# ask_cloud) — just entirely hardcoded, no runtime way to see or change
-# it, unlike Hermes' `hermes fallback list/add/remove`. This is the
-# management layer on top of the SAME chain, not a new mechanism.
-# Keep in sync with ask_cloud's fn_map keys — a name here that isn't a
-# real fn_map entry just gets silently dropped by _load_fallback_order,
-# it can't crash the chain or reintroduce a disabled provider.
-_FALLBACK_ORDER_FILE = Path.home() / ".master_ai_fallback_order.json"
-# 2026-09-07: free-first fallback order. OpenCode (keyless free) and
-# OpenRouter free lanes are tried before any paid direct provider.
-# NVIDIA direct is last because it consumes paid credits; it only runs
-# when no free option works.
-_DEFAULT_FALLBACK_ORDER = [
-    "opencode",
-    "nemotron",
-    "openrouter",
-    "deepseek-r1",
-    "hermes-405b",
-    "nvidia",
-    "nvidia-nano",
-]
-_VALID_FALLBACK_NAMES = {
-    "opencode",
-    "nvidia",
-    "nvidia-nano",
-    "hermes-405b",
-    "gpt-oss-120b",
-    "nemotron",
-    "qwen3-coder",
-    "deepseek-r1",
-    "openrouter",
-}
-
-
-def _load_fallback_order():
+def _load_fallback_order() -> Any:
     """Names only — ask_cloud resolves each against its own fn_map, so a
     stale/typo'd saved name is just dropped, never a crash. No override
     file, or an empty/invalid one, falls back to the built-in default
@@ -8843,10 +7480,8 @@ def _load_fallback_order():
         log(f"FALLBACK_ORDER_LOAD_ERROR: {e}")
     return list(_DEFAULT_FALLBACK_ORDER)
 
-
-def _save_fallback_order(names):
+def _save_fallback_order(names: Any) -> None:
     _FALLBACK_ORDER_FILE.write_text(json.dumps(names, indent=2))
-
 
 # ── `fallback ...` REPL commands (2026-09-28) ────────────────────────────
 # Extracted verbatim out of main()'s inline if-chain so the branch is
@@ -8861,7 +7496,7 @@ def _save_fallback_order(names):
 # (_VALID_FALLBACK_NAMES) and the stored chain are all lowercase, so
 # `fallback add NVIDIA` resolves like `fallback add nvidia` rather than
 # reporting "unknown provider 'NVIDIA'".
-def _handle_fallback_cmd(lo, cmd):
+def _handle_fallback_cmd(lo: str, cmd: str) -> bool:
     """Handle one `fallback ...` command. Returns True if it was consumed."""
     if lo in ("fallback", "fallback list"):
         order = _load_fallback_order()
@@ -8947,37 +7582,7 @@ def _handle_fallback_cmd(lo, cmd):
 
     return False
 
-
-# 2026-09-26: ask_cloud()'s fn_map (below) is the actual, authoritative
-# set of bare provider names it can dispatch to. delegate_runner.py used
-# to hand-copy this list into its own _DELEGATE_KNOWN_BARE_PROVIDERS —
-# already caught drifting when Poolside landed in fn_map tonight but
-# never got added there, so `delegate poolside-s: ...` silently fell
-# through to tier="default" instead of being recognized as a provider
-# override. Exported here so delegate_runner.py imports the real set
-# instead of maintaining a second copy; ask_cloud() asserts against it
-# below so a FUTURE fn_map addition that's forgotten here fails loud
-# (on the very next call) instead of drifting silently again.
-ASK_CLOUD_BARE_PROVIDERS = frozenset(
-    {
-        "opencode",
-        "opencode-go",
-        "glm-5.3-flash",
-        "nvidia",
-        "nvidia-nano",
-        "hermes-405b",
-        "gpt-oss-120b",
-        "nemotron",
-        "qwen3-coder",
-        "deepseek-r1",
-        "openrouter",
-        "poolside-s",
-        "poolside-xs",
-    }
-)
-
-
-def _pinned_fallback_notice(provider) -> bool:
+def _pinned_fallback_notice(provider: Any) -> bool:
     """True when `provider` is the model the operator explicitly pinned, so a
     fall-through is worth telling them about.
 
@@ -8992,8 +7597,7 @@ def _pinned_fallback_notice(provider) -> bool:
         return False
     return str(pin) == str(provider)
 
-
-def _notice_pinned_falling_back(provider, order) -> None:
+def _notice_pinned_falling_back(provider: Any, order: Any) -> None:
     """Session-visible: the pinned model didn't answer; here's the plan."""
     try:
         chain = ", ".join(order[:4]) if order else "default chain"
@@ -9008,8 +7612,7 @@ def _notice_pinned_falling_back(provider, order) -> None:
     except Exception as e:  # never let a notice break the call
         log(f"FALLBACK_NOTICE_ERROR: {e}")
 
-
-def _notice_backup_answered(provider, used_model) -> None:
+def _notice_backup_answered(provider: Any, used_model: Any) -> None:
     """Session-visible: name the model that actually produced the answer."""
     try:
         if used_model:
@@ -9021,8 +7624,7 @@ def _notice_backup_answered(provider, used_model) -> None:
     except Exception as e:  # never let a notice break the call
         log(f"FALLBACK_NOTICE_ERROR: {e}")
 
-
-def ask_cloud(messages, provider="opencode"):
+def ask_cloud(messages: Any, provider: str="opencode") -> Any:
     # Privacy guard: if READ injected private content into this turn, ask
     # for one-shot approval right here (TTY present -> interactive y/N,
     # same "absent user is not a consenting user" rule as confirm_run's
@@ -9112,7 +7714,7 @@ def ask_cloud(messages, provider="opencode"):
             f"constant only: {ASK_CLOUD_BARE_PROVIDERS - set(fn_map)})"
         )
 
-    def _record(resp_text, used_model):
+    def _record(resp_text: Any, used_model: Any) -> None:
         if harvest is None or not resp_text:
             return
         try:
@@ -9308,8 +7910,7 @@ def ask_cloud(messages, provider="opencode"):
         _notice_backup_answered(provider, None)
     return None
 
-
-def ask_model_router(messages, model=None, max_tokens=None):
+def ask_model_router(messages: Any, model: Any | None=None, max_tokens: Any | None=None) -> tuple:
     """Model/provider-agnostic single-call router.
 
     Picks the right backend based on the model identifier:
@@ -9433,9 +8034,8 @@ def ask_model_router(messages, model=None, max_tokens=None):
     elapsed = round(time.time() - t0, 2)
     return text, elapsed
 
-
 # ── STT: WHISPER ──────────────────────────────────────────────
-def record_audio(duration=5):
+def record_audio(duration: int=5) -> Any:
     print(f"{C}  🎤 Recording {duration}s — speak now...{X}")
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     tmp.close()
@@ -9445,8 +8045,7 @@ def record_audio(duration=5):
     )
     return tmp.name
 
-
-def transcribe(audio_file):
+def transcribe(audio_file: Any) -> Any:
     print(f"{Y}  📝 Transcribing...{X}")
     try:
         import warnings
@@ -9475,25 +8074,9 @@ def transcribe(audio_file):
         log(f"WHISPER_ERROR: {e}")
         return ""
 
-
 # ── TTS: PIPER ────────────────────────────────────────────────
-TTS_MAX_CHARS = 500  # truncate long replies so TTS doesn't hang on documents
 
-# 2026-09-02: Sensei's TTS and the ai-controller/Hermes "Aria" voice used to
-# be two totally disconnected systems -- this speak() hardcoded Piper's
-# "lessac" voice with no pitch/rate controls, while the operator's actually-
-# tuned voice (edge-tts en-US-AriaNeural, -22Hz pitch, +18% rate) lived only
-# in ~/ai-controller/voices/aria/config.json and was never read here. Turning
-# Sensei's TTS on made it speak in a voice the operator never configured.
-# Fix: read Aria's config live (so a retune in ai-controller is picked up
-# automatically, never a stale hardcoded copy) and speak with edge-tts +
-# that exact pitch/rate. Piper stays as the fallback for offline use or a
-# box that never had ai-controller installed -- Master AI's own install
-# docs promise it works standalone without any other project present.
-ARIA_VOICE_CONFIG = Path.home() / "ai-controller" / "voices" / "aria" / "config.json"
-
-
-def _aria_voice_settings():
+def _aria_voice_settings() -> None:
     try:
         cfg = json.loads(ARIA_VOICE_CONFIG.read_text())
         voice = cfg.get("voice")
@@ -9507,8 +8090,7 @@ def _aria_voice_settings():
     except Exception:
         return None
 
-
-def speak(text):
+def speak(text: str) -> Any:
     if not text:
         return
     # Strip directives and code blocks — not useful to hear
@@ -9535,7 +8117,7 @@ def speak(text):
     # any time after that. Same contract, applied here.
     _tts_t0 = time.time()
 
-    def _barge_in_since(t0):
+    def _barge_in_since(t0: Any) -> Any:
         try:
             return os.path.getmtime("/tmp/ai_tts_barge") >= t0
         except OSError:
@@ -9632,27 +8214,23 @@ def speak(text):
         except Exception:
             pass
 
-
 # ── TASK TRACKER ─────────────────────────────────────────────
-def load_tasks():
+def load_tasks() -> Any:
     try:
         return json.loads(TASKS_FILE.read_text())
     except Exception:
         return []
 
-
-def save_tasks(tasks):
+def save_tasks(tasks: Any) -> None:
     try:
         TASKS_FILE.write_text(json.dumps(tasks, indent=2))
     except Exception:
         pass
 
-
-def active_task_count():
+def active_task_count() -> Any:
     return sum(1 for t in load_tasks() if not t.get("done", False))
 
-
-def _build_task_list_context():
+def _build_task_list_context() -> Any:
     """Fresh-from-disk task list grounding, shared by every turn that needs it.
 
     2026-09-03: the 2026-09-02 fix below only ran inside handle()'s
@@ -9676,7 +8254,6 @@ def _build_task_list_context():
         f"an earlier turn]\n"
         + ("\n".join(f"- {p}" for p in pending[:15]) if pending else "All tasks done.")
     )
-
 
 def _reply_needs_operator_input(reply_text: str) -> bool:
     """True if this turn's reply is genuinely waiting on the operator —
@@ -9749,7 +8326,6 @@ def _reply_needs_operator_input(reply_text: str) -> bool:
 
     return False
 
-
 def _watchdog_maybe_auto_continue(reply_text: str) -> bool:
     """Called right after a normal turn finishes. Returns True if it
     queued an auto-continuation (via PENDING_USER_NOTE) instead of
@@ -9785,8 +8361,7 @@ def _watchdog_maybe_auto_continue(reply_text: str) -> bool:
     )
     return True
 
-
-def show_tasks():
+def show_tasks() -> None:
     tasks = load_tasks()
     if not tasks:
         print(f"  {W}No tasks. Use: task add <text>{X}\n")
@@ -9798,8 +8373,7 @@ def show_tasks():
         print(f"  {icon} {i}) {W}{t.get('text', '')}{X}")
     print()
 
-
-def handle_task_cmd(cmd):
+def handle_task_cmd(cmd: str) -> bool:
     """Handle task add/done/list/clear/toggle commands."""
     lo = cmd.lower().strip()
     tasks = load_tasks()
@@ -9850,27 +8424,9 @@ def handle_task_cmd(cmd):
 
     return False
 
-
 # ── CONTEXT-PRESSURE COMPACTION (in-place, no restart) ─────────
-# Elijah, 2026-09-28: "it needs to compact like all the other frameworks
-# compact. it doesn't need to restart, it just needs to compress. and
-# start from where it was. the restart is bad... it should just stay
-# where it is and start from the compression."
-#
-# Replaces the old context-pressure response: save_session() + write
-# RESUME_FLAG + os.execvp() (see handle_save_refresh()) -- a full process
-# restart that discarded MODE, PINNED_MODEL, and every other in-memory
-# session setting, relying on a resume-recap reload on the NEXT process's
-# first prompt to paper over it. handle_save_refresh() itself is
-# UNCHANGED and still used for deliberate user-requested fresh starts
-# ("new" / "clear" / "kick" / "refresh") -- those really do want a blank
-# slate, on purpose. This is only for the AUTOMATIC "history got too big"
-# trip inside orchestrate(): compress the older portion in place and keep
-# running the exact same process, same turn, same everything else.
-_COMPACT_KEEP_RECENT = 12  # most recent raw messages stay verbatim, full detail
 
-
-def _compact_older_messages(older_msgs):
+def _compact_older_messages(older_msgs: Any) -> Any:
     """One cloud call: a dense WORKING summary for a model to continue
     from -- not summarize_session()'s human-readable 4-bullet recap.
     Preserves concrete facts (paths, commands, decisions, values found)
@@ -9894,8 +8450,7 @@ def _compact_older_messages(older_msgs):
         log(f"CONTEXT_COMPACT_ERROR: {e}")
         return ""
 
-
-def _compact_history_in_place(history):
+def _compact_history_in_place(history: Any) -> bool:
     """Replace older turns with a dense summary; keep the system
     message(s) and the most recent _COMPACT_KEEP_RECENT messages verbatim.
     Mutates `history` in place (same list object the caller holds) and
@@ -9920,9 +8475,8 @@ def _compact_history_in_place(history):
     history[:] = system + [note] + recent
     return True
 
-
 # ── HISTORY COMPACT ───────────────────────────────────────────
-def compact_history(history):
+def compact_history(history: Any) -> None:
     """Keep system message + last 100 exchanges (200 msgs). Silent.
 
     2026-09-20: was 20 exchanges (40 msgs) — a flat, route-agnostic message
@@ -9942,46 +8496,7 @@ def compact_history(history):
     if len(convo) > 200:
         history[:] = system + convo[-200:]
 
-
-# P1.2 per-route history budgets. Chat banter doesn't need 30 turns of
-# context; debugging does. The trim runs before prompt assembly so cold
-# prefill stays bounded. See _route_history_budget() for the picker; raise
-# values here to extend any single tier's ceiling.
-#
-# 2026-09-20: raised substantially for the cloud-routed tiers. These caps
-# were sized for small local models (the "reasoning" tier's own comment
-# still says qwen3, but that tier is actually cloud_deep/DeepSeek, whose
-# real context window is ~128K tokens - roughly 500K+ chars - so 40000
-# chars (~10K tokens) was using well under 10% of what the model backing it
-# can actually hold). "chat" (Groq/cloud_fast) stays closer to its old
-# value on purpose: Groq has a real request-size limit (HTTP 413), not an
-# artificial one, per the P1.2 comment history above. "tool"/"code"/
-# "vision" route through local models with genuinely smaller windows, so
-# those got a real but more modest increase rather than the same jump.
-_ROUTE_HISTORY_BUDGETS = {
-    "chat": 14000,  # cloud_fast/Groq — real request-size ceiling, raise carefully
-    "tool": 18000,  # local with tool-required intent
-    "code": 70000,  # CODE_WORDS / ALTER_WORDS local
-    "reasoning": 220000,  # cloud_deep/DeepSeek — ~128K token window, was 10x undersized
-    "vision": 16000,  # local llava
-    "default": 70000,  # legacy local cap (pre-P1.2)
-}
-
-
-# Dispatch table for non-local routes. Lookup form (not `if` chain) keeps
-# route name literals out of `if`-branch bodies, which the auto-context
-# slicer would otherwise pick up as fallback matches for those route names.
-_NONLOCAL_ROUTE_TIERS = {
-    "cloud_fast": "chat",
-    "cloud_deep": "reasoning",
-    "cloud": "reasoning",
-    "cloud_vision": "vision",
-    "vision": "vision",
-    "web": "reasoning",
-}
-
-
-def _route_history_budget(route_name, user_text):
+def _route_history_budget(route_name: Any, user_text: Any) -> Any:
     """Pick a history-trim budget tuned to the chosen route.
 
     route_name is the dispatched route ('local', 'cloud_fast', etc.) — same
@@ -10027,8 +8542,7 @@ def _route_history_budget(route_name, user_text):
         pass
     return _ROUTE_HISTORY_BUDGETS["default"]
 
-
-def _trim_history_by_chars(history, max_chars, keep_system=True):
+def _trim_history_by_chars(history: Any, max_chars: Any, keep_system: bool=True) -> Any:
     """Trim oldest non-system messages until total chars <= max_chars.
     Used to prevent local prefill from ballooning into 10-minute TTFT."""
     if not history or not max_chars or max_chars <= 0:
@@ -10053,44 +8567,9 @@ def _trim_history_by_chars(history, max_chars, keep_system=True):
     after = len(kept)
     return after != before
 
-
 # ── AUTO FILE INJECTION ───────────────────────────────────────
-# Symbol-aware slicer caps. These are DEFAULTS — the adaptive sizing in
-# _adaptive_slice_params() scales them per call by symbol reference density
-# and prompt intent. Edit here to change the baseline; the adaptive scales
-# stay proportional.
-_SLICER_PRE_LINES = 50
-_SLICER_POST_LINES = 100
-_SLICER_MAX_CHARS = 8000
-_WHOLE_FILE_THRESHOLD = 200  # files <= this many lines, inject whole
-_WHOLE_FILE_MAX_CHARS = (
-    64000  # escape-hatch cap (raised 2026-09-11 for framework audits)
-)
-_WHOLE_FILE_CLOUD_BIAS_AT = (
-    15000  # inject_chars > this triggers cloud bias if available
-)
-_AUTO_CONTEXT_MAX_FILES = 2
-_SLICER_MAX_SLICES_PER_FILE = 2
-_SYMBOL_MIN_LENGTH = 4
 
-# P1.1 adaptive slicer: scale pre/post/max_chars by reference density and
-# intent verb so the model sees less context for narrow asks (rename, where
-# is) and more for wide ones (debug, audit, trace).
-_REF_DENSITY_TIGHT_BELOW = 3  # symbol appears <3 times → tighten
-_REF_DENSITY_EXPAND_ABOVE = 15  # symbol appears >15 times → expand
-_TIGHTER_INTENTS_RE = re.compile(
-    r"\b(?:rename|where\s+is|find|locate|show\s+me\s+the\s+def(?:inition)?|"
-    r"what\s+line|on\s+what\s+line)\b",
-    re.I,
-)
-_WIDER_INTENTS_RE = re.compile(
-    r"\b(?:fix|debug|understand|audit|trace|why\s+does|why\s+is|"
-    r"root\s+cause|how\s+does|walk\s+through|explain\s+the\s+flow)\b",
-    re.I,
-)
-
-
-def _adaptive_slice_params(content, symbol, user_text):
+def _adaptive_slice_params(content: Any, symbol: Any, user_text: Any) -> tuple:
     """Return (pre_lines, post_lines, max_chars) tuned to density + intent.
 
     Density: word-boundary count of the symbol in the file content.
@@ -10125,57 +8604,7 @@ def _adaptive_slice_params(content, symbol, user_text):
         mc = int(mc * 1.4)
     return (pre, post, mc)
 
-
-# ALL_CAPS English/instruction words that aren't code symbols. Prevents the
-# slicer from matching the user's directive language ("emit READ/RUN
-# directives") as identifiers and slicing on the wrong location. Sensei's own
-# directive verbs sit at the top — those are the proven leaks. The tail covers
-# common ALL_CAPS marker words seen in prompts.
-_INSTRUCTION_VERB_BLACKLIST = frozenset(
-    {
-        "READ",
-        "RUNTERM",
-        "CREATE",
-        "EDIT",
-        "WRITE",
-        "OPEN",
-        "DELETE",
-        "REMOVE",
-        "DONE",
-        "PLAN",
-        "TODO",
-        "FIXME",
-        "NOTE",
-        "WARN",
-        "INFO",
-    }
-)
-
-_SYMBOL_PATTERNS = [
-    re.compile(r"\b([a-zA-Z_][a-zA-Z0-9_]{2,})\s*\(\s*\)"),  # function_name()
-    re.compile(r"\b([A-Z][A-Z0-9_]{3,})\b"),  # ALL_CAPS_NAMES
-    re.compile(r"\b([A-Z][a-zA-Z0-9]{3,})\b"),  # CamelCase
-    re.compile(r"(?:def|class)\s+([a-z_][a-zA-Z0-9_]{3,})"),  # def foo / class Bar
-    re.compile(r"`([a-zA-Z_][a-zA-Z0-9_]{3,})`"),  # `backtick`
-    re.compile(r"\b([a-z][a-z0-9_]{3,}_[a-z0-9_]+)\b"),  # snake_case (must contain _)
-]
-_WHOLE_FILE_PHRASES = (
-    "whole file",
-    "entire file",
-    "full file",
-    "read all of",
-    "full review",
-    "complete file",
-    "all of the file",
-    # 2026-09-11: audit/review prompts imply whole-file intent
-    "audit",
-    "review this file",
-    "walk through this file",
-    "analyze this file",
-)
-
-
-def _extract_target_symbols(user_text: str, ignored_symbols=None) -> list:
+def _extract_target_symbols(user_text: str, ignored_symbols: Any | None=None) -> list:
     """Pull candidate code identifiers from the user prompt.
     Returns deduped list, ordered by appearance, lowercased dedup key."""
     ignored = {str(s).lower() for s in (ignored_symbols or []) if s}
@@ -10195,14 +8624,13 @@ def _extract_target_symbols(user_text: str, ignored_symbols=None) -> list:
             out.append(s)
     return out
 
-
 def _slice_around_symbol(
     content: str,
     symbol: str,
     pre_lines: int = _SLICER_PRE_LINES,
     post_lines: int = _SLICER_POST_LINES,
     max_chars: int = _SLICER_MAX_CHARS,
-):
+) -> None:
     """Find symbol's definition (or first word-boundary fallback) and slice around it.
 
     Two-pass: prefer a def/class line or a top-level assignment (`X = ...`,
@@ -10257,12 +8685,10 @@ def _slice_around_symbol(
         )
     return (start + 1, end, slice_text, match_idx + 1)
 
-
 def _is_whole_file_request(user_text_low: str) -> bool:
     return any(p in user_text_low for p in _WHOLE_FILE_PHRASES)
 
-
-def auto_inject_context(user_text, enabled=True):
+def auto_inject_context(user_text: str, enabled: bool=True) -> tuple:
     """Scan message for file paths/names, inject relevant slices as [AUTO-CONTEXT].
 
     Returns (injected_text, meta) where meta carries:
@@ -10270,6 +8696,10 @@ def auto_inject_context(user_text, enabled=True):
       - 'whole_file_requested': bool
       - 'inject_chars': int (length of returned text)
       - 'sliced': list of (path, symbol, start_line, end_line) — for the print line
+
+    2026-09-28: added intent guard. A bare filename mention in ordinary text
+    (e.g. "requirements.txt has real deps") should NOT trigger injection. Only
+    inject when the user signals they want to read or discuss the file.
     """
     meta = {
         "big_file_no_symbol_match": [],
@@ -10280,17 +8710,80 @@ def auto_inject_context(user_text, enabled=True):
     if not enabled:
         return ("", meta)
 
-    search_dirs = [Path.home() / "scripts", Path(os.getcwd())]
-    user_text_low = user_text.lower()
-    whole_file = _is_whole_file_request(user_text_low)
-    meta["whole_file_requested"] = whole_file
+    # Intent guard: only scan for file context when the user actually wants it.
+    # Ordinary status updates like "requirements.txt has real deps" must pass
+    # through without derailing into [AUTO-CONTEXT].
+    low_text = user_text.lower()
+    read_cues = (
+        "read",
+        "check",
+        "look at",
+        "show me",
+        "explain",
+        "what's in",
+        "what is in",
+        "open",
+        "review",
+        "audit",
+        "walk through",
+        "walk me through",
+        "debug",
+        "inside",
+        "contents of",
+        "content of",
+        "tell me about",
+        "describe",
+        "what does",
+        "how does",
+        "print",
+        "display",
+        "see",
+        "view",
+        "examine",
+        "inspect",
+        "analyze",
+        "analyse",
+        "grep",
+        "find in",
+        "search in",
+        "file has",
+        "the file",
+        "this file",
+        "that file",
+    )
 
     path_re = re.compile(
         r"(?:~/[\w/.\-]+\.[\w]+|\.\/[\w/.\-]+\.[\w]+|/[\w/.\-]+\.[\w]+|"
         r"[\w\-]+\.(?:py|sh|js|ts|html|css|json|txt|md|yaml|yml|conf|cfg|toml))"
     )
-    candidates = path_re.findall(user_text)
-    ignored_symbols = {Path(c).stem.lower() for c in candidates}
+
+    # Explicit symbol mentions also count as intent to inspect, BUT the filename
+    # stem itself (e.g. "requirements" from "requirements.txt") does not count.
+    # Only count symbols that are separate from the matched filename tokens.
+    path_candidates = path_re.findall(user_text)
+    filename_stems = {Path(c).stem.lower() for c in path_candidates}
+    symbols = _extract_target_symbols(user_text, ignored_symbols=filename_stems)
+    has_read_intent = any(cue in low_text for cue in read_cues) or bool(symbols)
+    # Path-shaped tokens with / or ~ are almost always meant to be looked at.
+    has_path_literal = bool(
+        re.search(
+            r"(?:^|\s)(?:~\/|\.\/|\.\.\/|\/[A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,8})\b",
+            user_text,
+        )
+    )
+    if not (has_read_intent or has_path_literal or _is_whole_file_request(low_text)):
+        return ("", meta)
+
+    # Repo-aware search dirs. Prefer the project root of the current working
+    # directory (look for .git, pyproject.toml, package.json, etc.) rather than
+    # blindly searching ~/scripts and cwd by bare filename.
+    search_dirs = _auto_context_search_dirs()
+
+    whole_file = _is_whole_file_request(low_text)
+    meta["whole_file_requested"] = whole_file
+
+    candidates = path_candidates
+    ignored_symbols = filename_stems
     symbols = _extract_target_symbols(user_text, ignored_symbols=ignored_symbols)
 
     injected = []
@@ -10401,26 +8894,60 @@ def auto_inject_context(user_text, enabled=True):
     meta["inject_chars"] = len(text)
     return (text, meta)
 
+# 2026-09-28: repo-aware search directories for auto-context. Avoid finding
+# stray files by bare name when the real file lives in a project root.
+def _auto_context_search_dirs() -> Any:
+    """Return ordered search directories for auto-context file lookup.
 
-# ── MEMORY ────────────────────────────────────────────────────
-def load_memory():
+    If cwd is inside a git/project root, that root is searched first. Then
+    fall back to ~/scripts and cwd. This prevents e.g. finding a stray
+    1-line requirements.txt somewhere else when the real repo has an 18-line
+    requirements.txt at the project root."""
+    dirs = []
+    cwd = Path.cwd()
+    root_markers = {
+        ".git",
+        "pyproject.toml",
+        "setup.py",
+        "setup.cfg",
+        "package.json",
+        "requirements.txt",
+        "README.md",
+        "README",
+        ".claude",
+    }
+    # Walk up from cwd looking for a project root
+    cur = cwd
+    project_root = None
+    while cur != cur.parent:
+        if any((cur / marker).exists() for marker in root_markers):
+            project_root = cur
+            break
+        cur = cur.parent
+    if project_root and project_root not in dirs:
+        dirs.append(project_root)
+    # Common sensei paths
+    if Path.home() / "scripts" not in dirs:
+        dirs.append(Path.home() / "scripts")
+    if cwd not in dirs:
+        dirs.append(cwd)
+    return dirs
+
+def load_memory() -> Any:
     try:
         return MEMORY_FILE.read_text().strip()
     except Exception:
         return ""
-
 
 def _is_memory_marker_line(line: str) -> bool:
     s = (line or "").strip().lower()
     # Topic markers are for human rewind / AI_CONTEXT snapshots; they are not durable facts.
     return s.startswith("--- new topic ---") or s.startswith("--- topic ---")
 
-
 def _topic_marker_line(kind: str = "NEW TOPIC") -> str:
     ts = _fmt_ampm()
     kind = (kind or "NEW TOPIC").strip().upper()
     return f"--- {kind} --- {ts}"
-
 
 def _append_memory_marker(line: str) -> None:
     line = (line or "").strip()
@@ -10435,7 +8962,6 @@ def _append_memory_marker(line: str) -> None:
     except Exception:
         pass
 
-
 def _timeout_fallback_system_prompt(cloud_system: str) -> str:
     """Cloud timeout fallback keeps identity/tool rules, but drops durable memory.
     The failure mode here is stale-topic drift, so memory must not ride along."""
@@ -10445,7 +8971,6 @@ def _timeout_fallback_system_prompt(cloud_system: str) -> str:
         + "\n\n[MEMORY]\n(omitted for timeout fallback; answer only the current user request)"
     )
 
-
 # ── SCHEDULER ──────────────────────────────────────────────────
 # 2026-09-01: restored — this was built 2026-08-20 (commit 64597c3), then
 # removed a week later as "unused" (commit 9925bb2) during a same-day
@@ -10454,19 +8979,16 @@ def _timeout_fallback_system_prompt(cloud_system: str) -> str:
 # ~/MD/handoff_sensei_hermes_parity_2026-08-31.md). Restored verbatim from
 # the last good commit (b6898db) — the daemon file (master_ai_scheduler.py)
 # was never deleted and is unchanged since 2026-08-20.
-def _scheduler_path():
+def _scheduler_path() -> Any:
     return Path.home() / ".master_ai_schedules.json"
 
-
-def _scheduler_log():
+def _scheduler_log() -> Any:
     return Path.home() / ".master_ai_scheduler.log"
 
-
-def _scheduler_pid():
+def _scheduler_pid() -> Any:
     return Path.home() / ".master_ai_scheduler.pid"
 
-
-def _load_schedules():
+def _load_schedules() -> Any:
     try:
         p = _scheduler_path()
         if not p.exists():
@@ -10477,15 +8999,13 @@ def _load_schedules():
         log(f"SCHEDULER_LOAD_ERROR: {e}")
         return []
 
-
-def _save_schedules(schedules):
+def _save_schedules(schedules: Any) -> None:
     try:
         _scheduler_path().write_text(json.dumps(schedules, indent=2))
     except Exception as e:
         log(f"SCHEDULER_SAVE_ERROR: {e}")
 
-
-def _scheduler_running():
+def _scheduler_running() -> bool:
     pid_file = _scheduler_pid()
     if not pid_file.exists():
         return False
@@ -10499,8 +9019,7 @@ def _scheduler_running():
         pid_file.unlink(missing_ok=True)
         return False
 
-
-def _start_scheduler_daemon():
+def _start_scheduler_daemon() -> bool:
     import subprocess
     import sys
 
@@ -10529,8 +9048,7 @@ def _start_scheduler_daemon():
     print(f"{Y}scheduler start pending — check log{X}")
     return True
 
-
-def _stop_scheduler_daemon():
+def _stop_scheduler_daemon() -> bool:
     import subprocess
     import sys
 
@@ -10553,8 +9071,7 @@ def _stop_scheduler_daemon():
     print(f"{G}scheduler stopped{X}")
     return True
 
-
-def _add_schedule(command, when, cadence):
+def _add_schedule(command: Any, when: Any, cadence: Any) -> Any:
     schedules = _load_schedules()
     sid = f"sched_{int(__import__('time').time())}"
     schedules.append(
@@ -10570,20 +9087,17 @@ def _add_schedule(command, when, cadence):
     _save_schedules(schedules)
     return sid
 
-
-def _remove_schedule(sid):
+def _remove_schedule(sid: Any) -> Any:
     schedules = _load_schedules()
     before = len(schedules)
     schedules = [s for s in schedules if s.get("id") != sid]
     _save_schedules(schedules)
     return before - len(schedules)
 
-
-def _list_schedules():
+def _list_schedules() -> Any:
     return _load_schedules()
 
-
-def _show_schedules():
+def _show_schedules() -> None:
     rows = [
         (
             s.get("id"),
@@ -10607,7 +9121,6 @@ def _show_schedules():
         )
     print(f"{BC}  ╚{'═' * 70}╝{X}\n")
 
-
 # ── MCP SERVERS — Sensei as MCP CLIENT ─────────────────────────
 # 2026-09-01. Sensei was always an MCP SERVER (sensei_mcp_server.py in
 # ~/projects/master-ai speaks JSON-RPC 2.0 over stdio to other agents) but
@@ -10621,13 +9134,12 @@ def _show_schedules():
 # validation. A server that fails probing is stored DISABLED with the
 # reason recorded — config is never trusted blindly (same philosophy as
 # the typed_actions validation gate).
-def _mcp_show():
+def _mcp_show() -> None:
     import sensei_mcp_client as _mcp
 
     print(_mcp.format_catalog(G, R, Y, C, W, D, X))
 
-
-def select_memory_context(user_text, max_chars=6000, mode="default"):
+def select_memory_context(user_text: Any, max_chars: int=6000, mode: str="default") -> Any:
     """Compact durable memory for local-model turns.
 
     Local routes intentionally skip a dynamic system prompt so Ollama can keep
@@ -10654,7 +9166,7 @@ def select_memory_context(user_text, max_chars=6000, mode="default"):
     }
     picked = []
 
-    def add(line):
+    def add(line: Any) -> None:
         if line not in picked:
             picked.append(line)
 
@@ -10679,18 +9191,9 @@ def select_memory_context(user_text, max_chars=6000, mode="default"):
             out = out[first_nl + 1 :]
     return out
 
-
 # ── APPROVED COMMANDS ─────────────────────────────────────────
-# P2.2: approval TTL + cwd scope. New line format is "<ts>\t<cwd>\t<cmd>".
-# Bare-command lines (no tab — pre-P2.2) keep their original semantics:
-# match-everywhere, never expire. This makes the migration safe — the
-# user's existing approvals still work — while new approvals get the
-# tighter contract.
-_APPROVED_DEFAULT_TTL_S = 24 * 3600  # 24h
-_APPROVED_GLOBAL_SCOPE = "*"  # cwd token meaning "any directory"
 
-
-def _parse_approved_line(line):
+def _parse_approved_line(line: str) -> None:
     """Return (ts, cwd, cmd). ts=0 + cwd=_APPROVED_GLOBAL_SCOPE for legacy
     bare-command lines so the matcher treats them as match-everywhere /
     no-expiry. Empty/malformed lines return None."""
@@ -10710,8 +9213,7 @@ def _parse_approved_line(line):
         return None
     return (ts, cwd or _APPROVED_GLOBAL_SCOPE, cmd)
 
-
-def load_approved():
+def load_approved() -> Any:
     """Backward-compatible accessor — returns a set of approved commands
     ignoring TTL/cwd. Most callers should use ``is_approved()`` instead;
     this is here for legacy display/list flows."""
@@ -10725,8 +9227,7 @@ def load_approved():
     except Exception:
         return set()
 
-
-def _load_approved_entries():
+def _load_approved_entries() -> Any:
     """Return parsed list of (ts, cwd, cmd) — TTL/cwd aware."""
     try:
         out = []
@@ -10738,8 +9239,7 @@ def _load_approved_entries():
     except Exception:
         return []
 
-
-def is_approved(cmd, cwd=None, max_age_s=_APPROVED_DEFAULT_TTL_S):
+def is_approved(cmd: Any, cwd: Any | None=None, max_age_s: Any=_APPROVED_DEFAULT_TTL_S) -> bool:
     """Match-with-TTL: returns True iff (cmd, cwd) matches an active
     entry. Legacy bare-command entries (ts=0, cwd='*') match unconditionally
     — back-compat for existing approvals. New entries match only if:
@@ -10762,8 +9262,7 @@ def is_approved(cmd, cwd=None, max_age_s=_APPROVED_DEFAULT_TTL_S):
         return True
     return False
 
-
-def save_approved(cmd, cwd=None, scope="cwd"):
+def save_approved(cmd: Any, cwd: Any | None=None, scope: str="cwd") -> None:
     """Persist an approval. ``scope`` is either 'cwd' (default, scoped to
     the current working dir) or 'global' (matches anywhere). The line
     format is "<ts>\t<cwd>\t<cmd>" so the TTL check works on read."""
@@ -10789,14 +9288,12 @@ def save_approved(cmd, cwd=None, scope="cwd"):
     keep.append(new_line)
     APPROVED_FILE.write_text("\n".join(keep) + "\n")
 
-
 # ── RESPONSE CACHE ─────────────────────────────
 _RICH_OK = False
 _RICH_CONSOLE = None
 _RICH_MARKDOWN = None
 
-
-def _ensure_rich():
+def _ensure_rich() -> Any:
     """Lazy-load rich + markdown_it only when rendering a reply."""
     global _RICH_OK, _RICH_CONSOLE, _RICH_MARKDOWN
     if _RICH_OK or _RICH_CONSOLE is not None:
@@ -10812,11 +9309,7 @@ def _ensure_rich():
         _RICH_OK = False
     return _RICH_OK
 
-
-_PREFIX_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
-
-
-def _reply_margin_for_prefix(prefix):
+def _reply_margin_for_prefix(prefix: Any) -> Any:
     """Visible-width margin matching a printed reply prefix (e.g. "  🥋 "),
     so wrapped/continuation lines line up under the first instead of
     landing flush at column 0. Shared by render_reply() and
@@ -10825,8 +9318,7 @@ def _reply_margin_for_prefix(prefix):
     visible = _PREFIX_ANSI_RE.sub("", prefix or "")
     return " " * len(visible.rsplit("\n", 1)[-1])
 
-
-def render_reply(text, prefix=None, suffix=None):
+def render_reply(text: Any, prefix: Any | None=None, suffix: Any | None=None) -> None:
     """Render AI reply as markdown via rich when available. Falls back to
     plain colored print.
 
@@ -10883,20 +9375,13 @@ def render_reply(text, prefix=None, suffix=None):
     if suffix:
         print(suffix)
 
-
-_ANSI_RE = re.compile(
-    r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b[@-_]|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]"
-)
-
-
-def sanitize(text):
+def sanitize(text: Any) -> Any:
     if not isinstance(text, str):
         return text
     cleaned = _ANSI_RE.sub("", text)
     return cleaned.strip()
 
-
-def read_nav_key(prompt):
+def read_nav_key(prompt: Any) -> Any:
     """Read a single navigation key OR a full typed line.
     Returns one of: 'next', 'prev', 'quit', '' (empty stay), or the typed text.
     Arrows: → / ↑ = next, ← / ↓ = prev, Esc/q/x = quit, Enter = next."""
@@ -10963,22 +9448,16 @@ def read_nav_key(prompt):
         except EOFError:
             return "quit"
 
-
-def cache_key(text):
+def cache_key(text: str) -> Any:
     return hashlib.md5(text.strip().lower().encode()).hexdigest()
 
-
-_ERROR_MARKERS = ("unavailable", "timed out", "no response", "error:", "failed")
-
-
-def _is_error_reply(r):
+def _is_error_reply(r: str) -> Any:
     if not r:
         return True
     lo = r.lower()
     return any(m in lo for m in _ERROR_MARKERS) and len(r) < 200
 
-
-def cache_lookup(text):
+def cache_lookup(text: Any) -> Any:
     try:
         cache = json.loads(CACHE_FILE.read_text())
         k = cache_key(text)
@@ -10996,8 +9475,7 @@ def cache_lookup(text):
         pass
     return None
 
-
-def cache_store(text, reply):
+def cache_store(text: Any, reply: Any) -> None:
     if _is_error_reply(reply):
         return
     try:
@@ -11014,9 +9492,8 @@ def cache_store(text, reply):
     except Exception:
         pass
 
-
 # ── GIT CONTEXT ───────────────────────────────────────────────
-def git_context():
+def git_context() -> Any:
     try:
         cwd = os.getcwd()
         branch = subprocess.run(
@@ -11039,9 +9516,8 @@ def git_context():
     except Exception:
         return ""
 
-
 # ── NINJA ANIMATIONS ─────────────────────────────────────────
-def play_anim(frames, delay=0.13, color=None):
+def play_anim(frames: Any, delay: float=0.13, color: Any | None=None) -> None:
     """Print ASCII animation frames in-place."""
     color = color or BC
     if not frames:
@@ -11059,198 +9535,24 @@ def play_anim(frames, delay=0.13, color=None):
         time.sleep(delay)
     print()
 
-
 # ── SAFE MODE — guard stance ──────────────────────────────────
-_A_SAFE = [
-    [
-        "      ___        ",
-        "   ══(o_o)══     ",
-        "      \\*/        ",
-        "      /|\\        ",
-        "     /   \\       ",
-    ],
-    [
-        "   /  ___  \\     ",
-        "  ║ =(o_o)= ║    ",
-        "  ║   \\*/   ║    ",
-        "   \\  /|\\  /     ",
-        "      / \\        ",
-    ],
-    [
-        "  ╔══(___) ══╗   ",
-        "  ║  (o_o)  ║    ",
-        "  ║   \\*/   ║    ",
-        "  ╚═══/|\\═══╝    ",
-        "     [GUARDED]   ",
-    ],
-]
 
 # ── PLAN MODE — meditation ────────────────────────────────────
-_A_PLAN = [
-    [
-        "      ___        ",
-        "   ══(o_o)══     ",
-        "      /|\\        ",
-        "     / | \\       ",
-        "    /  |  \\      ",
-    ],
-    [
-        "      ___        ",
-        "   ══(-_-)══     ",
-        "    __(|)__      ",
-        "   /  /|\\  \\     ",
-        "  /  /   \\  \\    ",
-    ],
-    [
-        "      ___        ",
-        "   ══(~_~)══     ",
-        "  /‾‾‾|‾‾‾\\     ",
-        " |  z z z  |     ",
-        "  \\_______/      ",
-    ],
-    [
-        "      ___        ",
-        "   ══(- -)══     ",
-        "  /‾‾‾|‾‾‾\\     ",
-        " |   ─OM─  |     ",
-        "  \\_______/      ",
-    ],
-]
 
 # ── AUTO MODE — charging ninja ────────────────────────────────
-_A_AUTO = [
-    [
-        "  ___            ",
-        "=(o▶o)=          ",
-        "  )|( >>         ",
-        " / \\ >>          ",
-        "/   \\            ",
-    ],
-    [
-        "      ___        ",
-        "   >=(o▶o)=      ",
-        "      )|( >>>    ",
-        "     / \\         ",
-        "    /   \\        ",
-    ],
-    [
-        "           ___   ",
-        "  >>> >>> =(o▶o)=",
-        "           )|(⚡  ",
-        "          / \\    ",
-        "         /   \\   ",
-    ],
-]
 
 # ── MODEL PICKER — spinning shuriken ─────────────────────────
-_A_SHURIKEN = [
-    ["   ✦  ─┼─  ✦    ", "      ─┼─        ", "   ✦  ─┼─  ✦    "],
-    ["    ╲  ─╬─  ╱   ", "       ─╬─       ", "    ╱  ─╬─  ╲   "],
-    ["   ✧  ═╬═  ✧    ", "      ═╬═        ", "   ✧  ═╬═  ✧    "],
-    ["  ★★  ═╬═  ★★   ", "      ═╬═        ", "  ★★  ═╬═  ★★   "],
-]
 
 # ── SAVE SESSION — bow ────────────────────────────────────────
-_A_BOW = [
-    [
-        "      ___        ",
-        "   ══(o_o)══     ",
-        "      /|\\        ",
-        "     /   \\       ",
-    ],
-    [
-        "      ___        ",
-        "   ══(o_o)══     ",
-        "     \\|/         ",
-        "     / \\         ",
-    ],
-    [
-        "   ___           ",
-        "  (o_o)══        ",
-        "  _\\|            ",
-        "   / \\           ",
-    ],
-    [
-        "  ___            ",
-        " (^_^)══         ",
-        "  _\\|            ",
-        "   / \\           ",
-    ],
-]
 
 # ── TASK ADD — punch ─────────────────────────────────────────
-_A_PUNCH = [
-    ["   o             ", "  /|\\            ", "  / \\            "],
-    ["   o             ", "  \\|~>           ", "  / \\            "],
-    ["   o             ", "  \\| ~~> ✦       ", "  / \\            "],
-]
 
 # ── EXIT — vanish ─────────────────────────────────────────────
-_A_VANISH = [
-    [
-        "      ___        ",
-        "   ══(o_o)══     ",
-        "      /|\\        ",
-        "     /   \\       ",
-    ],
-    [
-        "      ___        ",
-        "   ══(o_o)══  ~  ",
-        "      /|\\   ~~   ",
-        "     /   \\ ~~~   ",
-    ],
-    [
-        "      ___        ",
-        "   ══(._.)══ ~~~ ",
-        "      /|\\ ~~~~~  ",
-        "     /   \\       ",
-    ],
-    [
-        "       _         ",
-        "    ══(.)══ ~~~  ",
-        "       |  ~~~~~  ",
-        "       |         ",
-    ],
-    [
-        "                 ",
-        "       ~ ~~~~    ",
-        "      ~  ~~~~    ",
-        "                 ",
-    ],
-]
 
 # ── STARTUP — ninja appears ───────────────────────────────────
-_A_APPEAR = [
-    [
-        "                 ",
-        "                 ",
-        "    ~ ~~~~       ",
-        "   ~  ~~~~       ",
-        "                 ",
-    ],
-    [
-        "       _         ",
-        "    ══(.)══      ",
-        "       |  ~~~~   ",
-        "       |         ",
-    ],
-    [
-        "      ___        ",
-        "   ══(._.)══     ",
-        "      /|\\        ",
-        "     /   \\       ",
-    ],
-    [
-        "      ___        ",
-        "   ══(o_o)══     ",
-        "      /|\\        ",
-        "     /   \\       ",
-    ],
-]
-
 
 # ── HINT SYSTEM ───────────────────────────────────────────────
-def show_hint(title, body):
+def show_hint(title: Any, body: str) -> None:
     global HINTS
     if not HINTS:
         return
@@ -11262,15 +9564,13 @@ def show_hint(title, body):
     print(f"  {C}{'─' * 55}{X}")
     print(f"  {W}{Y}type hints off to disable tips{X}\n")
 
-
 # ── MODE HELPERS ──────────────────────────────────────────────
-def mode_label():
+def mode_label() -> Any:
     global MODE
     labels = {"review": f"{R}REVIEW{X}", "plan": f"{Y}PLAN{X}", "auto": f"{G}AUTO{X}"}
     return labels.get(MODE, MODE.upper())
 
-
-def show_plan_demo():
+def show_plan_demo() -> None:
     os.system("clear")
     steps = [
         (
@@ -11327,54 +9627,7 @@ def show_plan_demo():
     print(f"  {G}That's it! Type 'mode plan' and try it for real.{X}\n")
     print(f"  {C}Switch back to Plan mode anytime:{X}  {W}mode plan{X}\n")
 
-
-# Single source of truth for what each mode means. draw_status_bar,
-# show_mode_status, and the mode-change handler in main() all read from
-# here — so the top overlay, the mid-screen animation, and the hint
-# banner stay in sync. Adding a mode? Add ONE entry here.
-MODE_CONTRACTS = {
-    "plan": {
-        "tagline": "concrete execution plan first — default, no execution",
-        "contract": (
-            "1. Ask for work, I inspect context mentally and draft a concrete execution plan.\n"
-            "2. Good plans name likely files, exact changes, risks, and verification.\n"
-            "3. Press 1 or Enter to execute the approved plan, 2 to edit, 3 to discard.\n"
-            "4. I ask questions only when the answer blocks safe execution."
-        ),
-    },
-    "review": {
-        "tagline": "asks before every command (per-action confirm)",
-        "contract": (
-            "1. Every RUN: / EDIT: / CREATE: asks '1/2/3/4/5 — Yes/Always/No/Edit/Ask'.\n"
-            "2. Shows who / what / why / where before the prompt.\n"
-            "3. Destructive patterns (rm -rf, drop table, force-push) still pause.\n"
-            "4. Sudo is always handed off to your terminal — never runs inline.\n"
-            "5. Use this when you want to watch every step land."
-        ),
-    },
-    "auto": {
-        "tagline": "commands flow without asking (destructive still pauses)",
-        "contract": (
-            "1. Execute immediately — RUN: / EDIT: / CREATE: fire without asking.\n"
-            "2. Minimize interruptions — no pauses for routine questions.\n"
-            "3. Prefer action over planning — start working.\n"
-            "4. Course corrections welcome — 'mode plan' or 'mode review' takes the wheel back.\n"
-            "5. Destructive actions still pause — rm -rf, drop table, force-push,\n"
-            "   package uninstall, ollama rm, chmod -R, systemctl stop.\n"
-            "6. No data exfiltration — secrets/keys never sent to external services."
-        ),
-    },
-}
-
-# Title shown atop the contract.
-MODE_HINT_TITLES = {
-    "plan": "Plan Mode — concrete execution plan",
-    "review": "Review Mode — confirm every command",
-    "auto": "⚠  Auto Mode Active — you are allowing:",
-}
-
-
-def show_mode_status():
+def show_mode_status() -> None:
     global MODE
     anims = {"review": (_A_SAFE, R), "plan": (_A_PLAN, Y), "auto": (_A_AUTO, G)}
     frames, color = anims.get(MODE, (_A_PLAN, Y))
@@ -11396,9 +9649,8 @@ def show_mode_status():
             contract["contract"] + "\n\nType 'mode plan' to go back to default.",
         )
 
-
 # ── TUTORIAL ─────────────────────────────────────────────────
-def run_tutorial():
+def run_tutorial() -> None:
     STEPS = [
         (
             "Welcome to Master AI",
@@ -11457,9 +9709,8 @@ def run_tutorial():
             step += 1
     TUTORIAL_FILE.touch()
 
-
 # ── MODEL PICKER ──────────────────────────────────────────────
-def _model_catalog():
+def _model_catalog() -> Any:
     """Curated menu plus every cloud provider catalog that is currently
     available. Keeps model resolution provider-agnostic: a bare catalog id
     resolves to the right provider-prefixed pin regardless of which cloud
@@ -11487,8 +9738,7 @@ def _model_catalog():
             catalog[_m.lower()] = f"opencode-go::{_m}"
     return catalog
 
-
-def _refresh_ollama_key():
+def _refresh_ollama_key() -> None:
     """Pull OLLAMA_API_KEY from ~/.hermes/.env into KEYS lazily so
     Ollama Cloud is gated like every other cloud provider. The provider
     namespace is the key name."""
@@ -11499,8 +9749,7 @@ def _refresh_ollama_key():
     except Exception:
         pass
 
-
-def _refresh_opencode_go_key():
+def _refresh_opencode_go_key() -> None:
     """Pull the OpenCode Go key into KEYS lazily (keychain via
     _opencode_go_key()'s KEYS lookup, or ~/.hermes/.env fallback) so the
     Go provider is gated like every other cloud provider."""
@@ -11511,15 +9760,7 @@ def _refresh_opencode_go_key():
     except Exception:
         pass
 
-
-# OpenRouter's real catalog is hundreds of models; MODEL_MENU only curates
-# ~6 named ones. `model or search <term>` fetches+caches the live list so
-# any of them can be picked by exact id, not just the curated shortlist.
-_OPENROUTER_MODELS_CACHE = Path.home() / ".master_ai_openrouter_models_cache.json"
-_OPENROUTER_MODELS_TTL = 24 * 3600
-
-
-def _active_model_context_tokens():
+def _active_model_context_tokens() -> tuple:
     """The ACTIVE model's real context window, in tokens.
 
     2026-09-25: Sensei measured every model against one hardcoded
@@ -11628,8 +9869,7 @@ def _active_model_context_tokens():
             return toks, f"table:{prov}"
     return None, "unknown"
 
-
-def _context_watermark():
+def _context_watermark() -> tuple:
     """Char budget for the CURRENT model: 95% of its real context window.
 
     Returns (chars, tokens, source). Uses the model's documented
@@ -11649,42 +9889,7 @@ def _context_watermark():
         return CONTEXT_WATERMARK_FLOOR, tokens, f"{source} (raised to floor)"
     return chars, tokens, source
 
-
-# 2026-09-26 (Elijah): "i'm almost certain we didn't fix the context to be
-# native to the model and not characters... i had hermes do it, i'm not
-# sure if it's done right." Checked: it wasn't. _context_watermark() above
-# made the WINDOW SIZE model-real (95% of the model's own context_length),
-# but the USAGE measurement compared against that window was still
-# `sum(len(m["content"]) for m in history)` — raw characters times a fixed
-# CHARS_PER_TOKEN=3.6 constant applied to every model regardless of its
-# actual tokenizer. That's a universal English-average guess, not native
-# to anything.
-#
-# Real fix: every local Ollama response already reports prompt_eval_count
-# + eval_count — the ACTUAL token count from that model's own tokenizer
-# for that exact request (verified against Ollama's own docs before
-# relying on it). Every OpenAI-compatible cloud response already reports
-# usage.total_tokens the same way (verified against OpenRouter's and
-# Fireworks' own docs — "calculated using the model's native tokenizer",
-# not estimated). Both were sitting right there in every response, unused.
-# Since the full history is resent every turn, the LATEST call's own
-# prompt_eval_count/prompt_tokens already IS the current total history
-# size in that model's real tokens — no accumulation needed, just capture
-# the freshest one and use it directly instead of the char estimate,
-# whenever it matches the model actually active right now.
-#
-# 2026-09-27: this lived in memory only, so every restart (exactly what
-# handle_save_refresh's compact does when context pressure trips) wiped it
-# right when it mattered most -- the fresh process starts back on the char
-# estimate until the next real call completes, which is the one cold-start
-# gap in an otherwise-correct fix. _real_ctx_tokens_for_active_model()
-# already tolerates an arbitrarily old in-memory measurement (no ts-based
-# expiry, model-name match is the only gate), so persisting it to disk
-# across a restart is the same trust level, not a new one.
-_REAL_CTX_FILE = Path.home() / ".master_ai_real_ctx.json"
-
-
-def _load_real_ctx_from_disk():
+def _load_real_ctx_from_disk() -> Any:
     try:
         rec = json.loads(_REAL_CTX_FILE.read_text())
         if rec.get("model") and rec.get("tokens"):
@@ -11693,11 +9898,9 @@ def _load_real_ctx_from_disk():
         pass
     return {"model": None, "tokens": None, "ts": 0.0}
 
-
 _LAST_REAL_CTX: dict = _load_real_ctx_from_disk()
 
-
-def _record_real_ctx_tokens(model, tokens):
+def _record_real_ctx_tokens(model: Any, tokens: Any) -> None:
     """Stash the most recent REAL (model-native) total token count for
     `model`. Called from every place that already gets prompt_eval_count/
     eval_count (local) or usage.total_tokens (cloud) back from a real
@@ -11721,8 +9924,7 @@ def _record_real_ctx_tokens(model, tokens):
     except Exception:
         pass  # best-effort -- the in-memory copy is what actually matters this turn
 
-
-def _real_ctx_tokens_for_active_model():
+def _real_ctx_tokens_for_active_model() -> Any:
     """The most recent real token count, IF it was measured against the
     model that's actually active right now — a stale measurement from a
     model just switched away from would be actively misleading, so this
@@ -11764,15 +9966,14 @@ def _real_ctx_tokens_for_active_model():
         return tokens
     return None
 
-
-def _openrouter_model_catalog():
+def _openrouter_model_catalog() -> Any:
     """Returns [(id, name, is_free), ...] for every model OpenRouter
     currently serves. is_free is True when OpenRouter's own pricing.prompt
     is "0" — the authoritative signal, not just an ":free" suffix guess.
     Cached to disk for a day; falls back to a stale cache (or an empty
     list) if the live fetch fails."""
 
-    def _read_cache():
+    def _read_cache() -> Any:
         try:
             return json.loads(_OPENROUTER_MODELS_CACHE.read_text())
         except Exception:
@@ -11824,7 +10025,6 @@ def _openrouter_model_catalog():
             ]
         return []
 
-
 # 2026-09-07: free-only, catalog-aware OpenRouter model selection. The
 # hardcoded slug era (nvidia/nemotron-3.5-lightning:free, etc.) drifts too
 # fast — providers rotate free cohorts weekly.
@@ -11840,7 +10040,7 @@ def _openrouter_model_catalog():
 # tool-calling support, parameter count parsed from the model id, context
 # window -- cached 1h so this hot per-turn path doesn't hit the network
 # every call, but never hardcoded and never more than an hour stale).
-def _openrouter_free_models():
+def _openrouter_free_models() -> list:
     """Return currently free OpenRouter slugs from the live catalog,
     ranked by free_model_picker's real capability signals. Empty list if
     the catalog can't be fetched."""
@@ -11854,14 +10054,12 @@ def _openrouter_free_models():
         log(f"OPENROUTER_FREE_MODELS_ERROR: {e}")
         return []
 
-
-def _openrouter_best_free_model():
+def _openrouter_best_free_model() -> Any:
     """Single best free slug, or None if no free models are available."""
     slugs = _openrouter_free_models()
     return slugs[0] if slugs else None
 
-
-def print_openrouter_search(query, free_only=False):
+def print_openrouter_search(query: Any, free_only: bool=False) -> None:
     catalog = _openrouter_model_catalog()
     if not catalog:
         print(
@@ -11901,8 +10099,7 @@ def print_openrouter_search(query, free_only=False):
         f"\n  {D}pin one with: model <exact-id>   (use 'model or free' to see only 🆓 models){X}\n"
     )
 
-
-def print_full_model_catalog(query="", free_only=False):
+def print_full_model_catalog(query: str="", free_only: bool=False) -> None:
     """Every model reachable through every configured key, unfiltered —
     paid and free, local and cloud, one screen per provider.
 
@@ -12020,20 +10217,9 @@ def print_full_model_catalog(query="", free_only=False):
         )
     print(f"\n  {D}pin one with: model <exact-id>{X}\n")
 
-
 # ── Live model picker — every configured key, arrow keys + Enter ──────
-# Per Elijah 2026-08-20: "whenever I select model ... it should open up a
-# model catalog for every API key I have logged. I need to scroll up and
-# down and press enter to select it just like every other CLI." Wired
-# into sensei_tui's existing "/" completion menu (same arrow-key/Enter
-# mechanism already used for the command menu) via model_catalog_fn —
-# see SenseiApp(model_catalog_fn=...) in main().
-_NVIDIA_MODELS_CACHE = Path.home() / ".master_ai_nvidia_models_cache.json"
-_CEREBRAS_MODELS_CACHE = Path.home() / ".master_ai_cerebras_models_cache.json"
-_PROVIDER_MODELS_TTL = 24 * 3600
 
-
-def _provider_model_catalog(cache_file, url, key):
+def _provider_model_catalog(cache_file: Any, url: Any, key: Any) -> Any:
     """Generic OpenAI-style /v1/models fetch+cache for a single-endpoint
     provider (NVIDIA, Cerebras — no per-model pricing to track, just ids)."""
     try:
@@ -12061,27 +10247,21 @@ def _provider_model_catalog(cache_file, url, key):
         log(f"PROVIDER_MODELS_FETCH_ERROR [{url}]: {e}")
         return list(cached.get("models", [])) if cached else []
 
-
-def _nvidia_model_catalog():
+def _nvidia_model_catalog() -> Any:
     return _provider_model_catalog(
         _NVIDIA_MODELS_CACHE,
         "https://integrate.api.nvidia.com/v1/models",
         KEYS.get("nvidia"),
     )
 
-
-def _cerebras_model_catalog():
+def _cerebras_model_catalog() -> Any:
     return _provider_model_catalog(
         _CEREBRAS_MODELS_CACHE,
         "https://api.cerebras.ai/v1/models",
         KEYS.get("cerebras"),
     )
 
-
-_POOLSIDE_MODELS_CACHE = Path.home() / ".master_ai_poolside_models_cache.json"
-
-
-def _poolside_model_catalog():
+def _poolside_model_catalog() -> Any:
     """Poolside direct inference catalog. Ids come back already
     poolside/-prefixed (e.g. "poolside/laguna-s-2.1"), which is exactly the
     form ask_cloud's "poolside::" branch passes through unchanged."""
@@ -12091,11 +10271,7 @@ def _poolside_model_catalog():
         KEYS.get("poolside"),
     )
 
-
-_QWEN_MODELS_CACHE = Path.home() / ".master_ai_qwen_models_cache.json"
-
-
-def _qwen_model_catalog():
+def _qwen_model_catalog() -> Any:
     """QwenCloud Token Plan's real entitlement list — verified live
     2026-09-07 (HTTP 200, 12 models: qwen3.8-max, qwen3.8-flash, qwen3.7-
     max/plus, qwen3.6-flash, glm-5.2, deepseek-v4-pro/flash-0731, plus
@@ -12108,20 +10284,12 @@ def _qwen_model_catalog():
         KEYS.get("qwen"),
     )
 
-
-_GROQ_MODELS_CACHE = Path.home() / ".master_ai_groq_models_cache.json"
-
-
-def _groq_model_catalog():
+def _groq_model_catalog() -> Any:
     return _provider_model_catalog(
         _GROQ_MODELS_CACHE, "https://api.groq.com/openai/v1/models", KEYS.get("groq")
     )
 
-
-_OLLAMA_CLOUD_MODELS_CACHE = Path.home() / ".master_ai_ollama_cloud_models_cache.json"
-
-
-def _ollama_cloud_model_catalog():
+def _ollama_cloud_model_catalog() -> Any:
     """Ollama Cloud's own /v1/models — same OpenAI-compatible shape NVIDIA/
     Cerebras/Groq use, so it reuses _provider_model_catalog rather than a
     hardcoded list (the plan-debate slot only ever names one model id;
@@ -12130,12 +10298,7 @@ def _ollama_cloud_model_catalog():
         _OLLAMA_CLOUD_MODELS_CACHE, "https://ollama.com/v1/models", _ollama_cloud_key()
     )
 
-
-_OLLAMA_LOCAL_CACHE = {"ts": 0.0, "models": []}
-_OLLAMA_LOCAL_TTL = 30
-
-
-def _ollama_local_models():
+def _ollama_local_models() -> Any:
     if time.time() - _OLLAMA_LOCAL_CACHE["ts"] < _OLLAMA_LOCAL_TTL:
         return _OLLAMA_LOCAL_CACHE["models"]
     try:
@@ -12149,19 +10312,7 @@ def _ollama_local_models():
     _OLLAMA_LOCAL_CACHE["models"] = models
     return models
 
-
-_PROVIDER_PICKER_ORDER = (
-    "local",
-    "ollama-cloud",
-    "openrouter",
-    "nvidia",
-    "cerebras",
-    "groq",
-    "qwen",
-)
-
-
-def _invalidate_provider_caches():
+def _invalidate_provider_caches() -> None:
     """Delete every on-disk provider model cache so the next catalog read
     does a live fetch. Called at the top of live_provider_completions() —
     i.e. once per /model picker open — so a picker open is always a fresh
@@ -12198,8 +10349,7 @@ def _invalidate_provider_caches():
     # too so the picker never shows a model deleted with `ollama rm`.
     _OLLAMA_LOCAL_CACHE["ts"] = 0.0
 
-
-def live_provider_completions(query="", mode=None):
+def live_provider_completions(query: str="", mode: Any | None=None) -> Any:
     _refresh_ollama_key()
     """Providers with a key configured (or local Ollama actually running)
     — step 1 of the modal /model picker (sensei_tui._open_model_picker).
@@ -12265,8 +10415,7 @@ def live_provider_completions(query="", mode=None):
         rows.append(("poolside", "Poolside", "paid — code + reasoning"))
     return rows
 
-
-def live_model_completions(provider):
+def live_model_completions(provider: Any) -> Any:
     _refresh_ollama_key()
     """Every model for exactly ONE provider — step 2 of the modal /model
     picker, called with a bare provider key ("local"/"openrouter"/
@@ -12373,8 +10522,7 @@ def live_model_completions(provider):
         ]
     return []
 
-
-def _resolve_model_choice(choice):
+def _resolve_model_choice(choice: Any) -> Any:
     """Map a direct `model <name>` choice to a pin target.
 
     Returns:
@@ -12420,8 +10568,7 @@ def _resolve_model_choice(choice):
         return raw
     return ""
 
-
-def _is_key_backed_model(model):
+def _is_key_backed_model(model: Any) -> Any:
     m = (model or "").lower()
     # "nvidia::"/"cerebras::" = an explicit direct-API pick from the live
     # picker (live_model_completions) — disambiguated from OpenRouter's
@@ -12444,8 +10591,7 @@ def _is_key_backed_model(model):
     # CLOUD_MODEL_NAMES, picked via `model or search <term>`.
     return m in CLOUD_MODEL_NAMES or "/" in m
 
-
-def _model_required_key(model):
+def _model_required_key(model: Any) -> Any:
     """Return the key name required for a model choice. Provider-prefixed
     ids (provider::model) map to their provider key generically; legacy
     curated cloud names and OpenRouter ids are handled explicitly."""
@@ -12456,8 +10602,7 @@ def _model_required_key(model):
         return CLOUD_MODEL_KEYS[m]
     return "openrouter" if "/" in m else ""
 
-
-def _pin_model_choice(choice):
+def _pin_model_choice(choice: Any) -> tuple:
     global PINNED_MODEL
     resolved = _resolve_model_choice(choice)
     if resolved is None:
@@ -12515,8 +10660,7 @@ def _pin_model_choice(choice):
             msg += f"\n  {Y}⚠ couldn't confirm free/paid for this id — check: model or search {resolved.split('/')[-1]}{X}"
     return True, msg
 
-
-def _model_usage_rows(limit=12):
+def _model_usage_rows(limit: int=12) -> Any:
     rows = []
     for e in _router_recent_events():
         if e.get("kind") != "model_call":
@@ -12533,8 +10677,7 @@ def _model_usage_rows(limit=12):
     rows.sort(key=lambda r: (-r["calls"], r["model"]))
     return rows[:limit]
 
-
-def format_model_monitor():
+def format_model_monitor() -> Any:
     keys_now = load_keys()
     local = [m for m, d in MODEL_MENU if not _is_key_backed_model(m)]
     cloud = [m for m, d in MODEL_MENU if _is_key_backed_model(m)]
@@ -12558,8 +10701,7 @@ def format_model_monitor():
         lines.append("   recent use: no model calls recorded yet")
     return "\n".join(lines)
 
-
-def show_model_menu():
+def show_model_menu() -> None:
     global PINNED_MODEL
     os.system("clear")
     play_anim(_A_SHURIKEN, delay=0.1, color=BC)
@@ -12625,14 +10767,13 @@ def show_model_menu():
             ok, msg = _pin_model_choice(choice)
             print(f"  {msg if ok else msg}")
 
-
 # ── THOUGHT-CLOUD: rotating tips line above prompt while idle ─────
 # Pulled from master_ai_voice.json — trademark quotes mixed with command tips,
 # so the idle bubble occasionally drops a brand line like "Your AI. Every entry
 # point. Your hardware." alongside practical hints. One voice, one accord.
 # Tuple form: ("QUOTE" entries use "" in cmd slot + quote in desc; "TIP" entries
 # use cmd + desc like before.) The rendering code handles both.
-def _build_idle_tips():
+def _build_idle_tips() -> Any:
     v = _load_voice()
     out = []
     # Command tips first (solid practical value)
@@ -12654,24 +10795,13 @@ def _build_idle_tips():
         ]
     return out
 
-
 _IDLE_TIPS = _build_idle_tips()
 
 _IDLE_STOP = threading.Event()
 _IDLE_THREAD = None
 _IDLE_IDX = 0
 
-# Post-reply grace: the user needs a window to READ what just came back
-# before Sensei starts flashing tips above the prompt. Without this, a
-# tip can appear 30 seconds after the reply finishes while the user is
-# still absorbing the answer. 10s is enough breathing room for short
-# replies; long replies they'll still be reading past the grace, but
-# that's handled by the 30s grace-sec after they actually stop reading.
-_POST_REPLY_GRACE = 10.0
-_LAST_BUSY_CLEARED_TS = 0.0
-
-
-def _is_sensei_idle():
+def _is_sensei_idle() -> bool:
     """True-idle predicate used by the idle-tips thread. The user is
     TRULY idle only when ALL of these are true:
       - No worker is currently generating a reply (_WORKER_BUSY cleared)
@@ -12690,12 +10820,7 @@ def _is_sensei_idle():
             return False
     return True
 
-
-_DIM = "\033[3m"  # italic only — visible on light bg
-_THINK = "\033[3;38;5;240m"  # italic + darker grey, readable on light terminal
-
-
-def _idle_tips_runner():
+def _idle_tips_runner() -> bool:
     """Background: cycle tips on the reserved line above the prompt.
     Waits 15s of continuous empty-buffer idle before first tip. Polls
     readline's buffer — if user types anything, wipes tip and re-starts
@@ -12709,7 +10834,7 @@ def _idle_tips_runner():
     ROTATE_SEC = 5.0
     last_rotate = 0.0
 
-    def _buffer_has_text():
+    def _buffer_has_text() -> bool:
         try:
             import readline as _rl
 
@@ -12789,8 +10914,7 @@ def _idle_tips_runner():
     except Exception:
         pass
 
-
-def start_idle_tips():
+def start_idle_tips() -> None:
     """Reserve a line above the prompt and spin up the rotation thread."""
     global _IDLE_THREAD
     if not sys.stdout.isatty():
@@ -12800,8 +10924,7 @@ def start_idle_tips():
     _IDLE_THREAD = threading.Thread(target=_idle_tips_runner, daemon=True)
     _IDLE_THREAD.start()
 
-
-def stop_idle_tips():
+def stop_idle_tips() -> None:
     """Signal the idle thread to clear the tip line and exit."""
     _IDLE_STOP.set()
     t = _IDLE_THREAD
@@ -12811,23 +10934,12 @@ def stop_idle_tips():
         except Exception:
             pass
 
-
 # ── THOUGHT-CLOUD while AI is thinking (not idle — model generating) ──
-_THINK_TIPS = [
-    ("thinking...", "checking memory for context"),
-    ("thinking...", "routing through fallback chain"),
-    ("type ahead", "I'll queue your next message"),
-    ("slow?", "try 'model groq' next time"),
-    ("cache", "response cache stats"),
-    ("save session", "archive now + generate summary"),
-    ("scrollback", "50k lines — drag to copy back"),
-]
 _THINK_STOP = threading.Event()
 _THINK_THREAD = None
 _THINK_IDX = 0
 
-
-def _think_runner():
+def _think_runner() -> None:
     global _THINK_IDX
     while not _THINK_STOP.is_set():
         cmd, desc = _THINK_TIPS[_THINK_IDX % len(_THINK_TIPS)]
@@ -12849,8 +10961,7 @@ def _think_runner():
     except Exception:
         pass
 
-
-def start_thinking_tips():
+def start_thinking_tips() -> None:
     global _THINK_THREAD
     if not sys.stdout.isatty():
         return
@@ -12859,8 +10970,7 @@ def start_thinking_tips():
     _THINK_THREAD = threading.Thread(target=_think_runner, daemon=True)
     _THINK_THREAD.start()
 
-
-def stop_thinking_tips():
+def stop_thinking_tips() -> None:
     _THINK_STOP.set()
     t = _THINK_THREAD
     if t is not None:
@@ -12869,9 +10979,8 @@ def stop_thinking_tips():
         except Exception:
             pass
 
-
 # ── AUTO-TIPS SLIDESHOW (self-advancing, any key skips) ────────
-def show_autotips(slide_delay=4.0):
+def show_autotips(slide_delay: float=4.0) -> None:
     """Auto-advancing tips carousel. Any key skips to next slide. Letter 'q' quits."""
     slides = [
         (
@@ -12969,9 +11078,8 @@ def show_autotips(slide_delay=4.0):
 
     print(f"\n  {G}── end of tips ──  {D}type 'autotips' anytime to replay{X}\n")
 
-
 # ── HUB MENU (master control panel — numbered actions) ────────
-def show_hub():
+def show_hub() -> Any:
     """Show the Master AI hub with all features as numbered options.
     Returns the command string selected, or None if user quit."""
     items = [
@@ -13055,9 +11163,8 @@ def show_hub():
         # Anything else → pass through as a command / question
         return ans
 
-
 # ── PROJECTS SLIDE SHOW ───────────────────────────────────────
-def show_projects():
+def show_projects() -> Any:
     """Paginated view of Elijah's shipped projects — one per slide."""
     projects = [
         {
@@ -13122,10 +11229,7 @@ def show_projects():
             return None
         return ans  # user typed a question → caller sends it as a message
 
-
 # ── HELP CARD (slide show — one section per slide, mobile-friendly) ──
-_HELP_HIDDEN_FILE = Path.home() / ".master_ai_help_hidden"
-
 
 def _load_hidden_help_sections() -> set:
     try:
@@ -13137,15 +11241,13 @@ def _load_hidden_help_sections() -> set:
     except Exception:
         return set()
 
-
 def _save_hidden_help_sections(hidden: set) -> None:
     try:
         _HELP_HIDDEN_FILE.write_text("\n".join(sorted(hidden)))
     except Exception as e:
         log(f"HIDE_HELP_SAVE_ERROR: {e}")
 
-
-def show_help():
+def show_help() -> Any:
     """Paginated help. Returns None if user quit, or a string if user
     typed a question mid-help (caller should treat it as a new message)."""
     hidden = _load_hidden_help_sections()
@@ -13319,7 +11421,7 @@ def show_help():
     # above them (e.g. "Sensei" / "" / "" under THE CAST) — sort by GROUPING
     # each real entry with its trailing continuation lines as one block, so
     # a block moves together and never gets separated from what it explains.
-    def _alphabetize_rows(rows):
+    def _alphabetize_rows(rows: Any) -> list:
         blocks, current = [], []
         for row in rows:
             cmd_txt = row[0]
@@ -13383,22 +11485,21 @@ def show_help():
         # User typed a real question mid-help — exit and route it
         return ans
 
-
 # ── TIPS SCREEN ───────────────────────────────────────────────
-def show_tips():
+def show_tips() -> None:
     os.system("clear")
     cols = shutil.get_terminal_size().columns
     w = min(cols - 4, 72)
     bar = "═" * w
 
-    def row(label, text, lw=26):
+    def row(label: Any, text: Any, lw: int=26) -> None:
         print(f"{BC}  ║{X}  {Y}{label:<{lw}}{X}{C}{text}{X}")
 
-    def section(title):
+    def section(title: Any) -> None:
         print(f"{BC}  ╠{bar}╣{X}")
         print(f"{BC}  ║{X}  {BG}{'  ' + title}{X}")
 
-    def blank():
+    def blank() -> None:
         print(f"{BC}  ║{X}")
 
     print(f"\n{BC}  ╔{bar}╗{X}")
@@ -13517,8 +11618,7 @@ def show_tips():
     except Exception:
         pass
 
-
-def show_commands():
+def show_commands() -> None:
     """Simple first-screen command card for normal users."""
     rows = [
         ("Just type", "Ask for anything in plain English"),
@@ -13567,6 +11667,14 @@ def show_commands():
             "skill improve <name>",
             "failure-pattern report from real runs; proposed fixes go through the EDIT gate",
         ),
+        (
+            "skill create <name> [transcript]",
+            "generate SKILL.md + recipe.py from a session; asks before saving",
+        ),
+        (
+            "skill auto-author [on|off|status|now]",
+            "let Sensei draft low-risk skills from recent sessions",
+        ),
         ("doctor", "Check services, models, URLs, and warnings"),
         ("update", "Update Master AI safely"),
         ("copy chat", "Export this conversation"),
@@ -13584,8 +11692,7 @@ def show_commands():
     print(f"{BC}  ╚{'═' * width}╝{X}")
     print(f"  {D}Tip: you can ignore commands and just say what you want built.{X}\n")
 
-
-def show_controls():
+def show_controls() -> Any:
     """Standards-based control map for Sensei and Pupil.
 
     Sensei is terminal/TUI. Pupil is browser/web. They share product language,
@@ -13610,7 +11717,7 @@ def show_controls():
 
     # 2026-08-31: `_fit_text` helper was never defined (NameError when this
     # screen rendered). Inline the fit: hard-truncate to the cell width.
-    def _fit_text(text, limit):
+    def _fit_text(text: Any, limit: Any) -> Any:
         return text if len(text) <= limit else text[: limit - 1] + "…"
 
     print(f"\n{BC}  ╔{'═' * width}╗{X}")
@@ -13626,8 +11733,7 @@ def show_controls():
         f"  {D}Rule: do not reinvent platform controls; use the standard surface behavior.{X}\n"
     )
 
-
-def show_buckets():
+def show_buckets() -> None:
     """Quick reference for the punctuation command buckets."""
     rows = [
         (",", "general actions"),
@@ -13646,19 +11752,9 @@ def show_buckets():
         f"  {D}Tip: type punctuation + letters (example: /im or ;mod) to narrow fast.{X}\n"
     )
 
-
 # ── SAFETY BLOCK ─────────────────────────────────────────────
-BLOCKED_PATTERNS = [
-    "rm -rf /",
-    "rm -rf ~",
-    "rm -rf $HOME",
-    "mkfs",
-    "dd if=",
-    ":(){:|:&};:",
-]
 
-
-def _blocked_shell_issue(cmd):
+def _blocked_shell_issue(cmd: Any) -> None | str:
     """Return a hard shell-block reason for commands Sensei must never run."""
     low = (cmd or "").lower().strip()
     if not low:
@@ -13708,48 +11804,10 @@ def _blocked_shell_issue(cmd):
         return "self-capture of own tmux pane blocked — the conversation is already in your context, answer directly"
     return None
 
-
-def is_blocked(cmd):
+def is_blocked(cmd: Any) -> Any:
     return _blocked_shell_issue(cmd) is not None
 
-
-# 2026-08-24: caught in the audit log — two RUN: directives fused into one
-# command string with no separator ('...2>/devRUN: find ...') and raw
-# conversational text (question marks, emoji) leaking into a shell argument
-# ('-iname *deep learning weekly? open that up in the thread. \U0001F9E1*').
-# Neither is a real shell command; both ran anyway and logged "completed"
-# while doing nothing useful — typed_actions.parse_reply() only shadow-
-# parses for audit, nothing gates dispatch on it. This is the smallest
-# possible pre-dispatch check: catch the two observed corruption
-# signatures before confirm_run/confirm_runterm act on them.
-_EMBEDDED_DIRECTIVE_RE = re.compile(
-    r'(?<=[^\s\'"` ])(RUN|RUNTERM|READ|CREATE|EDIT|SEND_EMAIL|REMEMBER):',
-    re.IGNORECASE,
-)
-_STRAY_EMOJI_RE = re.compile(
-    "["
-    "\U0001f300-\U0001faff"
-    "\U00002600-\U000027bf"
-    "\U0001f1e6-\U0001f1ff"
-    "\U0000fe0f"  # variation selector-16 (emoji presentation, e.g. ✌️)
-    "\U0000200d"  # zero-width joiner (compound/skin-tone emoji sequences)
-    "]"
-)
-# 2026-08-31: caught in the audit log — the model wrote its whole rambling
-# continuation on the same line as 'RUN: echo "check"...' with no newline,
-# so _extract_directive() grabbed the entire paragraph as the "command"
-# (it ran anyway — bash choked on the prose, exit 2). Real shell commands
-# don't contain multiple sentence-ending periods next to conversational
-# connector phrases; only prose does. _directive_corruption_issue requires
-# both signals together so a legitimate command that happens to contain one
-# of these words in a string literal/comment isn't falsely blocked.
-_PROSE_LEAK_RE = re.compile(
-    r"\b(let'?s|we can|i'll|i will|actually|which we saw|that is a|that's a|those are)\b",
-    re.IGNORECASE,
-)
-
-
-def _directive_corruption_issue(cmd):
+def _directive_corruption_issue(cmd: Any) -> Any:
     """Return a refusal reason if `cmd` looks like a corrupted/concatenated
     directive rather than a real shell command, else None."""
     if not cmd:
@@ -13766,52 +11824,7 @@ def _directive_corruption_issue(cmd):
         return "conversational prose leaked into RUN payload — model rambled past the command on the same line"
     return None
 
-
-_CLEANUP_PROTECTED_PATHS = (
-    "~/Downloads",
-    "$HOME/Downloads",
-    "/home/user/Downloads",
-    "~/Desktop",
-    "$HOME/Desktop",
-    "/home/user/Desktop",
-    "~/Documents",
-    "$HOME/Documents",
-    "/home/user/Documents",
-    "~/Pictures",
-    "$HOME/Pictures",
-    "/home/user/Pictures",
-    "~/Videos",
-    "$HOME/Videos",
-    "/home/user/Videos",
-    "~/Music",
-    "$HOME/Music",
-    "/home/user/Music",
-    "~/scripts",
-    "$HOME/scripts",
-    "/home/user/scripts",
-    "~/.ollama",
-    "$HOME/.ollama",
-    "/home/user/.ollama",
-)
-
-_CLEANUP_SAFE_DELETE_HINTS = (
-    "/.cache/",
-    "/Trash/",
-    "__pycache__",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ruff_cache",
-    "node_modules/.cache",
-    "/tmp/",
-    "/var/tmp/",
-    "Cache",
-    "GPUCache",
-    "ShaderCache",
-    "GrShaderCache",
-)
-
-
-def _cleanup_safety_issue(cmd):
+def _cleanup_safety_issue(cmd: Any) -> Any:
     """Return a refusal reason for broad cleanup deletes that risk user data.
 
     Cleanup requests invite commands like `rm -rf ~/Downloads/*` or
@@ -13852,141 +11865,7 @@ def _cleanup_safety_issue(cmd):
             return f"cleanup delete touches protected path: {path}"
     return None
 
-
-_AGENT_POLICY_REQUEST_RULES = (
-    (
-        "credential theft",
-        (
-            "steal password",
-            "steal passwords",
-            "dump passwords",
-            "dump browser passwords",
-            "extract browser passwords",
-            "exfiltrate credentials",
-            "steal cookies",
-            "session hijack",
-            "browser cookie dump",
-        ),
-    ),
-    (
-        "phishing or fraud",
-        (
-            "phishing page",
-            "phishing site",
-            "credential harvesting",
-            "harvest credentials",
-            "fake login",
-            "spoof login",
-            "bank scam",
-            "romance scam",
-        ),
-    ),
-    (
-        "malware or persistence",
-        (
-            "keylogger",
-            "backdoor",
-            "reverse shell",
-            "persistence payload",
-            "stealth persistence",
-            "ransomware",
-            "cryptominer",
-            "botnet",
-        ),
-    ),
-    (
-        "unauthorized access",
-        (
-            "privilege escalation exploit",
-            "exploit ssh",
-            "brute force ssh",
-            "bypass login",
-            "break into",
-            "hack into",
-            "unauthorized access",
-        ),
-    ),
-    (
-        "scaled abuse",
-        (
-            "ddos",
-            "denial of service",
-            "spam thousands",
-            "mass spam",
-            "bulk account creation",
-            "fake accounts",
-            "credential stuffing",
-        ),
-    ),
-    (
-        "covert surveillance",
-        (
-            "spy on",
-            "track someone",
-            "monitor someone",
-            "secretly record",
-            "stalk",
-            "stalking",
-            "without them knowing",
-        ),
-    ),
-)
-
-_AGENT_POLICY_COMMAND_RULES = (
-    (
-        "credential theft",
-        (
-            "login data",
-            "cookies",
-            "key4.db",
-            "signons.sqlite",
-            ".aws/credentials",
-            ".config/gcloud",
-            ".ssh/id_rsa",
-            ".ssh/id_ed25519",
-        ),
-    ),
-    (
-        "malware or persistence",
-        (
-            "nc -e",
-            "ncat -e",
-            "bash -i >&",
-            "/dev/tcp/",
-            "crontab",
-            "/etc/cron",
-            "/var/spool/cron",
-            "authorized_keys",
-            "systemctl enable --now",
-            "nohup",
-        ),
-    ),
-    (
-        "scaled abuse",
-        (
-            "hping3",
-            "slowloris",
-            "masscan",
-            "hydra ",
-            "medusa ",
-        ),
-    ),
-)
-
-# Cron is only a persistence signal when the command WRITES a schedule.
-# Reading your own crontab (`crontab -l`, `ls /etc/cron.d`, `which crontab`)
-# is introspection, not persistence, and must not trip the malware gate.
-_CRON_INSTALL_REDIRECT_RE = re.compile(
-    r">>?\s*['\"]?\S*(?:/etc/crontab|/etc/cron\.[a-z]+|/var/spool/cron)"
-)
-# `crontab` at command position (start, after a separator, or behind sudo/env),
-# capturing its argument list up to the next separator.
-_CRONTAB_INVOCATION_RE = re.compile(
-    r"(?:^|[;&|\n]|\$\(|`)\s*(?:sudo\s+|env\s+)*crontab\b([^;&|\n]*)"
-)
-
-
-def _cron_persistence_write(low):
+def _cron_persistence_write(low: Any) -> bool:
     """True only for cron commands that install/modify a schedule.
 
     Read-only shapes (`crontab -l`, `crontab -u user -l`, `ls /etc/cron.d`,
@@ -14006,20 +11885,7 @@ def _cron_persistence_write(low):
         return True
     return False
 
-
-_AGENT_POLICY_EXFIL_TOKENS = (
-    "curl ",
-    "wget ",
-    "scp ",
-    "rsync ",
-    "nc ",
-    "ncat ",
-    "socat ",
-    "ftp ",
-)
-
-
-def _agent_policy_issue_for_request(text):
+def _agent_policy_issue_for_request(text: Any) -> Any:
     """Return a policy refusal reason for clearly disallowed agent requests."""
     low = (text or "").lower()
     if not low:
@@ -14029,8 +11895,7 @@ def _agent_policy_issue_for_request(text):
             return f"disallowed agent request: {label}"
     return None
 
-
-def _agent_policy_issue_for_command(cmd):
+def _agent_policy_issue_for_command(cmd: Any) -> Any:
     """Return a policy refusal reason for risky generated shell commands."""
     low = (cmd or "").lower()
     if not low:
@@ -14067,83 +11932,9 @@ def _agent_policy_issue_for_command(cmd):
         return f"policy block: {label} ({matched[0]})"
     return None
 
-
 # ── DESTRUCTIVE HEURISTIC ────────────────────────────────────
-# In auto mode the explicit policy is "flow like Claude Code — let it go
-# when I'm present, I'll watch" (Elijah, 2026-04-19). Low-risk commands
-# auto-run; THESE patterns still pause for the 5-button prompt even in
-# auto, because they can delete, force-overwrite, stop services, or
-# mass-mutate permissions. Conservative by design: a false positive just
-# makes auto mode prompt you once; a false negative means a destructive
-# command runs unattended. Bias toward prompt.
-_DESTRUCTIVE_PATTERNS = (
-    # deletion / shredding
-    "shred ",
-    "unlink ",
-    "rmdir ",
-    "trash-put ",
-    # git destructive
-    "git reset --hard",
-    "git push --force",
-    "git push -f",
-    "git clean -f",
-    "git checkout --",
-    "git branch -d",
-    "git branch -D",
-    # systemd state changes
-    "systemctl stop",
-    "systemctl disable",
-    "systemctl mask",
-    "systemctl --user stop",
-    "systemctl --user disable",
-    # database
-    "drop table",
-    "drop database",
-    "truncate table",
-    # mass perm/ownership changes
-    "chmod -r",
-    "chmod -rf",
-    "chown -r",
-    "chattr +i",
-    # aggressive process kills
-    "pkill -9",
-    "killall -9",
-    "kill -kill",
-    "kill -9 -1",
-    # filesystem low-level (BLOCKED_PATTERNS catches mkfs+dd, list for completeness)
-    "mkswap",
-    "fdisk ",
-    "parted ",
-    # package uninstall — banner promises these pause. sudo-apt already
-    # hands off, but user-level pip/npm/snap/pipx can uninstall without
-    # sudo and would otherwise flow through auto mode silently.
-    "pip uninstall",
-    "pip3 uninstall",
-    "pipx uninstall",
-    "npm uninstall",
-    "npm rm ",
-    "npm remove",
-    "yarn remove",
-    "pnpm remove",
-    "pnpm uninstall",
-    "snap remove",
-    "flatpak uninstall",
-    "flatpak remove",
-    "apt remove",
-    "apt purge",
-    "apt autoremove",
-    "gem uninstall",
-    "cargo uninstall",
-    "ollama rm ",  # don't auto-drop a model — user paid time to pull it
-    # overwriting redirections against real files (heuristic — `> /tmp/` is fine)
-    "> /etc/",
-    "> /usr/",
-    "> /var/",
-    "> /boot/",
-)
 
-
-def _hallucination_warn(cmd):
+def _hallucination_warn(cmd: Any) -> bool:
     """Warn if the first-token binary doesn't exist on PATH.
 
     Local models sometimes emit commands that don't exist on this OS
@@ -14243,8 +12034,7 @@ def _hallucination_warn(cmd):
     print(f"  {D}  (on Linux: try `ip addr` instead of `ipconfig`, etc.){X}")
     return False
 
-
-def _is_destructive(cmd):
+def _is_destructive(cmd: Any) -> Any:
     """True if `cmd` matches a destructive pattern. Case-insensitive
     substring match against the allow-prompt list. `rm ` gets its own
     word-boundary check so 'firm' / 'alarm' / 'form' don't trigger."""
@@ -14256,23 +12046,9 @@ def _is_destructive(cmd):
         return True
     return any(p in low for p in _DESTRUCTIVE_PATTERNS)
 
-
 # ── AUTO-MODE SANDBOX ────────────────────────────────────────
-# Three real constraints that only apply when MODE == "auto" (safe/plan
-# already gate every command behind a manual prompt):
-#   1. CWD fence   — EDIT:/CREATE: paths must resolve under an allowlist
-#   2. Sudo block  — RUN: commands starting with sudo/su are rejected
-#   3. Audit log   — every executed action appended to ~/.master_ai_audit.log
-# The point is: auto-mode shouldn't rely on the model's judgment alone.
-AUDIT_LOG = Path.home() / ".master_ai_audit.log"
-# P0.4 typed audit. JSONL alongside the legacy tab-separated text log so
-# hooks (P1.4), subagents (P1.5), and the observability dashboard (P1.7)
-# can consume a stable schema. See ~/scripts/typed_actions.py for the
-# record shape. Old AUDIT_LOG stays as-is — backward compatibility.
-AUDIT_LOG_JSONL = Path.home() / ".master_ai_audit_typed.jsonl"
 
-
-def _audit(kind, detail):
+def _audit(kind: Any, detail: Any) -> None:
     """Append one line: 12-hour timestamp · profile · mode · cwd · kind · detail.
     Safe to fail silently — audit is observability, not a blocker."""
     try:
@@ -14316,8 +12092,7 @@ def _audit(kind, detail):
     except Exception:
         pass
 
-
-def _record_blocked_action(kind, command="", reason="", audit_kind="POLICY-CMD-BLOCK"):
+def _record_blocked_action(kind: Any, command: str="", reason: str="", audit_kind: str="POLICY-CMD-BLOCK") -> Any:
     """Remember a refusal so process_reply can feed it back to the model.
     2026-05-11: also stores audit_kind on the entry so downstream on_blocked
     hooks (auto-extract-lesson) can filter by source — POLICY/FENCE blocks
@@ -14337,7 +12112,6 @@ def _record_blocked_action(kind, command="", reason="", audit_kind="POLICY-CMD-B
         pass
     return entry
 
-
 # ── SAFE PROMPT ─────────────────────────────────────────────
 # Safeguards must never deadlock but must ALSO never answer for the user.
 # If the pane has no TTY (e.g. a subprocess called confirm_run), we cannot
@@ -14345,13 +12119,12 @@ def _record_blocked_action(kind, command="", reason="", audit_kind="POLICY-CMD-B
 # forever for the user's answer — that is the intended behavior. Reason:
 # 2026-04-19 freeze where input() hung in a stdin-less pane with no way
 # out. Claude is NOT permitted to auto-answer; only the user consents.
-def _opt_lines(options, prefix="║   "):
+def _opt_lines(options: Any, prefix: str="║   ") -> list:
     """Format choice option rows. `options` is a sequence of
     (code, btn_style, description) where `code` is any single character."""
     return [f"{prefix}{style} {code}) {desc}{X}" for code, style, desc in options]
 
-
-def _safe_text(prompt):
+def _safe_text(prompt: Any) -> Any:
     """Read FREE TEXT inside a confirm (the Edit / Ask follow-ups). Two
     deliberate differences from _safe_choice: no keys are armed, so a
     keystroke can never be swallowed as an answer, and stale queue entries
@@ -14366,8 +12139,7 @@ def _safe_text(prompt):
     except (EOFError, KeyboardInterrupt):
         return None
 
-
-def _drain_queue(q):
+def _drain_queue(q: Any) -> None:
     """Discard everything currently queued. Used before a choice prompt
     blocks, so a value left over from an earlier prompt cannot be returned
     instantly and silently answer the new one."""
@@ -14379,8 +12151,7 @@ def _drain_queue(q):
     except Exception:
         pass
 
-
-def _safe_choice(prompt, keys=None, options=None, aliases=None, audit_cmd=None):
+def _safe_choice(prompt: Any, keys: Any | None=None, options: Any | None=None, aliases: Any | None=None, audit_cmd: Any | None=None) -> Any:
     """Read a single-key choice.
 
     Pass `options` (the same list whose labels were printed) and the live keys
@@ -14432,8 +12203,7 @@ def _safe_choice(prompt, keys=None, options=None, aliases=None, audit_cmd=None):
         if not had_confirm:
             _AWAITING_CONFIRM.clear()
 
-
-def _safe_input(prompt, audit_cmd=None):
+def _safe_input(prompt: Any, audit_cmd: Any | None=None) -> Any:
     """input() with one guardrail: refuse if stdin isn't a TTY.
 
     Returns None (and audits DENY-NO-TTY) when no live stdin is attached.
@@ -14457,7 +12227,6 @@ def _safe_input(prompt, audit_cmd=None):
             _audit("DENY-EOF", audit_cmd)
         return None
 
-
 # ── NO-TTY QUEUE (2026-09-11) ────────────────────────────────────────
 # _safe_input()'s no-TTY branch above is correct to refuse rather than
 # hang — but a flat refusal with no way to reconsider means every RUN/
@@ -14467,8 +12236,8 @@ def _safe_input(prompt, audit_cmd=None):
 # a real terminal (`approval_queue.py pending` / `approve <id>`) or from
 # inside a live Sensei session (`pending` / `approve <id>` REPL commands).
 def _queue_for_approval(
-    entry_type, who, what, where, why, how, payload, trigger="", diff=""
-):
+    entry_type: Any, who: Any, what: Any, where: Any, why: Any, how: Any, payload: Any, trigger: str="", diff: str=""
+) -> Any:
     """No live TTY to confirm — queue the action instead of just denying it.
 
     Returns the approval_queue entry id."""
@@ -14489,7 +12258,6 @@ def _queue_for_approval(
     _audit("QUEUED-NO-TTY", f"{entry_type}:{what}")
     return entry_id
 
-
 # ── APPROVAL HANDLERS ────────────────────────────────────────────────
 # Registered so `approval_queue.approve(<id>)` can actually replay a
 # queued action later. Each one just calls the same execution primitive
@@ -14497,25 +12265,21 @@ def _queue_for_approval(
 # _dispatch_browser_action) — one code path for "actually do the thing",
 # whether it runs immediately or gets approved after the fact.
 
-
 @approval_queue.register_handler("run_command")
-def _approval_run_command(entry):
+def _approval_run_command(entry: Any) -> Any:
     return run_command(entry["payload"]["cmd"])
 
-
 @approval_queue.register_handler("run_terminal")
-def _approval_run_terminal(entry):
+def _approval_run_terminal(entry: Any) -> Any:
     return run_in_terminal(entry["payload"]["cmd"])
 
-
 @approval_queue.register_handler("browser_action")
-def _approval_browser_action(entry):
+def _approval_browser_action(entry: Any) -> Any:
     p = entry["payload"]
     return _dispatch_browser_action(p["kind"], p["target"], p.get("value"))
 
-
 @approval_queue.register_handler("file_create")
-def _approval_file_create(entry):
+def _approval_file_create(entry: Any) -> Any:
     filepath, content = entry["payload"]["filepath"], entry["payload"]["content"]
     Path(filepath).parent.mkdir(parents=True, exist_ok=True)
     Path(filepath).write_text(content)
@@ -14531,9 +12295,8 @@ def _approval_file_create(entry):
         raise RuntimeError("post_create hook blocked")
     return f"created {filepath}"
 
-
 @approval_queue.register_handler("file_edit")
-def _approval_file_edit(entry):
+def _approval_file_edit(entry: Any) -> Any:
     """Replay a queued find/replace edit once Elijah approves it.
 
     Re-reads filepath fresh at approval time rather than trusting a
@@ -14558,8 +12321,7 @@ def _approval_file_edit(entry):
         raise RuntimeError("post_edit hook blocked")
     return f"edited {filepath}"
 
-
-def _is_sudo_cmd(cmd):
+def _is_sudo_cmd(cmd: Any) -> bool:
     """Cheap detector — does this command invoke privilege escalation?
     Used in auto mode to force a manual accept-every-time flow and to
     defer password-required commands to the user's own terminal."""
@@ -14588,8 +12350,7 @@ def _is_sudo_cmd(cmd):
         return bool(inner and _is_sudo_cmd(inner))
     return False
 
-
-def _split_top_level_pipes(cmd):
+def _split_top_level_pipes(cmd: Any) -> Any:
     """Split shell pipelines without treating `||` as a pipe."""
     parts, buf = [], []
     quote = ""
@@ -14625,8 +12386,7 @@ def _split_top_level_pipes(cmd):
         parts.append(tail)
     return parts
 
-
-def _first_shell_word(part):
+def _first_shell_word(part: Any) -> Any:
     try:
         toks = shlex.split(part or "")
     except Exception:
@@ -14637,8 +12397,7 @@ def _first_shell_word(part):
         return ""
     return os.path.basename(toks[0]).lower()
 
-
-def _is_web_grep_no_match(cmd, exit_code=None):
+def _is_web_grep_no_match(cmd: Any, exit_code: Any | None=None) -> Any:
     """True when grep's exit 1 means the search simply found no hits, not
     that the command failed. Applies to any producer piped into a
     grep-family tool (grep/egrep/fgrep/rg) — not just curl/wget — since
@@ -14660,8 +12419,7 @@ def _is_web_grep_no_match(cmd, exit_code=None):
         return False
     return _first_shell_word(parts[-1]) in {"grep", "egrep", "fgrep", "rg"}
 
-
-def _is_informational_cmd(cmd, exit_code=None):
+def _is_informational_cmd(cmd: str, exit_code: Any | None=None) -> bool:
     """True for commands whose nonzero exits are diagnostic answers, not
     failures. `systemctl status` returns 3 when a service is inactive —
     that's the right answer to 'is this running?', not a fatal error.
@@ -14707,11 +12465,7 @@ def _is_informational_cmd(cmd, exit_code=None):
         return True
     return False
 
-
-_NOOP_TOKENS = {"", ":", "true", "false", "exit", "exit 0"}
-
-
-def _is_noop_cmd(cmd):
+def _is_noop_cmd(cmd: Any) -> bool:
     """True if `cmd` is empty/whitespace or a bash no-op the model
     sometimes emits as a placeholder (`:`, `true`, etc.). Born from the
     2026-04-25 RUNTERM bug where the local model emitted `RUNTERM: :` and
@@ -14726,8 +12480,7 @@ def _is_noop_cmd(cmd):
         return True
     return False
 
-
-def _sudo_handoff(cmd):
+def _sudo_handoff(cmd: Any) -> Any:
     """sudo commands NEVER run inside Sensei. Password prompts must happen
     in a separate terminal that the user controls end-to-end. This is a
     hard product rule — see `feedback_passwords_other_terminal.md`.
@@ -14767,8 +12520,7 @@ def _sudo_handoff(cmd):
         output="[sudo handed off to user terminal]", ok=True, exit_code=0, command=cmd
     )
 
-
-def _build_self_mod_denylist():
+def _build_self_mod_denylist() -> Any:
     home = Path.home()
     paths = [
         home / "scripts" / "master_ai.py",
@@ -14789,35 +12541,9 @@ def _build_self_mod_denylist():
             pass
     return out
 
-
 _SELF_MOD_DENYLIST = _build_self_mod_denylist()
 
-# P2.3: read path fence + secret-path denylist + symlink escape denial.
-# Default-deny: READ targets must resolve to a real path under one of the
-# allowed roots, and must not match any secret-path pattern. The fence is
-# advisory in Plan/Review modes (model gets repair feedback); in Auto
-# mode the fence hard-blocks the read so the model can't silently
-# slurp /etc/shadow or ~/.ssh/id_rsa as "context".
-_READ_ALLOWED_ROOTS = (
-    Path.home(),
-    Path("/tmp"),
-    Path("/var/log"),
-)
-_READ_DENY_PATTERNS = (
-    re.compile(r"(^|/)\.ssh(/|$)"),
-    re.compile(r"(^|/)\.gnupg(/|$)"),
-    re.compile(r"(^|/)\.aws/credentials"),
-    re.compile(r"(^|/)\.master_ai_keys$"),
-    re.compile(r"(^|/)\.master_ai_creator$"),
-    re.compile(r"(^|/)\.netrc$"),
-    re.compile(r"^/etc/(?:shadow|gshadow|sudoers(?:\.d)?)"),
-    re.compile(r"^/root(?:/|$)"),
-    re.compile(r"^/proc(?:/|$)"),
-    re.compile(r"^/sys(?:/|$)"),
-)
-
-
-def _read_path_is_framework(filepath):
+def _read_path_is_framework(filepath: Any) -> Any:
     """Framework files (Sensei source, docs, config) may be read in larger
     chunks during self-audit/review."""
     fpath = str(filepath or "").lower()
@@ -14831,8 +12557,7 @@ def _read_path_is_framework(filepath):
         or "/.config/ai-controller/" in fpath
     )
 
-
-def _read_path_ok(filepath):
+def _read_path_ok(filepath: Any) -> tuple:
     """Return (ok, why). Resolves symlinks and checks:
        - resolved path stays under an allowed root (HOME, /tmp, /var/log)
        - resolved path matches no secret-path deny pattern
@@ -14862,8 +12587,7 @@ def _read_path_ok(filepath):
             continue
     return (False, f"outside allowed roots (resolved to {s})")
 
-
-def _cwd_fence_ok(filepath):
+def _cwd_fence_ok(filepath: Any) -> tuple:
     """Return (ok, reason) — is this path under a writable allowlist?
     Only enforced when MODE == 'auto'. Safe/plan ask the user explicitly."""
     if globals().get("MODE", "plan") != "auto":
@@ -14907,13 +12631,12 @@ def _cwd_fence_ok(filepath):
         f"auto-mode refuses writes outside CWD/Desktop/scripts/tmp (got {abspath})",
     )
 
-
 # ── ACTION PILLS ─────────────────────────────────────────────
 # Visual color-badges for action outcomes — matches Claude Code's
 # per-action status pills. Each kind renders as a short colored
 # chiclet that scans at a glance: green for success, red for
 # failure/blocked, yellow for skipped/warned.
-def _pill(kind, detail=""):
+def _pill(kind: Any, detail: str="") -> Any:
     """Return a colored pill badge + optional trailing detail."""
     badges = {
         "RAN": f"{BTN_G} RAN     {X}",
@@ -14931,11 +12654,10 @@ def _pill(kind, detail=""):
     tag = badges.get(kind, f"[{kind}]")
     return f"  {tag}  {detail}" if detail else f"  {tag}"
 
-
 class RunResult(str):
     """String-compatible shell result with reliable status metadata."""
 
-    def __new__(cls, output="", ok=False, exit_code=None, command="", error=""):
+    def __new__(cls, output: str="", ok: bool=False, exit_code: Any | None=None, command: str="", error: str="") -> Any:
         obj = str.__new__(cls, output or "")
         obj.ok = bool(ok)
         obj.exit_code = exit_code
@@ -14943,8 +12665,7 @@ class RunResult(str):
         obj.error = error
         return obj
 
-
-def _action_ok(result):
+def _action_ok(result: Any) -> Any:
     if isinstance(result, bool):
         return result
     if hasattr(result, "exit_code") and result.exit_code == 141:
@@ -14953,8 +12674,7 @@ def _action_ok(result):
         return bool(result.ok)
     return result is not None
 
-
-def _format_tool_result(kind, cmd, result):
+def _format_tool_result(kind: Any, cmd: Any, result: Any) -> Any:
     ok = _action_ok(result)
     exit_code = getattr(result, "exit_code", None)
     if exit_code is None:
@@ -14973,8 +12693,7 @@ def _format_tool_result(kind, cmd, result):
         output = output[:max_chars].rstrip() + f"\n... [truncated {omitted} chars]"
     return f"[{kind} RESULT]\nCommand: {cmd}\nExit: {exit_code}\nOutput:\n{output}"
 
-
-def _extract_path_lines(output):
+def _extract_path_lines(output: Any) -> Any:
     """Best-effort parse of path-like lines from shell output."""
     out = output or ""
     paths = []
@@ -14986,8 +12705,7 @@ def _extract_path_lines(output):
             paths.append(line)
     return paths
 
-
-def _print_run_success_summary(cmd, output):
+def _print_run_success_summary(cmd: Any, output: Any) -> None:
     """Human-readable result summary for common discovery commands."""
     c = (cmd or "").strip()
     low = c.lower()
@@ -15012,39 +12730,7 @@ def _print_run_success_summary(cmd, output):
         else:
             print(_pill("WARN", f"{D}not installed / not in PATH{X}"))
 
-
-_INTERACTIVE_RUN_WORDS = {
-    "less",
-    "more",
-    "man",
-    "nano",
-    "vim",
-    "vi",
-    "emacs",
-    "top",
-    "htop",
-    "btop",
-    "watch",
-    "tail -f",
-    "ssh",
-    "mysql",
-    "psql",
-    "sqlite3",
-}
-_VISUAL_RUN_WORDS = {
-    "rain",
-    "matrix",
-    "animation",
-    "animate",
-    "screensaver",
-    "terminal-effect",
-    "terminal_effect",
-    "curses",
-    "fullscreen",
-}
-
-
-def _shell_and_parts(cmd):
+def _shell_and_parts(cmd: Any) -> Any:
     """Split a simple shell chain on top-level && while preserving quotes.
 
     This is intentionally narrow: it handles the common model output shape
@@ -15083,16 +12769,14 @@ def _shell_and_parts(cmd):
         parts.append(tail)
     return parts or [(cmd or "").strip()]
 
-
-def _scriptish_token(token):
+def _scriptish_token(token: Any) -> bool:
     t = (token or "").strip().strip("'\"")
     return bool(
         t.startswith(("~", "/home/", "./", "../"))
         or t.endswith((".sh", ".py", ".js", ".html", ".htm"))
     )
 
-
-def _is_setup_command_part(part):
+def _is_setup_command_part(part: Any) -> bool:
     try:
         toks = shlex.split(part)
     except Exception:
@@ -15110,8 +12794,7 @@ def _is_setup_command_part(part):
         return True
     return False
 
-
-def _is_script_execution_part(part):
+def _is_script_execution_part(part: Any) -> Any:
     try:
         toks = shlex.split(part)
     except Exception:
@@ -15123,8 +12806,7 @@ def _is_script_execution_part(part):
         return any(_scriptish_token(t) for t in toks[1:] if not t.startswith("-"))
     return _scriptish_token(toks[0])
 
-
-def _missing_execution_targets(cmd):
+def _missing_execution_targets(cmd: Any) -> Any:
     missing = []
     for part in _shell_and_parts(cmd):
         try:
@@ -15155,8 +12837,7 @@ def _missing_execution_targets(cmd):
                 missing.append(exp)
     return sorted(set(missing))
 
-
-def _is_visual_command_part(part, visual_requested=False):
+def _is_visual_command_part(part: Any, visual_requested: bool=False) -> bool:
     low = (part or "").strip().lower()
     if not low or _is_setup_command_part(part):
         return False
@@ -15174,8 +12855,7 @@ def _is_visual_command_part(part, visual_requested=False):
         return True
     return False
 
-
-def _split_run_policy(cmd, visual_requested=False):
+def _split_run_policy(cmd: Any, visual_requested: bool=False) -> tuple:
     """Return (run_parts, runterm_parts) for a model-emitted RUN command."""
     parts = _shell_and_parts(cmd)
     if len(parts) == 1:
@@ -15196,8 +12876,7 @@ def _split_run_policy(cmd, visual_requested=False):
         i += 1
     return run_parts, runterm_parts
 
-
-def _looks_interactive_run(cmd):
+def _looks_interactive_run(cmd: Any) -> Any:
     low = (cmd or "").strip().lower()
     if not low:
         return False
@@ -15211,13 +12890,9 @@ def _looks_interactive_run(cmd):
         first = low.split()[0] if low.split() else ""
     return first in _INTERACTIVE_RUN_WORDS or low.startswith("tail -f ")
 
-
 # ── RUN COMMAND ───────────────────────────────────────────────
-_LAST_LIVE_TYPED_ACTIONS: list[dict] = []
-_LIVE_TYPED_ACTIONS_CAP = 200
 
-
-def _record_live_typed_action(action):
+def _record_live_typed_action(action: Any) -> None:
     """Persist one TypedAction's final lifecycle state.
 
     2026-09-01 (Phase 1.1): the only prior typed-action trail was a
@@ -15240,7 +12915,6 @@ def _record_live_typed_action(action):
     except Exception:
         pass
 
-
 # 2026-09-01: sandbox wrapper moved to sandbox.py so skill_runtime.py
 # recipes can share the exact same sandboxing instead of bypassing it
 # entirely with their own bare subprocess.run() calls. Kept as a thin
@@ -15249,48 +12923,8 @@ def _record_live_typed_action(action):
 from sandbox import build_sandbox_argv as _build_sandbox_argv
 
 # ── VERIFY-ON-STOP GATE (2026-09-27) ──────────────────────────
-# Ported from Hermes's agent/turn_stop_gates.py + verification_stop.py
-# (github.com/NousResearch/hermes-agent, checked live in
-# ~/.hermes/hermes-agent): a real, structural "don't let a turn close on
-# an unverified code edit" gate, not another prose instruction hoping the
-# model complies. Elijah: "why are we building this one by one when it
-# can be cloned or copied" -- the completion-contract text in
-# ~/.sensei_behavior.md only ever asked nicely; this actually enforces it.
-#
-# Scope: reset once per handle() call (one logical turn, including its
-# internal continuation chain), not per RUN/EDIT directive -- an edit ten
-# steps into a chain still needs to be verified before the chain's final
-# prose answer is allowed to stand.
-_TURN_EDITED_PATHS: set[str] = set()
-_TURN_VERIFIED_SINCE_EDIT = True  # nothing edited yet -> nothing to prove
-_VERIFY_STOP_ATTEMPTS = 0
-_VERIFY_STOP_MAX_ATTEMPTS = 2  # mirrors Hermes's max_attempts=2
 
-# Prose/data files have no runtime behavior to verify -- editing a
-# SKILL.md or README must never demand a test run.
-_NON_CODE_VERIFY_EXTENSIONS = frozenset(
-    {".md", ".markdown", ".mdx", ".rst", ".txt", ".log", ".csv", ".tsv", ".json"}
-)
-_VERIFY_COMMAND_MARKERS = (
-    "pytest",
-    "py_compile",
-    "unittest",
-    "npm test",
-    "npm run test",
-    "yarn test",
-    "go test",
-    "cargo test",
-    "bash -n",
-    "node --check",
-    "eslint",
-    "flake8",
-    "ruff",
-    "mypy",
-    "shellcheck",
-)
-
-
-def _is_non_code_verify_path(path):
+def _is_non_code_verify_path(path: Any) -> Any:
     try:
         return (
             Path(os.path.expanduser(path)).suffix.lower() in _NON_CODE_VERIFY_EXTENSIONS
@@ -15298,29 +12932,25 @@ def _is_non_code_verify_path(path):
     except Exception:
         return False
 
-
-def _reset_turn_verify_state():
+def _reset_turn_verify_state() -> None:
     globals()["_TURN_EDITED_PATHS"] = set()
     globals()["_TURN_VERIFIED_SINCE_EDIT"] = True
     globals()["_VERIFY_STOP_ATTEMPTS"] = 0
 
-
-def _mark_turn_path_mutated(filepath):
+def _mark_turn_path_mutated(filepath: Any) -> None:
     """Call from every successful EDIT/CREATE dispatch path."""
     if _is_non_code_verify_path(filepath):
         return
     globals()["_TURN_EDITED_PATHS"].add(filepath)
     globals()["_TURN_VERIFIED_SINCE_EDIT"] = False
 
-
-def _mark_turn_verified(cmd):
+def _mark_turn_verified(cmd: Any) -> None:
     """Call from run_command() on a successful (exit-0) RUN."""
     low = (cmd or "").lower()
     if any(marker in low for marker in _VERIFY_COMMAND_MARKERS):
         globals()["_TURN_VERIFIED_SINCE_EDIT"] = True
 
-
-def _verify_on_stop_nudge():
+def _verify_on_stop_nudge() -> Any:
     """Mirrors Hermes's build_verify_on_stop_nudge(): non-empty only when
     code was edited this turn with no verification run since, bounded by
     _VERIFY_STOP_MAX_ATTEMPTS so it can never loop forever."""
@@ -15339,7 +12969,6 @@ def _verify_on_stop_nudge():
         "only then give your closing answer. If verification genuinely "
         "isn't possible here, say so plainly instead of claiming it works.]"
     )
-
 
 # ── Session-scoped CWD (2026-09-28) ──────────────────────────────────────
 # 2026-09-27, root-caused live: a model emitted `cd /some/project/dir` as
@@ -15375,17 +13004,11 @@ if _MASTER_AI_DIR and _MASTER_AI_DIR not in sys.path:
 # and the path is fixed above.
 from scripts.session_cwd import get_session_cwd, set_session_cwd
 
-# A LEADING `cd <path>`, optionally chained: `cd a && cd b`. Parsed with
-# shlex rather than a regex so quoted paths containing spaces resolve.
-_CD_SEPARATORS = ("&&", "||", ";", "&", "|")
-
-
-def _run_cwd():
+def _run_cwd() -> Any:
     """cwd= to hand subprocess.run: the session CWD, or None to inherit."""
     return get_session_cwd() or None
 
-
-def _track_leading_cd(cmd, ok):
+def _track_leading_cd(cmd: Any, ok: Any) -> None:
     """Persist a successful leading `cd` so the NEXT RUN: inherits it.
 
     Only a LEADING cd moves the next command: in `foo && cd bar`, cd was
@@ -15424,8 +13047,7 @@ def _track_leading_cd(cmd, ok):
     if moved:
         set_session_cwd(base)
 
-
-def _fire_on_blocked(target, kind, action_reason, audit_kind):
+def _fire_on_blocked(target: Any, kind: Any, action_reason: Any, audit_kind: Any) -> None:
     """Fire the `on_blocked` hook for one blocked or failed action.
 
     Extracted 2026-09-28. Four call sites in process_reply() each carried an
@@ -15454,8 +13076,7 @@ def _fire_on_blocked(target, kind, action_reason, audit_kind):
     except Exception as e:
         log(f"ON_BLOCKED_HOOK_ERROR ({audit_kind}): {e}")
 
-
-def run_command(cmd):
+def run_command(cmd: Any) -> Any:
     print(f"\n🥷  {BOLD}Running:{X} {Y}{cmd}{X}")
     _mark_activity()
     _t0 = time.time()
@@ -15585,8 +13206,7 @@ def run_command(cmd):
         _record_live_typed_action(_typed)
         return RunResult(str(e), ok=False, exit_code=1, command=cmd, error=str(e))
 
-
-def _settings_set(key, value):
+def _settings_set(key: Any, value: Any) -> None:
     """Set one KEY=value line in ~/.master_ai_settings without disturbing others."""
     path = Path.home() / ".master_ai_settings"
     lines = path.read_text().splitlines() if path.exists() else []
@@ -15595,8 +13215,7 @@ def _settings_set(key, value):
     out.append(f"{key}={value}")
     path.write_text("\n".join(out).strip() + "\n")
 
-
-def _settings_get(key, default=""):
+def _settings_get(key: Any, default: str="") -> Any:
     path = Path.home() / ".master_ai_settings"
     if not path.exists():
         return default
@@ -15606,8 +13225,7 @@ def _settings_get(key, default=""):
             return line.split("=", 1)[1].strip()
     return default
 
-
-def set_mouse_profile(profile):
+def set_mouse_profile(profile: Any) -> bool:
     """Switch tmux/Sensei mouse behavior for phone-vs-local work.
 
     remote: tmux mouse on + future Sensei launches with SENSEI_MOUSE=1.
@@ -15672,8 +13290,7 @@ def set_mouse_profile(profile):
         )
     return True
 
-
-def _mouse_profile_restart(history):
+def _mouse_profile_restart(history: Any) -> None:
     """Lightweight restart after a mouse-profile switch — mirrors the
     `profile <name>` restart path (save, clear screen, execvp) rather
     than handle_save_refresh's heavier compact-and-resume flow, since
@@ -15698,16 +13315,14 @@ def _mouse_profile_restart(history):
         sys.executable, [sys.executable, str(Path.home() / "scripts/master_ai.py")]
     )
 
-
-def _doctor_cmd(argv, timeout=2):
+def _doctor_cmd(argv: Any, timeout: int=2) -> tuple:
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
         return proc.returncode, (proc.stdout + proc.stderr).strip()
     except Exception as e:
         return 1, str(e)
 
-
-def _doctor_http(url, timeout=2):
+def _doctor_http(url: Any, timeout: int=2) -> tuple:
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             return resp.status, resp.read(65536)
@@ -15716,24 +13331,21 @@ def _doctor_http(url, timeout=2):
     except Exception:
         return 0, b""
 
-
-def _doctor_port(host, port, timeout=1.5):
+def _doctor_port(host: Any, port: Any, timeout: float=1.5) -> bool:
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
     except Exception:
         return False
 
-
-def _doctor_service(name):
+def _doctor_service(name: Any) -> Any:
     if not shutil.which("systemctl"):
         return "unknown"
     rc, out = _doctor_cmd(["systemctl", "--user", "is-active", name], timeout=2)
     state = (out.splitlines() or ["unknown"])[0].strip()
     return state if rc == 0 or state else "inactive"
 
-
-def _doctor_count_lines(path):
+def _doctor_count_lines(path: Any) -> Any:
     try:
         return len(
             [l for l in path.read_text(errors="replace").splitlines() if l.strip()]
@@ -15741,16 +13353,14 @@ def _doctor_count_lines(path):
     except Exception:
         return 0
 
-
-def _doctor_tailscale_ip():
+def _doctor_tailscale_ip() -> Any:
     if shutil.which("tailscale"):
         rc, out = _doctor_cmd(["tailscale", "ip", "-4"], timeout=2)
         if rc == 0 and out.strip():
             return out.strip().splitlines()[0]
     return "100.101.249.96"
 
-
-def agent_standards_checks():
+def agent_standards_checks() -> Any:
     """Local, Anthropic-inspired agent-readiness checks.
 
     This is not a certification. It is a concrete gap report so Sensei does
@@ -15758,7 +13368,7 @@ def agent_standards_checks():
     """
     checks = []
 
-    def add(status, name, detail):
+    def add(status: Any, name: Any, detail: Any) -> None:
         checks.append((status, name, detail))
 
     shim = Path.home() / ".local" / "bin" / "matrix-rain"
@@ -15956,16 +13566,14 @@ def agent_standards_checks():
 
     return checks
 
-
-def agent_standards_score(checks=None):
+def agent_standards_score(checks: Any | None=None) -> Any:
     """Return Sensei's local readiness score as an integer percentage."""
     checks = checks if checks is not None else agent_standards_checks()
     weights = {"PASS": 1.0, "WARN": 0.5, "FAIL": 0.0}
     earned = sum(weights.get(status, 0.0) for status, _, _ in checks)
     return round(100 * earned / max(1, len(checks)))
 
-
-def format_agent_standards():
+def format_agent_standards() -> Any:
     checks = agent_standards_checks()
     counts = {
         k: sum(1 for status, _, _ in checks if status == k)
@@ -15983,8 +13591,7 @@ def format_agent_standards():
         lines.append(f"{status:4}  {name}: {detail}")
     return "\n".join(lines)
 
-
-def show_agent_standards():
+def show_agent_standards() -> None:
     print(f"\n{BC}  ╔════════════════════════════════════════════════════════════╗{X}")
     print(f"{BC}  ║{X}  {BW}SENSEI — Agent Standards{X}")
     print(f"{BC}  ╚════════════════════════════════════════════════════════════╝{X}")
@@ -15999,22 +13606,7 @@ def show_agent_standards():
             print(f"  {line}")
     print()
 
-
-# 2026-09-03: sensei had no supply-chain vulnerability checking at all —
-# a real gap vs Hermes' `hermes security` (OSV.dev audit of venv/plugins/
-# MCP servers). requirements.txt has exactly one entry (ddgs) and
-# pyproject.toml has no dependency list either, so neither file is an
-# honest description of what this app actually imports — AST-parsing
-# master_ai.py itself is the only accurate way to know what a security
-# audit should even be scoped to. A bare `pip-audit` with no scoping
-# audits the ENTIRE system Python environment (confirmed live — it
-# surfaced CVEs in packages like VTK that have nothing to do with
-# sensei), which is useless noise for "is sensei's own dependency
-# footprint safe."
-_SECURITY_AUDIT_NAME_ALIASES = {"whisper": "openai-whisper"}
-
-
-def _sensei_third_party_imports():
+def _sensei_third_party_imports() -> Any:
     """Top-level third-party import names actually used by master_ai.py —
     excludes stdlib (sys.stdlib_module_names) and local sibling modules
     (every *.py file in the same directory, e.g. hooks/sandbox/harvest —
@@ -16038,8 +13630,7 @@ def _sensei_third_party_imports():
         if n not in stdlib and n not in local_modules and not n.startswith("_")
     )
 
-
-def _resolve_installed_dist(import_name):
+def _resolve_installed_dist(import_name: Any) -> tuple:
     """Import name -> (installed distribution name, version), or (None,
     None) if not resolvable. Handles the import-name != PyPI-name case
     (whisper's distribution is actually "openai-whisper")."""
@@ -16055,8 +13646,7 @@ def _resolve_installed_dist(import_name):
             continue
     return None, None
 
-
-def run_security_audit():
+def run_security_audit() -> dict:
     """Scope pip-audit to sensei's OWN direct third-party dependencies
     (via _sensei_third_party_imports + version resolution), not the whole
     system Python. Audits ONE package per pip-audit invocation rather
@@ -16128,8 +13718,7 @@ def run_security_audit():
         "unscannable": unscannable,
     }
 
-
-def show_doctor():
+def show_doctor() -> Any:
     """Compact live health card for real use: URLs, services, mode, next fixes."""
     warnings = []
 
@@ -16198,7 +13787,7 @@ def show_doctor():
     tts_pref = "ON" if TTS_ENABLED else "OFF"
     probe_rows = []
 
-    def add_probe(label, ok, detail):
+    def add_probe(label: Any, ok: Any, detail: Any) -> None:
         probe_rows.append((label, ok, detail))
         if not ok:
             warnings.append(f"{label} probe failed: {detail}")
@@ -16279,7 +13868,7 @@ def show_doctor():
     except Exception:
         crash = ""
 
-    def state(ok, text):
+    def state(ok: Any, text: Any) -> Any:
         return f"{G}OK{X}   {text}" if ok else f"{Y}WARN{X} {text}"
 
     print(f"\n{BC}  ╔════════════════════════════════════════════════════════════╗{X}")
@@ -16336,8 +13925,7 @@ def show_doctor():
             f"\n  {G}A-grade live path: terminal, Pupil, memory, models, and voice file are reachable.{X}\n"
         )
 
-
-def run_in_terminal(cmd):
+def run_in_terminal(cmd: Any) -> Any:
     """Spawn cmd in a fresh graphical terminal window. Fire-and-forget —
     we do NOT wait, do NOT capture output, do NOT impose a timeout.
     For visual / interactive scripts (matrix-rain, htop, vim, curses apps)
@@ -16394,13 +13982,12 @@ def run_in_terminal(cmd):
     _record_live_typed_action(_typed)
     return "no-terminal-available"
 
-
 # ── KICK ESCAPE FROM CONFIRM PROMPTS ─────────────────────────
 # Born from the 2026-04-21 clarify-prompt trap: typing 'kick' at a
 # Choose (1/2/3) prompt was being SKIPPED, then the input got routed
 # as a fresh chat turn instead of restarting the engine. This helper
 # is called from every confirm prompt so 'kick' always escapes cleanly.
-def _check_kick_escape(choice):
+def _check_kick_escape(choice: Any) -> None:
     lo = (choice or "").strip().lower()
     if lo in ("kick", "force restart", "hard restart"):
         _RESTART_STARTED.set()
@@ -16415,8 +14002,7 @@ def _check_kick_escape(choice):
         # bypasses both traps.
         os._exit(42)
 
-
-def _normalize_run_cmd(cmd):
+def _normalize_run_cmd(cmd: Any) -> Any:
     """Repair common model/voice shell slips before execution."""
     fixed = (cmd or "").strip()
     # `./~/path` is never valid; the model means `~/path`.
@@ -16429,8 +14015,7 @@ def _normalize_run_cmd(cmd):
         print(f"{Y}  normalized command:{X} {fixed}")
     return fixed
 
-
-def _normalize_ollama_systemctl_scope(cmd):
+def _normalize_ollama_systemctl_scope(cmd: Any) -> Any:
     """Ollama is a system unit on your-machine, never a user unit."""
     try:
         parts = shlex.split(cmd)
@@ -16479,43 +14064,9 @@ def _normalize_ollama_systemctl_scope(cmd):
         rewritten.insert(0, "sudo")
     return " ".join(shlex.quote(p) for p in rewritten)
 
-
 # ── BROWSER_* DISPATCH ───────────────────────────────────────
-# 2026-08-27: the system prompt has taught the model the full BROWSER_*
-# vocabulary for a long time ("the dispatcher parses bare directive
-# lines" — see the FORMAT DISCIPLINE block) but no code anywhere in this
-# file ever executed one; grep for `kind == "BROWSER` or an
-# /extension/queue POST turned up nothing. The model was promised a tool
-# that didn't exist. This wires it to the exact same bridge queue
-# sensei_mcp_server.py's _push()/_await_result()/_dispatch() already use
-# successfully (that's what backs this Claude Code session's own
-# mcp__sensei__* tools) — same mechanism, different caller.
-_SENSEI_BRIDGE_URL = "http://127.0.0.1:8791"
 
-# Mirrors side_panel.js's READONLY_BROWSER_KINDS — these observe, they
-# don't change page state, so they skip the confirm gate even in
-# review/plan mode. Everything else (NAV/CLICK/FILL/SUBMIT/UPLOAD_FILE/
-# CLOSE_TAB/JS/CDP_*) is gated like RUN: auto-mode dispatches directly,
-# review/plan mode asks first.
-_BROWSER_READONLY_KINDS = {
-    "BROWSER_READ",
-    "BROWSER_READ_PAGE",
-    "BROWSER_OBSERVE",
-    "BROWSER_SCREENSHOT",
-    "BROWSER_WAIT",
-    "BROWSER_SCROLL",
-    "BROWSER_FIND",
-    "BROWSER_EXTRACT_LIST",
-    "BROWSER_DRIVE_INSPECT_FOLDER",
-    "BROWSER_CONSOLE",
-    "BROWSER_NETWORK",
-}
-
-_BROWSER_DIRECTIVE_RE = re.compile(r"^\s*(BROWSER_[A-Z_]+):\s*(.+)$")
-_BROWSER_SEP_RE = re.compile(r"\s*(?:::|=>|:=)\s*")
-
-
-def _extract_browser_actions(lines):
+def _extract_browser_actions(lines: Any) -> Any:
     """Pull {kind, target, value} out of BROWSER_*: lines, same shape as
     sensei_bridge.py's parse_directives(). Separator matches what the
     system prompt already documents for BROWSER_FILL/BROWSER_UPLOAD_FILE
@@ -16535,17 +14086,16 @@ def _extract_browser_actions(lines):
         actions.append({"kind": kind, "target": target, "value": value})
     return actions
 
-
 class _BrowserResult:
     """Adapts the bridge's JSON result to what _action_ok()/
     _format_tool_result() already expect (an object with .ok, stringified
     for output) without changing either of those shared functions."""
 
-    def __init__(self, ok, data):
+    def __init__(self, ok: Any, data: Any) -> None:
         self.ok = ok
         self.data = data
 
-    def __str__(self):
+    def __str__(self) -> Any:
         if isinstance(self.data, (dict, list)):
             try:
                 return json.dumps(self.data)[:4000]
@@ -16553,8 +14103,7 @@ class _BrowserResult:
                 pass
         return str(self.data)
 
-
-def _sensei_bridge_alive():
+def _sensei_bridge_alive() -> bool:
     try:
         req = urllib.request.Request(f"{_SENSEI_BRIDGE_URL}/health")
         with urllib.request.urlopen(req, timeout=3) as r:
@@ -16562,10 +14111,9 @@ def _sensei_bridge_alive():
     except Exception:
         return False
 
-
 def _dispatch_browser_action(
-    kind, target, value, session_id="mcp-default", wait_seconds=25
-):
+    kind: Any, target: Any, value: Any, session_id: str="mcp-default", wait_seconds: int=25
+) -> Any:
     """Push one action to sensei_bridge's /extension/queue and poll
     /extension/result for the outcome — the identical push/await shape
     sensei_mcp_server.py's _push()/_await_result() use. Chrome + the
@@ -16605,9 +14153,8 @@ def _dispatch_browser_action(
         time.sleep(0.5)
     return _BrowserResult(False, {"reason": "timeout", "action_id": action_id})
 
-
 @_awaiting_confirm
-def confirm_browser_action(kind, target, value):
+def confirm_browser_action(kind: Any, target: Any, value: Any) -> Any:
     label = f"{kind}: {target}" + (f" :: {value}" if value else "")
     if kind in _BROWSER_READONLY_KINDS:
         _audit("BROWSER", label)
@@ -16671,10 +14218,9 @@ def confirm_browser_action(kind, target, value):
     _audit("BROWSER", label)
     return _dispatch_browser_action(kind, target, value)
 
-
 # ── 4-OPTION CONFIRM ─────────────────────────────────────────
 @_awaiting_confirm
-def confirm_run(cmd):
+def confirm_run(cmd: str) -> Any:
     cmd = _normalize_run_cmd(cmd)
     if _is_noop_cmd(cmd):
         print(_pill("EMPTY-CMD", f"{D}RUN payload was empty/no-op — refusing{X}"))
@@ -16922,9 +14468,8 @@ def confirm_run(cmd):
     _remember_last_action("run_denied", command=cmd)
     return None
 
-
 @_awaiting_confirm
-def confirm_runterm(cmd):
+def confirm_runterm(cmd: str) -> Any:
     """Confirm + spawn in a fresh graphical terminal. Same safety gates as
     confirm_run (block list + sudo handoff), but skips hallucination_warn
     (user/model explicitly signaled this is interactive/visual — they know
@@ -17095,7 +14640,6 @@ def confirm_runterm(cmd):
     _remember_last_action("runterm_denied", command=cmd)
     return None
 
-
 def _looks_like_english(s: str) -> bool:
     """True if `s` looks like a natural-language instruction rather than a
     shell command. Heuristic only — users can force-run via plain `edit`
@@ -17143,10 +14687,9 @@ def _looks_like_english(s: str) -> bool:
     alpha_tokens = sum(1 for t in tokens if t.replace("'", "").isalpha())
     return alpha_tokens >= max(2, len(tokens) - 1)
 
-
 # ── FILE CREATE CONFIRM ───────────────────────────────────────
 @_awaiting_confirm
-def _fire_hook_or_block(kind, target, content=None):
+def _fire_hook_or_block(kind: str, target: Any, content: Any | None=None) -> bool:
     """P1.4: fire hooks for ``kind``; on block, record _LAST_HOOK_BLOCK +
     audit + return True (caller should abort). Returns False if no hook
     blocked (caller proceeds). Hooks module unavailable / errors swallow
@@ -17185,9 +14728,8 @@ def _fire_hook_or_block(kind, target, content=None):
     log(f"HOOK_BLOCK {kind} on {target}: {result.hook_id}: {result.reason}")
     return True
 
-
 @_awaiting_confirm
-def confirm_create(filepath, content):
+def confirm_create(filepath: Any, content: str) -> bool:
     filepath = os.path.expanduser(filepath)
     # Auto-mode CWD fence
     ok, why = _cwd_fence_ok(filepath)
@@ -17324,13 +14866,12 @@ def confirm_create(filepath, content):
         _remember_last_action("create_denied", path=filepath)
         return False
 
-
 # ── SEND_EMAIL CONFIRM ───────────────────────────────────────
 # Irreversible action — sent = sent. Always prompts in auto mode (no
 # bypass) per the same irreversible-action policy Claude-for-Chrome uses
 # for purchases/sensitive_fill. Plan mode refuses. Review mode prompts.
 @_awaiting_confirm
-def confirm_send_email(spec):
+def confirm_send_email(spec: dict) -> Any:
     to = spec.get("to", "")
     subject = spec.get("subject", "")
     body = spec.get("body", "")
@@ -17383,9 +14924,8 @@ def confirm_send_email(spec):
     _audit("SEND_EMAIL-CANCELLED", f"to={to}")
     return {"ok": False, "error": "user cancelled", "recipient": to}
 
-
 @_awaiting_confirm
-def confirm_send_telegram(spec):
+def confirm_send_telegram(spec: dict) -> Any:
     """Irreversible message — prompt once in review/auto, refuse in plan."""
     chat_id = spec.get("chat_id", "")
     text = spec.get("text", "")
@@ -17420,10 +14960,9 @@ def confirm_send_telegram(spec):
     _audit("SEND_TELEGRAM-CANCELLED", f"chat_id={chat_id}")
     return {"ok": False, "error": "user cancelled", "chat_id": chat_id}
 
-
 # ── FILE EDIT CONFIRM ────────────────────────────────────────
 @_awaiting_confirm
-def confirm_edit(filepath, find_text, replace_text):
+def confirm_edit(filepath: Any, find_text: str, replace_text: str) -> bool:
     filepath = os.path.expanduser(filepath)
     ok, why = _cwd_fence_ok(filepath)
     if not ok:
@@ -17531,7 +15070,6 @@ def confirm_edit(filepath, find_text, replace_text):
         _remember_last_action("edit_denied", path=filepath)
         return False
 
-
 # ── REMEMBER directive (self-write to memory, 2026-05-11) ────
 # Sensei's self-teaching loop. The user's `remember:` REPL command has
 # always written to MEMORY_FILE; this gives the MODEL the same ability
@@ -17541,7 +15079,7 @@ def confirm_edit(filepath, find_text, replace_text):
 # ("fetchmail isn't installed on this box; use Thunderbird via desktop
 # launcher instead") and that line shows up matched into next turn's
 # context whenever the user's words overlap.
-def confirm_remember(fact):
+def confirm_remember(fact: Any) -> bool:
     """Append a model-emitted memory line. Validates: non-empty, <200
     chars, not duplicate. Returns True if stored, False otherwise.
     Same write path as the user `remember:` REPL command."""
@@ -17581,18 +15119,13 @@ def confirm_remember(fact):
         log(f"REMEMBER_WRITE_ERROR: {e}")
         return False
 
-
-_SKILL_SESSION_MARKER = "[SENSEI_SKILL_SESSION]"
-
-
-def _normalize_skill_name(name):
+def _normalize_skill_name(name: Any) -> Any:
     slug = re.sub(
         r"[^a-z0-9_-]+", "-", str(name or "").strip().lower().replace("_", "-")
     ).strip("-")
     return slug if re.match(r"^[a-z0-9][a-z0-9_-]{0,80}$", slug or "") else ""
 
-
-def _parse_run_skill_payload(payload):
+def _parse_run_skill_payload(payload: Any) -> Any:
     raw = str(payload or "").strip()
     if not raw:
         return None
@@ -17632,8 +15165,7 @@ def _parse_run_skill_payload(payload):
             resume = True
     return {"name": name, "params": params, "session_id": session_id, "resume": resume}
 
-
-def _run_skill_specs_from_reply(reply):
+def _run_skill_specs_from_reply(reply: Any) -> Any:
     specs = []
     for line in str(reply or "").splitlines():
         if not _real_directive_line(line, "RUN_SKILL"):
@@ -17647,15 +15179,13 @@ def _run_skill_specs_from_reply(reply):
             specs.append(spec)
     return specs
 
-
-def _real_directive_line(line, name):
+def _real_directive_line(line: Any, name: Any) -> bool:
     for m in re.finditer(rf"\b{name}:", str(line or ""), re.IGNORECASE):
         if str(line or "")[: m.start()].count("`") % 2 == 0:
             return True
     return False
 
-
-def _skill_pending_directives(state):
+def _skill_pending_directives(state: Any) -> Any:
     pending = (getattr(state, "data", {}) or {}).get("_pending_directives")
     if not isinstance(pending, list):
         return []
@@ -17672,8 +15202,7 @@ def _skill_pending_directives(state):
             out.append(line)
     return out
 
-
-def _append_skill_session_marker(history, state):
+def _append_skill_session_marker(history: list, state: Any) -> None:
     meta = {
         "name": getattr(state, "skill_name", ""),
         "session_id": getattr(state, "session_id", ""),
@@ -17689,8 +15218,7 @@ def _append_skill_session_marker(history, state):
         }
     )
 
-
-def _latest_skill_session_marker(history):
+def _latest_skill_session_marker(history: Any) -> Any:
     for msg in reversed(history or []):
         content = msg.get("content", "") if isinstance(msg, dict) else ""
         if _SKILL_SESSION_MARKER not in str(content):
@@ -17709,8 +15237,7 @@ def _latest_skill_session_marker(history):
             return meta
     return None
 
-
-def _skill_state_reply(state, history):
+def _skill_state_reply(state: Any, history: Any) -> Any:
     pending = _skill_pending_directives(state)
     if pending:
         _append_skill_session_marker(history, state)
@@ -17742,8 +15269,7 @@ def _skill_state_reply(state, history):
     _append_skill_session_marker(history, state)
     return f"Skill {getattr(state, 'skill_name', 'unknown')} paused: {reason}"
 
-
-def _run_skill_reply_from_reply(reply, history):
+def _run_skill_reply_from_reply(reply: Any, history: Any) -> Any:
     specs = _run_skill_specs_from_reply(reply)
     if not specs:
         return None
@@ -17767,8 +15293,7 @@ def _run_skill_reply_from_reply(reply, history):
         log(f"RUN_SKILL_ERROR: {type(e).__name__}: {e}")
         return f"Skill dispatch failed: {type(e).__name__}: {e}"
 
-
-def _resume_skill_reply_from_turn(user_text, history):
+def _resume_skill_reply_from_turn(user_text: Any, history: Any) -> Any:
     if "[PREVIOUS ROUND RESULTS]" not in str(user_text or ""):
         return None
     meta = _latest_skill_session_marker(history)
@@ -17809,132 +15334,9 @@ def _resume_skill_reply_from_turn(user_text, history):
         log(f"RUN_SKILL_RESUME_ERROR: {type(e).__name__}: {e}")
         return f"Skill resume failed: {type(e).__name__}: {e}"
 
-
 # ── REPLY PROCESSOR ──────────────────────────────────────────
-_DIRECTIVE_KEYWORDS_RE = re.compile(
-    # No leading \b: models observed cramming directives together with
-    # zero separator at all once the <tool_call> tag between them is
-    # stripped (e.g. "3000BROWSER_WAIT:") — \b doesn't fire between a
-    # digit and a letter (both are \w), so a leading boundary check missed
-    # this exact case. The trailing (?=\s|$) after the colon already
-    # disambiguates real directives from prose sharing a substring.
-    r"(RUN_SKILL|RUNTERM|RUN|READ|CREATE|EDIT|ASK|DONE|REMEMBER|SEARCH|"
-    r"TASK_ADD|TASK_DONE|"
-    r"SEND_EMAIL|REMOTE_MCP|SEND_TELEGRAM|BROWSER_[A-Z_]+):(?=\s|$)"
-)
-_TOOL_CALL_TAG_RE = re.compile(r"</?\s*tool_calls?\s*>", re.IGNORECASE)
 
-# 2026-09-02: a different malformed-directive shape than the <tool_call>
-# wrapper above -- some free-tier models emit a real directive followed by
-# trailing fragments of THEIR OWN native structured tool-call XML schema,
-# e.g. `RUN: ls foo</arg_value><arg_key>description</arg_key><arg_value>...`
-# or `READ: /path/file.py<arg_key>end_line</arg_key><arg_value>150</arg_value>`.
-# Reproduced live three separate times today across different models. In
-# every observed case the real, valid command/path comes first and the XML
-# noise trails it -- so truncate at the first such tag rather than trying to
-# parse the fragment as real structured parameters (start_line/end_line etc.
-# have their own plain-text syntax elsewhere, e.g. READ: path:120-180).
-_ARG_XML_TAG_RE = re.compile(r"</?\s*arg_(?:key|value)\b", re.IGNORECASE)
-
-# 2026-09-08: reasoning models (confirmed live on glm-5.2 via OpenRouter)
-# sometimes leak a trailing `</think>` onto the SAME line as the directive
-# it just emitted, e.g. `RUN: ... | grep -v grep</think>`, instead of
-# cleanly closing the reasoning block before the directive starts. Since
-# `</think>` opens with `<`, bash parses it as a malformed input-redirect
-# token and dies with "syntax error near unexpected token `newline'" --
-# every RUN from that turn fails, not just a cosmetic glitch. Same
-# truncate-at-first-tag treatment as _ARG_XML_TAG_RE above.
-_THINK_TAG_RE = re.compile(r"</?\s*think\s*>", re.IGNORECASE)
-
-_XML_INVOKE_RE = re.compile(
-    # Native XML tool-call blocks some <tool_call>-agnostic models emit despite the
-    # system prompt forbidding it (live 2026-09-10 on poolside/laguna-xs-2.1:free
-    # and nvidia::deepseek-coder-6.7b: `<invoke name="RUN"><parameter
-    # name="command" string="true">ls ~/scripts/</parameter></invoke>`).
-    # Previously these were invisible to every directive parser: the reply
-    # rendered as prose + raw XML, nothing dispatched, and the model — seeing
-    # no tool output — re-emitted the same block forever (the "Sensei going
-    # crazy" loop). Convert each block to the bare directive grammar the
-    # dispatcher actually speaks, then let _normalize_directive_lines do the
-    # rest (newline forcing, backtick parity).
-    r'<invoke\s+name\s*=\s*"([A-Za-z_]+)"\s*>(.*?)</invoke\s*>',
-    re.IGNORECASE | re.DOTALL,
-)
-_XML_PARAM_RE = re.compile(
-    r'<parameter\s+name\s*=\s*"([A-Za-z_]+)"[^>]*>(.*?)</parameter\s*>',
-    re.IGNORECASE | re.DOTALL,
-)
-
-# 2026-09-21: a second, distinct native tool-call shape, confirmed live on
-# opencode-go::mimo-v2.5-pro (and documented as several open-weight model
-# families' trained-in tool-call format, not something particular to one
-# model). Unlike _XML_INVOKE_RE's Anthropic-style `<invoke name="X">
-# <parameter name="Y">`, this one puts the value directly on the tag with
-# `=`, no quotes, no `name` attribute: `<function=bash><parameter=command>
-# cd ~/scripts && ...</parameter><parameter=description>...</parameter>
-# </function>`. Same failure mode _XML_INVOKE_RE was built to fix, live
-# again on a model whose native tool-call template this system prompt never
-# asked for: rendered as prose + raw XML, nothing ever dispatched, user had
-# to manually say "proceed" over and over to get anything resembling
-# forward motion because the model never received real tool output to
-# continue from — it was reacting to its own unexecuted call, not a result.
-_XML_FUNCTION_RE = re.compile(
-    r"<function\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*>(.*?)</function\s*>",
-    re.IGNORECASE | re.DOTALL,
-)
-_XML_FUNCTION_PARAM_RE = re.compile(
-    r"<parameter\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*>(.*?)</parameter\s*>",
-    re.IGNORECASE | re.DOTALL,
-)
-# None of these common cross-model "run a shell command" tool names are
-# master_ai's own RUN directive keyword, so without this alias map a
-# <function=bash> block would convert to a still-unrecognized "BASH: ..."
-# line instead of the RUN: the dispatcher actually understands — visible
-# is strictly better than invisible (see docstring below), but recognized
-# and dispatched is the real fix.
-_XML_FUNCTION_NAME_ALIASES = {
-    "bash": "RUN",
-    "shell": "RUN",
-    "execute": "RUN",
-    "exec": "RUN",
-    "terminal": "RUN",
-    "run_command": "RUN",
-    "run_shell_command": "RUN",
-}
-
-# 2026-09-21: two more native tool-call shapes, added proactively (not yet
-# reproduced live, unlike the two above) after the <function=> fix, per
-# operator request to cover known formats up front instead of one more
-# live-reproduce-then-patch cycle per model. Both are real, standardized
-# conventions specific model families are trained on, not something this
-# system prompt asks for:
-#
-#   Hermes/NousResearch function-calling (the literal "Hermes style" name —
-#   this convention, not the codebase's own RUN:/CREATE: grammar, is what
-#   most open-weight tool-calling fine-tunes, including several Qwen/GLM/
-#   Kimi variants likely to show up via opencode-go, were actually trained
-#   on): a single JSON object inside one tag pair —
-#       <tool_call>
-#       {"name": "bash", "arguments": {"command": "ls -la"}}
-#       </tool_call>
-#   Distinct from _BARE_KEYWORD_LINE_RE's existing <tool_call> handling:
-#   that one strips <tool_call> as wrapper noise around this codebase's OWN
-#   bare RUN/READ/etc. keyword line; this one has a real JSON payload
-#   inside instead, which never looks like a bare keyword, so the two never
-#   collide — gated on the body starting with "{" specifically.
-#
-#   Mistral function-calling: a bracket-tagged JSON array, no XML at all —
-#       [TOOL_CALLS] [{"name": "bash", "arguments": {"command": "ls -la"}}]
-#   which can carry more than one call per block.
-_JSON_TOOL_CALL_RE = re.compile(
-    r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.IGNORECASE | re.DOTALL
-)
-_MISTRAL_TOOL_CALLS_RE = re.compile(
-    r"\[TOOL_CALLS\]\s*(\[.*?\])", re.IGNORECASE | re.DOTALL
-)
-
-
-def _json_tool_call_to_directive_line(name, arguments):
+def _json_tool_call_to_directive_line(name: str, arguments: dict) -> Any:
     """Shared conversion for both JSON-shaped formats above: a {"name":
     ..., "arguments": {...}} dict becomes one `X: payload` directive line.
     Prefers a "command" argument when present (matching the XML function
@@ -17963,8 +15365,7 @@ def _json_tool_call_to_directive_line(name, arguments):
         return None
     return f"{directive_name}: {payload}"
 
-
-def _xml_tool_calls_to_directives(reply):
+def _xml_tool_calls_to_directives(reply: str) -> Any:
     """Translate native tool-call shapes into bare `X: payload` directives
     (one line, whitespace-collapsed inside the payload so a multi-line
     command body still satisfies the one-directive-per-line invariant).
@@ -18015,7 +15416,7 @@ def _xml_tool_calls_to_directives(reply):
 
     if "<invoke" in reply:
 
-        def _conv(m):
+        def _conv(m: Any) -> Any:
             name = m.group(1).strip().upper()
             body = m.group(2)
             params = _XML_PARAM_RE.findall(body)
@@ -18033,7 +15434,7 @@ def _xml_tool_calls_to_directives(reply):
 
     if "<function" in reply.lower():
 
-        def _conv_fn(m):
+        def _conv_fn(m: Any) -> Any:
             raw_name = m.group(1).strip().lower()
             name = _XML_FUNCTION_NAME_ALIASES.get(raw_name, raw_name.upper())
             body = m.group(2)
@@ -18057,7 +15458,7 @@ def _xml_tool_calls_to_directives(reply):
 
     if "<tool_call>" in reply.lower() and "{" in reply:
 
-        def _conv_json(m):
+        def _conv_json(m: Any) -> Any:
             try:
                 obj = json.loads(m.group(1))
             except (json.JSONDecodeError, ValueError):
@@ -18073,7 +15474,7 @@ def _xml_tool_calls_to_directives(reply):
 
     if "[TOOL_CALLS]" in reply.upper():
 
-        def _conv_mistral(m):
+        def _conv_mistral(m: Any) -> Any:
             try:
                 calls = json.loads(m.group(1))
             except (json.JSONDecodeError, ValueError):
@@ -18095,39 +15496,7 @@ def _xml_tool_calls_to_directives(reply):
 
     return reply
 
-
-_BARE_KEYWORD_LINE_RE = re.compile(
-    r"^\s*(?:<\s*tool_calls?\s*>\s*)?"
-    r"(RUN_SKILL|RUNTERM|RUN|READ|CREATE|EDIT|ASK|DONE|REMEMBER|SEARCH|"
-    r"TASK_ADD|TASK_DONE|SEND_EMAIL|REMOTE_MCP|SEND_TELEGRAM|BROWSER_[A-Z_]+)"
-    r"\s*$",
-    re.IGNORECASE,
-)
-_BARE_KEYWORD_ARG_RE = re.compile(
-    r"^\s*(?:</?\s*tool_calls?\s*>\s*|(?:Command)?:{1,2}\s*)(.+)$", re.IGNORECASE
-)
-
-# 2026-09-13: a fourth variant, reproduced repeatedly (including right after
-# a [Directive repair] correction telling the model the right format) on
-# opencode-go::deepseek-v4-pro: the argument line carries NO wrapper at all
-# -- no colon, no tag, nothing -- just the bare command directly:
-#     RUN
-#     ls ~/.master_ai_tasks/ 2>/dev/null && echo "---TASKS DIR---"
-# _BARE_KEYWORD_ARG_RE deliberately does not match this (see
-# _join_bare_keyword_lines's docstring: a bare keyword followed by ordinary
-# prose has no signal it's a payload, and joining it in would execute prose
-# as a command). But a real command line and a prose sentence are
-# distinguishable on their own content, without needing a wrapper: real
-# shell commands carry shell syntax (paths, redirects, operators); English
-# sentences don't. Require at least one unambiguous shell-syntax marker
-# before treating a completely unwrapped line as the payload -- this is a
-# positive allowlist (safe default: no match), not a denylist, so it only
-# ever WIDENS what gets joined, never risks executing a sentence that
-# happens to lack these specific markers.
-_SHELL_SYNTAX_MARKER_RE = re.compile(r"~/|\.\./|/[a-zA-Z0-9_.]|&&|\|\||`|\$\(")
-
-
-def _join_bare_keyword_lines(reply):
+def _join_bare_keyword_lines(reply: Any) -> Any:
     """A third malformed-directive shape, distinct from
     _xml_tool_calls_to_directives (native <invoke> XML) and
     _normalize_directive_lines (crammed same-line directives): some
@@ -18205,11 +15574,7 @@ def _join_bare_keyword_lines(reply):
         i += 1
     return "\n".join(out)
 
-
-_MAX_LINE_REPEATS = 3
-
-
-def _truncate_repeated_lines(reply, max_repeats=_MAX_LINE_REPEATS):
+def _truncate_repeated_lines(reply: Any, max_repeats: Any=_MAX_LINE_REPEATS) -> Any:
     """Circuit-breaker for a model stuck regenerating the same broken
     line(s) instead of ever finishing a reply.
 
@@ -18282,8 +15647,7 @@ def _truncate_repeated_lines(reply, max_repeats=_MAX_LINE_REPEATS):
         )
     return "\n".join(out)
 
-
-def _normalize_directive_lines(reply):
+def _normalize_directive_lines(reply: Any) -> Any:
     """Give every parser downstream (_extract_directive, split-on-newline
     per-line matchers, _extract_browser_actions's line.strip()-anchored
     regex) what they all assume: one directive per line, at column 0.
@@ -18339,7 +15703,6 @@ def _normalize_directive_lines(reply):
             pos = start
     out.append(text[pos:])
     return "".join(out)
-
 
 def _reply_claims_unexecuted_action(reply_text: str) -> bool:
     """True if reply_text talks like it's taking/about to take an action
@@ -18425,21 +15788,9 @@ def _reply_claims_unexecuted_action(reply_text: str) -> bool:
     sentence_count = len([s for s in re.split(r"[.!?]+", text) if s.strip()])
     return sentence_count <= 2 and len(text) < 200
 
-
 # ── Typed dispatch validation gate (CLAUDE.md Tier-1, 2026-09-28) ─────────
-# List-name -> action kind. Explicit because the extraction lists are
-# plural/snake-cased and deriving the kind from the name silently produced
-# RUN_CMDS, which matched no rule and let every payload through.
-_GATE_KIND_BY_LIST = {
-    "read_paths": "READ",
-    "run_cmds": "RUN",
-    "runterm_cmds": "RUNTERM",
-    "send_email_specs": "SEND_EMAIL",
-    "send_telegram_specs": "SEND_TELEGRAM",
-}
 
-
-def _validation_gate(collected):
+def _validation_gate(collected: dict) -> tuple:
     """Run every collected directive through the pre-dispatch validator.
 
     CLAUDE.md's Tier-1 blocker: nothing validated the shape of an action
@@ -18503,9 +15854,8 @@ def _validation_gate(collected):
         kept[name] = survivors
     return kept, blocked
 
-
 # ── MCP_CALL dispatch (2026-09-28) ────────────────────────────────────────
-def _run_mcp_call_spec(spec, history):
+def _run_mcp_call_spec(spec: Any, history: list) -> None:
     """Invoke one `MCP_CALL: <server> <tool> {json}` and feed back the result.
 
     The spec has already been through _validation_gate, so the server is
@@ -18570,8 +15920,7 @@ def _run_mcp_call_spec(spec, history):
         except Exception:
             pass
 
-
-def process_reply(reply, history, streamed=False, continue_after_tools=False):
+def process_reply(reply: str, history: list, streamed: bool=False, continue_after_tools: bool=False) -> Any:
     """Parse RUN: / READ: / CREATE: directives from AI reply and execute."""
     globals()["_CHAIN_SUDO_ACKS"] = 0
     reply = _xml_tool_calls_to_directives(reply)
@@ -18580,7 +15929,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
     reply = _truncate_repeated_lines(reply)
     raw_lines = reply.splitlines()
 
-    def _join_shell_continuations(src_lines):
+    def _join_shell_continuations(src_lines: Any) -> Any:
         """Join directive shell commands split with trailing backslashes.
 
         Models often emit:
@@ -18699,7 +16048,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
     # Strip surrounding backticks/quotes from extracted commands — local
     # models sometimes wrap commands in `backticks` or 'quotes'. Shell
     # would mis-interpret those (backticks trigger command substitution).
-    def _strip_command_wrap(s):
+    def _strip_command_wrap(s: str) -> Any:
         s = s.strip()
         for pair in (("`", "`"), ("'", "'"), ('"', '"'), ("“", "”"), ("‘", "’")):
             if s.startswith(pair[0]) and s.endswith(pair[1]) and len(s) >= 2:
@@ -18707,7 +16056,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
                 break
         return s
 
-    def _extract_directive(line, name):
+    def _extract_directive(line: Any, name: Any) -> Any:
         parts = re.split(rf"\b{name}:", line, maxsplit=1, flags=re.IGNORECASE)
         if len(parts) != 2:
             return ""
@@ -18739,14 +16088,14 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             1 if _ch == "`" else 0
         )
 
-    def _real_directive(line, name, line_start=0):
+    def _real_directive(line: Any, name: Any, line_start: int=0) -> bool:
         for m in re.finditer(rf"\b{name}:", line, re.IGNORECASE):
             global_pos = line_start + m.start()
             if _prefix_backtick_parity[global_pos] % 2 == 0:
                 return True
         return False
 
-    def _directive_payload(line, name, line_start=0):
+    def _directive_payload(line: Any, name: Any, line_start: int=0) -> Any:
         if not _real_directive(line, name, line_start=line_start):
             return ""
         return _strip_command_wrap(
@@ -18860,7 +16209,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
     # 2026-05-17: SEND_EMAIL: to=<addr> subject="..." body="..." attach=<path>
     # Parses to a dict spec; dispatcher calls confirm_send_email which gates
     # by mode (plan refuses, review/auto always prompt — irreversible).
-    def _parse_send_email_spec(line):
+    def _parse_send_email_spec(line: Any) -> Any:
         payload = _extract_directive(line, "SEND_EMAIL")
         if not payload:
             return None
@@ -18894,7 +16243,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
     # from Sensei CLI. Uses TELEGRAM_BOT_TOKEN from ~/.master_ai_keys. Irreversible
     # send, so it follows the same confirm gate as SEND_EMAIL (plan refuses,
     # review/auto prompt once).
-    def _parse_send_telegram_spec(line):
+    def _parse_send_telegram_spec(line: Any) -> None:
         payload = _extract_directive(line, "SEND_TELEGRAM")
         if not payload:
             return None
@@ -19297,7 +16646,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
     # Print non-directive narrative text. Backtick-wrapped directive names
     # (e.g. "use `RUN:` for shell commands") are prose and must stay in the
     # narrative — same backtick-parity check as the directive parser above.
-    def _line_is_directive(l):
+    def _line_is_directive(l: Any) -> bool:
         for m in re.finditer(r"\b(?:run|runterm|read|create|edit):", l, re.IGNORECASE):
             if l[: m.start()].count("`") % 2 == 0:
                 return True
@@ -19457,7 +16806,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
     # approach as the <arg_key>/<tool_call> stripping above.
     _READ_SHELL_NOISE_RE = re.compile(r"\s+(?:\|\||&&|\||[12]?>&?\d?|2>/dev/null)\s*")
 
-    def _parse_read_target(raw):
+    def _parse_read_target(raw: Any) -> tuple:
         """Return (path, start_line, end_line) for READ payloads.
 
         Models often emit code-review style locations like
@@ -19600,13 +16949,13 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             )
             return None
 
-    def _latest_user_turn():
+    def _latest_user_turn() -> Any:
         for msg in reversed(history):
             if msg.get("role") == "user":
                 return msg.get("content") or ""
         return ""
 
-    def _creation_expected():
+    def _creation_expected() -> bool:
         text = _latest_user_turn().lower()
         return bool(
             _is_tool_required(text)
@@ -19616,7 +16965,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             )
         )
 
-    def _inline_python_generator(cmd):
+    def _inline_python_generator(cmd: str) -> Any:
         low = cmd.lower()
         if not re.search(r"\bpython(?:3|\d(?:\.\d+)?)?\s+-c\b", low):
             return False
@@ -19641,7 +16990,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             )
         )
 
-    def _is_bare_cd(cmd):
+    def _is_bare_cd(cmd: str) -> Any:
         """True for a RUN/RUNTERM command that is ONLY `cd <dir>` with nothing
         chained after it — `cd X && Y` or `cd X; Y` are fine, only the
         standalone form is the problem (see the repair message below for why)."""
@@ -19650,7 +16999,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             return False
         return not re.search(r"&&|;|\|\|", stripped)
 
-    def _visual_requested():
+    def _visual_requested() -> bool:
         text = _latest_user_turn().lower()
         return bool(
             any(w in text for w in _VISUAL_RUN_WORDS)
@@ -19664,7 +17013,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             or "credit roll" in text
         )
 
-    def _html_demo_expected():
+    def _html_demo_expected() -> bool:
         text = _latest_user_turn().lower()
         return bool(
             re.search(
@@ -19674,7 +17023,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
             and re.search(r"\b(create|write|make|build|generate|demo)\b", text)
         )
 
-    def _html_demo_quality_issues(content):
+    def _html_demo_quality_issues(content: str) -> Any:
         issues = []
         low = content.lower()
         if not re.search(r"<!doctype\s+html|<html[\s>]", low):
@@ -20085,7 +17434,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         runterm_cmds.extend(visual_parts)
     run_cmds = normalized_run_cmds
 
-    def _append_tool_blocked_feedback(kind, cmd):
+    def _append_tool_blocked_feedback(kind: Any, cmd: Any) -> bool:
         blocked = globals().get("_LAST_BLOCKED_ACTION") or {}
         if not blocked:
             return False
@@ -20125,7 +17474,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
         log(f"CHAIN_BLOCKED_FEEDBACK: appended [TOOL BLOCKED] for: {cmd}")
         return True
 
-    def _append_exec_failure_feedback(kind, cmd, detail):
+    def _append_exec_failure_feedback(kind: Any, cmd: Any, detail: Any) -> None:
         """Genuine runtime failure (the command ran, then failed) — NOT a
         pre-execution safeguard refusal, so _LAST_BLOCKED_ACTION is never
         set and _append_tool_blocked_feedback() can't fire for this case.
@@ -20582,8 +17931,7 @@ def process_reply(reply, history, streamed=False, continue_after_tools=False):
 
     return reply
 
-
-def execute_approved_plan(original_request, approved_plan, history):
+def execute_approved_plan(original_request: Any, approved_plan: Any, history: Any) -> Any:
     """Turn a Plan-mode prose plan into a real execution turn.
 
     Older Plan mode re-ran the original user sentence after approval. That
@@ -20605,10 +17953,9 @@ def execute_approved_plan(original_request, approved_plan, history):
     )
     return handle(execution_prompt, history)
 
-
 # ── PERMISSIONS WIZARD ────────────────────────────────────────
 @_awaiting_confirm
-def permissions_wizard():
+def permissions_wizard() -> None:
     PERMISSIONS = [
         (
             "Shell Command Execution",
@@ -20739,9 +18086,8 @@ def permissions_wizard():
         time.sleep(0.6)
     print()
 
-
 # ── STARTUP CHECK ─────────────────────────────────────────────
-def startup_check():
+def startup_check() -> Any:
     errors = 0
     tui_mode = _SENSEI_APP is not None
     if not tui_mode:
@@ -20770,7 +18116,7 @@ def startup_check():
         errors += 1
 
     # Memory / Approved counts
-    def _count(f):
+    def _count(f: Any) -> Any:
         try:
             return len([l for l in f.read_text().splitlines() if l.strip()])
         except Exception:
@@ -20835,7 +18181,6 @@ def startup_check():
     print()
     return errors
 
-
 def _humanize_commit_subject(subject: str) -> str:
     """One git commit subject -> one plain-English bullet, no engineering
     jargon. Elijah: "I need to know what's new... described in
@@ -20865,23 +18210,17 @@ def _humanize_commit_subject(subject: str) -> str:
         return f"{verb}: {rest}"
     return s[0].upper() + s[1:] if s else s
 
-
-_WHATSNEW_STATE = Path.home() / ".master_ai_whatsnew_state.json"
-
-
 def _load_whatsnew_last_shown() -> str:
     try:
         return json.loads(_WHATSNEW_STATE.read_text()).get("last_shown_sha", "")
     except Exception:
         return ""
 
-
 def _save_whatsnew_last_shown(sha: str) -> None:
     try:
         _WHATSNEW_STATE.write_text(json.dumps({"last_shown_sha": sha}))
     except Exception:
         pass
-
 
 def _valid_ref(repo_dir: str, ref: str) -> bool:
     if not ref:
@@ -20892,7 +18231,6 @@ def _valid_ref(repo_dir: str, ref: str) -> bool:
         timeout=5,
     )
     return r.returncode == 0
-
 
 def _whats_new_report(repo_dir: str, after: str, from_ref: str | None) -> str:
     """Plain-English 'what changed' block for everything reaching `after`
@@ -20964,7 +18302,6 @@ def _whats_new_report(repo_dir: str, after: str, from_ref: str | None) -> str:
     )
     return f"\nWhat's new:\n{(plain or bullets).strip()}\n"
 
-
 def _run_git_update(repo_dir: str | None = None) -> tuple[bool, str]:
     """Pull the repo master_ai.py (and everything alongside it, incl.
     sensei_tui.py) is symlinked from — the one real update mechanism,
@@ -21032,7 +18369,6 @@ def _run_git_update(repo_dir: str | None = None) -> tuple[bool, str]:
         )
     except Exception as e:
         return False, f"Update failed: {e}"
-
 
 def _check_update_status(
     repo_dir: str | None = None,
@@ -21160,8 +18496,7 @@ def _check_update_status(
         pass
     return color, message
 
-
-def _show_tui_credit_roll(cloud_status, mem_count, update_color="", update_message=""):
+def _show_tui_credit_roll(cloud_status: Any, mem_count: Any, update_color: str="", update_message: str="") -> bool:
     """Opening-credit style brand roll inside the TUI chat frame."""
     if _SENSEI_APP is None:
         return False
@@ -21191,9 +18526,8 @@ def _show_tui_credit_roll(cloud_status, mem_count, update_color="", update_messa
         time.sleep(0.10)
     return True
 
-
 # ── STATUS BAR ───────────────────────────────────────────────
-def draw_status_bar(history=None):
+def draw_status_bar(history: Any | None=None) -> Any:
     """Active status — bold blue, right-aligned at TOP RIGHT. No bg color.
     Shows only what's currently ON/active (modes, TTS, memory, tasks, model).
 
@@ -21204,7 +18538,7 @@ def draw_status_bar(history=None):
     the approach visible on every turn instead of the reset feeling random.
     """
 
-    def _count(f):
+    def _count(f: Any) -> Any:
         try:
             return len([l for l in f.read_text().splitlines() if l.strip()])
         except Exception:
@@ -21315,19 +18649,10 @@ def draw_status_bar(history=None):
         pad = 0
     print(f"\n{' ' * pad}{BC}{tag}{X}")
 
-
 # ── MAIN HANDLER ─────────────────────────────────────────────
 # ── AGENT MODE — plan / execute / critique / refine ─────────────
-# Sensei's self-critique loop. Explicit opt-in via `agent:` prefix.
-# Each step runs through the normal handle() path, so all existing
-# sandbox gates (sudo handoff, CWD fence, confirm prompts, blocked
-# patterns) stay enforced. The loop adds a THIN layer of planning +
-# critiquing around it — it does not bypass anything.
-LOOP_MAX_CYCLES = 5
-LOOP_MAX_SECONDS = 600  # 10 minutes wall-clock ceiling
 
-
-def _loop_ai(prompt, history=None, max_tokens=600):
+def _loop_ai(prompt: Any, history: Any | None=None, max_tokens: int=600) -> Any:
     """Single AI call used inside the loop — plan, critique, or refine.
     Uses the default local path (keeps the loop offline-capable).
     Not routed through handle() because we don't want sandbox prompts
@@ -21369,8 +18694,7 @@ def _loop_ai(prompt, history=None, max_tokens=600):
     except Exception as e:
         return f"(loop ai error: {e})"
 
-
-def _loop_parse_steps(plan_text):
+def _loop_parse_steps(plan_text: Any) -> Any:
     """Extract numbered steps from an AI-generated plan. Accepts:
      1. Step one
      2. Step two
@@ -21388,8 +18712,7 @@ def _loop_parse_steps(plan_text):
             steps.append(m.group(1).strip())
     return steps[:8]
 
-
-def _loop_extract_question(plan_text):
+def _loop_extract_question(plan_text: Any) -> Any:
     """Return a planner clarification question, if the agent asked one."""
     text = (plan_text or "").strip()
     if not text:
@@ -21405,8 +18728,7 @@ def _loop_extract_question(plan_text):
         ).strip()
     return ""
 
-
-def _loop_critique_verdict(critique_text):
+def _loop_critique_verdict(critique_text: Any) -> Any:
     """Parse the AI critic's verdict from the critique reply.
     Expected tokens: DONE | RETRY | CONTINUE | STOP.
     Default to CONTINUE if unclear — the loop will move forward; the
@@ -21417,8 +18739,7 @@ def _loop_critique_verdict(critique_text):
             return tok
     return "CONTINUE"
 
-
-def handle_loop_task(task, history, context_policy=None):
+def handle_loop_task(task: Any, history: list, context_policy: Any | None=None) -> Any:
     """Run a task through plan → (execute → critique → refine) × N.
     Bounded by LOOP_MAX_CYCLES and LOOP_MAX_SECONDS. Every step goes
     through handle() so sandbox stays enforced end-to-end."""
@@ -21432,7 +18753,7 @@ def handle_loop_task(task, history, context_policy=None):
     )
     print()
 
-    def _call_handle(text):
+    def _call_handle(text: Any) -> Any:
         if context_policy is None:
             return handle(text, history)
         try:
@@ -21549,8 +18870,7 @@ def handle_loop_task(task, history, context_policy=None):
     history.append({"role": "assistant", "content": summary})
     return summary
 
-
-def _extract_prefixed_payload(text, prefixes):
+def _extract_prefixed_payload(text: Any, prefixes: Any) -> Any:
     stripped = (text or "").strip()
     low = stripped.lower()
     for prefix in prefixes:
@@ -21559,15 +18879,13 @@ def _extract_prefixed_payload(text, prefixes):
             return stripped[len(prefix) :].lstrip(" :;\t")
     return None
 
-
-def _try_open_url_intent(user_text):
+def _try_open_url_intent(user_text: Any) -> Any:
     """If user_text is 'open <url|domain|shortcut>', return URL. Else None.
     Deterministic pre-route catch so 'open <X>' never reaches a model that
     might hallucinate a URL."""
     return resolve_open_target_url(user_text)
 
-
-def _neutralize_directive_lines(text):
+def _neutralize_directive_lines(text: Any) -> Any:
     """Display-only safety for pure reasoning answers."""
     return re.sub(
         r"(?im)^(\s*)(RUN|RUNTERM|READ|CREATE|EDIT|ASK|THINK|DONE):",
@@ -21575,8 +18893,7 @@ def _neutralize_directive_lines(text):
         text or "",
     )
 
-
-def _display_reasoning_answer(user_text, answer, history):
+def _display_reasoning_answer(user_text: Any, answer: Any, history: list) -> bool:
     safe_answer = _neutralize_directive_lines((answer or "").strip())
     if not safe_answer:
         return False
@@ -21587,14 +18904,7 @@ def _display_reasoning_answer(user_text, answer, history):
         threading.Thread(target=speak, args=(safe_answer,), daemon=True).start()
     return True
 
-
-# P1.3: depth knobs for the reason surface. Cloud DeepSeek-R1 is one-shot
-# so 'fast' and 'max' bypass it (fast wants local-fast TTFB, max wants the
-# mandatory second-critic pass that only the local 4-stage loop supports).
-_REASON_DEPTHS = frozenset({"fast", "standard", "deep", "max"})
-
-
-def _parse_reason_command(user_text):
+def _parse_reason_command(user_text: Any) -> None:
     """Recognize the four reason surface forms (P1.3):
 
       reason: <q>                      → depth='deep' (legacy default)
@@ -21624,8 +18934,7 @@ def _parse_reason_command(user_text):
         return ("deep", m.group(1).strip())
     return None
 
-
-def handle_tight_reasoning(user_text, query, history, depth="deep"):
+def handle_tight_reasoning(user_text: Any, query: Any, history: Any, depth: str="deep") -> None:
     """Best available pure-text reasoning lane.
 
     P1.3: ``depth`` selects the cognitive budget:
@@ -21690,8 +18999,7 @@ def handle_tight_reasoning(user_text, query, history, depth="deep"):
     except Exception as e:
         print(f"  {R}tight reasoning error: {e}{X}")
 
-
-def handle_image_gen(user_text, prompt, history):
+def handle_image_gen(user_text: Any, prompt: Any, history: list) -> None:
     """Submit a local image-gen job via sd-server (CPU, ~56s/image on your-machine).
 
     Async by design: returns immediately with the job id. The PNG lands in
@@ -21751,12 +19059,10 @@ def handle_image_gen(user_text, prompt, history):
     history.append({"role": "user", "content": user_text})
     history.append({"role": "assistant", "content": msg})
 
-
-def _imagegen_script():
+def _imagegen_script() -> Any:
     return Path.home() / "scripts" / "image_engine" / "imagegen.sh"
 
-
-def _latest_image_file():
+def _latest_image_file() -> Any:
     out_dir = Path.home() / "scripts" / "image_engine" / "out"
     try:
         imgs = sorted(
@@ -21766,8 +19072,7 @@ def _latest_image_file():
         imgs = []
     return imgs[0] if imgs else None
 
-
-def handle_image_status(user_text, arg, history):
+def handle_image_status(user_text: Any, arg: str, history: list) -> None:
     """Show/fetch image artifacts so chat results can contain image paths."""
     arg = (arg or "").strip()
     if arg.lower() in ("latest", "last", ""):
@@ -21816,9 +19121,8 @@ def handle_image_status(user_text, arg, history):
     history.append({"role": "user", "content": user_text})
     history.append({"role": "assistant", "content": msg})
 
-
 @_tracks_turn_activity
-def handle(user_text, history, image_path=None, context_policy=None):
+def handle(user_text: str, history: list, image_path: Any | None=None, context_policy: Any | None=None) -> Any:
     _reset_turn_privacy()
     _reset_turn_verify_state()
     globals()["_LAST_TURN_RENDERED"] = False
@@ -22354,7 +19658,8 @@ def handle(user_text, history, image_path=None, context_policy=None):
         f"{project_ctx}"
     )
     CLOUD_SYSTEM = (
-        f"You are Master AI — a task-executing AI service agent built by Elijah, "
+        f"You are Master AI — a task-executing AI service agent built by "
+        f"{_operator_first_name() or 'its operator'}, "
         f"running on your-machine ({os_info}, {arch}).\n"
         f"\nEXECUTION RULE: When the user gives a multi-step task and says 'proceed' or 'proceed all', "
         f"execute the entire task chain autonomously. Do not pause after every file or step to ask permission. "
@@ -23608,7 +20913,7 @@ def handle(user_text, history, image_path=None, context_policy=None):
         # standing pat on the raw dump as the final answer.
         result = None
 
-    def _continue_model_turn(repair_turn=False):
+    def _continue_model_turn(repair_turn: bool=False) -> tuple:
         if route in ("cloud", "web"):
             # 2026-09-07: removed automatic "private tool output -> local" branch.
             # It was forcing every tool result on a private path to be summarized
@@ -23933,9 +21238,8 @@ def handle(user_text, history, image_path=None, context_policy=None):
     compact_history(history)
     return reply
 
-
 # ── SESSION SUMMARY ──────────────────────────────────────────
-def summarize_session(history):
+def summarize_session(history: Any) -> tuple:
     msgs = [m for m in history if m.get("role") in ("user", "assistant")]
     if len(msgs) < 4:
         return None, None
@@ -23991,8 +21295,7 @@ def summarize_session(history):
     except Exception:
         return None, None
 
-
-def save_session(history, silent=False):
+def save_session(history: Any, silent: bool=False) -> Any:
     global CHARS_SINCE_SAVE
     with _SAVE_LOCK:
         msgs = [m for m in history if m.get("role") in ("user", "assistant")]
@@ -24003,7 +21306,7 @@ def save_session(history, silent=False):
         date_str = _fmt_ampm()
         CHARS_SINCE_SAVE = 0
 
-    def _is_structured_block(content):
+    def _is_structured_block(content: str) -> Any:
         """True for tool-result / file / directive blocks that should keep
         their own labeled block shape in the saved transcript, not be
         flattened under a generic 'You:' line."""
@@ -24035,7 +21338,7 @@ def save_session(history, silent=False):
         )
         return any(content.lstrip().startswith(p) for p in prefixes)
 
-    def _block_label_for(content):
+    def _block_label_for(content: str) -> str:
         """Pick a human label for a structured block based on its prefix."""
         c = content.lstrip()
         if c.startswith("[RUN RESULT]") or c.startswith("[RUNTERM RESULT]"):
@@ -24106,16 +21409,14 @@ def save_session(history, silent=False):
     elif not silent:
         print(f"{G}  ✅ Session saved → {chat_path.name}{X}")
 
-
-def _auto_save_background(history):
+def _auto_save_background(history: Any) -> None:
     """Run save_session silently in a background thread."""
     try:
         save_session(list(history), silent=True)
     except Exception:
         pass
 
-
-def _bounded_save_session(history, timeout=8.0):
+def _bounded_save_session(history: Any, timeout: float=8.0) -> None:
     """save_session() on a daemon thread with a hard wall-clock bound.
 
     2026-09-07 already proved this live for the TUI's SIGTERM handler:
@@ -24131,7 +21432,7 @@ def _bounded_save_session(history, timeout=8.0):
     save loses at most the session summary, never blocks shutdown."""
     done = threading.Event()
 
-    def _bg():
+    def _bg() -> None:
         try:
             save_session(list(history), silent=True)
         finally:
@@ -24140,8 +21441,7 @@ def _bounded_save_session(history, timeout=8.0):
     threading.Thread(target=_bg, daemon=True).start()
     done.wait(timeout=timeout)
 
-
-def _request_auto_save(history):
+def _request_auto_save(history: Any) -> None:
     """Save the current session shortly after a turn completes."""
     if not history:
         return
@@ -24156,8 +21456,7 @@ def _request_auto_save(history):
             target=_auto_save_background, args=(list(history),), daemon=True
         ).start()
 
-
-def _query_worker(history_ref):
+def _query_worker(history_ref: Any) -> None:
     """Serial worker: pop queued queries, run handle(), handle reply+cache+tts+autosave.
     Runs forever as a daemon thread. history_ref is the main loop's live history list.
     """
@@ -24190,8 +21489,7 @@ def _query_worker(history_ref):
             globals()["_LAST_BUSY_CLEARED_TS"] = time.time()
             _QUERY_QUEUE.task_done()
 
-
-def handle_save_refresh(history):
+def handle_save_refresh(history: Any) -> None:
     """Snapshot session, summarize it, then restart fresh — and reload the
     summary as a recap on the other side, per the interactive prompt's own
     promise ("Sensei will save the conversation, restart, and reload it
@@ -24240,8 +21538,7 @@ def handle_save_refresh(history):
         sys.executable, [sys.executable, str(Path.home() / "scripts/master_ai.py")]
     )
 
-
-def _sessions_list_entries(limit=30):
+def _sessions_list_entries(limit: int=30) -> Any:
     """List saved sessions, newest first, excluding the current one — the
     data `load session`/`load summary` already write (CHATS_DIR/*.chat +
     *.summary, one pair per session, named by that session's start
@@ -24337,8 +21634,7 @@ def _sessions_list_entries(limit=30):
 
     return entries
 
-
-def _derive_session_title(chat_path):
+def _derive_session_title(chat_path: Any) -> Any:
     """Fallback title for a single session with no summary file.
 
     1. Ask the cloud for a short 3-6 word title from the first ~600 chars of
@@ -24404,8 +21700,7 @@ def _derive_session_title(chat_path):
 
     return "untitled session"
 
-
-def _batch_cloud_titles(chat_paths):
+def _batch_cloud_titles(chat_paths: Any) -> Any:
     """Generate cloud titles for many sessions in ONE call.
 
     Each chat path without a summary gets its first ~300 chars of transcript
@@ -24474,8 +21769,7 @@ def _batch_cloud_titles(chat_paths):
     except Exception:
         return {}
 
-
-def show_last_summary():
+def show_last_summary() -> None:
     """Compact 1-line session note. 'load summary' reveals the full bullets."""
     try:
         summaries = sorted(CHATS_DIR.glob("*.summary"), reverse=True)
@@ -24500,9 +21794,8 @@ def show_last_summary():
     except Exception:
         pass
 
-
 # ── MAIN LOOP ─────────────────────────────────────────────────
-def _is_simple_search_query(q):
+def _is_simple_search_query(q: str) -> bool:
     """True for a bare lookup ("weather indianapolis"), False for anything
     that reads like a multi-step task described in the search prefix
     ("search X, then write it to a file, then read it back"). Used to gate
@@ -24531,32 +21824,7 @@ def _is_simple_search_query(q):
             return False
     return True
 
-
-# 2026-09-27: same bug class as _is_simple_search_query above, in the
-# sibling `read ` shortcut -- confirmed live, "read me the first lesson"
-# and "read the first lesson in aiengineering.com" both got their FULL
-# tail ("me the first lesson", "the first lesson in aiengineering.com")
-# treated as a literal local file path, failed to resolve, and dead-ended
-# with "local text file not found" instead of ever reaching the model.
-# `read ` never got the natural-language guard `search ` did. A genuine
-# bare target is a path or a bare filename/phrase with no English filler
-# words in it; anything with common sentence filler reads as conversation,
-# not a literal reference, and should fall through to handle() instead.
-_READ_TARGET_FILLER_WORDS = (
-    " me ",
-    " the ",
-    " in ",
-    " on ",
-    " at ",
-    " for ",
-    " from ",
-    " about ",
-    " a ",
-    " my ",
-)
-
-
-def _looks_like_read_target(raw):
+def _looks_like_read_target(raw: str) -> Any:
     """True for something that could plausibly BE a path/filename/bare
     reference ("notes.txt", "~/Desktop/report", "aiengineering.com"),
     False for a natural-language sentence that merely starts with the word
@@ -24569,29 +21837,9 @@ def _looks_like_read_target(raw):
     low = f" {raw.lower()} "
     return not any(w in low for w in _READ_TARGET_FILLER_WORDS)
 
-
 # ── Markdown-only skills (npx skills add packages, etc.) ────────────
-# 2026-09-27: the model's own system prompt (see "AUTHORING A NEW SKILL"
-# below) says a skill needs both SKILL.md and a recipe.py state machine --
-# right for skills Sensei writes for itself, wrong for a skill installed
-# from an external package (`npx skills add rohitg00/ai-engineering-from-
-# scratch`), which ships as a portable SKILL.md meant to be read and
-# followed directly in conversation -- no code at all. Confirmed live:
-# every skill in that package is SKILL.md only. The model kept trying to
-# hand-generate a recipe.py to satisfy a contract that never applied to
-# this kind of skill -- the direct cause of tonight's repeatedly truncated,
-# broken recipe.py files (missing `return` statements, missing closing
-# brackets). This loads a plain SKILL.md directly and hands it to the
-# model as instructions for the conversation, instead of trying to compile
-# it into a state machine.
-_MARKDOWN_SKILL_DIRS = (
-    Path.home() / ".agents" / "skills",
-    Path.home() / ".claude" / "skills",
-    Path.home() / ".master_ai_skills",
-)
 
-
-def _find_markdown_skill(name):
+def _find_markdown_skill(name: Any) -> Any:
     """Path to <name>/SKILL.md in the first matching skill directory, or
     None. Checks the universal `npx skills add` location first, then
     Claude Code's own, then Sensei's own skill dir last (recipe.py-style
@@ -24606,8 +21854,7 @@ def _find_markdown_skill(name):
             return candidate
     return None
 
-
-def _strip_skill_frontmatter(text):
+def _strip_skill_frontmatter(text: str) -> Any:
     """Drop the YAML frontmatter block (--- ... ---) a SKILL.md starts
     with, returning just the prose body the model should follow."""
     if text.startswith("---"):
@@ -24616,8 +21863,7 @@ def _strip_skill_frontmatter(text):
             return text[end + 4 :].lstrip("\n")
     return text
 
-
-def _restore_reload_carry(path=None):
+def _restore_reload_carry(path: Any | None=None) -> Any:
     """Consume the pending reload-carry note and return it, or None.
 
     When master_ai.py live-reloads it writes the operator's in-flight
@@ -24653,8 +21899,7 @@ def _restore_reload_carry(path=None):
         log(f"AUTO_RELOAD_CARRY_RESTORE_ERROR: {e}")
         return None
 
-
-def _reload_if_code_changed(history, pending_cmd):
+def _reload_if_code_changed(history: Any, pending_cmd: Any) -> None:
     """If master_ai.py's own file has changed on disk since this process
     started, transparently save+restart (execvp) instead of continuing to
     run stale in-memory code -- see _STARTUP_CODE_MTIME's comment for why
@@ -24710,11 +21955,9 @@ def _reload_if_code_changed(history, pending_cmd):
         sys.executable, [sys.executable, str(Path.home() / "scripts/master_ai.py")]
     )
 
-
 _AOE_INSTANCE_ID_CACHE = None
 
-
-def _aoe_instance_id():
+def _aoe_instance_id() -> Any:
     """This pane's real aoe instance id (hex), for the hook status file and
     self-rename. aoe injects AOE_INSTANCE_ID for its recognized agents
     (claude, hermes, opencode, ...) but NEVER for a bare `custom_agents`
@@ -24768,8 +22011,7 @@ def _aoe_instance_id():
     _AOE_INSTANCE_ID_CACHE = inst
     return inst
 
-
-def _aoe_status(state):
+def _aoe_status(state: Any) -> None:
     """Report our own turn state to aoe, the same way Claude Code's hooks do
     (.claude/settings.json writes 'running'/'idle'/'waiting' into
     /tmp/aoe-hooks-1000/$AOE_INSTANCE_ID/status). master-ai has no hook
@@ -24801,13 +22043,12 @@ def _aoe_status(state):
     except Exception:
         pass
 
-
 # ── `schedule ...` REPL commands (2026-09-28) ─────────────────────────────
 # Extracted verbatim out of main()'s inline if-chain. Pure move: this block
 # read only `lo`/`cmd` and called module-level helpers, so it had no
 # business being 44 lines deep inside a 3,600-line function — and no way to
 # be called from a test without driving the whole REPL.
-def _handle_schedule_cmd(lo, cmd):
+def _handle_schedule_cmd(lo: str, cmd: str) -> bool:
     """Handle one `schedule`/`scheduler` command. Returns True if consumed."""
     if not (lo.startswith("schedule") or lo.startswith("scheduler")):
         return False
@@ -24853,10 +22094,9 @@ def _handle_schedule_cmd(lo, cmd):
         print(f"  {D}example: schedule doctor 02:00 daily{X}")
     return True
 
-
 # ── `hooks` REPL command (2026-09-28) ──────────────────────────────────
 # Extracted verbatim out of main()'s inline if-chain. Pure move.
-def _handle_hooks_cmd(lo, cmd):
+def _handle_hooks_cmd(lo: str, cmd: Any) -> bool:
     """Handle one `lo == 'hooks' or lo.startswith('hooks ')`. Returns True if it was consumed."""
     if not (lo == "hooks" or lo.startswith("hooks ")):
         return False
@@ -24896,10 +22136,9 @@ def _handle_hooks_cmd(lo, cmd):
         print(f"  {W}hooks command error: {e}{X}\n")
     return True
 
-
 # ── `delegate` REPL command (2026-09-28) ──────────────────────────────────
 # Extracted verbatim out of main()'s inline if-chain. Pure move.
-def _handle_delegate_cmd(lo, cmd):
+def _handle_delegate_cmd(lo: str, cmd: Any) -> bool:
     """Handle one `lo == 'delegate' or lo.startswith('delegate ')`. Returns True if it was consumed."""
     if not (lo == "delegate" or lo.startswith("delegate ")):
         return False
@@ -24932,10 +22171,9 @@ def _handle_delegate_cmd(lo, cmd):
         traceback.print_exc()
     return True
 
-
 # ── `mesh` REPL command (2026-09-28) ──────────────────────────────────
 # Extracted verbatim out of main()'s inline if-chain. Pure move.
-def _handle_mesh_cmd(lo, cmd):
+def _handle_mesh_cmd(lo: str, cmd: Any) -> bool:
     """Handle one `lo == 'mesh' or lo.startswith('mesh ')`. Returns True if it was consumed."""
     if not (lo == "mesh" or lo.startswith("mesh ")):
         return False
@@ -24963,10 +22201,9 @@ def _handle_mesh_cmd(lo, cmd):
         print(f"  {R}❌ mesh error: {e}{X}")
     return True
 
-
 # ── `mcp` REPL command (2026-09-28) ──────────────────────────────────
 # Extracted verbatim out of main()'s inline if-chain. Pure move.
-def _handle_mcp_cmd(lo, cmd):
+def _handle_mcp_cmd(lo: str, cmd: str) -> bool:
     """Handle one `lo == 'mcp' or lo.startswith('mcp ')`. Returns True if it was consumed."""
     if not (lo == "mcp" or lo.startswith("mcp ")):
         return False
@@ -25012,10 +22249,9 @@ def _handle_mcp_cmd(lo, cmd):
         print(f"  {W}mcp command error: {e}{X}\n")
     return True
 
-
 # ── `proposal` REPL command (2026-09-28) ──────────────────────────────────
 # Extracted verbatim out of main()'s inline if-chain. Pure move.
-def _handle_proposal_cmd(lo, cmd):
+def _handle_proposal_cmd(lo: str, cmd: Any) -> bool:
     """Handle one `lo in ('proposals', 'pending proposals') or lo.startswith('proposal ')`. Returns True if it was consumed."""
     if not (lo in ("proposals", "pending proposals") or lo.startswith("proposal ")):
         return False
@@ -25055,10 +22291,9 @@ def _handle_proposal_cmd(lo, cmd):
         print(f"  {W}proposal review error: {e}{X}\n")
     return True
 
-
 # ── `project` REPL command (2026-09-28) ──────────────────────────────────
 # Extracted verbatim out of main()'s inline if-chain. Pure move.
-def _handle_project_cmd(lo, cmd):
+def _handle_project_cmd(lo: str, cmd: Any) -> bool:
     """Handle one `lo.startswith('project ')`. Returns True if it was consumed."""
     if not (lo.startswith("project ")):
         return False
@@ -25085,10 +22320,9 @@ def _handle_project_cmd(lo, cmd):
         print(f"  {R}❌ Directory not found: {proj}{X}")
     return True
 
-
 # ── `profile` REPL command (2026-09-28) ──────────────────────────────────
 # Extracted verbatim out of main()'s inline if-chain. Pure move.
-def _handle_profile_cmd(lo, cmd):
+def _handle_profile_cmd(lo: str, cmd: str) -> bool:
     """Handle one `lo.startswith('profile ') and lo not in ('profile list',)`. Returns True if it was consumed."""
     if not (lo.startswith("profile ") and lo not in ("profile list",)):
         return False
@@ -25124,8 +22358,7 @@ def _handle_profile_cmd(lo, cmd):
     )
     return True
 
-
-def main():
+def main() -> None:
     if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
         print(
             "usage: master-ai [-h] [--setup] [--uninstall] [update]\n\n"
@@ -25275,7 +22508,7 @@ def main():
     update_color, update_message = "", ""
     _update_check_result = {}
 
-    def _run_update_check_bg():
+    def _run_update_check_bg() -> None:
         try:
             c, m = _check_update_status(interval_days=14)
         except Exception:
@@ -25521,7 +22754,7 @@ def main():
     # Save on any exit — force-close, terminal close, SIGTERM. Also summarize
     # so the session shows up in `sessions list` / `sessions resume` without
     # repopulating the window next launch.
-    def _exit_save(signum=None, frame=None):
+    def _exit_save(signum: Any | None=None, frame: Any | None=None) -> None:
         try:
             _bounded_save_session(GLOBAL_HISTORY)
         except Exception:
@@ -25546,7 +22779,7 @@ def main():
         signal.signal(signal.SIGHUP, _exit_save)  # fires when terminal window closes
         if os.environ.get("TMUX") and hasattr(signal, "SIGWINCH"):
 
-            def _sigwinch(_s, _f):
+            def _sigwinch(_s: Any, _f: Any) -> None:
                 _nudge_tmux_auto_resize()
 
             signal.signal(signal.SIGWINCH, _sigwinch)
@@ -25752,57 +22985,7 @@ def main():
 
         # ── TinyFish slash commands ─────────────────────────────
         if lo.startswith("tinyfish") or lo.startswith("tf ") or lo == "tf":
-            parts = cmd.split(None, 2)
-            sub = parts[1].lower() if len(parts) > 1 else ""
-            rest = parts[2] if len(parts) > 2 else ""
-            try:
-                import tinyfish_client as _tf
-
-                if not _tf.has_key():
-                    print(
-                        f"  {Y}TinyFish API key not found. Run the TinyFish setup first.{X}"
-                    )
-                    continue
-                if lo in ("tinyfish", "tinyfish status", "tf", "tf status"):
-                    try:
-                        w = _tf.wallet()
-                        balance = w.get("balance_cents", "?")
-                        currency = w.get("currency", "USD")
-                        auto_reload = w.get("auto_reload_enabled", "?")
-                        print(
-                            f"  {C}TinyFish wallet:{X} {balance} {currency} cents  auto-reload={auto_reload}{X}"
-                        )
-                    except Exception as e:
-                        print(f"  {Y}TinyFish wallet check failed: {e}{X}")
-                    continue
-                if sub in ("search", "s"):
-                    q = rest.strip() or "today's top Hacker News story"
-                    print(f"  {BC}[TinyFish search]{X} {q}")
-                    try:
-                        res = _tf.search(q)
-                        out = _tf.format_search(res, max_results=5)
-                        print(f"\n  {C}{out}{X}\n")
-                    except Exception as e:
-                        print(f"  {R}TinyFish search failed: {e}{X}")
-                    continue
-                if sub in ("fetch", "f"):
-                    urls = [
-                        u.strip() for u in rest.split() if u.strip().startswith("http")
-                    ]
-                    if not urls:
-                        print(f"  {Y}usage: tinyfish fetch <url> [<url> ...]{X}")
-                        continue
-                    print(f"  {BC}[TinyFish fetch]{X} {len(urls)} URL(s)")
-                    try:
-                        res = _tf.fetch_content(urls)
-                        out = _tf.format_fetch(res)
-                        print(f"\n  {C}{out}{X}\n")
-                    except Exception as e:
-                        print(f"  {R}TinyFish fetch failed: {e}{X}")
-                    continue
-                print(f"  {Y}usage: tinyfish [search|fetch|status] ...{X}")
-            except Exception as e:
-                print(f"  {R}TinyFish command error: {e}{X}")
+            _handle_tinyfish(cmd, lo)
             continue
 
         # ── Scheduler slash commands ──────────────────────────
@@ -25843,164 +23026,17 @@ def main():
         # Existing `skill list/load` style commands elsewhere in this file
         # are untouched; these are new subcommands alongside them.
         if lo == "skill" or lo.startswith("skill "):
-            try:
-                import skill_improve_helpers as _sk
+            _handle_skill_cmd(cmd, history)
+            continue
 
-                _parts = cmd.split()
-                _sub = _parts[1].lower() if len(_parts) > 1 else ""
-                _rest = _parts[2:]
-                if _sub in ("", "list"):
-                    # bare `skill` = marketplace browse (source listing
-                    # lives in `skill browse`; no legacy conflict — the
-                    # old `skills`-style command family is untouched)
-                    print(f"  {_sk.browse(None)}")
-                elif _sub == "browse":
-                    _src = _rest[0] if _rest else None
-                    print(f"  {_sk.browse(_src)}")
-                elif _sub == "install":
-                    if len(_rest) < 2:
-                        print(f"  {W}usage: skill install <source> <skill-id>{X}")
-                        print(
-                            f"  {D}example: skill install hermes research/web-search-ddgr{X}"
-                        )
-                    else:
-                        print(f"  {_sk.install(_rest[0], _rest[1])}")
-                elif _sub == "run":
-                    # Reuses _parse_run_skill_payload — the same parser the
-                    # RUN_SKILL: model directive uses (_run_skill_specs_from_reply)
-                    # — so `skill run <name> <json>` and a model's RUN_SKILL:
-                    # line accept identical syntax. Re-derived from the raw
-                    # `cmd` text (not the pre-split _rest) so JSON payload
-                    # whitespace survives intact.
-                    _m = re.match(
-                        r"^\s*skill\s+run\s+(\S+)\s*(.*)$",
-                        cmd,
-                        re.IGNORECASE | re.DOTALL,
-                    )
-                    if not _m:
-                        print(
-                            f"  {W}usage: skill run <name> [<json-params>|<session-id>]{X}"
-                        )
-                        print(
-                            f'  {D}example: skill run google-workspace {{"command": "gmail.search", "args": {{"query": "is:unread", "max": 5}}}}{X}'
-                        )
-                    else:
-                        try:
-                            _spec = _parse_run_skill_payload(
-                                f"{_m.group(1)} {_m.group(2)}".strip()
-                            )
-                        except Exception as e:
-                            print(f"  {W}invalid skill run payload: {e}{X}")
-                            _spec = None
-                        if _spec is None:
-                            print(
-                                f"  {W}could not parse skill name/params — usage: skill run <name> [<json-params>]{X}"
-                            )
-                        else:
-                            try:
-                                import skill_runtime as _sr
-
-                                _state = _sr.run_skill(
-                                    _spec["name"],
-                                    _spec.get("params") or {},
-                                    session_id=_spec.get("session_id"),
-                                    resume=bool(
-                                        _spec.get("resume") and _spec.get("session_id")
-                                    ),
-                                )
-                                log(
-                                    f"SKILL_REPL_RUN: {_state.skill_name} session={_state.session_id} step={_state.current_step}"
-                                )
-                                print(f"  {_skill_state_reply(_state, history)}")
-                            except Exception as e:
-                                print(
-                                    f"  {W}skill run error: {type(e).__name__}: {e}{X}"
-                                )
-                elif _sub == "resume":
-                    # Distinct from `skill run <name> <session-id>` (same
-                    # effect) only in that it validates a session id is
-                    # actually given and reports a clear usage error if not.
-                    # Handles the INTERRUPT->next-step advance itself — per
-                    # skill_runtime.run_skill()'s own contract, resuming an
-                    # INTERRUPTed session without first moving current_step
-                    # off INTERRUPT just re-enters INTERRUPT and does nothing.
-                    if not _rest:
-                        print(f"  {W}usage: skill resume <name> <session-id>{X}")
-                    else:
-                        _rname = _normalize_skill_name(_rest[0])
-                        _rsession = _rest[1] if len(_rest) > 1 else ""
-                        if not _rname or not _rsession:
-                            print(f"  {W}usage: skill resume <name> <session-id>{X}")
-                        else:
-                            try:
-                                import skill_runtime as _sr
-
-                                _state0 = _sr.load_state(_rname, _rsession)
-                                if _state0.done or _state0.aborted:
-                                    print(
-                                        f"  {Y}session already finished (done={_state0.done} aborted={_state0.aborted}){X}"
-                                    )
-                                else:
-                                    _pending = (_state0.data or {}).get("_pending_step")
-                                    if _state0.current_step == _sr.INTERRUPT:
-                                        if not _pending:
-                                            print(
-                                                f"  {W}recipe never set _pending_step on interrupt — cannot auto-resume{X}"
-                                            )
-                                            _state0 = None
-                                        else:
-                                            _state0.current_step = _pending
-                                    if _state0 is not None:
-                                        _sr.save_state(_state0)
-                                        _state = _sr.run_skill(
-                                            _state0.skill_name,
-                                            _state0.params,
-                                            session_id=_state0.session_id,
-                                            resume=True,
-                                        )
-                                        log(
-                                            f"SKILL_REPL_RESUME: {_state.skill_name} session={_state.session_id} step={_state.current_step}"
-                                        )
-                                        print(
-                                            f"  {_skill_state_reply(_state, history)}"
-                                        )
-                            except _sr.SkillNotFound as e:
-                                print(f"  {W}no such session: {e}{X}")
-                            except Exception as e:
-                                print(
-                                    f"  {W}skill resume error: {type(e).__name__}: {e}{X}"
-                                )
-                elif _sub == "audit":
-                    if not _rest:
-                        print(f"  {W}usage: skill audit <name>{X}")
-                    else:
-                        print(f"  {_sk.audit(' '.join(_rest))}")
-                elif _sub == "improve":
-                    _name = _rest[0] if _rest else ""
-                    if not _name:
-                        print(f"  {W}usage: skill improve <name>{X}")
-                    else:
-                        _text, _fix = _sk.improve(_name)
-                        print(f"\n{_text}\n")
-                        if _fix:
-                            # THE safety gate: identical path to any other
-                            # EDIT Sensei proposes — fence check + diff +
-                            # mode check + explicit confirm. No bypass.
-                            _ok = confirm_edit(
-                                _fix["filepath"],
-                                _fix["find_text"],
-                                _fix["replace_text"],
-                            )
-                            print(
-                                f"  {G if _ok else Y}improve edit "
-                                f"{'applied' if _ok else 'not applied'}{X}"
-                            )
-                else:
-                    print(
-                        f"  {W}usage: skill [browse [source]|install <source> <id>|run <name> [json]|resume <name> <session-id>|audit <name>|improve <name>]{X}"
-                    )
-            except Exception as e:
-                print(f"  {W}skill command error: {e}{X}\n")
+        # ── AI Engineering from Scratch tutor commands ─────────────────
+        # 2026-09-28. Thin wrapper over aies_tutor.py so Sensei can run
+        # the curriculum's prose-based skills (start-learning, learn,
+        # course-guide, check-understanding) without hand-adapting each
+        # one into the typed STEPS state machine. Also speaks lesson text
+        # via the existing voice_bridge / master-ai TTS stack.
+        if lo == "tutor" or lo.startswith("tutor "):
+            _handle_tutor(cmd)
             continue
 
         if lo == "help":
@@ -26027,38 +23063,7 @@ def main():
         # own direct dependencies (see run_security_audit docstring for
         # why that scoping matters), not the whole system Python.
         if lo in ("security", "security audit"):
-            print(
-                f"  {C}Scanning sensei's own dependencies (not the whole system)...{X}"
-            )
-            result = run_security_audit()
-            if not result["ok"]:
-                print(f"  {R}audit failed: {result['error']}{X}")
-            else:
-                print(
-                    f"  {D}Scanned: {', '.join(f'{k} {v}' for k, v in result['scanned'].items())}{X}\n"
-                )
-                any_vulns = False
-                for dep in result["dependencies"]:
-                    vulns = dep.get("vulns", [])
-                    if vulns:
-                        any_vulns = True
-                        print(
-                            f"  {R}⚠ {dep['name']} {dep['version']} — {len(vulns)} known vuln(s){X}"
-                        )
-                        for v in vulns[:3]:
-                            fix = ", ".join(v.get("fix_versions", [])) or "no fix yet"
-                            print(f"      {D}{v['id']} — fix: {fix}{X}")
-                    else:
-                        print(f"  {G}✓ {dep['name']} {dep['version']} — clean{X}")
-                if not any_vulns:
-                    print(f"\n  {G}No known vulnerabilities found.{X}")
-                unscannable = result.get("unscannable") or {}
-                if unscannable:
-                    print(
-                        f"\n  {Y}Could not scan (build/isolation issue, not a vuln finding):{X}"
-                    )
-                    for name, reason in unscannable.items():
-                        print(f"  {Y}?{X} {name} — {D}{reason[:120]}{X}")
+            _handle_security()
             continue
 
         # ── Tips screen ───────────────────────────────────────
@@ -26069,39 +23074,7 @@ def main():
 
         # ── Model picker ──────────────────────────────────────
         if lo in ("model", "models") or lo.startswith("model "):
-            if lo in ("model", "models"):
-                show_model_menu()
-            else:
-                choice = cmd[6:].strip()
-                choice_lo = choice.lower()
-                _or_free_prefixes = ("or free", "openrouter free")
-                _search_prefixes = ("search ", "or search ", "openrouter search ")
-                _matched_prefix = next(
-                    (p for p in _search_prefixes if choice_lo.startswith(p)), None
-                )
-                if choice.lower() in (
-                    "stats",
-                    "stat",
-                    "usage",
-                    "monitor",
-                    "monitoring",
-                ) or choice.lower() in ("keys", "key"):
-                    print(f"\n  {C}{format_model_monitor()}{X}\n")
-                elif choice_lo == "free":
-                    # 2026-09-07: was OpenRouter-only, silently excluding NVIDIA/
-                    # Cerebras/Groq keys the operator actually has configured.
-                    # "model free" now means every provider, no filter — use
-                    # "model openrouter free" for the OpenRouter-only view.
-                    print_full_model_catalog("", free_only=True)
-                elif choice_lo in _or_free_prefixes:
-                    print_openrouter_search("", free_only=True)
-                elif choice_lo == "all" or choice_lo.startswith("all "):
-                    print_full_model_catalog(choice[3:].strip())
-                elif _matched_prefix is not None:
-                    print_openrouter_search(choice[len(_matched_prefix) :].strip())
-                else:
-                    ok, msg = _pin_model_choice(choice)
-                    print(f"  {msg}")
+            _handle_model(cmd, lo)
             continue
 
         # ── Tutorial ──────────────────────────────────────────
@@ -26194,77 +23167,10 @@ def main():
         # whether the orchestrator prefers the LOCAL engine or routes to
         # cloud when keys exist.
         if lo in ("mode local", "mode offline", "mode in-house"):
-            try:
-                (Path.home() / ".master_ai_run_mode").write_text("apocalypse")
-            except Exception:
-                pass
-            print()
-            print(
-                f"  {BC}🏠  Local Mode{X}  {D}(your AI, your hardware, no internet needed){X}"
-            )
-            print(f"  {W}What this gives you:{X}")
-            print(
-                "    · A tool, not a subscription. Like a book or a cassette — it works because"
-            )
-            print("      you own it, not because a company kept the lights on.")
-            print(
-                "    · The same Sensei will start up in 10 years. No key to renew, no service to"
-            )
-            print("      cancel on you, no cloud that might turn you off.")
-            print("    · Everything stays on your machine. Nothing leaves.")
-            print("    · Built to outlive the company that sold it.")
-            print(f"  {W}The trade:{X}")
-            print(
-                "    · Answers come at human pace, not instant. That's fine — good work isn't"
-            )
-            print("      measured in tokens per second.")
-            print("    · You won't chase the newest cloud model. You don't need to.")
-            print("    · If you're online and want cloud speed, borrow it per-message:")
-            print(
-                f"        {BC}fast:{X} <your message>  → one reply through Groq (fastest free cloud)"
-            )
-            print(
-                f"        {BC}deep:{X} <your message>  → one reply through DeepSeek-R1 (reasoning)"
-            )
-            print(
-                f"        {BC}reason:{X} <hard question> → DeepSeek-R1, else local deep reasoning loop"
-            )
-            print()
+            _handle_mode_local()
             continue
         if lo in ("mode connected", "mode online", "mode cloud", "mode peacetime"):
-            try:
-                (Path.home() / ".master_ai_run_mode").write_text("peacetime")
-            except Exception:
-                pass
-            print()
-            print(
-                f"  {BC}☁  Connected Mode{X}  {D}(uses free cloud for speed while you're online){X}"
-            )
-            print(f"  {W}What this gives you:{X}")
-            print("    · Groq Llama 3.3 70B for default asks — ~0.3 second replies.")
-            print(
-                "    · DeepSeek-R1 for reasoning — closest free path to top-tier quality."
-            )
-            print(
-                "    · `reason:` for careful DeepSeek-R1 reasoning with local deep fallback."
-            )
-            print("    · Gemini 2.0 Flash for vision + web-aware questions.")
-            print(f"  {W}The trade:{X}")
-            print(
-                "    · Needs internet. If it drops, Sensei falls back to your local models."
-            )
-            print("    · Cloud prompts leave your box. Providers may log them.")
-            print(
-                "    · Cloud keys can hit daily free-tier quotas — rare, but it happens."
-            )
-            print(f"  {W}Force local anytime:{X}")
-            print(
-                f"    · {BC}local:{X} <message>   → this one goes to your machine, not the cloud."
-            )
-            print(
-                f"    · {BC}private:{X} <message> → same, logged as privacy-intended."
-            )
-            print()
+            _handle_mode_connected()
             continue
 
         # ── Mode (execution safety: safe / plan / auto) ──────────────
@@ -26274,69 +23180,14 @@ def main():
         # Also re-tints the TUI header + frame + status line via
         # SenseiApp.set_mode() so the color signals the mode at a glance.
         if lo in ("mode plan", "mode review", "mode auto"):
-            new_mode = lo.split()[1]
-            old_mode = MODE
-            globals()["MODE"] = new_mode
-            save_mode(new_mode)  # persist so next launch opens in this mode
-            # Handshake banner for non-trivial transitions — completes the
-            # sequence so every mode flip carries the same visual language as
-            # the original Plan→Review handshake. 2026-04-22.
-            if old_mode != new_mode:
-                _HANDSHAKE = {
-                    ("plan", "review"): (C, "Plan → Review — per-step confirms ready"),
-                    ("plan", "auto"): (G, "Plan → Auto — flow mode engaged"),
-                    ("review", "auto"): (G, "Review → Auto — trust earned, full flow"),
-                    ("review", "plan"): (R, "Review → Plan — back to thinking"),
-                    ("auto", "review"): (
-                        C,
-                        "Auto → Review — stepping back for per-step confirms",
-                    ),
-                    ("auto", "plan"): (R, "Auto → Plan — back to thinking"),
-                }
-                banner = _HANDSHAKE.get((old_mode, new_mode))
-                if banner:
-                    color, text = banner
-                    print(f"\n{color}  ▶ handoff: {text}{X}")
-            show_mode_status()
-            if _SENSEI_APP is not None:
-                try:
-                    _SENSEI_APP.set_mode(new_mode)
-                except Exception:
-                    pass
+            _handle_mode_plan(lo)
             continue
         # Cycle plan → review → auto → plan — Elijah 2026-08-27: "cycle
         # through my modes from review, plan, and auto" instead of typing
         # the full "mode <name>" each time. Same banner/persist/repaint
         # path as an explicit mode switch, just rotates instead of naming.
         if lo in ("cycle", "cycle mode", "mode cycle", "mode next", "next mode"):
-            _CYCLE_ORDER = ("plan", "review", "auto")
-            old_mode = MODE if MODE in _CYCLE_ORDER else "plan"
-            new_mode = _CYCLE_ORDER[
-                (_CYCLE_ORDER.index(old_mode) + 1) % len(_CYCLE_ORDER)
-            ]
-            globals()["MODE"] = new_mode
-            save_mode(new_mode)
-            _HANDSHAKE = {
-                ("plan", "review"): (C, "Plan → Review — per-step confirms ready"),
-                ("plan", "auto"): (G, "Plan → Auto — flow mode engaged"),
-                ("review", "auto"): (G, "Review → Auto — trust earned, full flow"),
-                ("review", "plan"): (R, "Review → Plan — back to thinking"),
-                ("auto", "review"): (
-                    C,
-                    "Auto → Review — stepping back for per-step confirms",
-                ),
-                ("auto", "plan"): (R, "Auto → Plan — back to thinking"),
-            }
-            banner = _HANDSHAKE.get((old_mode, new_mode))
-            if banner:
-                color, text = banner
-                print(f"\n{color}  ▶ handoff: {text}{X}")
-            show_mode_status()
-            if _SENSEI_APP is not None:
-                try:
-                    _SENSEI_APP.set_mode(new_mode)
-                except Exception:
-                    pass
+            _handle_cycle()
             continue
         if lo == "mode":
             show_mode_status()
@@ -26654,70 +23505,11 @@ def main():
         # clipboard copy is the SECONDARY path, best-effort, silent on
         # failure so the internal file is the source of truth.
         if lo in ("copy chat", "copy session", "copy", "export chat", "transcript"):
-            try:
-                turns = []
-                for entry in history:
-                    role = entry.get("role", "?").upper()
-                    content = (entry.get("content", "") or "").strip()
-                    if role == "SYSTEM":
-                        continue
-                    turns.append(f"## {role}\n\n{content}\n")
-                transcript = "\n".join(turns) or "(empty chat)"
-                # Primary: write to a timestamped markdown file under CHATS_DIR.
-                CHATS_DIR.mkdir(exist_ok=True)
-                ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                out_path = CHATS_DIR / f"copy-{ts}.md"
-                header = f"# Sensei chat — {_fmt_ampm()}\n\n"
-                out_path.write_text(header + transcript)
-                print(f"  {G}✅ chat saved → {out_path}{X}")
-                print(f"  {D}   {len(turns)} turns · {len(transcript)} chars{X}")
-                # Secondary: best-effort clipboard copy via xclip. Silent if
-                # xclip is missing or X11 CLIPBOARD isn't reachable.
-                try:
-                    p = subprocess.Popen(
-                        ["xclip", "-selection", "clipboard"],
-                        stdin=subprocess.PIPE,
-                        stderr=subprocess.DEVNULL,
-                    )
-                    p.communicate(transcript.encode("utf-8"), timeout=5)
-                    if p.returncode == 0:
-                        print(f"  {D}   (also copied to clipboard){X}")
-                except Exception:
-                    pass
-            except Exception as e:
-                print(f"  {R}copy chat error: {e}{X}")
+            _handle_copy_chat(history)
             continue
 
         if lo == "load summary":
-            try:
-                summaries = sorted(CHATS_DIR.glob("*.summary"), reverse=True)
-                if not summaries:
-                    print(f"  {Y}No summaries found yet.{X}")
-                else:
-                    content = summaries[0].read_text().strip()
-                    bullets = [
-                        l for l in content.splitlines() if l.lstrip().startswith("•")
-                    ]
-                    trimmed = "\n".join(bullets[-2:]) if len(bullets) >= 2 else content
-                    history.append(
-                        {
-                            "role": "user",
-                            "content": f"[Resuming from last session — unfinished + next only]\n{trimmed}",
-                        }
-                    )
-                    history.append(
-                        {
-                            "role": "assistant",
-                            "content": "Got it — I have your last session's unfinished items and next steps. What would you like to continue?",
-                        }
-                    )
-                    print(
-                        f"  {G}✅ Last session context loaded (unfinished + next).{X}"
-                    )
-                    print(f"  {D}{trimmed[:300]}{X}")
-                    _request_auto_save(history)
-            except Exception as e:
-                print(f"  {R}❌ {e}{X}")
+            _handle_load_summary(history)
             continue
 
         if lo == "load session":
@@ -26778,36 +23570,7 @@ def main():
             continue
 
         if lo.startswith("sessions resume"):
-            arg = cmd.split(None, 2)[2].strip() if len(cmd.split(None, 2)) > 2 else ""
-            entries = _sessions_list_entries()
-            target = None
-            if arg.isdigit():
-                idx = int(arg) - 1
-                if 0 <= idx < len(entries):
-                    target = entries[idx]
-            else:
-                target = next((e for e in entries if e["ts"] == arg), None)
-            if not target:
-                print(f"  {Y}usage: sessions resume <number>  (see 'sessions list'){X}")
-            else:
-                try:
-                    content = target["chat_path"].read_text(errors="replace")[-6000:]
-                    history.append(
-                        {
-                            "role": "user",
-                            "content": f"[Resumed session from {target['date']}]\n{content}",
-                        }
-                    )
-                    history.append(
-                        {
-                            "role": "assistant",
-                            "content": f"Loaded the session from {target['date']} — I have that context now. What would you like to continue?",
-                        }
-                    )
-                    print(f"  {G}✅ Resumed session from {target['date']}.{X}")
-                    _request_auto_save(history)
-                except Exception as e:
-                    print(f"  {R}❌ {e}{X}")
+            _handle_sessions_resume(cmd, history)
             continue
 
         # ── Scroll commands (word-based — the ONE way to scroll in TUI mode) ─
@@ -26861,32 +23624,7 @@ def main():
 
         # ── Copy last AI reply to X11 clipboard ──────────────────────
         if lo in ("copy", "copy last", "clip"):
-            msgs = [h for h in history if h.get("role") == "assistant"]
-            if not msgs:
-                print(f"  {Y}No reply to copy yet.{X}")
-                continue
-            content = msgs[-1]["content"]
-            for tool in (
-                ["xclip", "-selection", "clipboard"],
-                ["wl-copy"],
-                ["xsel", "-b", "-i"],
-            ):
-                try:
-                    p = subprocess.run(
-                        tool, input=content, text=True, capture_output=True, timeout=3
-                    )
-                    if p.returncode == 0:
-                        print(
-                            f"  {G}✅ Copied last reply ({len(content)} chars) via {tool[0]}.{X}"
-                        )
-                        break
-                except FileNotFoundError:
-                    continue
-                except Exception as _e:
-                    continue
-            else:
-                print(f"  {Y}No clipboard tool found (tried xclip, wl-copy, xsel).{X}")
-                print(f"  {D}Install with: sudo apt install xclip{X}")
+            _handle_copy(history)
             continue
 
         # ── Kick: force crash so supervisor loop restarts us ─────────
@@ -26997,48 +23735,8 @@ def main():
             continue
 
         if lo in ("new", "clear"):
-            _RESTART_STARTED.set()
-            try:
-                RESUME_FLAG.unlink()
-            except FileNotFoundError:
-                pass
-            except Exception as e:
-                log(f"REFRESH_RESUME_CLEAR_ERROR: {e}")
-            try:
-                save_session(list(history), silent=True)
-            except Exception:
-                pass
-            # 2026-08-28: THREAD_FILE (~/.master_ai_thread) is a single
-            # global sticky label with no automatic lifecycle of its own —
-            # maybe_auto_label() only ever fires once and only if this file
-            # is empty, so a stale label survives forever otherwise. Elijah
-            # hit this directly: a label from days earlier was still
-            # showing after starting over on a completely different topic.
-            # "new"/"clear" already means "blank history, start fresh" —
-            # the label needs to reset here too so the next 3+ messages can
-            # get a label that actually matches the new conversation.
-            save_thread_label("")
-            print(
-                f"  {C}🔄 Refreshing Master AI — screen reset + engine restart...{X}",
-                flush=True,
-            )
-            if _SENSEI_APP is not None:
-                try:
-                    _SENSEI_APP.clear_output()
-                except Exception:
-                    pass
-            _clear_tmux_scrollback("refresh")
-            try:
-                subprocess.run(["stty", "sane"], check=False)
-            except Exception:
-                pass
-            sys.stdout.write("\033c\033[2J\033[H")
-            sys.stdout.flush()
-            os.execvp(
-                sys.executable,
-                [sys.executable, str(Path.home() / "scripts/master_ai.py")],
-            )
-            continue  # unreachable
+            _handle_new(history)
+            continue
 
         # ── Clear variants (approved/cache/chats) ───────────────────
         # 2026-08-27: "clear" alone is handled above (full reset).
@@ -27064,104 +23762,12 @@ def main():
 
         # ── Quick label edit: 'e', 'edit', or the pencil glyph ───────
         if lo in ("e", "edit", "✏", "✎"):
-            current = load_thread_label()
-            try:
-                suffix = f" (current: {current})" if current else ""
-                new_name = sanitize(input(f"  {D}✏{X}  label{suffix}: "))
-            except (EOFError, KeyboardInterrupt):
-                print()
-                continue
-            new_name = new_name.strip()
-            if not new_name:
-                continue
-            if new_name.lower() == "clear":
-                save_thread_label("")
-                print(f"  {G}✅ label cleared.{X}")
-                continue
-            if new_name.lower() == "suggest":
-                msgs = [m for m in history if m.get("role") in ("user", "assistant")][
-                    -8:
-                ]
-                if not msgs:
-                    print(f"  {Y}not enough context yet — chat a bit first.{X}")
-                    continue
-                transcript = "\n".join(
-                    f"{m['role']}: {m['content'][:200]}" for m in msgs
-                )
-                prompt = (
-                    f"Give a 2-4 word kebab-case label for this conversation "
-                    f"(lowercase, hyphens, no punctuation). Output ONLY the label.\n\n{transcript}"
-                )
-                suggested = (
-                    _ask_cloud_for_label([{"role": "user", "content": prompt}]) or ""
-                )
-                suggested = re.sub(
-                    r"[^a-z0-9\-]+",
-                    "-",
-                    suggested.strip().split("\n")[0].strip().lower(),
-                ).strip("-")[:40]
-                if suggested:
-                    save_thread_label(suggested)
-                    print(f"  {G}✅ label:{X} {BC}{suggested}{X}")
-                else:
-                    print(f"  {Y}couldn't generate a label — try again later.{X}")
-                continue
-            save_thread_label(new_name)
-            print(f"  {G}✅ label:{X} {BC}{new_name}{X}")
+            _handle_branch(history)
             continue
 
         # ── Thread label: show / set / suggest ───────────────────
         if lo == "label":
-            current = load_thread_label()
-            if current:
-                print(f"  {C}current label:{X} {BC}{current}{X}")
-            else:
-                print(f"  {D}no label set.{X}")
-            try:
-                new_name = sanitize(
-                    input(
-                        f"  {C}new label (Enter to keep, 'clear' to remove, 'suggest' for AI suggestion):{X} "
-                    )
-                )
-            except (EOFError, KeyboardInterrupt):
-                print()
-                continue
-            new_name = new_name.strip()
-            if not new_name:
-                continue
-            if new_name.lower() == "clear":
-                save_thread_label("")
-                print(f"  {G}✅ label cleared.{X}")
-                continue
-            if new_name.lower() == "suggest":
-                msgs = [m for m in history if m.get("role") in ("user", "assistant")][
-                    -8:
-                ]
-                if not msgs:
-                    print(
-                        f"  {Y}not enough context yet — type a few messages first.{X}"
-                    )
-                    continue
-                transcript = "\n".join(
-                    f"{m['role']}: {m['content'][:200]}" for m in msgs
-                )
-                prompt = (
-                    f"Give a 2-4 word kebab-case label for this conversation "
-                    f"(lowercase, hyphens, no punctuation). Output ONLY the label.\n\n{transcript}"
-                )
-                suggested = (
-                    _ask_cloud_for_label([{"role": "user", "content": prompt}]) or ""
-                )
-                suggested = suggested.strip().split("\n")[0].strip().lower()
-                suggested = re.sub(r"[^a-z0-9\-]+", "-", suggested).strip("-")[:40]
-                if suggested:
-                    save_thread_label(suggested)
-                    print(f"  {G}✅ label set to:{X} {BC}{suggested}{X}")
-                else:
-                    print(f"  {Y}suggestion failed.{X}")
-                continue
-            save_thread_label(new_name)
-            print(f"  {G}✅ label set to:{X} {BC}{new_name}{X}")
+            _handle_label(history)
             continue
 
         if lo.startswith("label:") or lo.startswith("label "):
@@ -27203,54 +23809,7 @@ def main():
 
         # ── Chats list / delete ────────────────────────────────
         if lo in ("chats", "clear chats") or lo.startswith("clear chats "):
-            files = (
-                sorted(
-                    CHATS_DIR.glob("*"), key=lambda f: f.stat().st_mtime, reverse=True
-                )
-                if CHATS_DIR.exists()
-                else []
-            )
-            if lo == "chats":
-                if not files:
-                    print(f"  {Y}No saved chats found.{X}")
-                else:
-                    print(f"\n  {C}Saved chats ({len(files)} files):{X}")
-                    for idx, f in enumerate(files, 1):
-                        sz = f.stat().st_size
-                        sz_str = f"{sz // 1024}KB" if sz >= 1024 else f"{sz}B"
-                        dt = _fmt_ampm(datetime.fromtimestamp(f.stat().st_mtime))
-                        print(f"  {W}{idx:>3}.{X} {dt}  {f.name:<40} {D}({sz_str}){X}")
-                    print(
-                        f"\n  {D}Type 'clear chats' to delete all, or 'clear chats 2' to delete #2{X}\n"
-                    )
-            elif lo == "clear chats":
-                if not files:
-                    print(f"  {Y}No saved chats to delete.{X}")
-                else:
-                    conf = (
-                        input(f"  {Y}Delete all {len(files)} chat files? (yes/no): {X}")
-                        .strip()
-                        .lower()
-                    )
-                    if conf in ("y", "yes"):
-                        for f in files:
-                            f.unlink(missing_ok=True)
-                        print(f"  {G}✅ All {len(files)} chat files deleted.{X}")
-                    else:
-                        print(f"  {D}Cancelled.{X}")
-            else:
-                try:
-                    n = int(lo.split()[-1]) - 1
-                    if 0 <= n < len(files):
-                        target = files[n]
-                        target.unlink(missing_ok=True)
-                        print(f"  {G}✅ Deleted: {target.name}{X}")
-                    else:
-                        print(
-                            f"  {R}No file #{n + 1}. Type 'chats' to see the list.{X}"
-                        )
-                except ValueError:
-                    print(f"  {R}Usage: clear chats <number>  e.g. 'clear chats 2'{X}")
+            _handle_chats(lo)
             continue
 
         # ── Permissions ───────────────────────────────────────
@@ -27424,36 +23983,7 @@ def main():
         # questions, generates a tailored cover via master-ai, builds
         # the portfolio packet + answer sheet under ~/jobseeker/.
         if lo in ("jobseeker", "job seeker"):
-            script = os.path.expanduser("~/scripts/jobseeker.sh")
-            if not os.path.isfile(script):
-                print(f"  {W}Job Seeker not installed at {script}{X}\n")
-                continue
-            try:
-                subprocess.Popen(
-                    [
-                        "gnome-terminal",
-                        "--title=Job Seeker",
-                        "--geometry=100x32",
-                        "--",
-                        "bash",
-                        "-c",
-                        f"{script}; echo; read -p 'Press Enter to close...'",
-                    ],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
-                print(f"\n  {G}🥷 Job Seeker launching in a new terminal window…{X}")
-                print(
-                    f"  {C}Asks: company, job title, posting (optional), distance, start date.{X}"
-                )
-                print(
-                    f"  {C}Output saved under ~/jobseeker/ (cover + packet PDF + answer sheet).{X}\n"
-                )
-            except FileNotFoundError:
-                print(f"  {W}gnome-terminal not found — fallback: bash {script}{X}\n")
-            except Exception as e:
-                print(f"  {W}Job Seeker failed to launch: {e}{X}\n")
+            _handle_jobseeker()
             continue
 
         if lo in ("router", "router stats"):
@@ -27482,49 +24012,7 @@ def main():
         #   agents inspect <name>   — show description + source path
         #   agents run <name> <task...>  — dispatch (returns inert JSON)
         if lo == "agents" or lo.startswith("agents "):
-            try:
-                import subagent_registry as _sr
-
-                # Slice off "agents" from the REPL input. The REPL variable
-                # here is `cmd` (not `user_text` — that's the post-command
-                # message-to-model variable scoped later). Codex caught
-                # this on the 2026-05-11 live-verification pass.
-                args = (cmd[len("agents") :].strip()).split(None, 1)
-                sub = (args[0] if args else "").lower()
-                rest = args[1] if len(args) > 1 else ""
-                if sub in ("", "list"):
-                    agents = _sr.list_subagents()
-                    print(f"\n  {C}Registered subagents ({len(agents)}):{X}")
-                    for a in agents:
-                        print(f"    {W}{a.name:<22}{X}  {a.description}")
-                    print()
-                elif sub == "inspect":
-                    a = _sr.get(rest.strip())
-                    if a is None:
-                        print(f"  {W}unknown subagent: {rest!r}{X}\n")
-                    else:
-                        print(f"\n  {C}{a.name}{X}")
-                        print(f"    description: {a.description}")
-                        print(f"    source:      {a.source}")
-                        print()
-                elif sub == "run":
-                    parts = rest.split(None, 1)
-                    if not parts:
-                        print(f"  {W}usage: agents run <name> [task...]{X}\n")
-                    else:
-                        sub_name, task = parts[0], (parts[1] if len(parts) > 1 else "")
-                        result = _sr.run(sub_name, task)
-                        import json as _json
-
-                        print(
-                            f"\n  {C}{_json.dumps(result, indent=2, default=str)}{X}\n"
-                        )
-                else:
-                    print(
-                        f"  {W}usage: agents [list|inspect <name>|run <name> <task>]{X}\n"
-                    )
-            except Exception as e:
-                print(f"  {W}agents command error: {e}{X}\n")
+            _handle_agents(cmd)
             continue
 
         # No-TTY approval queue — Elijah reviews/approves actions that got
@@ -27703,31 +24191,7 @@ def main():
             continue
 
         if lo == "done":
-            if not ACTIVE_PROJECT or not ACTIVE_TASK:
-                print(
-                    f"  {W}🥷 no selected task to mark done. try `dojo` to see state.{X}"
-                )
-                continue
-            if _dojo_mark_done(ACTIVE_PROJECT, ACTIVE_TASK):
-                print(f"  {G}✅ done:{X} {ACTIVE_TASK}")
-                # Pick next unchecked task
-                nxt = _dojo_next_task(ACTIVE_PROJECT)
-                if nxt:
-                    globals()["ACTIVE_TASK"] = nxt
-                    try:
-                        ACTIVE_TASK_FILE.write_text(nxt)
-                    except Exception:
-                        pass
-                    print(f"  {C}🥷 next task:{X} {W}{nxt}{X}")
-                else:
-                    globals()["ACTIVE_TASK"] = ""
-                    try:
-                        ACTIVE_TASK_FILE.write_text("")
-                    except Exception:
-                        pass
-                    print(f"  {G}🥷 project complete — no unchecked tasks left.{X}")
-            else:
-                print(f"  {R}❌ couldn't find that task in PROJECTS.md{X}")
+            _handle_done()
             continue
 
         # ── Mesh (node-to-node federated routing) ─────────────
@@ -27738,6 +24202,12 @@ def main():
         # `mesh ask <peer> <q...>`  → POST /ask to a peer, get its Ollama's reply
         # Use `self` as the peer name to loopback-test your own /ask pipe.
         if _handle_mesh_cmd(lo, cmd):
+            continue
+
+        if _handle_syscap_cmd(lo, cmd):
+            continue
+
+        if _handle_rag_cmd(lo, cmd):
             continue
 
         # Legacy alias retained for compatibility, now dependency-free.
@@ -27810,30 +24280,7 @@ def main():
         # exists -- a SKILL.md-only skill (no recipe.py) is meant to be
         # read and followed directly, not compiled into a state machine.
         if lo.startswith("use skill ") or lo.startswith("skill:"):
-            name = cmd[10:].strip() if lo.startswith("use skill ") else cmd[6:].strip()
-            if name.startswith(":"):
-                name = name[1:].strip()
-            if not name:
-                print(f"  {Y}usage: use skill <name>  OR  skill: <name>{X}")
-                continue
-            skill_path = _find_markdown_skill(name)
-            if not skill_path:
-                print(
-                    f"  {R}skill not found: {name}{X}\n"
-                    f"  {D}checked ~/.agents/skills, ~/.claude/skills, ~/.master_ai_skills{X}"
-                )
-                continue
-            body = _strip_skill_frontmatter(skill_path.read_text())
-            print(f"\n  {C}📘 Loaded skill:{X} {Y}{name}{X} {D}({skill_path}){X}\n")
-            globals()["PENDING_USER_NOTE"] = (
-                f"[SKILL: {name}]\n{body}\n\n"
-                "Follow the instructions above directly, in this conversation, "
-                "for this and any follow-up turns -- this is a plain-English "
-                "skill, not a recipe.py program. Do not write or run a state "
-                "machine for it; just act on it using your normal "
-                "RUN/CREATE/EDIT/etc. directives wherever its instructions "
-                "call for one."
-            )
+            _handle_use_skill(cmd, lo)
             continue
 
         # Different from `search`: search returns snippets from many pages,
@@ -28196,142 +24643,7 @@ def main():
         # approval (1 / Enter), the ORIGINAL user_text re-runs in Review
         # mode for per-command execution.
         if MODE == "plan" and not _looks_terminal_visual_request(user_text):
-            print(f"{C}  thinking (plan mode — two models debating)...{X}")
-            _hist_len_before = len(history)
-            # Pull grounding facts FIRST: Wikipedia + live web + filesystem
-            # + memory. Stops generic plans by giving the models real data
-            # about the actual subject before they draft. Fail-silent: if
-            # nothing comes back, the debate still drafts (just less specific).
-            _grounding = _plan_grounding(user_text)
-            # Plan mode is now a merge-to-consensus multi-agent debate:
-            # two models brainstorm a plan together and converge on ONE
-            # plan instead of arguing forever. See BRAINSTORM_MODE.md.
-            # The debate query carries the grounding facts + the user's ask.
-            _debate_query = (
-                f"{user_text}\n\n"
-                f"GROUNDING FACTS (use real names from these — files, dirs, "
-                f"scripts, services; no generic placeholders):\n{_grounding}"
-            )
-            try:
-                import sys as _sys
-
-                if str(Path.home() / "scripts") not in _sys.path:
-                    _sys.path.insert(0, str(Path.home() / "scripts"))
-                from sensei_reasoning_loop import _model_chat, run_plan_debate
-
-                try:
-                    from plan_slots import resolve_debate_slots
-                except ImportError:
-                    from scripts.plan_slots import resolve_debate_slots
-
-                # 2026-09-24: defaults are preferences, not pins. Every slot
-                # is validated against the LIVE OpenRouter catalog right
-                # before the debate; delisted models (e.g. minimax-m3:free)
-                # are substituted with the best currently-free pick instead
-                # of silently starving the convergence gate.
-                (
-                    _pa,
-                    _pb,
-                    _mg,
-                    _fb,
-                ) = resolve_debate_slots(
-                    PLAN_DEBATE_PLANNER_A,
-                    PLAN_DEBATE_PLANNER_B,
-                    PLAN_DEBATE_MERGER,
-                    PLAN_DEBATE_FALLBACK,
-                )
-
-                _debate = run_plan_debate(
-                    _debate_query,
-                    planner_a=_pa,
-                    planner_b=_pb,
-                    merger=_mg,
-                    fallback=_fb,
-                    max_rounds=PLAN_DEBATE_MAX_ROUNDS,
-                    live_pin_merger_round=int(
-                        os.environ.get("PLAN_DEBATE_PIN_ROUND", "5")
-                    ),
-                    progress=True,
-                )
-                plan_reply = _debate.get("plan", "") or ""
-                _converged = _debate.get("converged", False)
-
-                # 2026-09-27: the debate now bails fast on _INTERRUPT_EVENT
-                # (checked around every blocking sub-call, not just once per
-                # round — see run_plan_debate()). Honor that here: skip the
-                # Jev gate (another blocking call, no reason to make the
-                # user wait through it after they already asked to stop),
-                # drain any extra keystrokes typed while waiting so they
-                # don't replay as separate turns, and go straight back to
-                # the prompt instead of showing a half-built plan for
-                # approval.
-                if _debate.get("interrupted"):
-                    print(f"\n  {Y}plan debate interrupted{X}")
-                    _INTERRUPT_EVENT.clear()
-                    _drain_stale_tui_input("plan_debate_interrupted")
-                    while len(history) > _hist_len_before:
-                        history.pop()
-                    continue
-
-                # ── Jev end-gate (Elijah's design, 2026-09-24) ──────────
-                # The debate models vote on their own homework; Jev
-                # (typesafe/jev) is an independent typed second opinion on
-                # the FINAL plan before it's shown for approval. Fail-open:
-                # any gate failure flows the plan exactly as before.
-                try:
-                    from plan_jev_gate import run_jev_gate
-
-                    _jev_revise = lambda prompt, _mg_now=_mg: _model_chat(  # noqa: B023
-                        _mg_now, "", prompt, num_predict=2000
-                    )[0]
-                    _jev = run_jev_gate(user_text, plan_reply, revise_fn=_jev_revise)
-                    for _jline in _jev.get("progress", []):
-                        print(f"  {C}{_jline}{X}")
-                    plan_reply = _jev.get("annotated_plan") or plan_reply
-                    # Note: a flagged plan still flows to the approve menu —
-                    # fail-open by design — but the ⚠ banner is prepended to
-                    # the plan text so it's visible where Elijah approves.
-                except Exception as _jev_err:
-                    log(f"JEV_GATE_ERROR: {_jev_err}")
-                # ── end Jev end-gate ─────────────────────────────────────
-            except KeyboardInterrupt:
-                print(f"\n  {Y}plan debate interrupted{X}")
-                continue
-            except Exception as e:
-                print(f"  {R}plan debate error: {e}{X}")
-                continue
-            # Drop the planning turn from history so the real execution
-            # turn starts with clean context.
-            while len(history) > _hist_len_before:
-                history.pop()
-            # Soften any directives that leaked through into inert prose.
-            plan_text = re.sub(
-                r"(?im)^(\s*)(RUN|READ|CREATE|EDIT):",
-                r"\1(step would) ",
-                plan_reply,
-            )
-            # The debate converges to a single plan — treat it as ready.
-            # (No <PLAN READY> marker needed; "build it" is the signal.)
-            if plan_text.strip():
-                globals()["PENDING_PLAN_TEXT"] = plan_text
-                globals()["PENDING_PLAN_REQUEST"] = user_text
-                # Show the FULL plan in the thread so Elijah can read it and
-                # edit before approving — not just the 1/2/3/4 buttons. He
-                # explicitly wants to see the entire plan, not a "go" prompt.
-                print(f"\n{C}  ── PLAN ──────────────────────────────{X}")
-                print(f"{W}{plan_text}{X}")
-                print(f"{C}  ────────────────────────────────────────{X}")
-                print(
-                    f"\n  {BTN_G} 1){X} Review step-by-step  ·  {BTN_Y} 2){X} edit  ·  "
-                    f"{BTN_R} 3){X} no  ·  {BTN_C} 4){X} keep talking  ·  "
-                    f"{BTN_G} A){X} finish in Auto"
-                )
-                threading.Thread(
-                    target=speak, args=("Plan ready.",), daemon=True
-                ).start()
-            else:
-                # Debate produced nothing usable — keep history for context.
-                history.append({"role": "user", "content": user_text})
+            _handle_plan(history, user_text)
             continue
 
         # ── Auto-route multi-step requests through the agent loop ──────
@@ -28427,8 +24739,7 @@ def main():
             log(f"HANDLE_ERROR: {e}")
             print(f"  {R}error: {e}{X}")
 
-
-def _run_with_tui():
+def _run_with_tui() -> Any:
     """Wrap main() in the full-screen SenseiApp.
     - Stdout/stderr routed to the app's scrollable output buffer.
     - builtins.input() pulls from a submit queue filled by the TUI's Enter key.
@@ -28469,7 +24780,7 @@ def _run_with_tui():
     _orig_input = builtins.input
     _orig_stdout, _orig_stderr = sys.stdout, sys.stderr
 
-    def _tui_input(prompt=""):
+    def _tui_input(prompt: str="") -> Any:
         # Print the prompt into the scrollback so user sees what's being asked.
         if prompt:
             try:
@@ -28528,7 +24839,7 @@ def _run_with_tui():
         "save clear",
     }
 
-    def _on_submit(text: str):
+    def _on_submit(text: str) -> None:
         # Route to the confirm queue only while a confirm is actively waiting.
         # Otherwise this is a normal user question — goes in the type-ahead queue.
         lo = (text or "").strip().lower()
@@ -28551,7 +24862,7 @@ def _run_with_tui():
             _INTERRUPT_EVENT.set()
             _iq.put(text)
 
-            def _watchdog(_label=lo):
+            def _watchdog(_label: Any=lo) -> None:
                 for _ in range(25):  # 25 * 0.2s = 5s
                     if _RESTART_STARTED.is_set():
                         return  # graceful path took it — done here
@@ -28578,7 +24889,7 @@ def _run_with_tui():
 
     worker_err = []
 
-    def _worker():
+    def _worker() -> None:
         try:
             main()
         except SystemExit as e:
@@ -28625,7 +24936,7 @@ def _run_with_tui():
         try:
             old_sigwinch = signal.getsignal(signal.SIGWINCH)
 
-            def _sigwinch(_s, _f):
+            def _sigwinch(_s: Any, _f: Any) -> None:
                 _nudge_tmux_auto_resize()
 
             signal.signal(signal.SIGWINCH, _sigwinch)
@@ -28647,7 +24958,7 @@ def _run_with_tui():
     try:
         old_sigterm = signal.getsignal(signal.SIGTERM)
 
-        def _sigterm_save(_s, _f):
+        def _sigterm_save(_s: Any, _f: Any) -> None:
             # 2026-09-07: reproduced live — save_session() -> summarize_
             # session() -> _ask_cloud_for_label() chains through multiple
             # cloud providers sequentially with no bound on this path, so a
@@ -28698,6 +25009,1393 @@ def _run_with_tui():
     # Elijah 2026-08-21.
     if worker_err and isinstance(worker_err[0], KeyboardInterrupt):
         sys.exit(99)
+
+def _handle_skill_cmd(cmd: str, history: list) -> str:
+    """Extracted from `main()` REPL dispatch.
+
+    L23036-L23290 of the old `main()` while-loop. Lifted out on
+    2026-09-29 because that function had grown to 3527 lines holding 169 dispatch arms, and no
+    arm could be read without reading all the others.
+    """
+    try:
+        import skill_improve_helpers as _sk
+
+        _parts = cmd.split()
+        _sub = _parts[1].lower() if len(_parts) > 1 else ""
+        _rest = _parts[2:]
+        if _sub in ("", "list"):
+            # bare `skill` = marketplace browse (source listing
+            # lives in `skill browse`; no legacy conflict — the
+            # old `skills`-style command family is untouched)
+            print(f"  {_sk.browse(None)}")
+        elif _sub == "browse":
+            _src = _rest[0] if _rest else None
+            print(f"  {_sk.browse(_src)}")
+        elif _sub == "install":
+            if len(_rest) < 2:
+                print(f"  {W}usage: skill install <source> <skill-id>{X}")
+                print(
+                    f"  {D}example: skill install hermes research/web-search-ddgr{X}"
+                )
+            else:
+                print(f"  {_sk.install(_rest[0], _rest[1])}")
+        elif _sub == "run":
+            # Reuses _parse_run_skill_payload — the same parser the
+            # RUN_SKILL: model directive uses (_run_skill_specs_from_reply)
+            # — so `skill run <name> <json>` and a model's RUN_SKILL:
+            # line accept identical syntax. Re-derived from the raw
+            # `cmd` text (not the pre-split _rest) so JSON payload
+            # whitespace survives intact.
+            _m = re.match(
+                r"^\s*skill\s+run\s+(\S+)\s*(.*)$",
+                cmd,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if not _m:
+                print(
+                    f"  {W}usage: skill run <name> [<json-params>|<session-id>]{X}"
+                )
+                print(
+                    f'  {D}example: skill run google-workspace {{"command": "gmail.search", "args": {{"query": "is:unread", "max": 5}}}}{X}'
+                )
+            else:
+                try:
+                    _spec = _parse_run_skill_payload(
+                        f"{_m.group(1)} {_m.group(2)}".strip()
+                    )
+                except Exception as e:
+                    print(f"  {W}invalid skill run payload: {e}{X}")
+                    _spec = None
+                if _spec is None:
+                    print(
+                        f"  {W}could not parse skill name/params — usage: skill run <name> [<json-params>]{X}"
+                    )
+                else:
+                    try:
+                        import skill_runtime as _sr
+
+                        _state = _sr.run_skill(
+                            _spec["name"],
+                            _spec.get("params") or {},
+                            session_id=_spec.get("session_id"),
+                            resume=bool(
+                                _spec.get("resume") and _spec.get("session_id")
+                            ),
+                        )
+                        log(
+                            f"SKILL_REPL_RUN: {_state.skill_name} session={_state.session_id} step={_state.current_step}"
+                        )
+                        print(f"  {_skill_state_reply(_state, history)}")
+                    except Exception as e:
+                        print(
+                            f"  {W}skill run error: {type(e).__name__}: {e}{X}"
+                        )
+        elif _sub == "resume":
+            # Distinct from `skill run <name> <session-id>` (same
+            # effect) only in that it validates a session id is
+            # actually given and reports a clear usage error if not.
+            # Handles the INTERRUPT->next-step advance itself — per
+            # skill_runtime.run_skill()'s own contract, resuming an
+            # INTERRUPTed session without first moving current_step
+            # off INTERRUPT just re-enters INTERRUPT and does nothing.
+            if not _rest:
+                print(f"  {W}usage: skill resume <name> <session-id>{X}")
+            else:
+                _rname = _normalize_skill_name(_rest[0])
+                _rsession = _rest[1] if len(_rest) > 1 else ""
+                if not _rname or not _rsession:
+                    print(f"  {W}usage: skill resume <name> <session-id>{X}")
+                else:
+                    try:
+                        import skill_runtime as _sr
+
+                        _state0 = _sr.load_state(_rname, _rsession)
+                        if _state0.done or _state0.aborted:
+                            print(
+                                f"  {Y}session already finished (done={_state0.done} aborted={_state0.aborted}){X}"
+                            )
+                        else:
+                            _pending = (_state0.data or {}).get("_pending_step")
+                            if _state0.current_step == _sr.INTERRUPT:
+                                if not _pending:
+                                    print(
+                                        f"  {W}recipe never set _pending_step on interrupt — cannot auto-resume{X}"
+                                    )
+                                    _state0 = None
+                                else:
+                                    _state0.current_step = _pending
+                            if _state0 is not None:
+                                _sr.save_state(_state0)
+                                _state = _sr.run_skill(
+                                    _state0.skill_name,
+                                    _state0.params,
+                                    session_id=_state0.session_id,
+                                    resume=True,
+                                )
+                                log(
+                                    f"SKILL_REPL_RESUME: {_state.skill_name} session={_state.session_id} step={_state.current_step}"
+                                )
+                                print(
+                                    f"  {_skill_state_reply(_state, history)}"
+                                )
+                    except _sr.SkillNotFound as e:
+                        print(f"  {W}no such session: {e}{X}")
+                    except Exception as e:
+                        print(
+                            f"  {W}skill resume error: {type(e).__name__}: {e}{X}"
+                        )
+        elif _sub == "audit":
+            if not _rest:
+                print(f"  {W}usage: skill audit <name>{X}")
+            else:
+                print(f"  {_sk.audit(' '.join(_rest))}")
+        elif _sub == "improve":
+            _name = _rest[0] if _rest else ""
+            if not _name:
+                print(f"  {W}usage: skill improve <name>{X}")
+            else:
+                _text, _fix = _sk.improve(_name)
+                print(f"\n{_text}\n")
+                if _fix:
+                    # THE safety gate: identical path to any other
+                    # EDIT Sensei proposes — fence check + diff +
+                    # mode check + explicit confirm. No bypass.
+                    _ok = confirm_edit(
+                        _fix["filepath"],
+                        _fix["find_text"],
+                        _fix["replace_text"],
+                    )
+                    print(
+                        f"  {G if _ok else Y}improve edit "
+                        f"{'applied' if _ok else 'not applied'}{X}"
+                    )
+        elif _sub == "create":
+            # 2026-09-28. Supervised skill creation from a session
+            # transcript. Generates SKILL.md + recipe.py, audits them,
+            # and either saves (auto-approve / low-risk) or prints a
+            # preview for explicit confirmation.
+            if len(_rest) < 1:
+                print(f"  {W}usage: skill create <name> [transcript-path]{X}")
+                print(
+                    f"  {D}example: skill create notify-hook ~/.master_ai_chats/1788319009.chat{X}"
+                )
+            else:
+                _skill_name = _normalize_skill_name(_rest[0])
+                _transcript = _rest[1] if len(_rest) > 1 else None
+                _saved, _msg, _details = _sk.create_skill(
+                    _skill_name,
+                    transcript_path=_transcript,
+                    auto_approve=False,
+                )
+                if _saved:
+                    print(f"  {G}{_msg}{X}")
+                else:
+                    # audit failed OR draft waiting for approval
+                    print(f"\n{_msg}\n")
+                    if _details.get("approved") is False and _details.get(
+                        "audit", {}
+                    ).get("passed"):
+                        print(
+                            f"  {D}Approve? Type 'yes' to save to "
+                            f"~/.master_ai_skills/{_details.get('name')}/{X}"
+                        )
+                        _answer = input("  > ").strip().lower()
+                        if _answer in ("yes", "y"):
+                            _saved2, _msg2, _ = _sk.create_skill(
+                                _skill_name,
+                                transcript_path=_transcript,
+                                auto_approve=True,
+                            )
+                            print(f"  {G if _saved2 else Y}{_msg2}{X}")
+                        else:
+                            print(f"  {Y}skill creation cancelled{X}")
+        elif _sub == "auto-author":
+            # 2026-09-28. Autonomous skill creation toggle.
+            _arg = _rest[0].lower() if _rest else ""
+            if _arg == "on":
+                _sk.set_auto_author_enabled(True)
+                print(f"  {G}auto-author enabled{X}")
+            elif _arg == "off":
+                _sk.set_auto_author_enabled(False)
+                print(f"  {Y}auto-author disabled{X}")
+            elif _arg == "status":
+                _on = _sk.get_auto_author_enabled()
+                print(f"  auto-author is {'enabled' if _on else 'disabled'}{X}")
+            elif _arg == "now":
+                # One-shot manual trigger
+                _draft = _sk.propose_auto_skill()
+                if _draft is None:
+                    print(
+                        f"  {D}no strong skill candidate found in recent sessions{X}"
+                    )
+                else:
+                    _d = _draft
+                    _transcript_for_save = (
+                        str(_d.transcript_path)
+                        if _d.transcript_path
+                        else str(_d.skill_dir.parent / "transcript.chat")
+                    )
+                    print(
+                        f"\n  {C}candidate: {_d.name}"
+                        f" ({'saved' if _d.approved else 'draft'}){X}\n"
+                    )
+                    print(f"  low-risk: {_d.low_risk}")
+                    print(
+                        f"  audit: {'PASS' if _d.audit.get('passed') else 'FAIL'}"
+                    )
+                    for r in _d.audit.get("reasons", []):
+                        print(f"    ✗ {r}")
+                    for w in _d.audit.get("warnings", [])[:3]:
+                        print(f"    ⚠ {w}")
+                    if not _d.approved and _d.audit.get("passed"):
+                        print(
+                            f"\n  {D}Approve? Type 'yes' to save to "
+                            f"~/.master_ai_skills/{_d.name}/{X}"
+                        )
+                        _answer = input("  > ").strip().lower()
+                        if _answer in ("yes", "y"):
+                            _saved3, _msg3, _ = _sk.create_skill(
+                                _d.name,
+                                transcript_path=str(
+                                    _d.skill_dir / ".." / "transcript.chat"
+                                ),
+                                auto_approve=True,
+                            )
+                            print(f"  {G if _saved3 else Y}{_msg3}{X}")
+            else:
+                print(f"  {W}usage: skill auto-author [on|off|status|now]{X}")
+        else:
+            print(
+                f"  {W}usage: skill [browse [source]|install <source> <id>|run <name> [json]|resume <name> <session-id>|audit <name>|improve <name>|create <name> [transcript]|auto-author [on|off|status|now]]{X}"
+            )
+    except Exception as e:
+        print(f"  {W}skill command error: {e}{X}\n")
+
+
+
+def _handle_plan(history: list, user_text: str) -> str:
+    """Extracted from `main()` REPL dispatch.
+
+    L25363-L25500 of the old `main()` while-loop. Lifted out on
+    2026-09-29 because that function had grown to 3275 lines holding 169 dispatch arms, and no
+    arm could be read without reading all the others.
+    """
+    print(f"{C}  thinking (plan mode — two models debating)...{X}")
+    _hist_len_before = len(history)
+    # Pull grounding facts FIRST: Wikipedia + live web + filesystem
+    # + memory. Stops generic plans by giving the models real data
+    # about the actual subject before they draft. Fail-silent: if
+    # nothing comes back, the debate still drafts (just less specific).
+    _grounding = _plan_grounding(user_text)
+    # Plan mode is now a merge-to-consensus multi-agent debate:
+    # two models brainstorm a plan together and converge on ONE
+    # plan instead of arguing forever. See BRAINSTORM_MODE.md.
+    # The debate query carries the grounding facts + the user's ask.
+    _debate_query = (
+        f"{user_text}\n\n"
+        f"GROUNDING FACTS (use real names from these — files, dirs, "
+        f"scripts, services; no generic placeholders):\n{_grounding}"
+    )
+    try:
+        import sys as _sys
+
+        if str(Path.home() / "scripts") not in _sys.path:
+            _sys.path.insert(0, str(Path.home() / "scripts"))
+        from sensei_reasoning_loop import _model_chat, run_plan_debate
+
+        try:
+            from plan_slots import resolve_debate_slots
+        except ImportError:
+            from scripts.plan_slots import resolve_debate_slots
+
+        # 2026-09-24: defaults are preferences, not pins. Every slot
+        # is validated against the LIVE OpenRouter catalog right
+        # before the debate; delisted models (e.g. minimax-m3:free)
+        # are substituted with the best currently-free pick instead
+        # of silently starving the convergence gate.
+        (
+            _pa,
+            _pb,
+            _mg,
+            _fb,
+        ) = resolve_debate_slots(
+            PLAN_DEBATE_PLANNER_A,
+            PLAN_DEBATE_PLANNER_B,
+            PLAN_DEBATE_MERGER,
+            PLAN_DEBATE_FALLBACK,
+        )
+
+        _debate = run_plan_debate(
+            _debate_query,
+            planner_a=_pa,
+            planner_b=_pb,
+            merger=_mg,
+            fallback=_fb,
+            max_rounds=PLAN_DEBATE_MAX_ROUNDS,
+            live_pin_merger_round=int(
+                os.environ.get("PLAN_DEBATE_PIN_ROUND", "5")
+            ),
+            progress=True,
+        )
+        plan_reply = _debate.get("plan", "") or ""
+        _converged = _debate.get("converged", False)
+
+        # 2026-09-27: the debate now bails fast on _INTERRUPT_EVENT
+        # (checked around every blocking sub-call, not just once per
+        # round — see run_plan_debate()). Honor that here: skip the
+        # Jev gate (another blocking call, no reason to make the
+        # user wait through it after they already asked to stop),
+        # drain any extra keystrokes typed while waiting so they
+        # don't replay as separate turns, and go straight back to
+        # the prompt instead of showing a half-built plan for
+        # approval.
+        if _debate.get("interrupted"):
+            print(f"\n  {Y}plan debate interrupted{X}")
+            _INTERRUPT_EVENT.clear()
+            _drain_stale_tui_input("plan_debate_interrupted")
+            while len(history) > _hist_len_before:
+                history.pop()
+            return
+
+        # ── Jev end-gate (Elijah's design, 2026-09-24) ──────────
+        # The debate models vote on their own homework; Jev
+        # (typesafe/jev) is an independent typed second opinion on
+        # the FINAL plan before it's shown for approval. Fail-open:
+        # any gate failure flows the plan exactly as before.
+        try:
+            from plan_jev_gate import run_jev_gate
+
+            _jev_revise = lambda prompt, _mg_now=_mg: _model_chat(  # noqa: B023
+                _mg_now, "", prompt, num_predict=2000
+            )[0]
+            _jev = run_jev_gate(user_text, plan_reply, revise_fn=_jev_revise)
+            for _jline in _jev.get("progress", []):
+                print(f"  {C}{_jline}{X}")
+            plan_reply = _jev.get("annotated_plan") or plan_reply
+            # Note: a flagged plan still flows to the approve menu —
+            # fail-open by design — but the ⚠ banner is prepended to
+            # the plan text so it's visible where Elijah approves.
+        except Exception as _jev_err:
+            log(f"JEV_GATE_ERROR: {_jev_err}")
+        # ── end Jev end-gate ─────────────────────────────────────
+    except KeyboardInterrupt:
+        print(f"\n  {Y}plan debate interrupted{X}")
+        return
+    except Exception as e:
+        print(f"  {R}plan debate error: {e}{X}")
+        return
+    # Drop the planning turn from history so the real execution
+    # turn starts with clean context.
+    while len(history) > _hist_len_before:
+        history.pop()
+    # Soften any directives that leaked through into inert prose.
+    plan_text = re.sub(
+        r"(?im)^(\s*)(RUN|READ|CREATE|EDIT):",
+        r"\1(step would) ",
+        plan_reply,
+    )
+    # The debate converges to a single plan — treat it as ready.
+    # (No <PLAN READY> marker needed; "build it" is the signal.)
+    if plan_text.strip():
+        globals()["PENDING_PLAN_TEXT"] = plan_text
+        globals()["PENDING_PLAN_REQUEST"] = user_text
+        # Show the FULL plan in the thread so Elijah can read it and
+        # edit before approving — not just the 1/2/3/4 buttons. He
+        # explicitly wants to see the entire plan, not a "go" prompt.
+        print(f"\n{C}  ── PLAN ──────────────────────────────{X}")
+        print(f"{W}{plan_text}{X}")
+        print(f"{C}  ────────────────────────────────────────{X}")
+        print(
+            f"\n  {BTN_G} 1){X} Review step-by-step  ·  {BTN_Y} 2){X} edit  ·  "
+            f"{BTN_R} 3){X} no  ·  {BTN_C} 4){X} keep talking  ·  "
+            f"{BTN_G} A){X} finish in Auto"
+        )
+        threading.Thread(
+            target=speak, args=("Plan ready.",), daemon=True
+        ).start()
+    else:
+        # Debate produced nothing usable — keep history for context.
+        history.append({"role": "user", "content": user_text})
+
+
+
+def _handle_use_skill(cmd: str, lo: str) -> str:
+    """Extracted from `main()` REPL dispatch.
+
+    L24977-L25002 of the old `main()` while-loop. Lifted out on
+    2026-09-29 because that function had grown to 3140 lines holding 169 dispatch arms, and no
+    arm could be read without reading all the others.
+    """
+    name = cmd[10:].strip() if lo.startswith("use skill ") else cmd[6:].strip()
+    if name.startswith(":"):
+        name = name[1:].strip()
+    if not name:
+        print(f"  {Y}usage: use skill <name>  OR  skill: <name>{X}")
+        return
+    skill_path = _find_markdown_skill(name)
+    if not skill_path:
+        print(
+            f"  {R}skill not found: {name}{X}\n"
+            f"  {D}checked ~/.agents/skills, ~/.claude/skills, ~/.master_ai_skills{X}"
+        )
+        return
+    body = _strip_skill_frontmatter(skill_path.read_text())
+    print(f"\n  {C}📘 Loaded skill:{X} {Y}{name}{X} {D}({skill_path}){X}\n")
+    globals()["PENDING_USER_NOTE"] = (
+        f"[SKILL: {name}]\n{body}\n\n"
+        "Follow the instructions above directly, in this conversation, "
+        "for this and any follow-up turns -- this is a plain-English "
+        "skill, not a recipe.py program. Do not write or run a state "
+        "machine for it; just act on it using your normal "
+        "RUN/CREATE/EDIT/etc. directives wherever its instructions "
+        "call for one."
+    )
+
+
+
+def _handle_done() -> str:
+    """Extracted from `main()` REPL dispatch.
+
+    L24864-L24890 of the old `main()` while-loop. Lifted out on
+    2026-09-29 because that function had grown to 3117 lines holding 169 dispatch arms, and no
+    arm could be read without reading all the others.
+    """
+    if not ACTIVE_PROJECT or not ACTIVE_TASK:
+        print(
+            f"  {W}🥷 no selected task to mark done. try `dojo` to see state.{X}"
+        )
+        return
+    if _dojo_mark_done(ACTIVE_PROJECT, ACTIVE_TASK):
+        print(f"  {G}✅ done:{X} {ACTIVE_TASK}")
+        # Pick next unchecked task
+        nxt = _dojo_next_task(ACTIVE_PROJECT)
+        if nxt:
+            globals()["ACTIVE_TASK"] = nxt
+            try:
+                ACTIVE_TASK_FILE.write_text(nxt)
+            except Exception:
+                pass
+            print(f"  {C}🥷 next task:{X} {W}{nxt}{X}")
+        else:
+            globals()["ACTIVE_TASK"] = ""
+            try:
+                ACTIVE_TASK_FILE.write_text("")
+            except Exception:
+                pass
+            print(f"  {G}🥷 project complete — no unchecked tasks left.{X}")
+    else:
+        print(f"  {R}❌ couldn't find that task in PROJECTS.md{X}")
+
+
+
+def _handle_agents(cmd: str) -> str:
+    """Extracted from `main()` REPL dispatch.
+
+    L24643-L24687 of the old `main()` while-loop. Lifted out on
+    2026-09-29 because that function had grown to 3093 lines holding 169 dispatch arms, and no
+    arm could be read without reading all the others.
+    """
+    try:
+        import subagent_registry as _sr
+
+        # Slice off "agents" from the REPL input. The REPL variable
+        # here is `cmd` (not `user_text` — that's the post-command
+        # message-to-model variable scoped later). Codex caught
+        # this on the 2026-05-11 live-verification pass.
+        args = (cmd[len("agents") :].strip()).split(None, 1)
+        sub = (args[0] if args else "").lower()
+        rest = args[1] if len(args) > 1 else ""
+        if sub in ("", "list"):
+            agents = _sr.list_subagents()
+            print(f"\n  {C}Registered subagents ({len(agents)}):{X}")
+            for a in agents:
+                print(f"    {W}{a.name:<22}{X}  {a.description}")
+            print()
+        elif sub == "inspect":
+            a = _sr.get(rest.strip())
+            if a is None:
+                print(f"  {W}unknown subagent: {rest!r}{X}\n")
+            else:
+                print(f"\n  {C}{a.name}{X}")
+                print(f"    description: {a.description}")
+                print(f"    source:      {a.source}")
+                print()
+        elif sub == "run":
+            parts = rest.split(None, 1)
+            if not parts:
+                print(f"  {W}usage: agents run <name> [task...]{X}\n")
+            else:
+                sub_name, task = parts[0], (parts[1] if len(parts) > 1 else "")
+                result = _sr.run(sub_name, task)
+                import json as _json
+
+                print(
+                    f"\n  {C}{_json.dumps(result, indent=2, default=str)}{X}\n"
+                )
+        else:
+            print(
+                f"  {W}usage: agents [list|inspect <name>|run <name> <task>]{X}\n"
+            )
+    except Exception as e:
+        print(f"  {W}agents command error: {e}{X}\n")
+
+
+
+def _handle_jobseeker() -> str:
+    """Extracted from `main()` REPL dispatch.
+
+    L24585-L24616 of the old `main()` while-loop. Lifted out on
+    2026-09-29 because that function had grown to 3051 lines holding 169 dispatch arms, and no
+    arm could be read without reading all the others.
+    """
+    script = os.path.expanduser("~/scripts/jobseeker.sh")
+    if not os.path.isfile(script):
+        print(f"  {W}Job Seeker not installed at {script}{X}\n")
+        return
+    try:
+        subprocess.Popen(
+            [
+                "gnome-terminal",
+                "--title=Job Seeker",
+                "--geometry=100x32",
+                "--",
+                "bash",
+                "-c",
+                f"{script}; echo; read -p 'Press Enter to close...'",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        print(f"\n  {G}🥷 Job Seeker launching in a new terminal window…{X}")
+        print(
+            f"  {C}Asks: company, job title, posting (optional), distance, start date.{X}"
+        )
+        print(
+            f"  {C}Output saved under ~/jobseeker/ (cover + packet PDF + answer sheet).{X}\n"
+        )
+    except FileNotFoundError:
+        print(f"  {W}gnome-terminal not found — fallback: bash {script}{X}\n")
+    except Exception as e:
+        print(f"  {W}Job Seeker failed to launch: {e}{X}\n")
+
+
+
+def _handle_chats(lo: str) -> str:
+    """Extracted from `main()` REPL dispatch.
+
+    L24364-L24413 of the old `main()` while-loop. Lifted out on
+    2026-09-29 because that function had grown to 3022 lines holding 169 dispatch arms, and no
+    arm could be read without reading all the others.
+    """
+    files = (
+        sorted(
+            CHATS_DIR.glob("*"), key=lambda f: f.stat().st_mtime, reverse=True
+        )
+        if CHATS_DIR.exists()
+        else []
+    )
+    if lo == "chats":
+        if not files:
+            print(f"  {Y}No saved chats found.{X}")
+        else:
+            print(f"\n  {C}Saved chats ({len(files)} files):{X}")
+            for idx, f in enumerate(files, 1):
+                sz = f.stat().st_size
+                sz_str = f"{sz // 1024}KB" if sz >= 1024 else f"{sz}B"
+                dt = _fmt_ampm(datetime.fromtimestamp(f.stat().st_mtime))
+                print(f"  {W}{idx:>3}.{X} {dt}  {f.name:<40} {D}({sz_str}){X}")
+            print(
+                f"\n  {D}Type 'clear chats' to delete all, or 'clear chats 2' to delete #2{X}\n"
+            )
+    elif lo == "clear chats":
+        if not files:
+            print(f"  {Y}No saved chats to delete.{X}")
+        else:
+            conf = (
+                input(f"  {Y}Delete all {len(files)} chat files? (yes/no): {X}")
+                .strip()
+                .lower()
+            )
+            if conf in ("y", "yes"):
+                for f in files:
+                    f.unlink(missing_ok=True)
+                print(f"  {G}✅ All {len(files)} chat files deleted.{X}")
+            else:
+                print(f"  {D}Cancelled.{X}")
+    else:
+        try:
+            n = int(lo.split()[-1]) - 1
+            if 0 <= n < len(files):
+                target = files[n]
+                target.unlink(missing_ok=True)
+                print(f"  {G}✅ Deleted: {target.name}{X}")
+            else:
+                print(
+                    f"  {R}No file #{n + 1}. Type 'chats' to see the list.{X}"
+                )
+        except ValueError:
+            print(f"  {R}Usage: clear chats <number>  e.g. 'clear chats 2'{X}")
+
+
+
+def _handle_label(history: list) -> str:
+    """Extracted from `main()` REPL dispatch.
+
+    L24273-L24324 of the old `main()` while-loop. Lifted out on
+    2026-09-29 because that function had grown to 2975 lines holding 169 dispatch arms, and no
+    arm could be read without reading all the others.
+    """
+    current = load_thread_label()
+    if current:
+        print(f"  {C}current label:{X} {BC}{current}{X}")
+    else:
+        print(f"  {D}no label set.{X}")
+    try:
+        new_name = sanitize(
+            input(
+                f"  {C}new label (Enter to keep, 'clear' to remove, 'suggest' for AI suggestion):{X} "
+            )
+        )
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    new_name = new_name.strip()
+    if not new_name:
+        return
+    if new_name.lower() == "clear":
+        save_thread_label("")
+        print(f"  {G}✅ label cleared.{X}")
+        return
+    if new_name.lower() == "suggest":
+        msgs = [m for m in history if m.get("role") in ("user", "assistant")][
+            -8:
+        ]
+        if not msgs:
+            print(
+                f"  {Y}not enough context yet — type a few messages first.{X}"
+            )
+            return
+        transcript = "\n".join(
+            f"{m['role']}: {m['content'][:200]}" for m in msgs
+        )
+        prompt = (
+            f"Give a 2-4 word kebab-case label for this conversation "
+            f"(lowercase, hyphens, no punctuation). Output ONLY the label.\n\n{transcript}"
+        )
+        suggested = (
+            _ask_cloud_for_label([{"role": "user", "content": prompt}]) or ""
+        )
+        suggested = suggested.strip().split("\n")[0].strip().lower()
+        suggested = re.sub(r"[^a-z0-9\-]+", "-", suggested).strip("-")[:40]
+        if suggested:
+            save_thread_label(suggested)
+            print(f"  {G}✅ label set to:{X} {BC}{suggested}{X}")
+        else:
+            print(f"  {Y}suggestion failed.{X}")
+        return
+    save_thread_label(new_name)
+    print(f"  {G}✅ label set to:{X} {BC}{new_name}{X}")
+
+
+
+def _handle_branch(history: list) -> str:
+    """Extracted from `main()` REPL dispatch.
+
+    L24225-L24270 of the old `main()` while-loop. Lifted out on
+    2026-09-29 because that function had grown to 2926 lines holding 169 dispatch arms, and no
+    arm could be read without reading all the others.
+    """
+    current = load_thread_label()
+    try:
+        suffix = f" (current: {current})" if current else ""
+        new_name = sanitize(input(f"  {D}✏{X}  label{suffix}: "))
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    new_name = new_name.strip()
+    if not new_name:
+        return
+    if new_name.lower() == "clear":
+        save_thread_label("")
+        print(f"  {G}✅ label cleared.{X}")
+        return
+    if new_name.lower() == "suggest":
+        msgs = [m for m in history if m.get("role") in ("user", "assistant")][
+            -8:
+        ]
+        if not msgs:
+            print(f"  {Y}not enough context yet — chat a bit first.{X}")
+            return
+        transcript = "\n".join(
+            f"{m['role']}: {m['content'][:200]}" for m in msgs
+        )
+        prompt = (
+            f"Give a 2-4 word kebab-case label for this conversation "
+            f"(lowercase, hyphens, no punctuation). Output ONLY the label.\n\n{transcript}"
+        )
+        suggested = (
+            _ask_cloud_for_label([{"role": "user", "content": prompt}]) or ""
+        )
+        suggested = re.sub(
+            r"[^a-z0-9\-]+",
+            "-",
+            suggested.strip().split("\n")[0].strip().lower(),
+        ).strip("-")[:40]
+        if suggested:
+            save_thread_label(suggested)
+            print(f"  {G}✅ label:{X} {BC}{suggested}{X}")
+        else:
+            print(f"  {Y}couldn't generate a label — try again later.{X}")
+        return
+    save_thread_label(new_name)
+    print(f"  {G}✅ label:{X} {BC}{new_name}{X}")
+
+
+
+def _handle_new(history: list) -> str:
+    """Extracted from `main()` REPL dispatch.
+
+    L24158-L24200 of the old `main()` while-loop. Lifted out on
+    2026-09-29 because that function had grown to 2883 lines holding 169 dispatch arms, and no
+    arm could be read without reading all the others.
+    """
+    _RESTART_STARTED.set()
+    try:
+        RESUME_FLAG.unlink()
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        log(f"REFRESH_RESUME_CLEAR_ERROR: {e}")
+    try:
+        save_session(list(history), silent=True)
+    except Exception:
+        pass
+    # 2026-08-28: THREAD_FILE (~/.master_ai_thread) is a single
+    # global sticky label with no automatic lifecycle of its own —
+    # maybe_auto_label() only ever fires once and only if this file
+    # is empty, so a stale label survives forever otherwise. Elijah
+    # hit this directly: a label from days earlier was still
+    # showing after starting over on a completely different topic.
+    # "new"/"clear" already means "blank history, start fresh" —
+    # the label needs to reset here too so the next 3+ messages can
+    # get a label that actually matches the new conversation.
+    save_thread_label("")
+    print(
+        f"  {C}🔄 Refreshing Master AI — screen reset + engine restart...{X}",
+        flush=True,
+    )
+    if _SENSEI_APP is not None:
+        try:
+            _SENSEI_APP.clear_output()
+        except Exception:
+            pass
+    _clear_tmux_scrollback("refresh")
+    try:
+        subprocess.run(["stty", "sane"], check=False)
+    except Exception:
+        pass
+    sys.stdout.write("\033c\033[2J\033[H")
+    sys.stdout.flush()
+    os.execvp(
+        sys.executable,
+        [sys.executable, str(Path.home() / "scripts/master_ai.py")],
+    )
+
+
+
+def _handle_copy(history: list) -> str:
+    """Extracted from `main()` REPL dispatch.
+
+    L24022-L24049 of the old `main()` while-loop. Lifted out on
+    2026-09-29 because that function had grown to 2843 lines holding 169 dispatch arms, and no
+    arm could be read without reading all the others.
+    """
+    msgs = [h for h in history if h.get("role") == "assistant"]
+    if not msgs:
+        print(f"  {Y}No reply to copy yet.{X}")
+        return
+    content = msgs[-1]["content"]
+    for tool in (
+        ["xclip", "-selection", "clipboard"],
+        ["wl-copy"],
+        ["xsel", "-b", "-i"],
+    ):
+        try:
+            p = subprocess.run(
+                tool, input=content, text=True, capture_output=True, timeout=3
+            )
+            if p.returncode == 0:
+                print(
+                    f"  {G}✅ Copied last reply ({len(content)} chars) via {tool[0]}.{X}"
+                )
+                break
+        except FileNotFoundError:
+            continue
+        except Exception as _e:
+            continue
+    else:
+        print(f"  {Y}No clipboard tool found (tried xclip, wl-copy, xsel).{X}")
+        print(f"  {D}Install with: sudo apt install xclip{X}")
+
+
+
+def _handle_sessions_resume(cmd: str, history: list) -> str:
+    """Extracted from `main()` REPL dispatch.
+
+    L23939-L23970 of the old `main()` while-loop. Lifted out on
+    2026-09-29 because that function had grown to 2818 lines holding 169 dispatch arms, and no
+    arm could be read without reading all the others.
+    """
+    arg = cmd.split(None, 2)[2].strip() if len(cmd.split(None, 2)) > 2 else ""
+    entries = _sessions_list_entries()
+    target = None
+    if arg.isdigit():
+        idx = int(arg) - 1
+        if 0 <= idx < len(entries):
+            target = entries[idx]
+    else:
+        target = next((e for e in entries if e["ts"] == arg), None)
+    if not target:
+        print(f"  {Y}usage: sessions resume <number>  (see 'sessions list'){X}")
+    else:
+        try:
+            content = target["chat_path"].read_text(errors="replace")[-6000:]
+            history.append(
+                {
+                    "role": "user",
+                    "content": f"[Resumed session from {target['date']}]\n{content}",
+                }
+            )
+            history.append(
+                {
+                    "role": "assistant",
+                    "content": f"Loaded the session from {target['date']} — I have that context now. What would you like to continue?",
+                }
+            )
+            print(f"  {G}✅ Resumed session from {target['date']}.{X}")
+            _request_auto_save(history)
+        except Exception as e:
+            print(f"  {R}❌ {e}{X}")
+
+
+
+def _handle_load_summary(history: list) -> str:
+    """Extracted from `main()` REPL dispatch.
+
+    L23850-L23880 of the old `main()` while-loop. Lifted out on
+    2026-09-29 because that function had grown to 2789 lines holding 169 dispatch arms, and no
+    arm could be read without reading all the others.
+    """
+    try:
+        summaries = sorted(CHATS_DIR.glob("*.summary"), reverse=True)
+        if not summaries:
+            print(f"  {Y}No summaries found yet.{X}")
+        else:
+            content = summaries[0].read_text().strip()
+            bullets = [
+                l for l in content.splitlines() if l.lstrip().startswith("•")
+            ]
+            trimmed = "\n".join(bullets[-2:]) if len(bullets) >= 2 else content
+            history.append(
+                {
+                    "role": "user",
+                    "content": f"[Resuming from last session — unfinished + next only]\n{trimmed}",
+                }
+            )
+            history.append(
+                {
+                    "role": "assistant",
+                    "content": "Got it — I have your last session's unfinished items and next steps. What would you like to continue?",
+                }
+            )
+            print(
+                f"  {G}✅ Last session context loaded (unfinished + next).{X}"
+            )
+            print(f"  {D}{trimmed[:300]}{X}")
+            _request_auto_save(history)
+    except Exception as e:
+        print(f"  {R}❌ {e}{X}")
+
+
+
+def _handle_copy_chat(history: list) -> str:
+    """Extracted from `main()` REPL dispatch.
+
+    L23815-L23848 of the old `main()` while-loop. Lifted out on
+    2026-09-29 because that function had grown to 2761 lines holding 169 dispatch arms, and no
+    arm could be read without reading all the others.
+    """
+    try:
+        turns = []
+        for entry in history:
+            role = entry.get("role", "?").upper()
+            content = (entry.get("content", "") or "").strip()
+            if role == "SYSTEM":
+                continue
+            turns.append(f"## {role}\n\n{content}\n")
+        transcript = "\n".join(turns) or "(empty chat)"
+        # Primary: write to a timestamped markdown file under CHATS_DIR.
+        CHATS_DIR.mkdir(exist_ok=True)
+        ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        out_path = CHATS_DIR / f"copy-{ts}.md"
+        header = f"# Sensei chat — {_fmt_ampm()}\n\n"
+        out_path.write_text(header + transcript)
+        print(f"  {G}✅ chat saved → {out_path}{X}")
+        print(f"  {D}   {len(turns)} turns · {len(transcript)} chars{X}")
+        # Secondary: best-effort clipboard copy via xclip. Silent if
+        # xclip is missing or X11 CLIPBOARD isn't reachable.
+        try:
+            p = subprocess.Popen(
+                ["xclip", "-selection", "clipboard"],
+                stdin=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+            p.communicate(transcript.encode("utf-8"), timeout=5)
+            if p.returncode == 0:
+                print(f"  {D}   (also copied to clipboard){X}")
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"  {R}copy chat error: {e}{X}")
+
+
+
+def _handle_cycle() -> str:
+    """Extracted from `main()` REPL dispatch.
+
+    L23470-L23499 of the old `main()` while-loop. Lifted out on
+    2026-09-29 because that function had grown to 2730 lines holding 169 dispatch arms, and no
+    arm could be read without reading all the others.
+    """
+    _CYCLE_ORDER = ("plan", "review", "auto")
+    old_mode = MODE if MODE in _CYCLE_ORDER else "plan"
+    new_mode = _CYCLE_ORDER[
+        (_CYCLE_ORDER.index(old_mode) + 1) % len(_CYCLE_ORDER)
+    ]
+    globals()["MODE"] = new_mode
+    save_mode(new_mode)
+    _HANDSHAKE = {
+        ("plan", "review"): (C, "Plan → Review — per-step confirms ready"),
+        ("plan", "auto"): (G, "Plan → Auto — flow mode engaged"),
+        ("review", "auto"): (G, "Review → Auto — trust earned, full flow"),
+        ("review", "plan"): (R, "Review → Plan — back to thinking"),
+        ("auto", "review"): (
+            C,
+            "Auto → Review — stepping back for per-step confirms",
+        ),
+        ("auto", "plan"): (R, "Auto → Plan — back to thinking"),
+    }
+    banner = _HANDSHAKE.get((old_mode, new_mode))
+    if banner:
+        color, text = banner
+        print(f"\n{color}  ▶ handoff: {text}{X}")
+    show_mode_status()
+    if _SENSEI_APP is not None:
+        try:
+            _SENSEI_APP.set_mode(new_mode)
+        except Exception:
+            pass
+
+
+
+def _handle_mode_plan(lo: str) -> str:
+    """Extracted from `main()` REPL dispatch.
+
+    L23435-L23465 of the old `main()` while-loop. Lifted out on
+    2026-09-29 because that function had grown to 2703 lines holding 169 dispatch arms, and no
+    arm could be read without reading all the others.
+    """
+    new_mode = lo.split()[1]
+    old_mode = MODE
+    globals()["MODE"] = new_mode
+    save_mode(new_mode)  # persist so next launch opens in this mode
+    # Handshake banner for non-trivial transitions — completes the
+    # sequence so every mode flip carries the same visual language as
+    # the original Plan→Review handshake. 2026-04-22.
+    if old_mode != new_mode:
+        _HANDSHAKE = {
+            ("plan", "review"): (C, "Plan → Review — per-step confirms ready"),
+            ("plan", "auto"): (G, "Plan → Auto — flow mode engaged"),
+            ("review", "auto"): (G, "Review → Auto — trust earned, full flow"),
+            ("review", "plan"): (R, "Review → Plan — back to thinking"),
+            ("auto", "review"): (
+                C,
+                "Auto → Review — stepping back for per-step confirms",
+            ),
+            ("auto", "plan"): (R, "Auto → Plan — back to thinking"),
+        }
+        banner = _HANDSHAKE.get((old_mode, new_mode))
+        if banner:
+            color, text = banner
+            print(f"\n{color}  ▶ handoff: {text}{X}")
+    show_mode_status()
+    if _SENSEI_APP is not None:
+        try:
+            _SENSEI_APP.set_mode(new_mode)
+        except Exception:
+            pass
+
+
+
+def _handle_mode_connected() -> str:
+    """Extracted from `main()` REPL dispatch.
+
+    L23393-L23427 of the old `main()` while-loop. Lifted out on
+    2026-09-29 because that function had grown to 2675 lines holding 169 dispatch arms, and no
+    arm could be read without reading all the others.
+    """
+    try:
+        (Path.home() / ".master_ai_run_mode").write_text("peacetime")
+    except Exception:
+        pass
+    print()
+    print(
+        f"  {BC}☁  Connected Mode{X}  {D}(uses free cloud for speed while you're online){X}"
+    )
+    print(f"  {W}What this gives you:{X}")
+    print("    · Groq Llama 3.3 70B for default asks — ~0.3 second replies.")
+    print(
+        "    · DeepSeek-R1 for reasoning — closest free path to top-tier quality."
+    )
+    print(
+        "    · `reason:` for careful DeepSeek-R1 reasoning with local deep fallback."
+    )
+    print("    · Gemini 2.0 Flash for vision + web-aware questions.")
+    print(f"  {W}The trade:{X}")
+    print(
+        "    · Needs internet. If it drops, Sensei falls back to your local models."
+    )
+    print("    · Cloud prompts leave your box. Providers may log them.")
+    print(
+        "    · Cloud keys can hit daily free-tier quotas — rare, but it happens."
+    )
+    print(f"  {W}Force local anytime:{X}")
+    print(
+        f"    · {BC}local:{X} <message>   → this one goes to your machine, not the cloud."
+    )
+    print(
+        f"    · {BC}private:{X} <message> → same, logged as privacy-intended."
+    )
+    print()
+
+
+
+def _handle_mode_local() -> str:
+    """Extracted from `main()` REPL dispatch.
+
+    L23355-L23392 of the old `main()` while-loop. Lifted out on
+    2026-09-29 because that function had grown to 2643 lines holding 169 dispatch arms, and no
+    arm could be read without reading all the others.
+    """
+    try:
+        (Path.home() / ".master_ai_run_mode").write_text("apocalypse")
+    except Exception:
+        pass
+    print()
+    print(
+        f"  {BC}🏠  Local Mode{X}  {D}(your AI, your hardware, no internet needed){X}"
+    )
+    print(f"  {W}What this gives you:{X}")
+    print(
+        "    · A tool, not a subscription. Like a book or a cassette — it works because"
+    )
+    print("      you own it, not because a company kept the lights on.")
+    print(
+        "    · The same Sensei will start up in 10 years. No key to renew, no service to"
+    )
+    print("      cancel on you, no cloud that might turn you off.")
+    print("    · Everything stays on your machine. Nothing leaves.")
+    print("    · Built to outlive the company that sold it.")
+    print(f"  {W}The trade:{X}")
+    print(
+        "    · Answers come at human pace, not instant. That's fine — good work isn't"
+    )
+    print("      measured in tokens per second.")
+    print("    · You won't chase the newest cloud model. You don't need to.")
+    print("    · If you're online and want cloud speed, borrow it per-message:")
+    print(
+        f"        {BC}fast:{X} <your message>  → one reply through Groq (fastest free cloud)"
+    )
+    print(
+        f"        {BC}deep:{X} <your message>  → one reply through DeepSeek-R1 (reasoning)"
+    )
+    print(
+        f"        {BC}reason:{X} <hard question> → DeepSeek-R1, else local deep reasoning loop"
+    )
+    print()
+
+
+
+def _handle_model(cmd: str, lo: str) -> str:
+    """Extracted from `main()` REPL dispatch.
+
+    L23230-L23264 of the old `main()` while-loop. Lifted out on
+    2026-09-29 because that function had grown to 2608 lines holding 169 dispatch arms, and no
+    arm could be read without reading all the others.
+    """
+    if lo in ("model", "models"):
+        show_model_menu()
+    else:
+        choice = cmd[6:].strip()
+        choice_lo = choice.lower()
+        _or_free_prefixes = ("or free", "openrouter free")
+        _search_prefixes = ("search ", "or search ", "openrouter search ")
+        _matched_prefix = next(
+            (p for p in _search_prefixes if choice_lo.startswith(p)), None
+        )
+        if choice.lower() in (
+            "stats",
+            "stat",
+            "usage",
+            "monitor",
+            "monitoring",
+        ) or choice.lower() in ("keys", "key"):
+            print(f"\n  {C}{format_model_monitor()}{X}\n")
+        elif choice_lo == "free":
+            # 2026-09-07: was OpenRouter-only, silently excluding NVIDIA/
+            # Cerebras/Groq keys the operator actually has configured.
+            # "model free" now means every provider, no filter — use
+            # "model openrouter free" for the OpenRouter-only view.
+            print_full_model_catalog("", free_only=True)
+        elif choice_lo in _or_free_prefixes:
+            print_openrouter_search("", free_only=True)
+        elif choice_lo == "all" or choice_lo.startswith("all "):
+            print_full_model_catalog(choice[3:].strip())
+        elif _matched_prefix is not None:
+            print_openrouter_search(choice[len(_matched_prefix) :].strip())
+        else:
+            ok, msg = _pin_model_choice(choice)
+            print(f"  {msg}")
+
+
+
+def _handle_security() -> str:
+    """Extracted from `main()` REPL dispatch.
+
+    L23188-L23221 of the old `main()` while-loop. Lifted out on
+    2026-09-29 because that function had grown to 2576 lines holding 169 dispatch arms, and no
+    arm could be read without reading all the others.
+    """
+    print(
+        f"  {C}Scanning sensei's own dependencies (not the whole system)...{X}"
+    )
+    result = run_security_audit()
+    if not result["ok"]:
+        print(f"  {R}audit failed: {result['error']}{X}")
+    else:
+        print(
+            f"  {D}Scanned: {', '.join(f'{k} {v}' for k, v in result['scanned'].items())}{X}\n"
+        )
+        any_vulns = False
+        for dep in result["dependencies"]:
+            vulns = dep.get("vulns", [])
+            if vulns:
+                any_vulns = True
+                print(
+                    f"  {R}⚠ {dep['name']} {dep['version']} — {len(vulns)} known vuln(s){X}"
+                )
+                for v in vulns[:3]:
+                    fix = ", ".join(v.get("fix_versions", [])) or "no fix yet"
+                    print(f"      {D}{v['id']} — fix: {fix}{X}")
+            else:
+                print(f"  {G}✓ {dep['name']} {dep['version']} — clean{X}")
+        if not any_vulns:
+            print(f"\n  {G}No known vulnerabilities found.{X}")
+        unscannable = result.get("unscannable") or {}
+        if unscannable:
+            print(
+                f"\n  {Y}Could not scan (build/isolation issue, not a vuln finding):{X}"
+            )
+            for name, reason in unscannable.items():
+                print(f"  {Y}?{X} {name} — {D}{reason[:120]}{X}")
+
+
+
+def _handle_tutor(cmd: str) -> str:
+    """Extracted from `main()` REPL dispatch.
+
+    L23046-L23163 of the old `main()` while-loop. Lifted out on
+    2026-09-29 because that function had grown to 2545 lines holding 169 dispatch arms, and no
+    arm could be read without reading all the others.
+    """
+    try:
+        import aies_tutor as _tutor
+
+        _parts = cmd.split()
+        _sub = _parts[1].lower() if len(_parts) > 1 else ""
+        _rest = _parts[2:]
+        if _sub in ("", "start"):
+            _r = _tutor.start_learning()
+            print(
+                f"  {G if _r['status'] == 'created' else Y}{_r['message']}{X}"
+            )
+        elif _sub == "next":
+            _r = _tutor.next_lesson()
+            if _r["status"] == "lesson":
+                print(
+                    f"\n  {C}Next lesson: {_r['title']} ({_r['phase']}/{_r['lesson']}){X}\n"
+                )
+                # Show a preview of the lesson doc; full doc can be read in IDE.
+                _preview = _r["doc"].split("\n")[:12]
+                print("\n".join(f"  {line}" for line in _preview))
+                print(
+                    f"\n  {D}TTS chunks ready: {len(_r['tts_chunks'])} — "
+                    f"use `tutor speak <chunk-index-or-text>` to hear them.{X}"
+                )
+                # Also print the first chunk as a sample.
+                if _r["tts_chunks"]:
+                    print(f"\n  {D}Sample chunk:{X}\n  {_r['tts_chunks'][0]}")
+            else:
+                print(f"  {Y}{_r['message']}{X}")
+        elif _sub == "guide":
+            _topic = " ".join(_rest)
+            if not _topic:
+                print(f"  {W}usage: tutor guide <topic>{X}")
+            else:
+                _r = _tutor.course_guide(_topic)
+                if _r["status"] == "match":
+                    print(
+                        f"\n  {C}Match: {_r['title']} ({_r['phase']}/{_r['lesson']}){X}\n"
+                    )
+                    _preview = _r["doc"].split("\n")[:12]
+                    print("\n".join(f"  {line}" for line in _preview))
+                else:
+                    print(f"  {Y}No lesson matched '{_topic}'.{X}")
+        elif _sub == "quiz":
+            if not _rest:
+                print(f"  {W}usage: tutor quiz <phase-number-or-slug>{X}")
+            else:
+                _r = _tutor.check_understanding(_rest[0])
+                if _r["status"] == "quiz":
+                    print(
+                        f"\n  {C}Phase quiz: {_r['count']} post-stage questions ready.{X}\n"
+                    )
+                    for i, q in enumerate(_r["questions"][:5], 1):
+                        print(f"\n  {i}. {q['question']}")
+                        for opt_i, opt in enumerate(q.get("options", [])):
+                            print(f"     {chr(65 + opt_i)}. {opt}")
+                else:
+                    print(f"  {Y}{_r.get('message', 'quiz failed')}{X}")
+        elif _sub == "record":
+            if len(_rest) < 3:
+                print(
+                    f"  {W}usage: tutor record <phase> <lesson-dir> <score> [note]{X}"
+                )
+            else:
+                _note = " ".join(_rest[3:]) if len(_rest) > 3 else ""
+                _r = _tutor.record_lesson(_rest[0], _rest[1], _rest[2], _note)
+                print(
+                    f"  {G}{_r['status']}: {_r['phase']}/{_r['lesson']} = {_r['score']}{X}"
+                )
+        elif _sub == "speak":
+            _text = " ".join(_rest)
+            if not _text:
+                print(f"  {W}usage: tutor speak <text>{X}")
+            else:
+                _tutor.speak(_text)
+                print(f"  {G}sent to TTS.{X}")
+        elif _sub in ("read", "read-aloud"):
+            _chunk = 0
+            _all = False
+            for i, tok in enumerate(_rest):
+                if tok in ("--chunk", "-c") and i + 1 < len(_rest):
+                    try:
+                        _chunk = int(_rest[i + 1])
+                    except Exception:
+                        pass
+                if tok in ("--all", "-a"):
+                    _all = True
+            if _all:
+                _r = _tutor.current_lesson()
+                if not _r or _r.get("status") != "lesson":
+                    print(f"  {Y}no current lesson found.{X}")
+                else:
+                    _chunks = _r.get("tts_chunks", [])
+                    print(
+                        f"\n  {C}Reading {_r['title']} ({len(_chunks)} chunks)...{X}"
+                    )
+                    for i in range(len(_chunks)):
+                        _rr = _tutor.read_aloud(_r, chunk_index=i)
+                        print(f"  {G}chunk {i + 1}/{len(_chunks)} spoken.{X}")
+            else:
+                _rr = _tutor.read_aloud(chunk_index=_chunk)
+                if _rr.get("status") == "spoken":
+                    print(
+                        f"\n  {C}Reading chunk {_rr['chunk_index'] + 1}/{_rr['total_chunks']} "
+                        f"of {_rr['title']}...{X}"
+                    )
+                    print(f"  {D}{_rr['chunk_text']}{X}")
+                    print(f"  {G}sent to TTS.{X}")
+                else:
+                    print(f"  {Y}{_rr.get('message', 'read-aloud failed')}{X}")
+        else:
+            print(
+                f"  {W}usage: tutor [start|next|guide <topic>|quiz <phase>|record <phase> <lesson> <score>|speak <text>|read [--chunk N|--all]]{X}"
+            )
+    except Exception as e:
+        print(f"  {W}tutor command error: {e}{X}\n")
+
+
+
+def _handle_tinyfish(cmd: str, lo: str) -> str:
+    """Extracted from `main()` REPL dispatch.
+
+    L22945-L22997 of the old `main()` while-loop. Lifted out on
+    2026-09-29 because that function had grown to 2430 lines holding 169 dispatch arms, and no
+    arm could be read without reading all the others.
+    """
+    parts = cmd.split(None, 2)
+    sub = parts[1].lower() if len(parts) > 1 else ""
+    rest = parts[2] if len(parts) > 2 else ""
+    try:
+        import tinyfish_client as _tf
+
+        if not _tf.has_key():
+            print(
+                f"  {Y}TinyFish API key not found. Run the TinyFish setup first.{X}"
+            )
+            return
+        if lo in ("tinyfish", "tinyfish status", "tf", "tf status"):
+            try:
+                w = _tf.wallet()
+                balance = w.get("balance_cents", "?")
+                currency = w.get("currency", "USD")
+                auto_reload = w.get("auto_reload_enabled", "?")
+                print(
+                    f"  {C}TinyFish wallet:{X} {balance} {currency} cents  auto-reload={auto_reload}{X}"
+                )
+            except Exception as e:
+                print(f"  {Y}TinyFish wallet check failed: {e}{X}")
+            return
+        if sub in ("search", "s"):
+            q = rest.strip() or "today's top Hacker News story"
+            print(f"  {BC}[TinyFish search]{X} {q}")
+            try:
+                res = _tf.search(q)
+                out = _tf.format_search(res, max_results=5)
+                print(f"\n  {C}{out}{X}\n")
+            except Exception as e:
+                print(f"  {R}TinyFish search failed: {e}{X}")
+            return
+        if sub in ("fetch", "f"):
+            urls = [
+                u.strip() for u in rest.split() if u.strip().startswith("http")
+            ]
+            if not urls:
+                print(f"  {Y}usage: tinyfish fetch <url> [<url> ...]{X}")
+                return
+            print(f"  {BC}[TinyFish fetch]{X} {len(urls)} URL(s)")
+            try:
+                res = _tf.fetch_content(urls)
+                out = _tf.format_fetch(res)
+                print(f"\n  {C}{out}{X}\n")
+            except Exception as e:
+                print(f"  {R}TinyFish fetch failed: {e}{X}")
+            return
+        print(f"  {Y}usage: tinyfish [search|fetch|status] ...{X}")
+    except Exception as e:
+        print(f"  {R}TinyFish command error: {e}{X}")
 
 
 if __name__ == "__main__":

@@ -1,15 +1,17 @@
 from setuptools import setup
 
-with open("README.md", encoding="utf-8") as fh:
-    long_description = fh.read()
+# 2026-09-29: packaging metadata (name, version, description, readme,
+# requires-python, dependencies, extras, console scripts) lives in
+# pyproject.toml [project]. Once [project] exists, setuptools ignores
+# the setup.py equivalents, so keeping them here only hides drift — the
+# thread-factory scaffold (9d3c129) proved it: a bare [project]
+# silently dropped the dev extra and install_requires from CI's
+# `pip install -e .[dev]` and renamed the installed product. This file
+# now carries only what [project] cannot express: the module/package
+# lists, author, url, and classifiers.
 
 setup(
-    name="master-ai-cli",
-    version="0.1.0",
     author="Elijah Wilkins",
-    description="Local-first AI agent CLI with vision, voice, MCP integration, and multi-provider routing",
-    long_description=long_description,
-    long_description_content_type="text/markdown",
     url="https://github.com/ebey317/master-ai-cli",
     py_modules=[
         "ab_few_shot",
@@ -37,6 +39,7 @@ setup(
         "sensei_native_host",
         "sensei_reasoning_loop",
         "sensei_reflect",
+        "sensei_tables",
         "sensei_tool_detector",
         "sensei_tui",
         "setup_email",
@@ -46,6 +49,7 @@ setup(
         "slideshow_uninstall",
         "stt_server",
         "subagent_registry",
+        "thread_factory",
         "tts_server",
         "typed_actions",
         "uninstall_wizard",
@@ -55,35 +59,6 @@ setup(
         "delegate_runner",
     ],
     packages=["sensei_clean", "sensei_clean.adapters"],
-    python_requires=">=3.10",
-    install_requires=[
-        "ddgs>=0.8.0",
-        "prompt_toolkit>=3.0.0",
-    ],
-    extras_require={
-        "gdrive": [
-            "google-api-python-client>=2.0.0",
-            "google-auth-oauthlib>=1.0.0",
-        ],
-        "voice": [
-            "openai-whisper>=20231117",
-            "pyaudio>=0.2.14",
-        ],
-        "vision": [
-            "opencv-python>=4.8.0",
-            "pillow>=10.0.0",
-        ],
-        "dev": [
-            "pytest>=7.0.0",
-            "pytest-cov>=4.0.0",
-        ],
-    },
-    entry_points={
-        "console_scripts": [
-            "master-ai=master_ai:main",
-            "sensei=master_ai:main",
-        ],
-    },
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",

@@ -1,16 +1,19 @@
 """
 Tests for reasoning effort selection on model pickers.
 """
+
+import argparse
+
 import pytest
+
 from scripts.model_reasoning import (
-    ReasoningEffort,
     ModelSwitchRequest,
+    ReasoningEffort,
     add_reasoning_arg,
     apply_reasoning_effort,
     build_reasoning_picker_rows,
     model_supports_reasoning,
 )
-import argparse
 
 
 class TestReasoningEffortParsing:
@@ -106,7 +109,10 @@ class TestApplyReasoningEffort:
     def test_once_scope_snapshots_restore(self, monkeypatch):
         calls = []
         monkeypatch.setattr("sensei.config.set", lambda k, v: calls.append((k, v)))
-        monkeypatch.setattr("sensei.config.get", lambda k, d=None: "medium" if k == "agent.reasoning_effort" else d)
+        monkeypatch.setattr(
+            "sensei.config.get",
+            lambda k, d=None: "medium" if k == "agent.reasoning_effort" else d,
+        )
 
         msg = apply_reasoning_effort("session-1", ReasoningEffort.HIGH, scope="once")
         assert "one turn" in msg

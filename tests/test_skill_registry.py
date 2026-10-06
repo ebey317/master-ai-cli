@@ -1,21 +1,20 @@
 """Tests for project-root-keyed skill registry."""
+
 from __future__ import annotations
 
 import json
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from scripts.skill_registry import (
     get_skills,
     invalidate_cache,
-    scan_skills,
-    _resolve_project_tag,
 )
 
 
-def _write_skill(skill_dir: Path, name: str, entry: str = "main.py", desc: str = "") -> None:
+def _write_skill(
+    skill_dir: Path, name: str, entry: str = "main.py", desc: str = ""
+) -> None:
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "skill.json").write_text(
         json.dumps({"name": name, "entry": entry, "description": desc})
@@ -36,6 +35,7 @@ def test_project_skill_isolation(tmp_path: Path):
     # Session in repo1
     with tempfile.TemporaryDirectory() as _:
         import scripts.session_cwd as sc
+
         with sc.session_cwd_scope(repo1):
             invalidate_cache()
             skills = get_skills()
@@ -46,6 +46,7 @@ def test_project_skill_isolation(tmp_path: Path):
     # Session in repo2
     with tempfile.TemporaryDirectory() as _:
         import scripts.session_cwd as sc
+
         with sc.session_cwd_scope(repo2):
             invalidate_cache()
             skills = get_skills()
@@ -65,12 +66,14 @@ def test_home_skills_always_visible(tmp_path: Path):
 
     # Patch home tag
     import scripts.skill_registry as sr
+
     original_home = sr._resolve_home_tag
     sr._resolve_home_tag = lambda: str(home)
 
     try:
         with tempfile.TemporaryDirectory() as _:
             import scripts.session_cwd as sc
+
             with sc.session_cwd_scope(repo):
                 invalidate_cache()
                 skills = get_skills()

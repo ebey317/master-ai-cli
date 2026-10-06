@@ -1,5 +1,57 @@
+# 2026-09-29: [project] is the single source of packaging metadata. The
+# thread-factory scaffold (9d3c129) added a bare [project]
+# (name="thread-factory", dependencies=[]) which: crashed setuptools 80+
+# ([project] without readme -> AttributeError in _long_description),
+# silently dropped the repo's dev extra from CI's `pip install -e
+# .[dev]` (no mcp -> test_mcp_web_search collection errors), dropped
+# install_requires (no prompt_toolkit on CI), and renamed the installed
+# product away from master-ai-cli. setup.py now carries only what
+# [project] cannot express (py_modules, packages, author, url,
+# classifiers). The thread-factory console script is preserved below.
+[project]
+name = "master-ai-cli"
+version = "0.1.0"
+description = "Local-first AI agent CLI with vision, voice, MCP integration, and multi-provider routing"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "ddgs>=0.8.0",
+    "prompt_toolkit>=3.0.0",
+]
+
+[project.optional-dependencies]
+gdrive = [
+    "google-api-python-client>=2.0.0",
+    "google-auth-oauthlib>=1.0.0",
+]
+voice = [
+    "openai-whisper>=20231117",
+    "pyaudio>=0.2.14",
+]
+vision = [
+    "opencv-python>=4.8.0",
+    "pillow>=10.0.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    # test_mcp_web_search.py / test_mcp_call.py exercise the MCP
+    # server surface against the real SDK; CI installs .[dev] and
+    # would otherwise collect-error on the missing module.
+    "mcp>=1.2.0",
+]
+
+[project.scripts]
+master-ai = "master_ai:main"
+sensei = "master_ai:main"
+thread-factory = "thread_factory:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [tool.pytest.ini_options]
-addopts = "--timeout=60 --tb=short -v --cov=master_ai --cov=sensei_tui --cov=approval_queue --cov=hooks --cov=capabilities --cov=observability --cov=router --cov=subagent_registry --cov=skill_runtime --cov=tts_server --cov=typed_actions --cov=verifiers --cov=whereisit --cov-report=term-missing --cov-report=html"
+addopts = "--timeout=60 --tb=short -v --cov=master_ai --cov=sensei_tui --cov=approval_queue --cov=hooks --cov=capabilities --cov=observability --cov=router --cov=subagent_registry --cov=skill_runtime --cov=tts_server --cov=typed_actions --cov=verifiers --cov=whereisit --cov=thread_factory --cov-report=term-missing --cov-report=html"
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"

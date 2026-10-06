@@ -21,7 +21,103 @@ import json
 from pathlib import Path
 
 import learning_loop as ll
+import skill_author as sa
 import skill_marketplace as sm
+
+# Config key used by master_ai.py for the auto-author switch.
+AUTO_AUTHOR_KEY = "auto_author_enabled"
+AUTO_AUTHOR_DEFAULT = False
+
+
+def _settings_path() -> Path:
+    return Path.home() / ".master_ai_settings.json"
+
+
+def _load_settings() -> dict:
+    p = _settings_path()
+    if not p.exists():
+        return {AUTO_AUTHOR_KEY: AUTO_AUTHOR_DEFAULT}
+    try:
+        data = json.loads(p.read_text())
+    except Exception:
+        data = {}
+    data.setdefault(AUTO_AUTHOR_KEY, AUTO_AUTHOR_DEFAULT)
+    return data
+
+
+def _save_settings(data: dict) -> None:
+    p = _settings_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def get_auto_author_enabled() -> bool:
+    return bool(_load_settings().get(AUTO_AUTHOR_KEY, AUTO_AUTHOR_DEFAULT))
+
+
+def set_auto_author_enabled(enabled: bool) -> None:
+    data = _load_settings()
+    data[AUTO_AUTHOR_KEY] = bool(enabled)
+    _save_settings(data)
+
+
+def create_skill(
+    name: str, transcript_path: str | None = None, auto_approve: bool = False
+) -> tuple[bool, str, dict]:
+    """`skill create <name> [transcript]` — generate, audit, and optionally
+    save a new skill from a session transcript.
+
+    Returns (saved_ok, message_text, detail_dict).
+    """
+    path = Path(transcript_path) if transcript_path else None
+    try:
+        draft = sa.create_skill(name, transcript_path=path, auto_approve=auto_approve)
+    except Exception as e:
+        return False, f"skill create failed: {e}", {}
+
+    details = {
+        "name": draft.name,
+        "low_risk": draft.low_risk,
+        "audit": draft.audit,
+        "approved": draft.approved,
+    }
+
+    if not draft.audit.get("passed"):
+        msg = f"audit failed for '{draft.name}':\n" + "\n".join(
+            f"  ✗ {r}" for r in draft.audit.get("reasons", [])
+        )
+        return False, msg, details
+
+    if draft.approved:
+        return (
+            True,
+            f"skill '{draft.name}' created and saved to ~/.master_ai_skills/{draft.name}/",
+            details,
+        )
+
+    # audit passed but not saved yet — present draft for approval
+    recipe_lines = draft.recipe_py.splitlines()[:12]
+    recipe_preview = "\n".join(recipe_lines)
+    preview = f"""draft skill '{draft.name}' is ready for review.
+
+low-risk auto-approve: {"yes" if draft.low_risk else "no"}
+audit: PASS
+warnings: {len(draft.audit.get("warnings", []))}
+
+SKILL.md preview:
+{draft.skill_md[:600]}
+
+recipe.py preview:
+{recipe_preview}
+"""
+    return False, preview, details
+
+
+def propose_auto_skill() -> sa.Draft | None:
+    """Harvest the best recent session and turn it into a draft skill.
+    Does NOT save unless auto-author is enabled AND the draft is low-risk."""
+    enabled = get_auto_author_enabled()
+    return sa.propose_auto_skill(auto_approve_enabled=enabled)
 
 
 def browse(source: str | None = None) -> str:

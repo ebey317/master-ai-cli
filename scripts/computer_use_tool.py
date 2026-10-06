@@ -18,6 +18,7 @@ from scripts.approval_gate import Verdict, request_approval, set_explicit_callba
 # Tool implementation
 # ──────────────────────────────────────────────────────────────────────
 
+
 def _build_pattern_key(action: str, background: bool) -> str:
     mode = "background" if background else "foreground"
     return f"cua:{action}:{mode}"
@@ -86,6 +87,7 @@ def screenshot(*, background: bool = False) -> str:
 # ──────────────────────────────────────────────────────────────────────
 # Optional explicit callback hook (kept for parity with upstream)
 # ──────────────────────────────────────────────────────────────────────
+
 
 def set_approval_callback(cb: callable | None) -> None:
     """

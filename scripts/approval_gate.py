@@ -23,12 +23,14 @@ from typing import Any
 # Public verdict vocabulary (shared by all tools)
 # ──────────────────────────────────────────────────────────────────────
 
+
 class Verdict(str, Enum):
-    ONCE = "once"          # allow this single invocation
-    SESSION = "session"    # allow for the rest of this session
-    ALWAYS = "always"      # persist to permanent allowlist
-    DENY = "deny"          # refuse this invocation
-    TIMEOUT = "timeout"    # prompt timed out
+    ONCE = "once"  # allow this single invocation
+    SESSION = "session"  # allow for the rest of this session
+    ALWAYS = "always"  # persist to permanent allowlist
+    DENY = "deny"  # refuse this invocation
+    TIMEOUT = "timeout"  # prompt timed out
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Internal stores (process-wide, thread-safe)
@@ -47,6 +49,7 @@ _callback_lock = threading.RLock()
 # ──────────────────────────────────────────────────────────────────────
 # Public API
 # ──────────────────────────────────────────────────────────────────────
+
 
 def set_explicit_callback(cb: Callable[..., Verdict] | None) -> None:
     """
@@ -85,6 +88,7 @@ def _get_thread_callback() -> Callable[..., Verdict] | None:
 @dataclass(frozen=True)
 class ApprovalRequest:
     """Data passed to the approval callback."""
+
     pattern_key: str
     description: str
     extra: dict[str, Any] = field(default_factory=dict)
@@ -166,8 +170,10 @@ def list_grants() -> tuple[set[str], set[str]]:
 # Cleanup on interpreter exit (helps test isolation)
 # ──────────────────────────────────────────────────────────────────────
 
+
 def _atexit_clear() -> None:
     clear_all_grants()
     set_explicit_callback(None)
+
 
 atexit.register(_atexit_clear)

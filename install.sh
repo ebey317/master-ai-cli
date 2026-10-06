@@ -19,6 +19,11 @@ source "$(dirname "$0")/brand.sh" 2>/dev/null || source ~/scripts/brand.sh 2>/de
 : "${D:=$(tput setaf 8 2>/dev/null)}"
 : "${X:=$(tput sgr0 2>/dev/null)}"
 
+# 2026-09-28: this install.sh used to make Ollama required and treat API
+# keys as optional. That is backwards for the hobbyist market: cloud keys
+# make Sensei useful immediately, local models are an upgrade path later.
+# The flow below puts OpenRouter first and Ollama last.
+
 INSTALL_LOG="$HOME/.master_ai_install.log"
 APPROVE_ALL=0
 SCRIPT_SRC="$(cd "$(dirname "$0")" && pwd)"
@@ -26,6 +31,14 @@ TARGET="$HOME/scripts"
 mkdir -p "$HOME/.master_ai_approved_components" 2>/dev/null
 : > "$INSTALL_LOG"
 log() { echo "[$(date '+%I:%M:%S %p')] $1" >> "$INSTALL_LOG"; }
+
+# ── 0. Early dependency checks (cheap, before prompts) ───────────
+_need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo -e "  ${BR}✗ required command not found:${X} ${BW}$1${X}"; return 1; }; }
+_missing_basic=0
+for _cmd in bash python3 curl; do
+    _need_cmd "$_cmd" || _missing_basic=1
+done
+[ "$_missing_basic" = "1" ] && { echo -e "  ${BR}Cannot continue without bash, python3, and curl.${X}"; exit 1; }
 
 # ── OS detection ─────────────────────────────────────────────
 detect_os() {
@@ -112,20 +125,21 @@ case "$OS" in
 esac
 echo ""
 echo -e "  ${BW}This installer sets up:${X}"
-echo -e "    ${C}·${X} Ollama (local model runtime) ${D}— recommended, optional${X}"
-echo -e "    ${C}·${X} Master AI models (~15 GB, pulled once)"
+echo -e "    ${C}·${X} Sensei CLI & Master AI runtime"
+echo -e "    ${C}·${X} Cloud model key (OpenRouter — strongly recommended, skippable)"
+echo -e "    ${C}·${X} Ollama (local model runtime) — recommended, optional"
+echo -e "    ${C}·${X} Master AI models (~15 GB, pulled once — only if Ollama chosen)"
+echo -e "    ${C}·${X} TTS voice (Piper — optional)"
 echo -e "    ${C}·${X} Auto-start services (platform-appropriate)"
-echo -e "    ${C}·${X} TTS voice (Piper)"
-echo -e "    ${C}·${X} API keys (optional — free cloud fallbacks)"
 echo ""
-echo -e "  ${BY}⚠ Local server (Ollama) is NOT optional.${X}"
+echo -e "  ${BY}⚠ Cloud model key strongly recommended (can skip — add later).${X}"
 echo -e "  ${BW}Format you'll see:${X} ${BC}Yes / Always / All / No${X} (matches Sensei)"
 echo ""
 if [ "${MASTER_AI_NONINTERACTIVE:-0}" != "1" ]; then
     read -rp "  press Enter to begin (or Ctrl-C to cancel) " _
 fi
 
-# ── 2. Bootstrap: copy files to ~/scripts if not already there ──
+# ── 2. Bootstrap: copy files to ~/scripts if not already there ───
 echo ""
 echo -e "  ${BC}━━━ STEP 1/6: install files ━━━${X}"
 if [ "$SCRIPT_SRC" = "$TARGET" ]; then
@@ -152,6 +166,18 @@ else
     fi
 fi
 
+# ── 2b. Required runtime directories ───────────────────────────
+mkdir -p "$HOME/.master_ai_profiles/default" \
+         "$HOME/.master_ai_skills" \
+         "$HOME/.master_ai_mcp" \
+         "$HOME/.master_ai_logs" \
+         "$HOME/.master_ai_skins"
+# Default profile seed (keeps the very first launch from erroring on missing dirs)
+[ -f "$HOME/.master_ai_profiles/default/config.json" ] || cat > "$HOME/.master_ai_profiles/default/config.json" <<'EOF'
+{"name": "default", "voice": "joe", "auto_mode": false}
+EOF
+
+# Ollama is OPTIONAL (Elijah 2026-09-27: local model is a choice, not a requirement).
 # If the user set SKIP_OLLAMA=1, don't try to install Ollama (used by pack_for_sale.sh clean-machine test)
 [ "${SKIP_OLLAMA:-0}" = "1" ] && echo -e "  ${D}  SKIP_OLLAMA set — skipping Ollama installation check${X}"
 if [ "${SKIP_OLLAMA:-0}" != "1" ]; then
@@ -179,16 +205,13 @@ else
                 echo -e "  ${C}  Installing Ollama via Homebrew...${X}"
                 brew install ollama
             else
-                echo -e "  ${BY}⚠ Homebrew not found. Opening the Ollama download page.${X}"
-                open "https://ollama.com/download" 2>/dev/null
-                echo -e "  ${D}   Download + install Ollama.app from that page, then re-run this installer.${X}"
-                exit 1
+                echo -e "  ${BY}⚠ Homebrew not found. Skipping Ollama.${X}"
+                echo -e "  ${D}   Download later from https://ollama.com/download${X}"
             fi
             ;;
         windows)
-            echo -e "  ${BY}⚠ Download + install Ollama for Windows, then re-run:${X}"
+            echo -e "  ${BY}⚠ Ollama on native Windows — install later from:${X}"
             echo -e "  ${C}   https://ollama.com/download${X}"
-            exit 1
             ;;
     esac
     log "Ollama installed"
@@ -196,103 +219,179 @@ else
 fi
 fi
 
-# Start the Ollama daemon (platform-specific)
+# ── 3. Cloud model keys (prompted once here; the later section only tops up) ──
+echo ""
+echo -e "  ${BC}━━━ STEP 2/6: Cloud model key (REQUIRED) ━━━${X}"
+echo ""
+echo -e "  ${BW}Sensei needs a cloud model key to do anything useful.${X}"
+echo -e "  ${D}OpenRouter is recommended: one key, many models, pay-as-you-go.${X}"
+echo ""
+echo -e "  ${BG}1)${X} ${BW}OpenRouter${X}        ${C}https://openrouter.ai/keys${X}"
+echo -e "  ${BG}2)${X} ${BW}Groq${X}              ${C}https://console.groq.com/keys${X}"
+echo -e "  ${BG}3)${X} ${BW}Google Gemini${X}     ${C}https://aistudio.google.com/app/apikey${X}"
+echo -e "  ${BG}4)${X} ${BW}Anthropic Claude${X}  ${C}https://console.anthropic.com/settings/keys${X}"
+echo ""
+
+_openrouter_set=0
+_key_attempts=0
+while [ "$_openrouter_set" = "0" ] && [ "${MASTER_AI_NONINTERACTIVE:-0}" != "1" ]; do
+    read -rp "  Paste an OpenRouter key (sk-or-v1-...) now, or Enter to skip: " key
+    if [ -z "$key" ]; then
+        if [ "$_key_attempts" -gt 0 ]; then
+            echo -e "  ${BY}⚠ continuing without OpenRouter — Sensei won't answer until you add one later.${X}"
+            break
+        fi
+        echo -e "  ${BY}⚠ OpenRouter is strongly recommended. You can add it later in ~/.master_ai_keys${X}"
+        _key_attempts=$((_key_attempts + 1))
+        continue
+    fi
+    python3 - "$key" <<'PY'
+import json, os, sys
+key = sys.argv[1]
+field = None
+if key.startswith("gsk_"):       field = "groq"
+elif key.startswith("sk-ant-"):  field = "anthropic"
+elif key.startswith("sk-or-v1-"):field = "openrouter"
+elif key.startswith("sk-proj-"): field = "openai"
+elif key.startswith("sk-"):      field = "deepseek"
+elif key.startswith("hf_"):      field = "huggingface"
+elif key.startswith("AIzaSy"):   field = "gemini"
+elif key.startswith("xai-"):     field = "xai"
+elif key.startswith("nvapi-"):   field = "nvidia"
+if not field:
+    print("  ? couldn't identify key prefix — skipped"); sys.exit(0)
+path = os.path.expanduser("~/.master_ai_keys")
+try: d = json.load(open(path))
+except Exception: d = {}
+if field in d and d[field] and d[field] != key:
+    d[field + "_2"] = key; print(f"  ✅ {field}: saved as SECONDARY")
+else:
+    d[field] = key; print(f"  ✅ {field}: saved as PRIMARY")
+with open(path, "w") as f: json.dump(d, f, indent=2)
+os.chmod(path, 0o600)
+PY
+    if [ -n "$key" ] && [[ "$key" == sk-or-v1-* ]]; then
+        _openrouter_set=1
+    fi
+    echo ""
+    read -rp "  Paste another key, or Enter to finish: " key
+    if [ -n "$key" ]; then
+        python3 - "$key" <<'PY'
+import json, os, sys
+key = sys.argv[1]
+field = None
+if key.startswith("gsk_"):       field = "groq"
+elif key.startswith("sk-ant-"):  field = "anthropic"
+elif key.startswith("sk-or-v1-"):field = "openrouter"
+elif key.startswith("sk-proj-"): field = "openai"
+elif key.startswith("sk-"):      field = "deepseek"
+elif key.startswith("hf_"):      field = "huggingface"
+elif key.startswith("AIzaSy"):   field = "gemini"
+elif key.startswith("xai-"):     field = "xai"
+elif key.startswith("nvapi-"):   field = "nvidia"
+if not field:
+    print("  ? couldn't identify key prefix — skipped"); sys.exit(0)
+path = os.path.expanduser("~/.master_ai_keys")
+try: d = json.load(open(path))
+except Exception: d = {}
+if field in d and d[field] and d[field] != key:
+    d[field + "_2"] = key; print(f"  ✅ {field}: saved as SECONDARY")
+else:
+    d[field] = key; print(f"  ✅ {field}: saved as PRIMARY")
+with open(path, "w") as f: json.dump(d, f, indent=2)
+os.chmod(path, 0o600)
+PY
+    fi
+done
+# Start the Ollama daemon if installed
 case "$OS" in
     linux|wsl)
-        if [ "${SKIP_OLLAMA:-0}" != "1" ] && ! systemctl is-active --quiet ollama 2>/dev/null; then
+        if command -v ollama >/dev/null 2>&1 && ! systemctl is-active --quiet ollama 2>/dev/null; then
             systemctl start ollama 2>/dev/null || (nohup ollama serve >/tmp/ollama.log 2>&1 &)
             sleep 2
         fi ;;
     mac)
-        if ! pgrep -x ollama >/dev/null 2>&1; then
+        if command -v ollama >/dev/null 2>&1 && ! pgrep -x ollama >/dev/null 2>&1; then
             echo -e "  ${C}  Starting Ollama in background...${X}"
             nohup ollama serve >/tmp/ollama.log 2>&1 &
             sleep 2
         fi ;;
 esac
-if [ "${SKIP_OLLAMA:-0}" != "1" ]; then
+if command -v ollama >/dev/null 2>&1; then
     echo -e "  ${BG}✅ Ollama running at http://localhost:11434${X}"
 fi
 
-# ── 4. Models ────────────────────────────────────────────────
+# ── 5. Models (only if Ollama is present) ──────────────────────
 echo ""
-echo -e "  ${BC}━━━ STEP 3/6: AI models ━━━${X}"
-# THE TRIFECTA (locked 2026-04-19): spark + brain + eyes.
-# Total disk ~11 GB. Skip any and install.sh will remind you later.
-#
-# 2026-09-26: this used to offer all 3 to every box unconditionally,
-# including the 7B "brain" model on machines with under 16GB RAM — its
-# own description text here admits it "needs 16 GB+ RAM to run
-# comfortably," so a low-RAM box was being offered something the
-# installer itself knew was a bad fit, decided only by whether the user
-# happened to read that fine print before clicking yes. Now scales with
-# detected RAM the same way hardware_model.py's tier_max_b() does for
-# runtime model selection (2/3/4/14B tiers) — the trifecta is what fits
-# the box, not a fixed list everyone sees regardless of hardware.
-_ram_mb=$(awk '/MemTotal/ {print int($2/1024); exit}' /proc/meminfo 2>/dev/null || echo 16000)
-if [ "${_ram_mb:-0}" -ge 16000 ]; then
-    MODELS=("qwen2.5:3b" "qwen2.5:7b" "llava:latest")
-elif [ "${_ram_mb:-0}" -ge 8000 ]; then
-    MODELS=("qwen2.5:3b" "llava:latest")
-    echo -e "  ${D}  (under 16 GB RAM detected — skipping qwen2.5:7b, it needs more headroom than this box has)${X}"
+echo -e "  ${BC}━━━ STEP 3/6: AI models (optional — only if Ollama was chosen) ━━━${X}"
+if ! command -v ollama >/dev/null 2>&1; then
+    echo -e "  ${D}  Ollama not installed — skipping local model download.${X}"
 else
-    MODELS=("qwen2.5:3b")
-    echo -e "  ${D}  (under 8 GB RAM detected — offering only the smallest model; vision needs more RAM than this box has)${X}"
-fi
-for m in "${MODELS[@]}"; do
-    if [ "${SKIP_MODELS:-0}" = "1" ]; then
-        echo -e "  ${D}  SKIP_MODELS set — not checking $m${X}"; continue
-    fi
-    if ollama list 2>/dev/null | awk 'NR>1{print $1}' | grep -q "^${m}\$"; then
-        echo -e "  ${BG}✅ already have:${X} $m"; continue
-    fi
-    ask_install "Model: $m" \
-        "$(case "$m" in
-            qwen2.5:3b)       echo 'Spark — 3B model, ~1.9 GB, near-instant responses. Briefings, quick answers, idle thoughts. Start here if RAM is tight.';;
-            qwen2.5:7b)       echo 'Brain — 7B model, ~4.7 GB, the daily driver. Code, chat, reasoning. Needs 16 GB+ RAM to run comfortably.';;
-            llava:latest)     echo 'Eyes — vision + text in one model, ~4.7 GB. Required for the scrap scanner and apothecary. Skip if you are tight on disk.';;
-        esac)"
-    if [ "$REPLY_CHOICE" = "yes" ]; then
-        echo -e "  ${C}  pulling $m — this takes a while...${X}"
-        ollama pull "$m" && log "pulled $m"
+    _ram_mb=$(awk '/MemTotal/ {print int($2/1024); exit}' /proc/meminfo 2>/dev/null || echo 16000)
+    if [ "${_ram_mb:-0}" -ge 16000 ]; then
+        MODELS=("qwen2.5:3b" "qwen2.5:7b" "llava:latest")
+    elif [ "${_ram_mb:-0}" -ge 8000 ]; then
+        MODELS=("qwen2.5:3b" "llava:latest")
+        echo -e "  ${D}  (under 16 GB RAM detected — skipping qwen2.5:7b)${X}"
     else
-        echo -e "  ${BY}⚠ skipped $m${X} — run later: ${BW}ollama pull $m${X}"
+        MODELS=("qwen2.5:3b")
+        echo -e "  ${D}  (under 8 GB RAM detected — offering only the smallest model)${X}"
     fi
-done
-
-# ── 4b. OPTIONAL: 14B big-brain tier (only pitched on 24 GB+ boxes) ────
-if [ "${SKIP_MODELS:-0}" != "1" ]; then
-ram_total_mb=$(awk '/MemTotal/ {print int($2/1024); exit}' /proc/meminfo 2>/dev/null)
-if [ "${ram_total_mb:-0}" -ge 24000 ]; then
-    if ollama list 2>/dev/null | awk 'NR>1{print $1}' | grep -q "^qwen2.5:14b\$"; then
-        echo -e "  ${BG}✅ already have:${X} qwen2.5:14b (big brain)"
-    else
-        ask_install "Big brain: qwen2.5:14b (~9 GB, optional)" \
-            "You have enough RAM for the 14B tier. Pulls a model that keeps Sensei sharp on real work — deep refactors, architecture, long reasoning. Skip if you're low on disk."
+    for m in "${MODELS[@]}"; do
+        if [ "${SKIP_MODELS:-0}" = "1" ]; then
+            echo -e "  ${D}  SKIP_MODELS set — not checking $m${X}"; continue
+        fi
+        if ollama list 2>/dev/null | awk 'NR>1{print $1}' | grep -q "^${m}\$"; then
+            echo -e "  ${BG}✅ already have:${X} $m"; continue
+        fi
+        ask_install "Model: $m" \
+            "$(case "$m" in
+                qwen2.5:3b)       echo 'Spark — 3B model, ~1.9 GB, near-instant responses. Briefings, quick answers, idle thoughts. Start here if RAM is tight.';;
+                qwen2.5:7b)       echo 'Brain — 7B model, ~4.7 GB, the daily driver. Code, chat, reasoning. Needs 16 GB+ RAM to run comfortably.';;
+                llava:latest)     echo 'Eyes — vision + text in one model, ~4.7 GB. Required for the scrap scanner and apothecary. Skip if you are tight on disk.';;
+            esac)"
         if [ "$REPLY_CHOICE" = "yes" ]; then
-            echo -e "  ${C}  pulling qwen2.5:14b — this takes a while (it's big)...${X}"
-            ollama pull qwen2.5:14b && log "pulled qwen2.5:14b (big brain)"
+            echo -e "  ${C}  pulling $m — this takes a while...${X}"
+            ollama pull "$m" && log "pulled $m"
         else
-            echo -e "  ${BY}⚠ skipped big brain${X} — run later: ${BW}ollama pull qwen2.5:14b${X}"
+            echo -e "  ${BY}⚠ skipped $m${X} — run later: ${BW}ollama pull $m${X}"
+        fi
+    done
+
+    # OPTIONAL: 14B big-brain tier (only pitched on 24 GB+ boxes)
+    if [ "${SKIP_MODELS:-0}" != "1" ]; then
+        ram_total_mb=$(awk '/MemTotal/ {print int($2/1024); exit}' /proc/meminfo 2>/dev/null)
+        if [ "${ram_total_mb:-0}" -ge 24000 ]; then
+            if ollama list 2>/dev/null | awk 'NR>1{print $1}' | grep -q "^qwen2.5:14b\$"; then
+                echo -e "  ${BG}✅ already have:${X} qwen2.5:14b (big brain)"
+            else
+                ask_install "Big brain: qwen2.5:14b (~9 GB, optional)" \
+                    "You have enough RAM for the 14B tier. Pulls a model that keeps Sensei sharp on real work. Skip if you're low on disk."
+                if [ "$REPLY_CHOICE" = "yes" ]; then
+                    echo -e "  ${C}  pulling qwen2.5:14b — this takes a while (it's big)...${X}"
+                    ollama pull qwen2.5:14b && log "pulled qwen2.5:14b (big brain)"
+                else
+                    echo -e "  ${BY}⚠ skipped big brain${X} — run later: ${BW}ollama pull qwen2.5:14b${X}"
+                fi
+            fi
+        else
+            echo -e "  ${D}  (big-brain 14B skipped — needs 24+ GB RAM; you have ~$((ram_total_mb/1024)) GB)${X}"
         fi
     fi
-else
-    echo -e "  ${D}  (big-brain 14B skipped — needs 24+ GB RAM; you have ~$((ram_total_mb/1024)) GB)${X}"
-fi
 fi
 
-# ── 5. TTS ───────────────────────────────────────────────────
+# ── 6. TTS ─────────────────────────────────────────────────────
 echo ""
 echo -e "  ${BC}━━━ STEP 4/6: TTS (voice) ━━━${X}"
 ask_install "TTS server (Piper voice synthesis)" \
-    "Lets the slideshow read pages aloud + gives Sensei a voice. ~70 MB. Optional but recommended."
+    "Lets Sensei read pages aloud + gives it a voice. ~70 MB. Optional but recommended."
 [ "$REPLY_CHOICE" = "yes" ] && {
     [ -f "$TARGET/tts_server.py" ] \
       && echo -e "  ${BG}✅ tts_server.py ready${X}" \
       || echo -e "  ${BY}⚠ tts_server.py missing — TTS will fall back to browser voice${X}"
 } || echo -e "  ${BY}⚠ TTS skipped${X}"
 
-# ── 6. Auto-start services ───────────────────────────────────
+# ── 7. Auto-start services ───────────────────────────────────
 echo ""
 echo -e "  ${BC}━━━ STEP 5/6: Auto-start services ━━━${X}"
 ask_install "Auto-start on boot" \
@@ -359,19 +458,20 @@ else
 fi
 
 # ── 7. API keys ──────────────────────────────────────────────
+# (moved to STEP 2/6 earlier in this file; this section is intentionally
+# left minimal for upgrades that run an older layout — new installs hit the
+# required-key prompt at STEP 2)
 echo ""
-echo -e "  ${BC}━━━ STEP 6/6: Cloud keys (optional) ━━━${X}"
+echo -e "  ${BC}━━━ EXTRA: Additional cloud keys ━━━${X}"
 echo ""
-echo -e "  ${BW}You don't need any of these. Local models cover most cases.${X}"
-echo -e "  For faster cloud fallbacks, free keys help:"
+echo -e "  ${BW}Already set up OpenRouter above. Add fallbacks if you want:${X}"
 echo ""
 echo -e "  ${BG}1)${X} ${BW}Groq${X}              ${C}https://console.groq.com/keys${X}"
-echo -e "  ${BG}2)${X} ${BW}OpenRouter${X}        ${C}https://openrouter.ai/keys${X}"
-echo -e "  ${BG}3)${X} ${BW}Google Gemini${X}     ${C}https://aistudio.google.com/app/apikey${X}"
-echo -e "  ${BG}4)${X} ${BW}HuggingFace${X}       ${C}https://huggingface.co/settings/tokens${X}"
-echo -e "  ${BG}5)${X} ${BW}Anthropic Claude${X}  ${C}https://console.anthropic.com/settings/keys${X}"
+echo -e "  ${BG}2)${X} ${BW}Google Gemini${X}     ${C}https://aistudio.google.com/app/apikey${X}"
+echo -e "  ${BG}3)${X} ${BW}HuggingFace${X}       ${C}https://huggingface.co/settings/tokens${X}"
+echo -e "  ${BG}4)${X} ${BW}Anthropic Claude${X}  ${C}https://console.anthropic.com/settings/keys${X}"
 echo ""
-read -rp "  Paste a key now (or Enter to skip): " key
+read -rp "  Paste a fallback key now (or Enter to skip): " key
 while [ -n "$key" ] && [ "${MASTER_AI_NONINTERACTIVE:-0}" != "1" ]; do
     python3 - "$key" <<'PY'
 import json, os, sys
@@ -506,6 +606,7 @@ echo -e "  ${BC}║${X}  ${BG}🥷  INSTALL COMPLETE${X}                        
 echo -e "  ${BC}╚══════════════════════════════════════════════════════╝${X}"
 echo ""
 echo -e "  ${BW}Next:${X}"
+echo -e "    ${BG}·${X} First run:   ${BW}bash $TARGET/first_run.sh${X}  (cleanup + Google setup)"
 echo -e "    ${BG}·${X} Menu:        ${BW}master${X}  (or bash $TARGET/master.sh)"
 echo -e "    ${BG}·${X} Sensei:      ${BW}sensei${X}  (direct terminal agent)"
 echo -e "    ${BG}·${X} Tour:        open ${BW}$TARGET/slideshow.html${X}"
@@ -515,11 +616,11 @@ echo ""
 echo -e "  ${D}Log: $INSTALL_LOG${X}"
 echo ""
 
-# Auto-launch: ask once, then open the menu so they're not stranded
-ask_install "Open master.sh now" \
-    "Drops you straight into the main menu so you can try Pupil (5) or Sensei (4) right away."
+# Auto-launch: ask once, then open first_run.sh so they're not stranded
+ask_install "Run first-run setup now" \
+    "Starts Sensei with a safe cleanup + optional Google Workspace setup so you see immediate value."
 if noninteractive_skip_prompt; then
-    echo -e "  ${D}  non-interactive: not launching master.sh${X}"
+    echo -e "  ${D}  non-interactive: not launching first_run.sh${X}"
 elif [ "$REPLY_CHOICE" = "yes" ]; then
-    exec bash "$TARGET/master.sh"
+    exec bash "$TARGET/first_run.sh"
 fi

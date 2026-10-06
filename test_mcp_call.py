@@ -297,9 +297,9 @@ def test_a_failing_validation_result_is_not_treated_as_success(stub_catalog):
     # The trap itself: a failure must be truthy-checked against None.
     failure = av.ValidationResult(ok=False, reason="x")
     assert bool(failure) is False, "premise of the bug"
-    assert (
-        failure is not None
-    ) is True, "so `if failure is not None` is the correct guard"
+    assert (failure is not None) is True, (
+        "so `if failure is not None` is the correct guard"
+    )
 
     for kind in ("RUN", "RUNTERM", "READ", "MCP_CALL"):
         res = av.validate_action({"kind": kind, "target": ""})
