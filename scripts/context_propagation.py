@@ -5,13 +5,15 @@ Ensures that contextvars (session ID, profile config, auth tokens, feature flags
 carry into background threads and cross-thread async scheduling, preventing
 "empty context" fallback to launch-time defaults.
 """
+
 from __future__ import annotations
 
-import contextvars
-import threading
-import functools
-from typing import Any, Callable, Optional, TypeVar, ParamSpec, Awaitable
 import asyncio
+import contextvars
+import functools
+import threading
+from collections.abc import Awaitable, Callable
+from typing import Any, ParamSpec, TypeVar
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -26,18 +28,25 @@ def capture_context() -> contextvars.Context:
     return contextvars.copy_context()
 
 
-def run_with_context(ctx: contextvars.Context, func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
+def run_with_context(
+    ctx: contextvars.Context, func: Callable[P, R], *args: P.args, **kwargs: P.kwargs
+) -> R:
     """Execute *func* inside *ctx* (blocking)."""
     return ctx.run(func, *args, **kwargs)
 
 
-def bind_context(ctx: contextvars.Context) -> Callable[[Callable[P, R]], Callable[P, R]]:
+def bind_context(
+    ctx: contextvars.Context,
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """Decorator: run the wrapped function under *ctx*."""
+
     def decorator(fn: Callable[P, R]) -> Callable[P, R]:
         @functools.wraps(fn)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             return ctx.run(fn, *args, **kwargs)
+
         return wrapper
+
     return decorator
 
 
@@ -47,8 +56,8 @@ def spawn_context_thread(
     name: str,
     daemon: bool = True,
     args: tuple = (),
-    kwargs: Optional[dict] = None,
-    context: Optional[contextvars.Context] = None,
+    kwargs: dict | None = None,
+    context: contextvars.Context | None = None,
 ) -> threading.Thread:
     """
     Return an unstarted ``threading.Thread`` that runs *target* under the captured context.
@@ -78,7 +87,7 @@ def schedule_with_context(
     coro: Awaitable[Any],
     loop: asyncio.AbstractEventLoop,
     *,
-    context: Optional[contextvars.Context] = None,
+    context: contextvars.Context | None = None,
 ) -> asyncio.Future:
     """
     Schedule *coro* on *loop* with *context* (or current context) applied to the scheduled task.
@@ -89,10 +98,18 @@ def schedule_with_context(
     ctx = context or contextvars.copy_context()
 
     def _submit() -> asyncio.Future:
-        return asyncio.run_coroutine_threadsafe(coro, loop)
+        # run_coroutine_threadsafe returns a concurrent.futures.Future —
+        # awaitable only after bridging. wrap_future converts it to a real
+        # asyncio.Future on the caller's running loop, so `await fut` works.
+        # (the coro param is an Awaitable by contract; run_coroutine_threadsafe
+        # narrows to Coroutine — mypy can't see that every caller passes one)
+        return asyncio.wrap_future(
+            asyncio.run_coroutine_threadsafe(coro, loop)  # type: ignore[arg-type]
+        )
 
-    # Run the submission itself inside the context so the returned Future's task
-    # carries the contextvars (Python 3.11+ propagates context to the created task).
+    # Run the submission inside the captured context. NOTE: this propagates
+    # the context to the *submission*; the created task's own context behavior
+    # is interpreter-version-dependent, which the propagation test verifies.
     return ctx.run(_submit)
 
 
@@ -105,7 +122,11 @@ class ContextAwareLoop:
     (gRPC, Pub/Sub, WebSocket, signal handlers).
     """
 
-    def __init__(self, loop: asyncio.AbstractEventLoop, context: Optional[contextvars.Context] = None):
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        context: contextvars.Context | None = None,
+    ):
         self._loop = loop
         self._ctx = context or contextvars.copy_context()
 
@@ -120,7 +141,9 @@ class ContextAwareLoop:
         """Schedule a plain callback with context applied."""
         return self._ctx.run(self._loop.call_soon_threadsafe, callback, *args)
 
-    def call_later(self, delay: float, callback: Callable[..., Any], *args: Any) -> asyncio.TimerHandle:
+    def call_later(
+        self, delay: float, callback: Callable[..., Any], *args: Any
+    ) -> asyncio.TimerHandle:
         return self._ctx.run(self._loop.call_later, delay, callback, *args)
 
 
@@ -130,14 +153,31 @@ class ContextAwareLoop:
 
 
 class use_context:
-    """``with use_context(ctx): ...`` — run a block under *ctx*."""
+    """``with use_context(bindings, ...): ...`` — apply contextvar values for a block.
 
-    def __init__(self, ctx: contextvars.Context):
-        self._ctx = ctx
-        self._token: Optional[contextvars.Token] = None
+    A captured contextvars.Context is a *frozen snapshot* with no
+    ``__enter__``/``__exit__`` (that API does not exist in any Python
+    version), so a Context object cannot wrap a ``with`` block directly.
+    The block-scoped equivalent is binding values: pass a mapping of
+    ContextVar -> value; ``__enter__`` sets each and records tokens,
+    ``__exit__`` resets them in reverse order, restoring whatever the
+    caller had before (values or unset).
+    """
 
-    def __enter__(self) -> None:
-        self._token = self._ctx.__enter__()
+    def __init__(self, bindings: dict[contextvars.ContextVar, Any]):
+        self._bindings = dict(bindings)
+        self._tokens: list[tuple[contextvars.ContextVar, contextvars.Token]] = []
+
+    def __enter__(self) -> dict[contextvars.ContextVar, contextvars.Token]:
+        tokens: dict[contextvars.ContextVar, contextvars.Token] = {}
+        for var, value in self._bindings.items():
+            tokens[var] = var.set(value)
+            self._tokens.append((var, tokens[var]))
+        return tokens
 
     def __exit__(self, *exc: Any) -> None:
-        self._ctx.__exit__(None, None, None)
+        # Reverse order keeps the restore stack consistent if one var was
+        # rebound inside another's scope.
+        for var, token in reversed(self._tokens):
+            var.reset(token)
+        self._tokens.clear()

@@ -21,15 +21,14 @@ Usage:
 
 import contextvars
 from pathlib import Path
-from typing import Optional
 
 # Contextvar holding the pinned session cwd (Path or None)
-_session_cwd_var: contextvars.ContextVar[Optional[Path]] = contextvars.ContextVar(
+_session_cwd_var: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
     "sensei_session_cwd", default=None
 )
 
 
-def pin_session_cwd(cwd: Optional[str | Path]) -> contextvars.Token:
+def pin_session_cwd(cwd: str | Path | None) -> contextvars.Token:
     """
     Pin the session's logical working directory for the current context.
 
@@ -46,7 +45,7 @@ def reset_session_cwd(token: contextvars.Token) -> None:
     _session_cwd_var.reset(token)
 
 
-def get_pinned_cwd() -> Optional[Path]:
+def get_pinned_cwd() -> Path | None:
     """
     Get the currently pinned session cwd, or None if not pinned.
 
@@ -56,7 +55,7 @@ def get_pinned_cwd() -> Optional[Path]:
     return _session_cwd_var.get()
 
 
-def run_with_pinned_cwd(cwd: Optional[str | Path], func, *args, **kwargs):
+def run_with_pinned_cwd(cwd: str | Path | None, func, *args, **kwargs):
     """
     Run a function with a temporary session cwd pin.
 
@@ -73,18 +72,20 @@ def run_with_pinned_cwd(cwd: Optional[str | Path], func, *args, **kwargs):
         reset_session_cwd(token)
 
 
-async def run_async_with_pinned_cwd(cwd: Optional[str | Path], coro):
+async def run_async_with_pinned_cwd(cwd: str | Path | None, coro):
     """
     Run a coroutine with a temporary session cwd pin.
 
     The pin is active for the duration of the coroutine and automatically
-    reset afterwards. The context is copied so the pin propagates to any
-    tasks spawned within the coroutine.
+    reset afterwards. Child tasks created by the coroutine inherit the pin:
+    asyncio.create_task snapshots the current (pinned) context at creation.
+    (The previous ctx.run() wrapping was wrong — Context.run drives a
+    coroutine to completion synchronously and returns a plain value, so
+    `await ctx.run(coro)` awaited a non-awaitable and never awaited the
+    coroutine itself.)
     """
     token = pin_session_cwd(cwd)
     try:
-        ctx = contextvars.copy_context()
-        # Run the coroutine in the copied context
-        return await ctx.run(coro)
+        return await coro
     finally:
         reset_session_cwd(token)

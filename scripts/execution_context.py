@@ -15,10 +15,11 @@ from __future__ import annotations
 import os
 from typing import Literal
 
-from sensei.utils.env import env_var_enabled, is_truthy_value  # type: ignore[attr-defined]
+from .config import env_var_enabled, is_truthy_value
 
-
-ContextKind = Literal["interactive", "single_query", "cron", "api_server", "webhook", "unknown"]
+ContextKind = Literal[
+    "interactive", "single_query", "cron", "api_server", "webhook", "unknown"
+]
 
 
 def detect_context_kind() -> ContextKind:

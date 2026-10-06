@@ -6,16 +6,17 @@ defines the agent's identity, principles, and operating constitution. It sits
 in the same trust class as config.yaml: agent writes go through approval gates,
 no repository checkout can plant it.
 """
+
 from __future__ import annotations
 
 import logging
 import os
 from pathlib import Path
-from typing import Optional
 
 from .context_scanner import (
     ContextFileEntry,
     ContextFileStatus,
+    ScanAction,
     ScanResult,
     estimate_tokens_rough,
     load_context_file,
@@ -57,8 +58,10 @@ def load_constitution(
     if load_status != ContextFileStatus.LOADED:
         # Empty, unreadable, or truncated before scan
         scan_result = ScanResult(
-            action=ScanAction.LOAD if load_status == ContextFileStatus.TRUNCATED else ScanAction.BLOCKED,
-            findings=tuple(),
+            action=ScanAction.LOAD
+            if load_status == ContextFileStatus.TRUNCATED
+            else ScanAction.BLOCKED,
+            findings=(),
             content=raw_content,
             status_label=load_status.value,
         )
@@ -108,13 +111,15 @@ def list_constitution_sources(
     raw_content, load_status = load_context_file(path, max_chars)
 
     if load_status != ContextFileStatus.LOADED:
-        return [ContextFileEntry(
-            label="SENSEI.md",
-            path=str(path),
-            chars=len(raw_content),
-            est_tokens=estimate_tokens_rough(raw_content),
-            status=load_status,
-        )]
+        return [
+            ContextFileEntry(
+                label="SENSEI.md",
+                path=str(path),
+                chars=len(raw_content),
+                est_tokens=estimate_tokens_rough(raw_content),
+                status=load_status,
+            )
+        ]
 
     scan_result = scan_context_content(raw_content, "SENSEI.md", user_authored=True)
 
@@ -127,10 +132,12 @@ def list_constitution_sources(
     else:
         manifest_status = ContextFileStatus.LOADED
 
-    return [ContextFileEntry(
-        label="SENSEI.md",
-        path=str(path),
-        chars=len(raw_content),
-        est_tokens=estimate_tokens_rough(raw_content),
-        status=manifest_status,
-    )]
+    return [
+        ContextFileEntry(
+            label="SENSEI.md",
+            path=str(path),
+            chars=len(raw_content),
+            est_tokens=estimate_tokens_rough(raw_content),
+            status=manifest_status,
+        )
+    ]

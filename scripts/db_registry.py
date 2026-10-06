@@ -5,15 +5,14 @@ Provides a single writer connection per database path per process with refcounti
 and lightweight read-only connections that don't acquire write locks or start
 background threads. Mirrors the upstream hermes_state_registry pattern.
 """
+
 from __future__ import annotations
 
 import atexit
 import sqlite3
 import threading
-import weakref
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
 
 from .db_schema import ensure_schema  # assumes a schema module exists
 
@@ -25,7 +24,7 @@ class _ConnectionHandle:
         self.path = path
         self.read_only = read_only
         self._refcount = 0
-        self._conn: Optional[sqlite3.Connection] = None
+        self._conn: sqlite3.Connection | None = None
         self._lock = threading.Lock()
         self._closed = False
 
@@ -78,9 +77,26 @@ class _Registry:
 
     def __init__(self):
         self._handles: dict[tuple[Path, bool], _ConnectionHandle] = {}
+        self._txn_locks: dict[tuple[Path, bool], threading.RLock] = {}
         self._lock = threading.Lock()
         self._finalized = False
         atexit.register(self._shutdown)
+
+    def txn_lock(self, path: Path, *, read_only: bool = False) -> threading.RLock:
+        """Per-(path, read_only) lock serializing transactional use of the
+        SINGLETON connection. The shared writer conn is created with
+        check_same_thread=False, so concurrent session() blocks on it
+        interleave transactions ('cannot start a transaction within a
+        transaction'). Callers using acquire() raw are responsible for
+        their own serialization — the registry only guarantees it for
+        session()."""
+        key = (path.resolve(), read_only)
+        with self._lock:
+            lk = self._txn_locks.get(key)
+            if lk is None:
+                lk = threading.RLock()
+                self._txn_locks[key] = lk
+            return lk
 
     def acquire(self, path: Path, *, read_only: bool = False) -> sqlite3.Connection:
         """Get a connection from the shared handle, creating if needed."""
@@ -117,7 +133,9 @@ class _Registry:
 _registry = _Registry()
 
 
-def acquire(db_path: Optional[Path | str] = None, *, read_only: bool = False) -> sqlite3.Connection:
+def acquire(
+    db_path: Path | str | None = None, *, read_only: bool = False
+) -> sqlite3.Connection:
     """
     Acquire a shared database connection for the given path.
 
@@ -144,7 +162,7 @@ def acquire(db_path: Optional[Path | str] = None, *, read_only: bool = False) ->
     return _registry.acquire(path, read_only=read_only)
 
 
-def release(db_path: Optional[Path | str] = None, *, read_only: bool = False) -> None:
+def release(db_path: Path | str | None = None, *, read_only: bool = False) -> None:
     """Release a connection acquired via acquire()."""
     from .config import get_state_db_path
 
@@ -153,7 +171,7 @@ def release(db_path: Optional[Path | str] = None, *, read_only: bool = False) ->
 
 
 @contextmanager
-def session(db_path: Optional[Path | str] = None, *, read_only: bool = False):
+def session(db_path: Path | str | None = None, *, read_only: bool = False):
     """
     Context manager for a database session.
 
@@ -163,17 +181,20 @@ def session(db_path: Optional[Path | str] = None, *, read_only: bool = False):
     from .config import get_state_db_path
 
     path = Path(db_path) if db_path else get_state_db_path()
-    conn = _registry.acquire(path, read_only=read_only)
-    try:
-        yield conn
-        if not read_only:
-            conn.commit()
-    except Exception:
-        if not read_only:
-            conn.rollback()
-        raise
-    finally:
-        _registry.release(path, read_only=read_only)
+    # Serialize the whole with-block: the singleton connection is process-wide,
+    # so two threads must not interleave BEGIN/COMMIT on it.
+    with _registry.txn_lock(path, read_only=read_only):
+        conn = _registry.acquire(path, read_only=read_only)
+        try:
+            yield conn
+            if not read_only:
+                conn.commit()
+        except Exception:
+            if not read_only:
+                conn.rollback()
+            raise
+        finally:
+            _registry.release(path, read_only=read_only)
 
 
 # Backwards-compatible alias for existing code
@@ -186,10 +207,10 @@ class SessionDB:
             db.execute(...)
     """
 
-    def __init__(self, db_path: Optional[Path | str] = None, *, read_only: bool = True):
+    def __init__(self, db_path: Path | str | None = None, *, read_only: bool = True):
         self._path = db_path
         self._read_only = read_only
-        self._conn: Optional[sqlite3.Connection] = None
+        self._conn: sqlite3.Connection | None = None
 
     def __enter__(self) -> sqlite3.Connection:
         self._conn = acquire(self._path, read_only=self._read_only)

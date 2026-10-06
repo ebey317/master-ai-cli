@@ -2,19 +2,22 @@
 Optional skills catalog and installer for Sensei.
 Manages optional-skills/ directory and registers blueprints as suggestions.
 """
+
 from __future__ import annotations
+
 import json
 import shutil
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from skill_metadata import SkillManifest, SkillBlueprint
+from .skill_metadata import SkillBlueprint, SkillManifest
 
 
 @dataclass
 class SuggestionEntry:
     """A user-opt-in suggestion registered from a skill blueprint."""
+
     skill_name: str
     skill_version: str
     blueprint: SkillBlueprint
@@ -27,7 +30,7 @@ class SuggestionEntry:
         return d
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SuggestionEntry":
+    def from_dict(cls, data: dict[str, Any]) -> SuggestionEntry:
         bp_data = data.pop("blueprint")
         data["blueprint"] = SkillBlueprint(**bp_data)
         return cls(**data)
@@ -80,7 +83,9 @@ class OptionalSkillsCatalog:
         # Parse reference: category/skill-name
         parts = skill_ref.split("/")
         if len(parts) != 2:
-            raise ValueError(f"Invalid skill reference: {skill_ref}. Use 'category/skill-name'")
+            raise ValueError(
+                f"Invalid skill reference: {skill_ref}. Use 'category/skill-name'"
+            )
 
         category, skill_name = parts
         source_dir = self.optional_skills_dir / category / skill_name
@@ -121,10 +126,11 @@ class OptionalSkillsCatalog:
         suggestions = [s for s in suggestions if s.skill_name != manifest.metadata.name]
 
         from datetime import datetime
+
         entry = SuggestionEntry(
             skill_name=manifest.metadata.name,
             skill_version=manifest.metadata.version,
-            blueprint=manifest.metadata.blueprint,
+            blueprint=manifest.metadata.blueprint,  # type: ignore[arg-type]
             registered_at=datetime.now().isoformat(),
             accepted=False,
         )

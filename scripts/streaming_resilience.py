@@ -7,11 +7,12 @@ Portable reimplementation of the "undelivered stream failure" classification:
 - On stream error: if deltas fired but no visible text delivered and no tool call
   in flight → treat as undelivered failure (retry); otherwise → partial delivery (no retry).
 """
+
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ class StreamDeliveryTracker:
     (including whitespace/think-only), while ``visible_text_delivered`` only
     becomes true when scrubbed, non-whitespace text actually reaches a consumer.
     """
+
     deltas_were_sent: bool = False
     first_delta_fired: bool = False
     visible_text_buffer: str = ""
@@ -91,7 +93,7 @@ class StreamErrorClassifier:
         self,
         max_retries: int,
         is_transient_fn: Callable[[Exception], bool],
-        on_undelivered_retry: Optional[Callable[[Exception], None]] = None,
+        on_undelivered_retry: Callable[[Exception], None] | None = None,
     ):
         self.max_retries = max_retries
         self.is_transient_fn = is_transient_fn
@@ -100,7 +102,7 @@ class StreamErrorClassifier:
     @dataclass
     class Decision:
         should_retry: bool
-        error: Optional[Exception] = None
+        error: Exception | None = None
         reason: str = ""
 
     def classify(
@@ -128,15 +130,21 @@ class StreamErrorClassifier:
             # Nothing even left the provider — standard transient retry logic applies
             if self.is_transient_fn(error) and attempt < self.max_retries:
                 return self.Decision(True, reason="transient error before any delta")
-            return self.Decision(False, error, "non-transient or budget exhausted before any delta")
+            return self.Decision(
+                False, error, "non-transient or budget exhausted before any delta"
+            )
 
         # Deltas *did* fire. Now check if anything visible reached a consumer.
         if tracker.partial_tool_in_flight():
             # Tool call in flight — aborting discards it; retry transient errors
             # (reconnecting + duplicated preamble beats a failed action; no tool executed yet)
             if self.is_transient_fn(error) and attempt < self.max_retries:
-                return self.Decision(True, reason="transient error with tool call in flight")
-            return self.Decision(False, error, "non-transient or budget exhausted with tool in flight")
+                return self.Decision(
+                    True, reason="transient error with tool call in flight"
+                )
+            return self.Decision(
+                False, error, "non-transient or budget exhausted with tool in flight"
+            )
 
         if not tracker.visible_text_delivered():
             # Deltas fired (whitespace/think-only or no consumer) but NOTHING visible delivered.
@@ -151,11 +159,16 @@ class StreamErrorClassifier:
             if attempt < self.max_retries:
                 self.on_undelivered_retry(error)
                 return self.Decision(True, reason="undelivered stream failure (retry)")
-            return self.Decision(False, error, "undelivered stream failure (budget exhausted)")
+            return self.Decision(
+                False, error, "undelivered stream failure (budget exhausted)"
+            )
 
         # Visible text *was* delivered → real partial delivery.
         # No retry (would duplicate text). Error propagates to conversation loop.
-        logger.warning("Streaming failed after partial delivery (visible text delivered), not retrying: %s", error)
+        logger.warning(
+            "Streaming failed after partial delivery (visible text delivered), not retrying: %s",
+            error,
+        )
         return self.Decision(False, error, "partial delivery with visible text")
 
 
@@ -165,14 +178,25 @@ def is_transient_error(error: Exception) -> bool:
 
     Treat as transient: network errors, timeouts, 5xx, stream corruption.
     Treat as non-transient: 4xx (bad request), auth errors, context length.
+    Also recognizes plain-Exception messages naming timeouts — provider
+    SDKs and wrappers raise bare Exception(\"timeout\")/Exception(\"timed out\")
+    after swallowing the typed error, and a timeout is still a timeout.
     """
     import httpx
 
-    if isinstance(error, (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)):
+    if isinstance(
+        error, (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)
+    ):
         return True
     if isinstance(error, httpx.HTTPStatusError):
         return 500 <= error.response.status_code < 600
-    return False
+    msg = str(error).lower()
+    return (
+        "timeout" in msg
+        or "timed out" in msg
+        or "temporarily unavailable" in msg
+        or "connection reset" in msg
+    )
 
 
 def make_partial_stream_stub(
