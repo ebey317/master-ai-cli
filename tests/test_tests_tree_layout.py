@@ -24,6 +24,8 @@ KNOWN_UNMAPPED = {
     "test_skill_blueprint.py",  # tests scripts/skill_metadata.py (multi-class)
     "test_model_switch_reasoning.py",  # tests scripts/model_reasoning.py + model_switch.py
     "test_tests_tree_layout.py",  # this file
+    "test_verifiers_extra.py",  # supplementary cases for verifiers.py
+    "test_master_ai_core.py",  # smoke/e2e driver for master_ai.py
 }
 
 # Subdirectories under tests/ that are allowed (not name-mapped to a module).
