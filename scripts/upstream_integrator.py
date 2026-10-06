@@ -31,6 +31,7 @@ import json
 import os
 import py_compile
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -553,8 +554,7 @@ def touched_core_check(files):
 
 
 def run_tests():
-    # fast gate: compile everything, then run the focused parser test
-    rc, _, _ = _git("stash", "list")
+    # fast gate: compile everything, then run the pytest suite (~4s, 260 tests)
     try:
         c = subprocess.run(
             [
@@ -572,13 +572,22 @@ def run_tests():
             return False, c.stderr[:300]
     except Exception:
         pass
-    t = REPO / "tests" / "test_master_ai_parser.py"
-    if t.exists():
+    pytest_bin = shutil.which("pytest") or str(
+        Path.home() / ".local" / "bin" / "pytest"
+    )
+    try:
         c = subprocess.run(
-            [sys.executable, str(t)], capture_output=True, text=True, timeout=180
+            [pytest_bin, "tests/", "-q", "-p", "no:cacheprovider"],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            cwd=str(REPO),
         )
         return c.returncode == 0, (c.stdout + c.stderr)[-500:]
-    return True, "no test file"
+    except FileNotFoundError as e:
+        return False, f"pytest not found: {e}"
+    except Exception as e:
+        return False, f"test run failed: {e}"
 
 
 def main():
