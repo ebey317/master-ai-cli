@@ -186,7 +186,7 @@ def build(batch: int = 16, verbose: bool = True) -> dict:
             chunk = pending[start : start + batch]
             bodies = [body for _id, body in chunk]
             vectors = embeddings.embed_many(bodies, batch=batch)
-            for (_id, _body), vector in zip(chunk, vectors):
+            for (_id, _body), vector in zip(chunk, vectors, strict=True):
                 if vector is None:
                     continue
                 conn.execute(

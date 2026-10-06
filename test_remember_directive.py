@@ -24,6 +24,7 @@ from pathlib import Path
 os.environ["SENSEI_TUI"] = "0"
 sys.path.insert(0, os.path.expanduser("~/scripts"))
 
+import dispatch  # noqa: E402
 import master_ai  # noqa: E402
 
 
@@ -247,7 +248,7 @@ class BlockedFeedbackInvitesRemember(unittest.TestCase):
     def test_tool_blocked_message_mentions_remember(self):
         import inspect
 
-        src = inspect.getsource(master_ai.process_reply)
+        src = inspect.getsource(dispatch.process_reply)
         self.assertIn("[TOOL BLOCKED]", src)
         # The blocked-feedback body must invite the model to emit REMEMBER:
         idx = src.find("[TOOL BLOCKED]")
@@ -262,7 +263,7 @@ class BlockedFeedbackInvitesRemember(unittest.TestCase):
     def test_hook_blocked_message_mentions_remember(self):
         import inspect
 
-        src = inspect.getsource(master_ai.process_reply)
+        src = inspect.getsource(dispatch.process_reply)
         idx = src.find("[HOOK BLOCKED]")
         self.assertGreater(idx, 0, "HOOK BLOCKED feedback must exist")
         window = src[idx : idx + 1000]

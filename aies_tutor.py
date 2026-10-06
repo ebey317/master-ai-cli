@@ -31,7 +31,7 @@ except Exception:
 
 AIES_REPO = Path("/home/elijah/projects/ai-engineering-from-scratch")
 OPENCODE_SKILLS = Path.home() / ".config" / "opencode" / "skills"
-DEFAULT_LEARNING_FILE = Path("LEARNING.md")
+DEFAULT_LEARNING_FILE = Path("/home/elijah/LEARNING.md")
 ROADMAP_URL = "https://raw.githubusercontent.com/rohitg00/ai-engineering-from-scratch/main/ROADMAP.md"
 README_URL = "https://raw.githubusercontent.com/rohitg00/ai-engineering-from-scratch/main/README.md"
 RAW_BASE = "https://raw.githubusercontent.com/rohitg00/ai-engineering-from-scratch/main"
@@ -415,8 +415,15 @@ def next_lesson() -> dict[str, Any]:
 def record_lesson(
     phase: str, lesson: str, score: str, note: str = ""
 ) -> dict[str, Any]:
-    _append_progress(phase, lesson_dir, score, note)
-    return {"status": "recorded", "phase": phase, "lesson": lesson_dir, "score": score}
+    # Normalize numeric phase args ("01", "1") to the full phase slug so the
+    # logged row matches what _find_next_lesson checks against.
+    if re.fullmatch(r"\d{1,2}", phase):
+        for num, slug, _ in _phase_dirs():
+            if num == int(phase):
+                phase = slug
+                break
+    _append_progress(phase, lesson, score, note)
+    return {"status": "recorded", "phase": phase, "lesson": lesson, "score": score}
 
 
 def current_lesson() -> dict[str, Any] | None:

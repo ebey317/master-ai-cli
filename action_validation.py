@@ -446,8 +446,10 @@ def validate_action(action) -> ValidationResult:
             return _validate_mcp_call(target)
 
         return _ok(kind, target if isinstance(target, str) else "")
-    except Exception as e:  # noqa: BLE001 - a validator must never break dispatch
-        return ValidationResult(ok=True, reason=f"validation skipped: {e}")
+    except Exception as e:  # noqa: BLE001 - fail-closed: a broken validator must never silently grant permission
+        return ValidationResult(
+            ok=False, reason=f"VALIDATOR FAILURE — action blocked: {e}"
+        )
 
 
 def validate_all(actions) -> tuple[list, list]:

@@ -37,8 +37,13 @@ class AutoReloadTests(unittest.TestCase):
         self.execvp_calls = []
         self.save_session_calls = []
         master_ai.os.execvp = lambda *a, **k: self.execvp_calls.append((a, k))
-        master_ai.save_session = lambda h, silent=False: self.save_session_calls.append(
-            (h, silent)
+        # 2026-10-05: accept the full real signature — _reload_if_code_changed
+        # now calls save_session(..., summarize_timeout=15.0) (since 80c8152),
+        # and the old (h, silent=False)-only stub logged
+        # AUTO_RELOAD_SAVE_ERROR and skipped the save, failing
+        # test_resume_flag_points_at_the_saved_chat_log at baseline.
+        master_ai.save_session = lambda h, silent=False, **k: (
+            self.save_session_calls.append((h, silent))
         )
         master_ai._clear_tmux_scrollback = lambda *a, **k: None
 

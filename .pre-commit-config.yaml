@@ -31,42 +31,34 @@ repos:
         # (~/.local/bin/shellcheck); override entry to the real binary too.
         language: system
         entry: shellcheck
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.10.0
+  - repo: local
     hooks:
-      - id: mypy
-        # 2026-09-14: mypy follows the full import graph by default, so
-        # checking one changed file (e.g. master_ai.py) also type-checks
-        # every module it imports. Several of those (typed_actions.py,
-        # learning_loop.py, skill_marketplace.py, sensei_mcp_client.py,
-        # skill_improve_helpers.py) carry ~51 pre-existing, unrelated type
-        # errors that were silently blocking ANY commit touching
-        # master_ai.py. --follow-imports=silent restricts checking to the
-        # files actually being committed; it does not fix or hide those
-        # modules' own errors when THEY are the ones being committed.
+      - id: mypy-baseline
+        name: mypy (baselined -- new errors only)
+        # 2026-09-29: this replaces the mirrors-mypy hook, which never
+        # completed a single run.
+        # ./conftest.py and ./tests/conftest.py are both top-level modules
+        # named `conftest`; mypy aborts with "Duplicate module named
+        # conftest" and reports "errors prevented further checking", so
+        # NOTHING was type-checked, ever. Its own comment predicted this
+        # would eventually be fixed by renaming files, but the real
+        # duplicate-conftest collision was missed entirely.
         #
-        # 2026-09-25: dropped `--exclude sensei_clean/__init__.py`, added
-        # here to work around the sensei_clean.py / sensei_clean/ package
-        # name collision. It never actually worked -- mypy's --exclude
-        # only applies to files it discovers itself; pre-commit passes
-        # every matched file as an explicit argument via `--all-files`,
-        # which bypasses --exclude entirely, so the "Duplicate module
-        # named sensei_clean" error kept firing regardless. Root cause
-        # fixed properly instead: the colliding top-level script is
-        # renamed to sensei_clean_cli.py, so there's no longer a real
-        # collision for any exclude flag to work around.
-        args: [--ignore-missing-imports, --follow-imports=silent]
-        # appforge/templates/**/*.py are code-generation templates: they
-        # contain literal `{{PLACEHOLDER}}` tokens (AppForge's own
-        # substitution syntax, not real Python names) that only become
-        # valid, checkable Python after generation replaces them. mypy
-        # correctly flags the placeholder as an undefined name in the raw
-        # template -- that's not a bug to fix, the template was never
-        # meant to type-check as-is. This is pre-commit's own `exclude`
-        # (filters files before the hook ever runs), which actually works,
-        # unlike mypy's own `--exclude` flag against explicit file args
-        # (see the 2026-09-25 note above).
-        exclude: ^appforge/templates/
+        # Fixing it exposes 203 pre-existing errors (107 unique
+        # file|code|message) -- accumulated debt, not regressions, since
+        # there was never a working gate to regress from. Requiring zero
+        # before a release would mean rewriting a 26k-line monolith, which
+        # is a far bigger risk to the ship than the errors are.
+        #
+        # tools/mypy_gate.py therefore baselines the existing debt and fails
+        # only on NEW errors, so the codebase can only ratchet forward.
+        # Replaces the mirror hook (one source of truth for the tool
+        # version -- mypy==1.10.0 is pinned in the dev extra, matching the
+        # rev this hook used).
+        entry: python tools/mypy_gate.py
+        language: system
+        types: [python]
+        require_serial: true
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0
     hooks:

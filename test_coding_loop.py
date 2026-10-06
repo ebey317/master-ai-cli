@@ -19,12 +19,12 @@ import unittest
 os.environ["SENSEI_TUI"] = "0"
 sys.path.insert(0, os.path.expanduser("~/scripts"))
 
-import master_ai  # noqa: E402
+import dispatch  # noqa: E402
 
 
 class ReadBeforeEditGuardrail(unittest.TestCase):
     def test_process_reply_has_read_before_edit_check(self):
-        src = inspect.getsource(master_ai.process_reply)
+        src = inspect.getsource(dispatch.process_reply)
         # The guard names the repair message explicitly so a refactor
         # that drops it gets caught.
         self.assertIn(
@@ -43,7 +43,7 @@ class ReadBeforeEditGuardrail(unittest.TestCase):
     def test_guard_returns_none_on_unread_edits(self):
         # The repair branch must use `return None` so the model gets a
         # repair turn (not `return reply` which would advance the chain).
-        src = inspect.getsource(master_ai.process_reply)
+        src = inspect.getsource(dispatch.process_reply)
         idx = src.find("DIRECTIVE_REPAIR_READ_BEFORE_EDIT")
         self.assertGreater(
             idx, 0, "log line for the guard is the anchor — should exist"
