@@ -7,18 +7,16 @@ Verifies the two key invariants:
 """
 
 import asyncio
-import contextvars
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
 from scripts.mcp_session_cwd import (
+    get_pinned_cwd,
     pin_session_cwd,
     reset_session_cwd,
-    get_pinned_cwd,
-    run_with_pinned_cwd,
     run_async_with_pinned_cwd,
+    run_with_pinned_cwd,
 )
 
 
@@ -34,17 +32,21 @@ class TestSessionCwdPinning:
 
     def test_pin_none_clears(self):
         """Pinning None clears the cwd."""
-        pin_session_cwd("/some/path")
+        token_outer = pin_session_cwd("/some/path")
         token = pin_session_cwd(None)
         try:
             assert get_pinned_cwd() is None
         finally:
+            # Reset in REVERSE order: each token restores the value present
+            # before its own set, so unwinding outer-first would re-pin
+            # '/some/path' and leak into later tests.
             reset_session_cwd(token)
+            reset_session_cwd(token_outer)
 
     def test_run_with_pinned_cwd_isolated(self, tmp_path):
         """run_with_pinned_cwd isolates the pin to the call."""
         outer = Path("/outer")
-        pin_session_cwd(outer)
+        token_outer = pin_session_cwd(outer)
         try:
             captured = {}
 
@@ -56,7 +58,7 @@ class TestSessionCwdPinning:
             # Outer pin restored
             assert get_pinned_cwd() == outer.resolve()
         finally:
-            reset_session_cwd(pin_session_cwd(None))  # clear
+            reset_session_cwd(token_outer)
 
     def test_run_with_pinned_cwd_propagates_to_threads(self, tmp_path):
         """Pin propagates to functions run via contextvars.copy_context().run."""
@@ -83,7 +85,9 @@ class TestSessionCwdPinning:
         await run_async_with_pinned_cwd(tmp_path, parent())
         assert captured["cwd"] == tmp_path.resolve()
 
-    def test_explicit_config_cwd_wins_over_session_pin(self, tmp_path, tmp_path_factory):
+    def test_explicit_config_cwd_wins_over_session_pin(
+        self, tmp_path, tmp_path_factory
+    ):
         """
         Invariant: explicit per-server cwd in config always wins over session pin.
         This is a design invariant - the session pin is only a *default*.
@@ -96,7 +100,7 @@ class TestSessionCwdPinning:
 
             # The transport should use explicit cwd, not session pin
             effective_cwd = server_config.get("cwd") or get_pinned_cwd()
-            assert effective_cwd == other_dir.resolve()
+            assert Path(effective_cwd).resolve() == other_dir.resolve()
         finally:
             reset_session_cwd(session_token)
 
@@ -126,6 +130,7 @@ class TestSessionCwdPinning:
 
     def test_pin_survives_exception(self, tmp_path):
         """Pin is reset even if the wrapped function raises."""
+
         def raises():
             raise ValueError("boom")
 

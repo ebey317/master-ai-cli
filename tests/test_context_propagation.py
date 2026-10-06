@@ -3,22 +3,26 @@ Tests for context propagation utilities.
 
 Run with: python -m pytest tests/test_context_propagation.py -v
 """
-import contextvars
-import threading
+
 import asyncio
+import contextvars
+
 import pytest
+
 from scripts.context_propagation import (
+    ContextAwareLoop,
+    bind_context,
     capture_context,
     run_with_context,
-    bind_context,
-    spawn_context_thread,
     schedule_with_context,
-    ContextAwareLoop,
+    spawn_context_thread,
     use_context,
 )
 
 # A contextvar to simulate session-scoped state (e.g., profile ID, auth token)
-SESSION_ID: contextvars.ContextVar[str] = contextvars.ContextVar("session_id", default="launch-default")
+SESSION_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "session_id", default="launch-default"
+)
 
 
 def test_capture_and_run_restores_contextvar():
@@ -63,7 +67,9 @@ def test_spawn_context_thread_carries_context():
     t.start()
     t.join(timeout=2)
 
-    assert result["value"] == "session-thread-1", "Thread should see captured session ID"
+    assert result["value"] == "session-thread-1", (
+        "Thread should see captured session ID"
+    )
 
 
 def test_spawn_context_thread_without_explicit_context_uses_current():
@@ -116,11 +122,11 @@ async def test_context_aware_loop_submit():
 
 
 def test_use_context_manager():
-    SESSION_ID.set("session-cm-1")
-    ctx = capture_context()
-
+    # use_context takes {ContextVar: value} bindings: a Context snapshot
+    # has no __enter__ (that API does not exist), so block-scoped context
+    # is expressed as set-values-inside/reset-on-exit.
     SESSION_ID.set("outside")
-    with use_context(ctx):
+    with use_context({SESSION_ID: "session-cm-1"}):
         assert SESSION_ID.get() == "session-cm-1"
     assert SESSION_ID.get() == "outside"
 

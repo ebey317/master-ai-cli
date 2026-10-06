@@ -1,13 +1,9 @@
 """Tests for constitution_loader integration."""
-import tempfile
-from pathlib import Path
 
-import pytest
+from pathlib import Path
 
 from scripts.constitution_loader import (
     load_constitution,
-    list_constitution_sources,
-    get_constitution_path,
 )
 from scripts.context_scanner import ContextFileStatus, ScanAction
 
@@ -89,13 +85,22 @@ class TestConstitutionLoader:
         assert result.action == ScanAction.FLAGGED
 
         # Manifest status should be FLAGGED
-        from scripts.constitution_loader import ContextFileEntry, ContextFileStatus
+        # (aliased: a function-level re-import of ContextFileStatus would
+        # shadow the module-level name used earlier in this function)
+        from scripts.constitution_loader import (
+            ContextFileEntry,
+        )
+        from scripts.constitution_loader import (
+            ContextFileStatus as ManifestStatus,
+        )
+
         entry = ContextFileEntry(
             label="SENSEI.md",
             path=str(constitution),
             chars=len(raw),
             est_tokens=len(raw) // 4,
-            status=ContextFileStatus.FLAGGED,
+            status=ManifestStatus.FLAGGED,
         )
         assert entry.status == ContextFileStatus.FLAGGED
-        assert entry.loaded is True
+        # ContextFileEntry has no `loaded` attr; loading-ness is exactly
+        # "status is LOADED/FLAGGED/TRUNCATED" per the manifest contract.

@@ -120,6 +120,10 @@ def test_resolve_project_tag_finds_git_root(tmp_path: Path):
     with sc.session_cwd_scope(subdir):
         assert sr._resolve_project_tag() == str(repo.resolve())
 
-    # Outside any repo
-    with sc.session_cwd_scope(tmp_path / "nowhere"):
+    # Outside any repo. NOTE: a pytest tmp_path must NOT be used for this
+    # leg — pytest's tmp dirs live under ~/.hermes/cache, and a directory
+    # may exist at $HOME/.git on this machine, which is a real repo; the
+    # parent walk would then rightly find it and this assertion would
+    # fail for the wrong reason. /tmp has no .git as an ancestor.
+    with sc.session_cwd_scope(Path("/tmp/project-tag-nowhere")):
         assert sr._resolve_project_tag() is None
