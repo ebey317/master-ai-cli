@@ -131,7 +131,7 @@ RELEVANCE_THRESHOLD = 4
 MAX_ENTRIES_PER_REPO = 50
 
 # Paths
-REPO_ROOT = Path.home() / "master-ai-cli"
+REPO_ROOT = Path(__file__).resolve().parent.parent
 MEMORY_DIR = REPO_ROOT / "memory"
 DIGEST_DIR = MEMORY_DIR / "upstream-digest"
 STATE_FILE = MEMORY_DIR / "upstream-watcher-state.json"
