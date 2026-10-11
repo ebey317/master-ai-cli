@@ -1,0 +1,89 @@
+# Sensei plugin catalog for routing strategies and agent plugins.
+# Each entry describes a routable component: a skill, tool, or sub-agent
+# that the router can select for a given task.
+
+schema_version: 1
+
+plugins:
+  - name: "code-explorer"
+    type: "skill"
+    description: "Explores codebases, finds definitions, traces call graphs. Best for 'how does X work?' tasks."
+    entry_point: "skills.code_explorer:CodeExplorerSkill"
+    capabilities:
+      - "code_navigation"
+      - "symbol_lookup"
+      - "call_graph"
+    requires_env: []
+    tier: "core"
+    metadata:
+      complexity: "medium"
+      typical_latency_ms: 500
+
+  - name: "file-operator"
+    type: "tool"
+    description: "Reads, writes, greps, and patches files. Best for concrete file edits."
+    entry_point: "scripts.file_tool:FileTool"
+    capabilities:
+      - "read"
+      - "write"
+      - "grep"
+      - "patch"
+    requires_env: []
+    tier: "core"
+    metadata:
+      complexity: "low"
+      typical_latency_ms: 50
+
+  - name: "shell-runner"
+    type: "tool"
+    description: "Runs shell commands, captures output. Best for build, test, lint, and one-off commands."
+    entry_point: "scripts.shell_tool:ShellTool"
+    capabilities:
+      - "exec"
+      - "stream_output"
+    requires_env: []
+    tier: "core"
+    metadata:
+      complexity: "low"
+      typical_latency_ms: 200
+
+  - name: "web-searcher"
+    type: "skill"
+    description: "Searches the web, fetches pages, extracts snippets. Best for 'what is X?' or 'latest version of Y'."
+    entry_point: "skills.web_search:WebSearchSkill"
+    capabilities:
+      - "search"
+      - "fetch"
+      - "extract"
+    requires_env:
+      - "SEARXNG_URL"
+    tier: "community"
+    metadata:
+      complexity: "high"
+      typical_latency_ms: 3000
+
+  - name: "test-generator"
+    type: "skill"
+    description: "Generates unit tests for a given module or function. Best for 'write tests for X'."
+    entry_point: "skills.test_gen:TestGenSkill"
+    capabilities:
+      - "generate_tests"
+      - "run_tests"
+    requires_env: []
+    tier: "community"
+    metadata:
+      complexity: "medium"
+      typical_latency_ms: 2000
+
+  - name: "doc-writer"
+    type: "skill"
+    description: "Writes/updates documentation, READMEs, docstrings. Best for 'document X'."
+    entry_point: "skills.doc_writer:DocWriterSkill"
+    capabilities:
+      - "write_docs"
+      - "update_readme"
+    requires_env: []
+    tier: "community"
+    metadata:
+      complexity: "medium"
+      typical_latency_ms: 1500
