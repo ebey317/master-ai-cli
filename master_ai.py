@@ -7467,7 +7467,14 @@ def speak(text: str) -> Any:
         return
     if len(text) > TTS_MAX_CHARS:
         text = text[:TTS_MAX_CHARS] + "... message truncated."
-    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    # prefix carries the AI_TTS_BARGE tag into aplay's /proc/<pid>/cmdline.
+    # tts_control.py's barge-in kill pass (ptt_pynput._mute_tts) only
+    # recognizes a playback binary as TTS-owned via this exact tag or a
+    # known owner marker (hermes/voice_bridge.py) in its cmdline -- an
+    # untagged aplay call is invisible to it and plays to completion no
+    # matter when the trigger is pressed. voice_bridge.py's mpv fallback
+    # carries the same tag via --force-media-title for the same reason.
+    tmp = tempfile.NamedTemporaryFile(prefix="AI_TTS_BARGE_", suffix=".wav", delete=False)
     tmp.close()
     # 2026-09-02: RT/F13 barge-in (ptt_pynput._mute_tts) kills aplay/mpv/
     # ffplay by exact binary name on every press, and this file's own
