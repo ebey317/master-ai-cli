@@ -1,7 +1,5 @@
 """Tests for the scheduled-job prompt builder (recursion guard)."""
 
-import pytest
-
 from scripts.scheduler_prompt import SCHEDULED_JOB_HINT, build_job_prompt
 
 
@@ -32,10 +30,10 @@ class TestBuildJobPromptRecursionGuard:
         """Original SILENT behavior must remain intact."""
         prompt = build_job_prompt("Any task")
         assert "[SILENT]" in prompt
-        assert "respond with exactly \"[SILENT]\"" in prompt
+        assert 'respond with exactly "[SILENT]"' in prompt
 
     def test_hint_ends_with_double_newline(self):
         """Formatting: hint block ends with a blank line before task text."""
         prompt = build_job_prompt("Task body")
         assert prompt.startswith(SCHEDULED_JOB_HINT)
-        assert prompt[len(SCHEDULED_JOB_HINT):] == "Task body"
+        assert prompt[len(SCHEDULED_JOB_HINT) :] == "Task body"

@@ -8,11 +8,11 @@ Ported from NousResearch/hermes-agent tests:
 import pytest
 
 from scripts.execution_context import (
-    detect_context_kind,
-    presence_flags,
     check_cronjob_requirements,
-    is_truly_unattended,
+    detect_context_kind,
     has_async_approval_bridge,
+    is_truly_unattended,
+    presence_flags,
 )
 
 
@@ -112,7 +112,9 @@ def test_cronjob_requirements_exec_ask(monkeypatch):
     assert check_cronjob_requirements() is True
 
 
-def test_cronjob_requirements_external_cron_worker_with_presence_vars_stripped(monkeypatch):
+def test_cronjob_requirements_external_cron_worker_with_presence_vars_stripped(
+    monkeypatch,
+):
     """External cron worker has presence trio stripped from env;
     the cron session marker alone must keep cron.allow_agent_scheduling effective."""
     for var in ("SENSEI_INTERACTIVE", "SENSEI_GATEWAY_SESSION", "SENSEI_EXEC_ASK"):
@@ -122,7 +124,9 @@ def test_cronjob_requirements_external_cron_worker_with_presence_vars_stripped(m
     assert check_cronjob_requirements() is True
 
 
-@pytest.mark.parametrize("var_name", ["SENSEI_INTERACTIVE", "SENSEI_GATEWAY_SESSION", "SENSEI_EXEC_ASK"])
+@pytest.mark.parametrize(
+    "var_name", ["SENSEI_INTERACTIVE", "SENSEI_GATEWAY_SESSION", "SENSEI_EXEC_ASK"]
+)
 def test_cronjob_requirements_each_flag_sufficient(monkeypatch, var_name):
     for var in ("SENSEI_INTERACTIVE", "SENSEI_GATEWAY_SESSION", "SENSEI_EXEC_ASK"):
         monkeypatch.delenv(var, raising=False)

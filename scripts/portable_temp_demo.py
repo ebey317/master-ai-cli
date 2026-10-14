@@ -4,8 +4,9 @@
 Run directly to verify behaviour; import in other scripts via:
     from scripts.temp_utils import get_sensei_tempdir, make_sensei_tempdir
 """
+
 from __future__ import annotations
-import os
+
 import shutil
 import sys
 from pathlib import Path

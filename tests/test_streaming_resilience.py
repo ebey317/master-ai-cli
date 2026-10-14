@@ -1,5 +1,5 @@
 """Tests for the streaming resilience helpers (portable design invariants)."""
-import pytest
+
 from scripts.streaming_resilience import (
     StreamDeliveryTracker,
     StreamErrorClassifier,
@@ -60,8 +60,12 @@ class TestStreamErrorClassifier:
         tracker.mark_delta_sent()  # think-only delta
         # No mark_visible_text called
 
-        classifier = StreamErrorClassifier(max_retries=3, is_transient_fn=is_transient_error)
-        decision = classifier.classify(Exception("connection reset"), attempt=1, tracker=tracker)
+        classifier = StreamErrorClassifier(
+            max_retries=3, is_transient_fn=is_transient_error
+        )
+        decision = classifier.classify(
+            Exception("connection reset"), attempt=1, tracker=tracker
+        )
 
         assert decision.should_retry
         assert "undelivered" in decision.reason
@@ -71,8 +75,12 @@ class TestStreamErrorClassifier:
         tracker = StreamDeliveryTracker()
         tracker.mark_delta_sent()
 
-        classifier = StreamErrorClassifier(max_retries=1, is_transient_fn=is_transient_error)
-        decision = classifier.classify(Exception("connection reset"), attempt=1, tracker=tracker)
+        classifier = StreamErrorClassifier(
+            max_retries=1, is_transient_fn=is_transient_error
+        )
+        decision = classifier.classify(
+            Exception("connection reset"), attempt=1, tracker=tracker
+        )
 
         assert not decision.should_retry
         assert decision.error is not None
@@ -84,7 +92,9 @@ class TestStreamErrorClassifier:
         tracker.mark_delta_sent()
         tracker.mark_visible_text("Hello world")
 
-        classifier = StreamErrorClassifier(max_retries=3, is_transient_fn=is_transient_error)
+        classifier = StreamErrorClassifier(
+            max_retries=3, is_transient_fn=is_transient_error
+        )
         decision = classifier.classify(Exception("timeout"), attempt=1, tracker=tracker)
 
         assert not decision.should_retry
@@ -97,7 +107,9 @@ class TestStreamErrorClassifier:
         tracker.mark_delta_sent()
         tracker.mark_tool_call_start("bash")
 
-        classifier = StreamErrorClassifier(max_retries=3, is_transient_fn=is_transient_error)
+        classifier = StreamErrorClassifier(
+            max_retries=3, is_transient_fn=is_transient_error
+        )
         decision = classifier.classify(Exception("timeout"), attempt=1, tracker=tracker)
 
         assert decision.should_retry
@@ -109,8 +121,12 @@ class TestStreamErrorClassifier:
         tracker.mark_delta_sent()
         tracker.mark_tool_call_start("bash")
 
-        classifier = StreamErrorClassifier(max_retries=3, is_transient_fn=lambda e: False)
-        decision = classifier.classify(Exception("bad request"), attempt=1, tracker=tracker)
+        classifier = StreamErrorClassifier(
+            max_retries=3, is_transient_fn=lambda e: False
+        )
+        decision = classifier.classify(
+            Exception("bad request"), attempt=1, tracker=tracker
+        )
 
         assert not decision.should_retry
         assert "non-transient" in decision.reason
@@ -119,7 +135,9 @@ class TestStreamErrorClassifier:
         """No deltas sent → standard transient retry logic applies."""
         tracker = StreamDeliveryTracker()  # deltas_were_sent = False
 
-        classifier = StreamErrorClassifier(max_retries=3, is_transient_fn=is_transient_error)
+        classifier = StreamErrorClassifier(
+            max_retries=3, is_transient_fn=is_transient_error
+        )
         decision = classifier.classify(Exception("timeout"), attempt=1, tracker=tracker)
 
         assert decision.should_retry
@@ -161,18 +179,27 @@ class TestPartialStreamStub:
 class TestIsTransientError:
     def test_network_errors_transient(self):
         import httpx
+
         assert is_transient_error(httpx.TimeoutException("timeout"))
         assert is_transient_error(httpx.NetworkError("dns"))
         assert is_transient_error(httpx.RemoteProtocolError("protocol"))
 
     def test_5xx_transient(self):
         import httpx
+
         resp = httpx.Response(503, request=httpx.Request("GET", "http://x"))
-        assert is_transient_error(httpx.HTTPStatusError("503", request=resp.request, response=resp))
+        assert is_transient_error(
+            httpx.HTTPStatusError("503", request=resp.request, response=resp)
+        )
 
     def test_4xx_non_transient(self):
         import httpx
+
         resp = httpx.Response(400, request=httpx.Request("GET", "http://x"))
-        assert not is_transient_error(httpx.HTTPStatusError("400", request=resp.request, response=resp))
+        assert not is_transient_error(
+            httpx.HTTPStatusError("400", request=resp.request, response=resp)
+        )
         resp = httpx.Response(401, request=httpx.Request("GET", "http://x"))
-        assert not is_transient_error(httpx.HTTPStatusError("401", request=resp.request, response=resp))
+        assert not is_transient_error(
+            httpx.HTTPStatusError("401", request=resp.request, response=resp)
+        )

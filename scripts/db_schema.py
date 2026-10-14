@@ -2,6 +2,7 @@
 Schema initialization for Sensei state database.
 Separated to allow registry to call it without circular imports.
 """
+
 import sqlite3
 
 SCHEMA_VERSION = 3
@@ -65,7 +66,5 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER PRIMARY KEY)"
     )
-    conn.execute(
-        "INSERT OR IGNORE INTO _schema_version VALUES (?)", (SCHEMA_VERSION,)
-    )
+    conn.execute("INSERT OR IGNORE INTO _schema_version VALUES (?)", (SCHEMA_VERSION,))
     conn.commit()

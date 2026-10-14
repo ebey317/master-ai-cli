@@ -2,19 +2,23 @@
 Skill metadata parser with blueprint support for Sensei.
 Portable design: skills declare cron/suggestion blueprints in their SKILL.md frontmatter.
 """
+
 from __future__ import annotations
+
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
+
 import yaml
 
 
 @dataclass
 class SkillBlueprint:
     """A scheduled job/suggestion declared by a skill."""
+
     schedule: str  # cron expression
-    prompt: str    # prompt template for the suggestion
+    prompt: str  # prompt template for the suggestion
     description: str = ""
     opt_in: bool = True  # never auto-scheduled, user must accept via /suggestions
 
@@ -22,6 +26,7 @@ class SkillBlueprint:
 @dataclass
 class SkillMetadata:
     """Parsed skill metadata from SKILL.md frontmatter."""
+
     name: str
     description: str
     version: str
@@ -30,11 +35,11 @@ class SkillMetadata:
     platforms: list[str]
     tags: list[str] = field(default_factory=list)
     related_skills: list[str] = field(default_factory=list)
-    blueprint: Optional[SkillBlueprint] = None
+    blueprint: SkillBlueprint | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_file(cls, skill_path: Path) -> "SkillMetadata":
+    def from_file(cls, skill_path: Path) -> SkillMetadata:
         """Parse SKILL.md frontmatter."""
         content = skill_path.read_text(encoding="utf-8")
         frontmatter, _ = cls._split_frontmatter(content)
@@ -78,16 +83,17 @@ class SkillMetadata:
 @dataclass
 class SkillManifest:
     """Complete skill manifest including runtime paths."""
+
     metadata: SkillMetadata
     skill_dir: Path
-    entry_point: Optional[Path] = None  # e.g., main.py, skill.py
+    entry_point: Path | None = None  # e.g., main.py, skill.py
 
     @property
     def slug(self) -> str:
         return self.metadata.name.lower().replace(" ", "-")
 
     @classmethod
-    def from_directory(cls, skill_dir: Path) -> "SkillManifest":
+    def from_directory(cls, skill_dir: Path) -> SkillManifest:
         skill_md = skill_dir / "SKILL.md"
         if not skill_md.exists():
             raise FileNotFoundError(f"No SKILL.md in {skill_dir}")

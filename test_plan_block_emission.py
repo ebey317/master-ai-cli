@@ -34,7 +34,34 @@ from pathlib import Path
 BASE = "http://127.0.0.1:8080"
 TIMEOUT_S = 20
 CHAT_TIMEOUT_S = 600
-FIXTURE_URL = "file:///home/user/scripts/sensei_extension/test/job_app_smoke.html"
+
+
+def _fixture_url() -> str:
+    """Resolve the smoke fixture across machines.
+
+    2026-10-13: hardcoded to /home/user/scripts/..., which does not resolve
+    outside the authoring machine. This test currently skips, so the bug is
+    latent rather than firing -- but it points the model at a page_context URL
+    that cannot exist, so it would assert against a phantom fixture the moment
+    the skip is lifted.
+    """
+    name = "sensei_extension/test/job_app_smoke.html"
+    candidates = [
+        Path.home() / "scripts" / name,
+        Path.home() / ".local" / "share" / "master-ai" / name,
+        Path(__file__).resolve().parent
+        / "sensei_extension"
+        / "test"
+        / "job_app_smoke.html",
+        Path("/home/user/scripts") / name,
+    ]
+    for cand in candidates:
+        if cand.is_file():
+            return f"file://{cand}"
+    return f"file://{candidates[0]}"
+
+
+FIXTURE_URL = _fixture_url()
 
 MULTI_STEP_INTERACTIVE = "\n".join(
     [

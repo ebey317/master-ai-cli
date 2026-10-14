@@ -18,7 +18,6 @@ Pure constants and regexes come straight from sensei_tables.
 from __future__ import annotations
 
 import re
-import sys
 from typing import Any
 
 from sensei_tables import (

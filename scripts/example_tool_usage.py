@@ -2,9 +2,9 @@
 Example showing how a Sensei tool script should use the context-preserving runner.
 Replace ad-hoc `asyncio.run` + ThreadPoolExecutor patterns with this helper.
 """
+
 from __future__ import annotations
 
-import asyncio
 from scripts.async_utils import run_async_preserving_context
 
 
@@ -12,6 +12,7 @@ async def _fetch_secrets_and_do_work() -> str:
     # This coroutine runs inside the side thread but *with the caller's contextvars*.
     # Calls to get_secret(), profile-scoped config, etc. will see the correct scope.
     from sensei.secrets import get_secret  # hypothetical import
+
     token = get_secret("API_TOKEN")  # profile-scoped secret lookup
     url = get_secret("API_URL")
     # ... do async work ...

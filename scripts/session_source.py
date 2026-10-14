@@ -8,7 +8,6 @@ sources (kanban, tool, cron, a2a, ...) are intentionally inherited.
 """
 
 import os
-from typing import Optional
 
 # Sources that label the human conversation an interactive UI transport hosts.
 # A finite one-shot child spawned from such a session inherits SESSION_SOURCE
@@ -25,7 +24,7 @@ SESSION_SOURCE_ENV = "SENSEI_SESSION_SOURCE"
 SINGLE_QUERY_SESSION_ENV = "SENSEI_SINGLE_QUERY_SESSION"
 
 
-def resolve_session_source(platform: Optional[str] = None) -> str:
+def resolve_session_source(platform: str | None = None) -> str:
     """Resolve the effective session source for the current process.
 
     Args:

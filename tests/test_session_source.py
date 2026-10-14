@@ -1,16 +1,15 @@
 """Tests for session source resolution."""
 
 import os
+
 import pytest
 
 from scripts.session_source import (
-    resolve_session_source,
-    mark_single_query_session,
-    set_session_source,
     SESSION_SOURCE_ENV,
     SINGLE_QUERY_SESSION_ENV,
-    _UI_TRANSPORT_SOURCES,
-    _AUTOMATION_SOURCES,
+    mark_single_query_session,
+    resolve_session_source,
+    set_session_source,
 )
 
 

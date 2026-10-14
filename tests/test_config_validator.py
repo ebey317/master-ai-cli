@@ -1,13 +1,13 @@
 """Tests for config_validator.py quoted container detection."""
+
 import pytest
-import yaml
 
 from scripts.config_validator import (
-    validate_quoted_containers,
-    validate_config_structure,
-    _container_slots,
     _KNOWN_CONTAINER_TYPES,
     _SCALAR_AS_ONE_ITEM_LIST_KEYS,
+    _container_slots,
+    validate_config_structure,
+    validate_quoted_containers,
 )
 
 
@@ -111,7 +111,7 @@ class TestQuotedContainerValidation:
     def test_handles_yaml_parse_errors_gracefully(self):
         config = {
             "plugins": {
-                "enabled": '[not valid yaml'  # malformed
+                "enabled": "[not valid yaml"  # malformed
             }
         }
         warnings = validate_quoted_containers(config)
@@ -120,11 +120,7 @@ class TestQuotedContainerValidation:
 
 class TestValidateConfigStructure:
     def test_includes_quoted_container_warnings(self):
-        config = {
-            "plugins": {
-                "enabled": '["a", "b"]'
-            }
-        }
+        config = {"plugins": {"enabled": '["a", "b"]'}}
         issues = validate_config_structure(config)
         assert any(i["key"] == "plugins.enabled" for i in issues)
 

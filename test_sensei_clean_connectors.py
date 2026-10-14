@@ -10,6 +10,7 @@ from unittest import mock
 from sensei_clean import status as _status
 from sensei_clean.adapters.local_fs import LocalFSAdapter
 from sensei_clean.apply import apply_actions, load_undo_records, undo_actions
+from sensei_clean.classify import matches_tokens
 from sensei_clean.connectors import detect_sources, supported_connector_catalog
 from sensei_clean.engine import scan_run
 
@@ -155,6 +156,55 @@ class SenseiCleanConnectorTests(unittest.TestCase):
                 all(r.success for r in undo_results), [r.message for r in undo_results]
             )
             self.assertTrue((downloads / "invoice.txt").exists())
+
+
+class ClassifierTokenBoundaryTests(unittest.TestCase):
+    """2026-10-13: regression for raw-substring token matching.
+
+    A random tempdir like /tmp/tmp65avurcv contains "cv", so the old
+    `token in full_path` check classified every file under it as
+    career-sensitive (monitored lane, confidence 0.7) and silently
+    dropped all unattended actions. "taxonomy" matched "tax" the same
+    way. Tokens must match on word boundaries (plurals allowed).
+    """
+
+    def test_short_tokens_do_not_match_inside_random_strings(self) -> None:
+        self.assertFalse(matches_tokens("/tmp/tmp65avurcv/Downloads/x.txt", ("cv",)))
+        self.assertFalse(matches_tokens("/home/elijah/mycv-archive/x.txt", ("cv",)))
+        self.assertFalse(matches_tokens("/tmp/taxonomy-notes/x.txt", ("tax",)))
+        self.assertFalse(matches_tokens("presumed-dead.mp4", ("resume",)))
+        self.assertFalse(matches_tokens("/tmp/w250-notes.pdf", ("w2",)))
+
+    def test_real_tokens_match_at_word_boundaries_with_plurals(self) -> None:
+        self.assertTrue(matches_tokens("/tmp/Resumes/final.docx", ("resume",)))
+        self.assertTrue(matches_tokens("/tmp/Taxes 2025/w2.pdf", ("tax",)))
+        self.assertTrue(matches_tokens("pay stubs/jan.pdf", ("pay stub",)))
+        self.assertTrue(matches_tokens("/data/cv/final.pdf", ("cv",)))
+        self.assertTrue(matches_tokens("/data/my-cv.pdf", ("cv",)))
+        self.assertTrue(matches_tokens("w-2 2025.pdf", ("w-2",)))
+
+    def test_adapter_classification_not_poisoned_by_temp_path(self) -> None:
+        adapter = LocalFSAdapter(
+            run_id="classify",
+            roots=["/tmp/tmp65avurcv"],
+            quarantine_root="/tmp/tmp65avurcv/q",
+        )
+        self.assertEqual(
+            adapter._classify(
+                Path("/tmp/tmp65avurcv/Downloads/invoice.txt"), "text/plain"
+            ),
+            ("documents", "Reading"),
+        )
+        self.assertEqual(
+            adapter._classify(
+                Path("/tmp/tmp65avurcv/Downloads/photo.jpg"), "image/jpeg"
+            ),
+            ("photos", "Photos"),
+        )
+        self.assertEqual(
+            adapter._classify(Path("/tmp/Resumes/Resume 2026.pdf"), "application/pdf"),
+            ("career", "Career"),
+        )
 
 
 if __name__ == "__main__":

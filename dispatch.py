@@ -381,17 +381,23 @@ def _resume_skill_reply_from_turn(user_text: Any, history: Any) -> Any:
         return f"Skill resume failed: {type(e).__name__}: {e}"
 
 
-def _json_tool_call_to_directive_line(name: str, arguments: dict) -> Any:
+def _json_tool_call_to_directive_line(name: Any, arguments: Any) -> Any:
     """Shared conversion for both JSON-shaped formats above: a {"name":
     ..., "arguments": {...}} dict becomes one `X: payload` directive line.
     Prefers a "command" argument when present (matching the XML function
     format's same preference, for the same reason — an accompanying
-    "description" argument is not the payload); otherwise falls back to
-    the first argument value. Defensive by construction: any shape that
+    "description" argument is not the payload); otherwise falls back to the
+    first argument value. Defensive by construction: any shape that
     doesn't parse into a usable (name, payload) pair returns None rather
     than guessing, consistent with this file's existing "safe default: no
     match" convention for widen-only heuristics — an execution safety
-    concern, not just a style one."""
+    concern, not just a style one.
+
+    `name`/`arguments` are typed Any because the callers pass straight out of
+    json.loads() on model output, where either key may be absent, null, or
+    the wrong type entirely. The isinstance guards below are the real
+    contract; annotating these as str/dict only described the happy path and
+    made every call site carry a lie."""
     if not isinstance(name, str) or not name.strip():
         return None
     directive_name = _XML_FUNCTION_NAME_ALIASES.get(
@@ -665,7 +671,7 @@ def _truncate_repeated_lines(reply: Any, max_repeats: Any = _MAX_LINE_REPEATS) -
     running it even once more than necessary just spends a tool call
     and pollutes context for nothing."""
     lines = (reply or "").splitlines()
-    counts = {}
+    counts: dict[str, int] = {}
     for line in lines:
         stripped = line.strip()
         if stripped:
@@ -673,7 +679,7 @@ def _truncate_repeated_lines(reply: Any, max_repeats: Any = _MAX_LINE_REPEATS) -
     over_limit = {ln for ln, c in counts.items() if c > max_repeats}
     if not over_limit:
         return reply
-    seen = {}
+    seen: dict[str, int] = {}
     out = []
     cut = False
     for line in lines:
@@ -1257,7 +1263,20 @@ def process_reply(
     # from Sensei CLI. Uses TELEGRAM_BOT_TOKEN from ~/.master_ai_keys. Irreversible
     # send, so it follows the same confirm gate as SEND_EMAIL (plan refuses,
     # review/auto prompt once).
-    def _parse_send_telegram_spec(line: Any) -> None:
+    # 2026-10-13: was annotated `-> None`, which misdescribed the function — it
+    # returns a {"chat_id", "text"} spec on every success path, and
+    # `send_telegram_specs` below filters on that return value.
+    #
+    # To be precise about severity: this was a TYPE-correctness bug only.
+    # Python does not enforce return annotations at runtime, so the dict was
+    # always returned and the `if s` filter always kept it; verified by
+    # executing the pre- and post-fix bodies side by side and getting an
+    # identical {'chat_id': ..., 'text': ...} result. What the wrong
+    # annotation caused was that mypy flagged every call as
+    # func-returns-value, which is what surfaced it. Fixed to `Any` to match
+    # the _parse_send_email_spec sibling and stop describing the happy path
+    # as if it were the only one.
+    def _parse_send_telegram_spec(line: Any) -> Any:
         payload = _extract_directive(line, "SEND_TELEGRAM")
         if not payload:
             return None
@@ -1373,8 +1392,20 @@ def process_reply(
     create_files = []
     # Parse EDIT: ... <<<FIND ... >>>FIND <<<REPLACE ... >>>REPLACE blocks
     edit_ops = []
-    in_block, cur_path, cur_content = False, None, []
-    cur_find, cur_replace, in_find, in_replace = None, None, False, False
+    # 2026-10-13: annotate the accumulators. These are all reset to [] / None
+    # as each block opens or closes, so each one is genuinely `list[str] |
+    # None` at different points -- mypy inferred the first assignment
+    # (`[]`/`None` in one tuple-unpack) and then rejected the reassignments.
+    # The None-sentinel means "no block currently open" and every read is
+    # already guarded, so this states the existing contract rather than
+    # changing it.
+    in_block: bool = False
+    cur_path: str | None = None
+    cur_content: list[str] | None = None
+    cur_find: list[str] | None = None
+    cur_replace: list[str] | None = None
+    in_find: bool = False
+    in_replace: bool = False
     for line in lines:
         if re.match(r"^\s*CREATE:", line, re.IGNORECASE):
             cur_path = os.path.expanduser(
@@ -1386,9 +1417,10 @@ def process_reply(
             in_block = True
         elif line.strip().upper() == ">>>CONTENT" and in_block:
             in_block = False
-            create_files.append((cur_path, "\n".join(cur_content)))
+            if cur_path is not None and cur_content is not None:
+                create_files.append((cur_path, "\n".join(cur_content)))
             cur_path = None
-        elif in_block:
+        elif in_block and cur_content is not None:
             cur_content.append(line)
         elif re.match(r"^\s*EDIT:", line, re.IGNORECASE):
             cur_path = os.path.expanduser(
@@ -1406,7 +1438,11 @@ def process_reply(
             in_replace = True
         elif line.strip().upper() == ">>>REPLACE" and in_replace:
             in_replace = False
-            if cur_find is not None and cur_replace is not None:
+            if (
+                cur_path is not None
+                and cur_find is not None
+                and cur_replace is not None
+            ):
                 edit_ops.append((cur_path, "\n".join(cur_find), "\n".join(cur_replace)))
             cur_path = None
             cur_find = None

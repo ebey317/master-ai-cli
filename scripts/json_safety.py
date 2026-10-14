@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ T = TypeVar("T")
 
 class NonDictJSONError(ValueError):
     """Raised when parsed JSON is not a dict/object."""
+
     pass
 
 
@@ -38,7 +40,11 @@ def load_json_dict(path: Path, encoding: str = "utf-8") -> dict | None:
         return None
 
     if not isinstance(data, dict):
-        log.warning("Non-dict JSON in %s (got %s), treating as corrupt", path, type(data).__name__)
+        log.warning(
+            "Non-dict JSON in %s (got %s), treating as corrupt",
+            path,
+            type(data).__name__,
+        )
         return None
 
     return data
@@ -69,8 +75,12 @@ def load_json_lines_dicts(path: Path, encoding: str = "utf-8") -> list[dict]:
             continue
 
         if not isinstance(entry, dict):
-            log.warning("Non-dict JSON on line %d of %s (got %s), skipping",
-                        line_num, path, type(entry).__name__)
+            log.warning(
+                "Non-dict JSON on line %d of %s (got %s), skipping",
+                line_num,
+                path,
+                type(entry).__name__,
+            )
             continue
 
         results.append(entry)
@@ -114,7 +124,7 @@ def scan_json_files(
     return results
 
 
-def safe_get(data: Any, key: str, default: T = None) -> T | Any:
+def safe_get(data: Any, key: str, default: T | None = None) -> T | Any:
     """
     Safely get a key from data if it's a dict, else return default.
 
@@ -125,7 +135,7 @@ def safe_get(data: Any, key: str, default: T = None) -> T | Any:
     return default
 
 
-def safe_get_nested(data: Any, *keys: str, default: T = None) -> T | Any:
+def safe_get_nested(data: Any, *keys: str, default: T | None = None) -> T | Any:
     """
     Safely traverse nested dicts. Returns default if any level is not a dict.
     """

@@ -4,16 +4,13 @@ import json
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from scripts.json_safety import (
     load_json_dict,
     load_json_lines_dicts,
-    try_parse_json_dict,
-    scan_json_files,
     safe_get,
     safe_get_nested,
-    NonDictJSONError,
+    scan_json_files,
+    try_parse_json_dict,
 )
 
 
@@ -89,7 +86,7 @@ class TestLoadJsonLinesDicts:
             f.write('{"valid": true}\n')
             f.write("42\n")
             f.write('{"also": "valid"}\n')
-            f.write('not json\n')
+            f.write("not json\n")
             f.write('["array"]\n')
             f.write('{"final": 1}\n')
             path = Path(f.name)
@@ -148,7 +145,9 @@ class TestScanJsonFiles:
             (dir_path / "a.json").write_text('{"name": "a", "enabled": true}')
             (dir_path / "b.json").write_text('{"name": "b", "enabled": false}')
 
-            results = scan_json_files(dir_path, "*.json", validator=lambda d: d.get("enabled"))
+            results = scan_json_files(
+                dir_path, "*.json", validator=lambda d: d.get("enabled")
+            )
             assert len(results) == 1
             assert results[0][1]["name"] == "a"
 

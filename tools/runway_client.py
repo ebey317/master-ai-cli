@@ -15,6 +15,7 @@ Per-model pitfalls encoded here (do not "simplify" them away):
 - THROTTLED is queued, not failed. FAILED carries failure/failureCode.
 - Never invent model ids; use ones in model_presets() or the models guide.
 """
+
 from __future__ import annotations
 
 import json
@@ -32,24 +33,45 @@ KEYCHAIN = Path.home() / ".master_ai_keys"
 # ratio/duration fields list what each model ACCEPTS on text_to_video;
 # prices are credits/second of output video (media-resolution noted).
 MODEL_PRESETS = {
-    "gen4.5":        {"io": "text/image->video", "ratios": ["1280:720", "720:1280"],
-                      "duration": (2, 10), "credits_per_s": 12,
-                      "prompt_chars": 1000, "required": ["ratio", "duration"]},
-    "gen4_turbo":    {"io": "image->video", "credits_per_s": 5},
-    "aleph2":        {"io": "video+text->video", "credits_per_s": 28, "min_gen": 56},
-    "act_two":       {"io": "image/video->video", "credits_per_s": 5},
-    "veo3.1":        {"io": "text/image->video", "credits_per_s": "20 no-audio / 40 audio"},
-    "veo3.1_fast":   {"io": "text/image->video", "credits_per_s": "10 no-audio / 15 audio"},
-    "seedance2":     {"io": "text/image/video->video", "credits_per_s": "36-40 (4K: 150)"},
-    "seedance2_fast":{"io": "text/image/video->video", "credits_per_s": 29},
-    "seedance2_mini":{"io": "text/image/video->video", "credits_per_s": 16, "min_gen": 64},
-    "wan3":          {"io": "text/image->video", "credits_per_s": "5 (480p) - 20 (1080p)"},
-    "hailuo3":       {"io": "text/image/video->video", "credits_per_s": "10 (768p) - 15 (2K)"},
-    "gemini_omni_flash": {"io": "text/image/video->video", "credits_per_s": 10,
-                          "prompt_chars": 4000},
-    "gen4_image":      {"io": "text/image->image", "credits_per_image": "5 (720p) / 8 (1080p)"},
-    "gen4_image_turbo":{"io": "text/image->image", "credits_per_image": 2},
-    "eleven_v3":       {"io": "text->audio (TTS)", "pricing": "1 credit / 50 chars"},
+    "gen4.5": {
+        "io": "text/image->video",
+        "ratios": ["1280:720", "720:1280"],
+        "duration": (2, 10),
+        "credits_per_s": 12,
+        "prompt_chars": 1000,
+        "required": ["ratio", "duration"],
+    },
+    "gen4_turbo": {"io": "image->video", "credits_per_s": 5},
+    "aleph2": {"io": "video+text->video", "credits_per_s": 28, "min_gen": 56},
+    "act_two": {"io": "image/video->video", "credits_per_s": 5},
+    "veo3.1": {"io": "text/image->video", "credits_per_s": "20 no-audio / 40 audio"},
+    "veo3.1_fast": {
+        "io": "text/image->video",
+        "credits_per_s": "10 no-audio / 15 audio",
+    },
+    "seedance2": {"io": "text/image/video->video", "credits_per_s": "36-40 (4K: 150)"},
+    "seedance2_fast": {"io": "text/image/video->video", "credits_per_s": 29},
+    "seedance2_mini": {
+        "io": "text/image/video->video",
+        "credits_per_s": 16,
+        "min_gen": 64,
+    },
+    "wan3": {"io": "text/image->video", "credits_per_s": "5 (480p) - 20 (1080p)"},
+    "hailuo3": {
+        "io": "text/image/video->video",
+        "credits_per_s": "10 (768p) - 15 (2K)",
+    },
+    "gemini_omni_flash": {
+        "io": "text/image/video->video",
+        "credits_per_s": 10,
+        "prompt_chars": 4000,
+    },
+    "gen4_image": {
+        "io": "text/image->image",
+        "credits_per_image": "5 (720p) / 8 (1080p)",
+    },
+    "gen4_image_turbo": {"io": "text/image->image", "credits_per_image": 2},
+    "eleven_v3": {"io": "text->audio (TTS)", "pricing": "1 credit / 50 chars"},
     "eleven_text_to_sound_v2": {"io": "text->sfx", "pricing": "1 credit/s"},
 }
 
@@ -64,7 +86,7 @@ def _load_key() -> str:
             line = line.strip()
             if line.startswith("RUNWAYML_API_SECRET="):
                 val = line.partition("=")[2].strip()
-                if val and "<" != val[0] and "[" != val[0] and val.isascii():
+                if val and val[0] != "<" and val[0] != "[" and val.isascii():
                     return val
     raise RuntimeError(
         "RUNWAYML_API_SECRET not set. Add a RUNWAYML_API_SECRET=... row to "
@@ -119,7 +141,11 @@ def cancel_task(task_id: str) -> None:
 def wait_for_task(task_id: str, max_seconds: int = 900, poll_every: int = 6) -> dict:
     """Poll with backoff until terminal status. Matches SDK wait_for_task_output."""
     deadline = time.time() + max_seconds
-    delay = poll_every
+    # 2026-10-13: starts as int (poll_every) but the backoff below multiplies
+    # it by 1.3, so it is a float for most of its life. Annotate it as such
+    # rather than letting mypy infer int from the first assignment and then
+    # reject the float reassignment.
+    delay: float = float(poll_every)
     while time.time() < deadline:
         t = get_task(task_id)
         status = t.get("status")
@@ -132,7 +158,7 @@ def wait_for_task(task_id: str, max_seconds: int = 900, poll_every: int = 6) -> 
             )
         # PENDING / THROTTLED / RUNNING -> keep waiting (THROTTLED is queued, not failed)
         time.sleep(delay)
-        delay = min(delay * 1.3, 20)
+        delay = min(delay * 1.3, 20.0)
     raise TimeoutError(f"Task {task_id} not terminal after {max_seconds}s")
 
 
@@ -159,8 +185,11 @@ def download_artifact(url: str, dest: str | Path) -> Path:
 
 if __name__ == "__main__":
     import sys
+
     if "--check" in sys.argv:
         org = get_credits()
         print(json.dumps(org, indent=2)[:500])
     else:
-        print("usage: python3 runway_client.py --check   (credit balance; verifies key)")
+        print(
+            "usage: python3 runway_client.py --check   (credit balance; verifies key)"
+        )

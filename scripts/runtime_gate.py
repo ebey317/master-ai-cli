@@ -179,8 +179,8 @@ def _foreign_master_ai_pids():
     must never touch it. pgrep never matches itself.
     """
     r = subprocess.run(
-        ["pgrep", "-af", r"master_ai\.py"],
-        capture_output=True, text=True)
+        ["pgrep", "-af", r"master_ai\.py"], capture_output=True, text=True
+    )
     pids = []
     for line in r.stdout.splitlines():
         pid_s, _, cmd = line.partition(" ")
@@ -198,7 +198,8 @@ def _require_idle(what):
     if pids:
         raise GateBusy(
             "refusing %s: other master_ai.py test processes active (pids: %s); "
-            "wait for them to finish and rerun the gate" % (what, ", ".join(pids)))
+            "wait for them to finish and rerun the gate" % (what, ", ".join(pids))
+        )
 
 
 def _reap(proc):
@@ -253,14 +254,19 @@ def check_boot(repo):
     try:
         r = _run([sys.executable, "master_ai.py", "--help"], cwd=repo)
     except subprocess.TimeoutExpired:
-        return False, "--help timed out (>%ds), possible hang on startup" % CHECK_TIMEOUT
+        return (
+            False,
+            "--help timed out (>%ds), possible hang on startup" % CHECK_TIMEOUT,
+        )
     out = (r.stdout or "") + (r.stderr or "")
     if "Traceback" in out:
         tail = "\n".join(out.strip().splitlines()[-8:])
         return False, "traceback on startup:\n" + tail
     if r.returncode != 0:
         return False, "exit code %d; output tail: %s" % (
-            r.returncode, out.strip().splitlines()[-3:])
+            r.returncode,
+            out.strip().splitlines()[-3:],
+        )
     return True, "clean startup as __main__ (rc=0, no traceback)"
 
 
@@ -275,8 +281,7 @@ def check_headless(repo):
     try:
         import headless_runner
     except Exception as e:
-        return False, "cannot import headless_runner: %s: %s" % (
-            type(e).__name__, e)
+        return False, "cannot import headless_runner: %s: %s" % (type(e).__name__, e)
 
     probe = "/tmp/gate_probe.txt"
     try:
@@ -285,18 +290,21 @@ def check_headless(repo):
         pass
 
     runner = headless_runner.HeadlessRunner(
-        task="Write the word hello to %s" % probe, max_turns=3)
+        task="Write the word hello to %s" % probe, max_turns=3
+    )
     calls = {"n": 0}
 
     def fake_reply(history):
         calls["n"] += 1
         if calls["n"] == 1:
             first = history[0] if history else {}
-            assert first.get("role") == "system", \
-                "first history message must be the system prompt, got: %r" % (
-                    first.get("role"),)
-            assert "RUN:" in first.get("content", ""), \
+            assert first.get("role") == "system", (
+                "first history message must be the system prompt, got: %r"
+                % (first.get("role"),)
+            )
+            assert "RUN:" in first.get("content", ""), (
                 "system prompt does not teach the directive format"
+            )
             return "RUN: printf 'hello' > %s" % probe
         return "Task complete."
 
@@ -308,7 +316,9 @@ def check_headless(repo):
 
     if not os.path.exists(probe):
         return False, "artifact not created at %s; loop output tail: %r" % (
-            probe, out[-400:] if isinstance(out, str) else out)
+            probe,
+            out[-400:] if isinstance(out, str) else out,
+        )
     content = open(probe).read()
     if content != "hello":
         return False, "artifact content wrong: %r (expected 'hello')" % content
@@ -321,8 +331,9 @@ def check_headless(repo):
     except OSError:
         pass
     try:
-        r = _run([sys.executable, "-c", _HEADLESS_CLI_DRIVER, repo, cli_probe],
-                 cwd=repo)
+        r = _run(
+            [sys.executable, "-c", _HEADLESS_CLI_DRIVER, repo, cli_probe], cwd=repo
+        )
     except subprocess.TimeoutExpired:
         return False, "CLI headless driver timed out (>%ds)" % CHECK_TIMEOUT
     out = (r.stdout or "") + (r.stderr or "")
@@ -330,14 +341,17 @@ def check_headless(repo):
         tail = "\n".join(out.strip().splitlines()[-10:])
         return False, "CLI headless path failed:\\n" + tail
     if not os.path.exists(cli_probe):
-        return False, ("CLI headless ran but artifact missing at %s; "
-                       "output tail: %r") % (cli_probe, out.strip()[-400:])
+        return False, (
+            "CLI headless ran but artifact missing at %s; output tail: %r"
+        ) % (cli_probe, out.strip()[-400:])
     content = open(cli_probe).read()
     if content != "hello":
         return False, "CLI artifact content wrong: %r (expected 'hello')" % content
-    return True, ("leg A: parse -> execute -> artifact verified (%s == 'hello'); "
-                  "leg B: __main__ routed --task/--headless to headless_runner, "
-                  "artifact verified (%s == 'hello')") % (probe, cli_probe)
+    return True, (
+        "leg A: parse -> execute -> artifact verified (%s == 'hello'); "
+        "leg B: __main__ routed --task/--headless to headless_runner, "
+        "artifact verified (%s == 'hello')"
+    ) % (probe, cli_probe)
 
 
 def check_split(repo):
@@ -368,9 +382,11 @@ def main():
         return 1
 
     results = []
-    for name, fn in (("BOOT", check_boot),
-                     ("HEADLESS", check_headless),
-                     ("SPLIT", check_split)):
+    for name, fn in (
+        ("BOOT", check_boot),
+        ("HEADLESS", check_headless),
+        ("SPLIT", check_split),
+    ):
         try:
             passed, detail = fn(repo)
         except GateBusy as e:
