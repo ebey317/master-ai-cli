@@ -215,14 +215,14 @@ I'm a self-taught developer. HVAC installer by day, building AI systems by night
 2. Create a feature branch: `git checkout -b feature/your-feature-name`
 3. Make changes
 4. Run the test suite: `pytest`
-5. Run linters: `ruff check .` and `black --check .`
+5. Run linters: `ruff check .` and `ruff format --check .`
 6. Run shellcheck: `shellcheck *.sh`
 7. Commit and push
 8. Open a pull request
 
 ### Code style
 
-- PEP 8 with 88-character line length (Black)
+- PEP 8 with 88-character line length (ruff-format)
 - `ruff` for linting
 - Unit tests for new functionality
 - Docstrings for public APIs
