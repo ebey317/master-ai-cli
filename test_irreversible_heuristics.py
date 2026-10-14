@@ -206,7 +206,13 @@ class BrowserHeuristicTests(unittest.TestCase):
 
 class ContinuationFormattingTests(unittest.TestCase):
     def test_format_action_results_includes_gated_by(self):
-        from stt_server import _format_action_results  # noqa: WPS433
+        # 2026-10-14: stt_server is a local runtime module (~/scripts on
+        # this box), not part of the repo; skip where it isn't importable
+        # (CI) instead of dying with ModuleNotFoundError.
+        try:
+            from stt_server import _format_action_results  # noqa: WPS433
+        except ImportError:
+            self.skipTest("stt_server (local runtime module) not importable")
 
         text = _format_action_results(
             [

@@ -25,6 +25,12 @@ dependencies = [
     # plugin catalog and every skill-metadata load. Core, not dev: this is
     # imported on the normal runtime path, not only by tests.
     "PyYAML>=6.0",
+    # 2026-10-14: imported at module scope by sensei_structured_aux.py and
+    # by the streaming-resilience tests, but never declared -- same disease
+    # as PyYAML above. CI surfaced it as ModuleNotFoundError in 5 tests on
+    # a clean `pip install -e .[dev]`; it only ever worked on boxes that
+    # happened to have httpx already. Runtime path for the aux provider.
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
@@ -47,6 +53,11 @@ dev = [
     # server surface against the real SDK; CI installs .[dev] and
     # would otherwise collect-error on the missing module.
     "mcp>=1.2.0",
+    # 2026-10-14: async-def tests (test_context_propagation,
+    # test_mcp_session_cwd) need the plugin explicitly; CI installs only
+    # this dev extra plus bare pytest, so without it they all fail with
+    # "async def functions are not natively supported" on the runner.
+    "pytest-asyncio>=1.0.0",
     # The type gate (tools/mypy_gate.py) is a `language: system`
     # pre-commit hook, so it runs against whatever interpreter is on
     # PATH rather than a hook-private venv. That means mypy has to be a

@@ -18,12 +18,27 @@ import master_ai  # noqa: E402
 
 
 class OutputCapsTest(unittest.TestCase):
+    def _require_sandbox(self):
+        """2026-10-14: the cap tests below exercise the real RUN path,
+        whose sandbox wrapper needs systemd-run + unshare. GitHub runners
+        have neither, so the command returns not-ok there for environment
+        reasons; skip in that case instead of misreporting a broken cap.
+        (test_output_caps_standards_pass is static and always runs.)"""
+        try:
+            ok = bool(master_ai.run_command("true").ok)
+        except Exception:
+            ok = False
+        if not ok:
+            self.skipTest("RUN sandbox not functional in this environment")
+
     def test_short_output_not_truncated(self):
+        self._require_sandbox()
         result = master_ai.run_command("echo hi")
         self.assertTrue(master_ai._action_ok(result))
         self.assertIn("hi", str(result))
 
     def test_long_output_is_capped(self):
+        self._require_sandbox()
         # Generate 50k chars and verify the formatted result is truncated.
         big = "x" * 50000
         result = master_ai.run_command(f"printf '%s' '{big}'")
@@ -39,6 +54,7 @@ class OutputCapsTest(unittest.TestCase):
         )
 
     def test_empty_output_replaced(self):
+        self._require_sandbox()
         result = master_ai.run_command("true")
         formatted = master_ai._format_tool_result("RUN", "true", result)
         self.assertIn("[no output]", formatted)

@@ -155,7 +155,16 @@ class RefreshDomainClassesTests(unittest.TestCase):
         )
         os.environ["SENSEI_TUI"] = "0"
         sys.path.insert(0, os.path.expanduser("~/scripts"))
-        import stt_server as srv
+        # 2026-10-14: stt_server is a local runtime module (~/scripts on
+        # this box), not part of the repo; skip where it isn't importable
+        # (CI) instead of dying with ModuleNotFoundError.
+        try:
+            import stt_server as srv
+        except ImportError:
+            self.skipTest(
+                "stt_server is a local runtime module (~/scripts), not part "
+                "of the repo; nothing to round-trip against here"
+            )
 
         original_path = srv._DOMAIN_CLASSES_PATH
         original_cache = dict(srv._DOMAIN_CLASSES_CACHE)
