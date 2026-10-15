@@ -1,10 +1,12 @@
-"""Parse and validate shell hook responses for pre_tool_call events.
+"""
+Portable shell hook parser for pre_tool_call events.
 
-Portable design from NousResearch/hermes-agent#30b38d1:
-- "action": "approve" → escalate to human approval gate (carries message, rule_key)
-- "action": "block"   → deny with message
-- "action": "modify"  → rewrite tool arguments
-- "decision": "approve" (Claude-Code) → auto-allow, NOT mapped to human gate
+Implements the Hermes-inspired design where shell hooks can emit:
+  - {"action": "block", "message": "..."}          -> block the tool
+  - {"action": "modify", "args": {...}}            -> modify tool args
+  - {"action": "approve", "message"?, "rule_key"?} -> escalate to human approval gate
+
+Claude-Code's `{"decision": "approve"}` means auto-ALLOW and is deliberately NOT mapped.
 """
 
 from __future__ import annotations
@@ -13,82 +15,99 @@ import json
 from typing import Any, Dict, Optional
 
 
+# Dialects ordered by precedence (first match wins)
+_PRE_TOOL_DIALECTS = [
+    # (verb_key, expected_value, _, payload_key)
+    ("action", "block", None, "message"),
+    ("action", "modify", None, "args"),
+    ("decision", "block", None, "reason"),
+    ("decision", "modify", None, "tool_input"),
+]
+
+
+def _parse_block_or_modify(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Parse block/modify dialects shared with Claude-Code compatibility."""
+    for verb, expected, _, payload_key in _PRE_TOOL_DIALECTS:
+        if data.get(verb) == expected:
+            payload = data.get(payload_key)
+            if isinstance(payload, dict) and payload_key == "args":
+                return {"action": "modify", "args": payload}
+            if isinstance(payload, dict) and payload_key == "tool_input":
+                return {"action": "modify", "args": payload}
+            if isinstance(payload, str) and payload_key in ("message", "reason"):
+                return {"action": "block", "message": payload.strip()} if payload.strip() else {"action": "block"}
+    return None
+
+
 def parse_pre_tool_call(stdout: str) -> Optional[Dict[str, Any]]:
-    """Parse a shell hook's stdout for pre_tool_call directives.
+    """
+    Parse a shell hook's stdout for pre_tool_call directives.
 
     Returns a canonical directive dict or None if no recognized directive.
-    Recognized shapes (Hermes-canonical first, then Claude-Code compat):
-      {"action": "approve", "message"?, "rule_key"?}  → escalate to human gate
-      {"action": "block", "message"?}                 → deny tool
-      {"action": "modify", "args": {...}}             → rewrite args
-      {"decision": "block", "reason"?}                → deny (CC compat)
-      {"decision": "modify", "tool_input": {...}}     → rewrite args (CC compat)
+    Recognized actions:
+      - block:   {"action": "block", "message"?: str}
+      - modify:  {"action": "modify", "args": Dict}
+      - approve: {"action": "approve", "message"?: str, "rule_key"?: str}
 
-    Notes:
-    - "decision": "approve" means auto-allow in Claude-Code; deliberately NOT mapped.
-    - Optional string fields (message, reason, rule_key) are stripped and omitted if empty.
-    - Invalid JSON or unrecognized top-level keys → None (hook treated as no-op).
+    The `approve` action escalates to the human approval gate.
+    Optional fields are included only when non-empty stripped strings.
     """
-    stdout = stdout.strip()
-    if not stdout:
+    if not stdout or not stdout.strip():
         return None
 
     try:
-        data = json.loads(stdout)
+        data = json.loads(stdout.strip())
     except json.JSONDecodeError:
         return None
 
     if not isinstance(data, dict):
         return None
 
-    # Hermes-canonical: approve → human approval gate
+    # 1. Block / modify dialects (Claude-Code compatible + Hermes canonical)
+    directive = _parse_block_or_modify(data)
+    if directive:
+        return directive
+
+    # 2. Hermes-only: escalate to human approval gate
+    #    Claude-Code's `{"decision": "approve"}` means auto-ALLOW and is NOT mapped here.
     if data.get("action") == "approve":
         directive: Dict[str, Any] = {"action": "approve"}
         for key in ("message", "rule_key"):
             value = data.get(key)
-            if isinstance(value, str):
-                stripped = value.strip()
-                if stripped:
-                    directive[key] = stripped
+            if isinstance(value, str) and value.strip():
+                directive[key] = value.strip()
         return directive
 
-    # Hermes-canonical: block
-    if data.get("action") == "block":
-        directive = {"action": "block"}
-        msg = data.get("message")
-        if isinstance(msg, str):
-            stripped = msg.strip()
-            if stripped:
-                directive["message"] = stripped
-        return directive
-
-    # Hermes-canonical: modify
-    if data.get("action") == "modify" and isinstance(data.get("args"), dict):
-        return {"action": "modify", "args": data["args"]}
-
-    # Claude-Code compat: decision:block → block
-    if data.get("decision") == "block":
-        directive = {"action": "block"}
-        reason = data.get("reason")
-        if isinstance(reason, str):
-            stripped = reason.strip()
-            if stripped:
-                directive["message"] = stripped
-        return directive
-
-    # Claude-Code compat: decision:modify → modify
-    if data.get("decision") == "modify" and isinstance(data.get("tool_input"), dict):
-        return {"action": "modify", "args": data["tool_input"]}
-
-    # decision:approve is auto-allow in Claude-Code; not mapped to human gate
     return None
 
 
-def format_approve_directive(message: str = "", rule_key: str = "") -> str:
-    """Build a JSON line for a shell hook to emit an approve escalation."""
-    payload: Dict[str, Any] = {"action": "approve"}
-    if message.strip():
-        payload["message"] = message.strip()
-    if rule_key.strip():
-        payload["rule_key"] = rule_key.strip()
-    return json.dumps(payload, separators=(",", ":"))
+def parse_post_tool_call(stdout: str) -> Optional[Dict[str, Any]]:
+    """Parse a shell hook's stdout for post_tool_call directives (future extensibility)."""
+    if not stdout or not stdout.strip():
+        return None
+    try:
+        data = json.loads(stdout.strip())
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    # Reserved for future: context injection, notifications, etc.
+    return None
+
+
+def parse_pre_llm_call(stdout: str) -> Optional[Dict[str, Any]]:
+    """Parse a shell hook's stdout for pre_llm_call directives."""
+    if not stdout or not stdout.strip():
+        return None
+    try:
+        data = json.loads(stdout.strip())
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    # Hermes canonical: {"context": "..."}
+    if "context" in data and isinstance(data["context"], str):
+        ctx = data["context"].strip()
+        if ctx:
+            return {"context": ctx}
+    return None
