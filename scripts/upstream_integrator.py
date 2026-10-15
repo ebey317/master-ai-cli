@@ -57,8 +57,8 @@ CORE_ENGINE_FILES = {
 }
 
 MSG_LIMIT = 1500
-DIFF_LINES = 500
-DIFF_CHARS = 8000
+DIFF_LINES = 200
+DIFF_CHARS = 4000
 # Must end in ":free" -- see the free-only gate in _ask_cloud().
 PLAN_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
