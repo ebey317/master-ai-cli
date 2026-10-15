@@ -176,6 +176,11 @@ class VisionRouting(RouterGoldenBase):
 
 
 class TerminalVisualRouting(RouterGoldenBase):
+    # RouterGoldenBase forces keyless load_keys + apocalypse run mode,
+    # deliberately: these goldens pin the offline world. Under keyed
+    # peacetime the same requests route cloud lanes instead, and terminal
+    # visuals still run via cloud-emitted directives (user-verified
+    # 2026-10-14).
     def test_matrix_rain_is_tool_required(self):
         d = self.decide("show me matrix rain in the terminal")
         self.assertEqual(d["route"], "local")

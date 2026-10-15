@@ -12751,17 +12751,32 @@ def agent_standards_checks() -> Any:
     )
 
     try:
+        # 2026-10-14: this used to require route == "local" with
+        # MODELS["master"] -- written when local was the default lane for
+        # peacetime requests. Since the 2026-09-08 cloud-first policy,
+        # peacetime requests route to cloud when keys exist, and terminal
+        # visuals work through that path (cloud replies emit the
+        # directives that run the visual -- verified live). The old
+        # expectation self-FAILed on any keyed box while passing on
+        # keyless CI, so the report was asserting a routing decision that
+        # is no longer policy. What this check actually guards: terminal
+        # visuals go through the NORMAL router/tool lane -- tool-required
+        # classification holds, a real lane model handles it (local OR
+        # cloud), and nothing is synthesized. A hidden PATH shim still
+        # FAILs the dedicated check above.
         route = orchestrate([], "matrix rain")
+        lane = route.get("route")
         ok = (
-            route.get("route") == "local"
-            and route.get("model") == MODELS["master"]
+            lane in {"local", "cloud", "cloud_fast", "cloud_deep"}
+            and bool(route.get("model"))
             and _is_tool_required("matrix rain")
             and "synth_reply" not in route
         )
         add(
             "PASS" if ok else "FAIL",
             "terminal visuals use normal tool lane",
-            f"route={route.get('route')} reason={route.get('reason', '')[:80]}",
+            f"route={lane} model={route.get('model')} "
+            f"reason={route.get('reason', '')[:60]}",
         )
     except Exception as e:
         add("FAIL", "terminal visuals use normal tool lane", str(e))

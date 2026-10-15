@@ -871,6 +871,12 @@ class DirectiveParserTests(unittest.TestCase):
         self.assertTrue(master_ai._is_tool_required("make a matrix credit screen"))
 
     def test_matrix_credit_screen_routes_to_local_tool_lane(self):
+        # Apocalypse/offline mode -- this class's setUp forces it -- routes
+        # tool-required visuals to the local tool lane. Under keyed
+        # peacetime the same request routes a cloud lane instead, and
+        # terminal visuals still run via cloud-emitted directives
+        # (user-verified 2026-10-14); this golden deliberately pins the
+        # offline world.
         decision = master_ai.orchestrate([], "make a matrix credit screen")
         self.assertEqual(decision["route"], "local")
         self.assertEqual(decision["model"], master_ai.MODELS["master"])
@@ -880,6 +886,8 @@ class DirectiveParserTests(unittest.TestCase):
         self.assertTrue(master_ai._is_tool_required("matrix rain"))
 
     def test_matrix_rain_routes_to_local_tool_lane(self):
+        # Offline-mode expectation -- see the note on
+        # test_matrix_credit_screen_routes_to_local_tool_lane above.
         decision = master_ai.orchestrate([], "matrix rain")
         self.assertEqual(decision["route"], "local")
         self.assertEqual(decision["model"], master_ai.MODELS["master"])
