@@ -154,7 +154,7 @@ def _ask_cloud(messages, timeout=300):
     if not key:
         print("  cloud: no OPENROUTER_API_KEY", flush=True)
         return None
-    max_tokens = 8192
+    max_tokens = 4096
     last_err = "unknown"
     for attempt in range(1, 4):
         payload = {
