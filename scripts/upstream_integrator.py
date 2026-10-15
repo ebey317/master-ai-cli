@@ -61,7 +61,7 @@ DIFF_LINES = 200
 DIFF_CHARS = 4000
 # Must end in ":free" -- see the free-only gate in _ask_cloud().
 PLAN_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
-OPENCODEGO_URL = "https://opencode.ai/zen/go/v1/chat/completions"
+OPENCODEGO_URL = "http://127.0.0.1:8793/v1"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 BATCH = 3
 
