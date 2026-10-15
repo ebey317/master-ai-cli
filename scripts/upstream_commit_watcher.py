@@ -36,6 +36,7 @@ REPOS: list[tuple[str, str]] = [
     ("anthropics", "claude-code"),
     ("NousResearch", "hermes-agent"),
     ("MoonshotAI", "kimi-code"),
+    ("opencode-ai", "opencode"),
 ]
 
 # Topics we care about when scoring a commit's applicability to Sensei.
@@ -124,7 +125,7 @@ SENSEI_KEYWORDS = {
     "optimization",
 }
 
-# Minimum score for a commit to appear in the digest.
+# Minimum score for a commit to appear in the digest and be enqueued.
 RELEVANCE_THRESHOLD = 4
 
 # Max entries per repo in the digest (keeps reading manageable).
@@ -135,6 +136,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 MEMORY_DIR = REPO_ROOT / "memory"
 DIGEST_DIR = MEMORY_DIR / "upstream-digest"
 STATE_FILE = MEMORY_DIR / "upstream-watcher-state.json"
+QUEUE_FILE = MEMORY_DIR / "upstream-integration-queue.json"
 
 # Lookback window when no previous state exists (e.g. first run).
 DEFAULT_LOOKBACK_DAYS = 14
@@ -221,6 +223,56 @@ def _save_state(state: dict) -> None:
     tmp.replace(STATE_FILE)
 
 
+def _load_queue() -> list[dict]:
+    if QUEUE_FILE.exists():
+        try:
+            data = json.loads(QUEUE_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return data
+            return data.get("items", data.get("queue", []))
+        except json.JSONDecodeError:
+            pass
+    return []
+
+
+def _save_queue(items: list[dict]) -> None:
+    QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = QUEUE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(items, indent=1, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(QUEUE_FILE)
+
+
+def _queue_item(commit: dict, owner: str, repo: str) -> dict:
+    c = commit.get("commit", {})
+    return {
+        "owner": owner,
+        "repo": repo,
+        "sha": commit.get("sha", ""),
+        "score": _score_commit(commit),
+        "url": commit.get("html_url", f"https://github.com/{owner}/{repo}/commit/{commit.get('sha', '')}"),
+        "message": c.get("message", ""),
+        "date": c.get("committer", {}).get("date", ""),
+    }
+
+
+def _merge_into_queue(queue: list[dict], new_items: list[dict]) -> tuple[list[dict], int, int]:
+    """Merge new items into queue, dedupe by sha, re-sort deterministically."""
+    seen = {it["sha"]: it for it in queue}
+    added = 0
+    skipped = 0
+    for it in new_items:
+        if it["sha"] in seen:
+            # keep the higher score
+            if it["score"] > seen[it["sha"]].get("score", 0):
+                seen[it["sha"]]["score"] = it["score"]
+            skipped += 1
+            continue
+        seen[it["sha"]] = it
+        added += 1
+    merged = sorted(seen.values(), key=lambda it: (-int(it.get("score", 0)), it.get("sha", "")))
+    return merged, added, skipped
+
+
 def _score_commit(commit: dict) -> int:
     """Score how relevant a commit message is to Sensei's architecture."""
     msg = commit.get("commit", {}).get("message", "").lower()
@@ -264,9 +316,9 @@ def _write_digest(
         f"# Upstream Commit Digest — {date_str}",
         "",
         f"Generated: {_iso(run_date)}",
-        "Watched upstreams: `anthropics/claude-code`, `NousResearch/hermes-agent`, `MoonshotAI/kimi-code`.",
+        "Watched upstreams: `anthropics/claude-code`, `NousResearch/hermes-agent`, `MoonshotAI/kimi-code`, `opencode-ai/opencode`.",
         "",
-        "This digest lists commits from upstream agent frameworks that may contain ideas, fixes, or patterns applicable to Sensei / master-ai-cli.  It does **not** apply changes automatically; review entries and run Sensei's `/learn` workflow or manual integration for anything worth adopting.",
+        "This digest lists commits from upstream agent frameworks that may contain ideas, fixes, or patterns applicable to Sensei / master-ai-cli. Relevant commits are automatically enqueued in `memory/upstream-integration-queue.json` for the integrator.",
         "",
         "---",
         "",
@@ -343,8 +395,11 @@ def main() -> int:
     run_date = _now()
     state = _load_state()
     state.setdefault("repos", {})
+    queue = _load_queue()
+    original_queue_size = len(queue)
 
     findings: dict[tuple[str, str], list[dict]] = {}
+    new_items: list[dict] = []
 
     for owner, repo in REPOS:
         repo_key = f"{owner}/{repo}"
@@ -357,12 +412,18 @@ def main() -> int:
         commits = _fetch_commits(owner, repo, since)
         findings[(owner, repo)] = commits
 
+        for c in commits:
+            if _score_commit(c) >= RELEVANCE_THRESHOLD:
+                new_items.append(_queue_item(c, owner, repo))
+
         state["repos"][repo_key] = {
             "last_check": _iso(run_date),
             "last_commit_count": len(commits),
         }
 
     digest_path = _write_digest(run_date, findings)
+    queue, added, skipped = _merge_into_queue(queue, new_items)
+    _save_queue(queue)
     _save_state(state)
 
     print(f"Upstream commit digest written to: {digest_path}")
@@ -371,6 +432,7 @@ def main() -> int:
         print(
             f"  {owner}/{repo}: {len(relevant)} relevant / {len(commits)} new commits"
         )
+    print(f"Integration queue: {original_queue_size} -> {len(queue)} (+{added} new, {skipped} already queued)")
 
     return 0
 
