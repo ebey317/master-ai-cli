@@ -133,18 +133,31 @@ def _openrouter_key():
 
 
 def _opencodego_key():
-    """OPENCODE_API_KEY from master keychain first, then env, then ~/.hermes/.env."""
+    """OpenCode Go key from the same keychain the relay uses.
+
+    The relay expects a line: 'opencode go <key>' in:
+    ~/Desktop/Projects/keychain/master_ai_keys
+    Fall back to ~/.master_ai_keys and ~/.hermes/.env for OPENCODE_API_KEY.
+    """
+    primary = Path.home() / "Desktop" / "Projects" / "keychain" / "master_ai_keys"
+    if primary.exists():
+        for ln in primary.read_text(errors="replace").splitlines():
+            parts = ln.strip().split()
+            if len(parts) >= 3 and parts[0] == "opencode" and parts[1] == "go":
+                k = _clean_key(parts[2])
+                if k:
+                    return k
     keychain = Path.home() / ".master_ai_keys"
     if keychain.exists():
         text = keychain.read_text(errors="replace")
         try:
-            k = _clean_key(json.loads(text).get("opencode", ""))
+            k = _clean_key(json.loads(text).get("opencode_go", ""))
             if k:
                 return k
         except Exception:
             for ln in text.splitlines():
                 s = ln.strip()
-                if s.startswith("OPENCODE_API_KEY="):
+                if not s.startswith("#") and s.startswith("OPENCODE_API_KEY="):
                     k = _clean_key(s.split("=", 1)[1])
                     if k:
                         return k
@@ -157,7 +170,7 @@ def _opencodego_key():
             s = ln.strip()
             if s.startswith("export "):
                 s = s[len("export ") :].strip()
-            if s.startswith("OPENCODE_API_KEY="):
+            if not s.startswith("#") and s.startswith("OPENCODE_API_KEY="):
                 k = _clean_key(s.split("=", 1)[1])
                 if k:
                     return k
