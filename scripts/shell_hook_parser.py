@@ -1,11 +1,10 @@
-"""
-Shell hook response parser for pre_tool_call events.
+"""Parse and validate shell hook responses for pre_tool_call events.
 
 Portable design from NousResearch/hermes-agent#30b38d1:
-- Parses Hermes canonical {"action": "approve", "message"?, "rule_key"?}
-- Strips and keeps only non-empty optional fields
-- Does NOT map {"decision": "approve"} (that dialect means auto-allow)
-- Returns None for unrecognized / malformed payloads so the tool proceeds
+- "action": "approve" → escalate to human approval gate (carries message, rule_key)
+- "action": "block"   → deny with message
+- "action": "modify"  → rewrite tool arguments
+- "decision": "approve" (Claude-Code) → auto-allow, NOT mapped to human gate
 """
 
 from __future__ import annotations
@@ -14,16 +13,21 @@ import json
 from typing import Any, Dict, Optional
 
 
-def parse_pre_tool_call_response(stdout: str) -> Optional[Dict[str, Any]]:
-    """
-    Parse a shell hook's stdout for a pre_tool_call directive.
+def parse_pre_tool_call(stdout: str) -> Optional[Dict[str, Any]]:
+    """Parse a shell hook's stdout for pre_tool_call directives.
 
-    Returns a directive dict or None. Recognized shapes (Hermes canonical first):
-      {"action": "approve", "message": "...", "rule_key": "..."}  -> escalate to approval gate
-      {"action": "block", "message": "..."}                       -> block with message
-      {"action": "modify", "args": {...}}                         -> modify tool args
-      {"decision": "block", "reason": "..."}                      -> Claude-Code block
-      {"decision": "modify", "tool_input": {...}}                 -> Claude-Code modify
+    Returns a canonical directive dict or None if no recognized directive.
+    Recognized shapes (Hermes-canonical first, then Claude-Code compat):
+      {"action": "approve", "message"?, "rule_key"?}  → escalate to human gate
+      {"action": "block", "message"?}                 → deny tool
+      {"action": "modify", "args": {...}}             → rewrite args
+      {"decision": "block", "reason"?}                → deny (CC compat)
+      {"decision": "modify", "tool_input": {...}}     → rewrite args (CC compat)
+
+    Notes:
+    - "decision": "approve" means auto-allow in Claude-Code; deliberately NOT mapped.
+    - Optional string fields (message, reason, rule_key) are stripped and omitted if empty.
+    - Invalid JSON or unrecognized top-level keys → None (hook treated as no-op).
     """
     stdout = stdout.strip()
     if not stdout:
@@ -37,41 +41,54 @@ def parse_pre_tool_call_response(stdout: str) -> Optional[Dict[str, Any]]:
     if not isinstance(data, dict):
         return None
 
-    # Hermes-only escalation to human-approval gate.
-    # Claude-Code's {"decision": "approve"} means auto-ALLOW, so it is deliberately not mapped.
+    # Hermes-canonical: approve → human approval gate
     if data.get("action") == "approve":
         directive: Dict[str, Any] = {"action": "approve"}
         for key in ("message", "rule_key"):
             value = data.get(key)
-            if isinstance(value, str) and value.strip():
-                directive[key] = value.strip()
+            if isinstance(value, str):
+                stripped = value.strip()
+                if stripped:
+                    directive[key] = stripped
         return directive
 
-    # Hermes canonical block
+    # Hermes-canonical: block
     if data.get("action") == "block":
-        message = data.get("message")
-        if isinstance(message, str) and message.strip():
-            return {"action": "block", "message": message.strip()}
-        return {"action": "block"}
+        directive = {"action": "block"}
+        msg = data.get("message")
+        if isinstance(msg, str):
+            stripped = msg.strip()
+            if stripped:
+                directive["message"] = stripped
+        return directive
 
-    # Hermes canonical modify
-    if data.get("action") == "modify":
-        args = data.get("args")
-        if isinstance(args, dict):
-            return {"action": "modify", "args": args}
+    # Hermes-canonical: modify
+    if data.get("action") == "modify" and isinstance(data.get("args"), dict):
+        return {"action": "modify", "args": data["args"]}
 
-    # Claude-Code dialect: decision:block
+    # Claude-Code compat: decision:block → block
     if data.get("decision") == "block":
+        directive = {"action": "block"}
         reason = data.get("reason")
-        if isinstance(reason, str) and reason.strip():
-            return {"action": "block", "message": reason.strip()}
-        return {"action": "block"}
+        if isinstance(reason, str):
+            stripped = reason.strip()
+            if stripped:
+                directive["message"] = stripped
+        return directive
 
-    # Claude-Code dialect: decision:modify
-    if data.get("decision") == "modify":
-        tool_input = data.get("tool_input")
-        if isinstance(tool_input, dict):
-            return {"action": "modify", "args": tool_input}
+    # Claude-Code compat: decision:modify → modify
+    if data.get("decision") == "modify" and isinstance(data.get("tool_input"), dict):
+        return {"action": "modify", "args": data["tool_input"]}
 
-    # decision:approve means auto-allow — do not map to approval gate
+    # decision:approve is auto-allow in Claude-Code; not mapped to human gate
     return None
+
+
+def format_approve_directive(message: str = "", rule_key: str = "") -> str:
+    """Build a JSON line for a shell hook to emit an approve escalation."""
+    payload: Dict[str, Any] = {"action": "approve"}
+    if message.strip():
+        payload["message"] = message.strip()
+    if rule_key.strip():
+        payload["rule_key"] = rule_key.strip()
+    return json.dumps(payload, separators=(",", ":"))
