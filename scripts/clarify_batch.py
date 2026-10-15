@@ -7,18 +7,19 @@ returning a structured JSON payload with explicit `timed_out` flag instead of
 sentinel strings. The per-question primitive returns (response, answered) so
 the caller decides what "no answer" means.
 """
+
 from __future__ import annotations
 
 import json
-import uuid
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
+from typing import Any
 
 # Type for the primitive that asks one question and returns (response, answered)
-AskOneFn = Callable[[str, Optional[List[str]], bool], Tuple[str, bool]]
+AskOneFn = Callable[[str, list[str] | None, bool], tuple[str, bool]]
 
 
 def ask_clarify_batch(
-    questions: List[Dict[str, Any]],
+    questions: list[dict[str, Any]],
     ask_one: AskOneFn,
     *,
     rearm_on_last: bool = True,
@@ -35,7 +36,7 @@ def ask_clarify_batch(
     Returns:
         JSON string: {"answers": {qid: response}, "timed_out": bool}
     """
-    answers: Dict[str, str] = {}
+    answers: dict[str, str] = {}
     timed_out = False
 
     for index, entry in enumerate(questions):
@@ -72,11 +73,12 @@ def make_clarify_callback(
     and always returns a JSON string for the batch form, or the raw response
     string for the single form (preserving backward compatibility).
     """
+
     def callback(
-        question: Optional[str] = None,
-        choices: Optional[List[str]] = None,
+        question: str | None = None,
+        choices: list[str] | None = None,
         multi_select: bool = False,
-        questions: Optional[List[Dict[str, Any]]] = None,
+        questions: list[dict[str, Any]] | None = None,
     ) -> str:
         if questions is not None:
             return ask_clarify_batch(questions, ask_one)
@@ -88,7 +90,9 @@ def make_clarify_callback(
 
 
 # Example primitive for a TUI/terminal surface — replace with real implementation
-def example_ask_one(question: str, choices: Optional[List[str]], multi_select: bool) -> Tuple[str, bool]:
+def example_ask_one(
+    question: str, choices: list[str] | None, multi_select: bool
+) -> tuple[str, bool]:
     """
     Example primitive: presents one question, blocks for answer.
     Returns (response_text, answered_bool).

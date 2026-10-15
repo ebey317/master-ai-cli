@@ -5,11 +5,12 @@ Provides a single source of truth for scratch space that respects:
 2. platform-default via tempfile.gettempdir()
 3. optional Sensei-specific override via SENSEI_TMPDIR
 """
+
 from __future__ import annotations
+
 import os
 import tempfile
 from pathlib import Path
-from typing import Optional
 
 
 def get_sensei_tempdir() -> Path:
@@ -29,7 +30,7 @@ def get_sensei_tempdir() -> Path:
     return Path(tempfile.gettempdir()).resolve()
 
 
-def make_sensei_tempdir(prefix: str = "sensei-", *, subdir: Optional[str] = None) -> Path:
+def make_sensei_tempdir(prefix: str = "sensei-", *, subdir: str | None = None) -> Path:
     """Create a fresh temporary directory under the Sensei temp root.
 
     Args:

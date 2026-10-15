@@ -13,13 +13,13 @@ from __future__ import annotations
 # It combines the original SILENT hint with the new RECURSION guard.
 SCHEDULED_JOB_HINT = (
     "SILENT: If there is genuinely nothing new to report, respond "
-    "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
+    'with exactly "[SILENT]" (nothing else) to suppress delivery. '
     "Never combine [SILENT] with content — either report your "
     "findings normally, or say [SILENT] and nothing more. "
     "RECURSION: This is a run of an EXISTING scheduled job — execute "
     "the task now. NEVER create or update a cron job because of "
     "recurring or future-schedule language in the task prompt below; "
-    "treat phrasing like \"each Monday\" or \"every day at 9\" as "
+    'treat phrasing like "each Monday" or "every day at 9" as '
     "context for this run, not as a request to schedule another job.]\n\n"
 )
 

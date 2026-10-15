@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 
+from ..classify import matches_tokens
 from ..schemas import (
     AccessGrant,
     ActionRecord,
@@ -229,27 +230,18 @@ class LocalFSAdapter(BaseAdapter):
     def _classify(self, path: Path, mime: str) -> tuple[str, str]:
         name = path.name.lower()
         full_path = str(path).lower()
-        if any(
-            token in full_path
-            for token in ("resume", "cv", "career", "cover_letter", "transcript")
+        if matches_tokens(
+            full_path, ("resume", "cv", "career", "cover_letter", "transcript")
         ):
             return "career", "Career"
-        if any(
-            token in full_path
-            for token in (
-                "w2",
-                "w-2",
-                "tax",
-                "paystub",
-                "pay stub",
-                "passport",
-                "license",
-            )
+        if matches_tokens(
+            full_path,
+            ("w2", "w-2", "tax", "paystub", "pay stub", "passport", "license"),
         ):
             return "financial", "Forms"
-        if any(token in full_path for token in ("poem", "poetry", "lyrics")):
+        if matches_tokens(full_path, ("poem", "poetry", "lyrics")):
             return "creative", "Poetry"
-        if any(token in full_path for token in ("private", "intimate", "nsfw", "nude")):
+        if matches_tokens(full_path, ("private", "intimate", "nsfw", "nude")):
             return "private", "Private"
         if mime.startswith("image/"):
             return "photos", "Photos"

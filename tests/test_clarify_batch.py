@@ -1,6 +1,7 @@
 """Tests for the batch-aware clarify helper."""
 
 import json
+
 from scripts.clarify_batch import ask_clarify_batch, make_clarify_callback
 
 
@@ -28,6 +29,7 @@ def test_batch_stops_at_first_unanswered():
 
 def test_batch_all_answered_no_timeout():
     """All answered -> timed_out=False, all answers collected."""
+
     def ask_one(q, choices, multi):
         return f"answer to {q}", True
 
@@ -38,11 +40,15 @@ def test_batch_all_answered_no_timeout():
     result = ask_clarify_batch(questions, ask_one)
     payload = json.loads(result)
 
-    assert payload == {"answers": {"a": "answer to A?", "b": "answer to B?"}, "timed_out": False}
+    assert payload == {
+        "answers": {"a": "answer to A?", "b": "answer to B?"},
+        "timed_out": False,
+    }
 
 
 def test_callback_single_form_returns_raw_string():
     """Legacy single-question form returns raw response string (not JSON)."""
+
     def ask_one(q, choices, multi):
         return "single answer", True
 
@@ -54,6 +60,7 @@ def test_callback_single_form_returns_raw_string():
 
 def test_callback_batch_form_returns_json():
     """Batch form returns structured JSON with answers and timed_out."""
+
     def ask_one(q, choices, multi):
         return "batch answer", True
 
@@ -61,11 +68,15 @@ def test_callback_batch_form_returns_json():
     result = cb(questions=[{"question": "Q1?"}, {"question": "Q2?"}])
     payload = json.loads(result)
 
-    assert payload == {"answers": {"q0": "batch answer", "q1": "batch answer"}, "timed_out": False}
+    assert payload == {
+        "answers": {"q0": "batch answer", "q1": "batch answer"},
+        "timed_out": False,
+    }
 
 
 def test_batch_uses_qid_when_provided():
     """Custom qid fields are respected in answers dict."""
+
     def ask_one(q, choices, multi):
         return "ok", True
 

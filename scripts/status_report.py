@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass(frozen=True)
 class StatusFields:
     """Structured, display-ready status fields."""
+
     session_id: str
     title: str
     model: str
@@ -25,12 +26,12 @@ class StatusFields:
     tokens: str
     agent_running: bool
     # Raw values for renderers that need them
-    created_dt: Optional[dt.datetime] = None
-    last_activity_dt: Optional[dt.datetime] = None
+    created_dt: dt.datetime | None = None
+    last_activity_dt: dt.datetime | None = None
     tokens_raw: int = 0
 
 
-def _parse_ts(value: Any, fallback: Optional[dt.datetime] = None) -> Optional[dt.datetime]:
+def _parse_ts(value: Any, fallback: dt.datetime | None = None) -> dt.datetime | None:
     """Parse a timestamp from various formats, returning timezone-aware UTC datetime."""
     if value is None:
         return fallback
@@ -64,7 +65,7 @@ def _parse_ts(value: Any, fallback: Optional[dt.datetime] = None) -> Optional[dt
     return fallback
 
 
-def _fmt_ts(dt_obj: Optional[dt.datetime]) -> str:
+def _fmt_ts(dt_obj: dt.datetime | None) -> str:
     """Format datetime as 'YYYY-MM-DD HH:MM' in local time, or placeholder."""
     if dt_obj is None:
         return "—"
@@ -82,12 +83,12 @@ def _fmt_tokens(count: int) -> str:
 
 def build_status_fields(
     session_id: str,
-    agent: Optional[Any] = None,
-    session_meta: Optional[dict[str, Any]] = None,
+    agent: Any | None = None,
+    session_meta: dict[str, Any] | None = None,
     *,
-    model: Optional[str] = None,
-    provider: Optional[str] = None,
-    created_fallback: Optional[dt.datetime] = None,
+    model: str | None = None,
+    provider: str | None = None,
+    created_fallback: dt.datetime | None = None,
     agent_running: bool = False,
 ) -> StatusFields:
     """
@@ -127,8 +128,14 @@ def build_status_fields(
 
     # Model / Provider: agent attributes > explicit args > session_meta > defaults
     if agent is not None:
-        model = model or getattr(agent, "model", None) or getattr(agent, "model_name", None)
-        provider = provider or getattr(agent, "provider", None) or getattr(agent, "provider_name", None)
+        model = (
+            model or getattr(agent, "model", None) or getattr(agent, "model_name", None)
+        )
+        provider = (
+            provider
+            or getattr(agent, "provider", None)
+            or getattr(agent, "provider_name", None)
+        )
     model = (model or session_meta.get("model") or "").strip() or "(unknown)"
     provider = (provider or session_meta.get("provider") or "").strip() or "unknown"
 
@@ -170,12 +177,14 @@ def status_lines(fields: StatusFields, *, prefix: str = "") -> list[str]:
     ]
     if fields.title:
         lines.append(f"{prefix}Title: {fields.title}")
-    lines.extend([
-        f"{prefix}Model: {fields.model}",
-        f"{prefix}Provider: {fields.provider}",
-        f"{prefix}Created: {fields.created}",
-        f"{prefix}Last Activity: {fields.last_activity}",
-        f"{prefix}Tokens: {fields.tokens}",
-        f"{prefix}Agent Running: {'Yes' if fields.agent_running else 'No'}",
-    ])
+    lines.extend(
+        [
+            f"{prefix}Model: {fields.model}",
+            f"{prefix}Provider: {fields.provider}",
+            f"{prefix}Created: {fields.created}",
+            f"{prefix}Last Activity: {fields.last_activity}",
+            f"{prefix}Tokens: {fields.tokens}",
+            f"{prefix}Agent Running: {'Yes' if fields.agent_running else 'No'}",
+        ]
+    )
     return lines

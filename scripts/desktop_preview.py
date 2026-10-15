@@ -3,9 +3,10 @@ Desktop preview integration for Sensei.
 Portable design: render HTML in preview pane when desktop_preview tool available,
 otherwise report absolute file path.
 """
+
 from __future__ import annotations
+
 from pathlib import Path
-from typing import Optional
 
 
 class DesktopPreview:
@@ -34,10 +35,9 @@ class DesktopPreview:
             # This would call the desktop_preview tool with the HTML content
             html_content = dashboard_path.read_text(encoding="utf-8")
             return f"[DESKTOP_PREVIEW] {html_content}"
-        else:
-            # In terminal: report absolute path
-            abs_path = dashboard_path.resolve()
-            return f"Dashboard available at: file://{abs_path}"
+        # In terminal: report absolute path
+        abs_path = dashboard_path.resolve()
+        return f"Dashboard available at: file://{abs_path}"
 
     def render_after_build(self, slug: str) -> str:
         """Called after dashboard build/tick to auto-preview in desktop."""

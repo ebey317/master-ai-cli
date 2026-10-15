@@ -42,8 +42,9 @@ from __future__ import annotations
 import functools
 import sys
 import threading
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import Any, Callable, Iterator, Optional
+from typing import Any
 
 _local = threading.local()
 
@@ -58,7 +59,7 @@ def get() -> Any:
 
 
 @contextmanager
-def using(module: Optional[Any]) -> Iterator[None]:
+def using(module: Any | None) -> Iterator[None]:
     """Make *module* the answer to get() for the duration of this call
     stack (this thread only). A caller that passes None is a no-op --
     get() falls through to its normal default. Restores whatever was

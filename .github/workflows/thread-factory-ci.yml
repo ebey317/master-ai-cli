@@ -18,7 +18,10 @@ jobs:
       # silently disagreeing on what's a type error). --strict here is a
       # different, deliberately stricter check than the shared lenient
       # pre-commit hook, not a duplicate of it -- but the version stays pinned.
-      - run: pip install pytest pytest-cov "mypy==1.10.0"
+      # 2026-10-14: pytest-timeout required -- pyproject's addopts pass
+      # --timeout=60, and without the plugin pytest exits 4 with
+      # "unrecognized arguments" before running a single test.
+      - run: pip install pytest pytest-cov pytest-timeout "mypy==1.10.0"
       # --follow-imports=silent: thread_factory.py lazily imports the repo's
       # own harvest.py/master_ai.py as optional integrations; both predate
       # strict typing, and without this flag --strict follows the import

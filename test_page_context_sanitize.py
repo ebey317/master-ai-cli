@@ -599,10 +599,7 @@ class Test9_BrowserEvalJsAbsenceGuard(unittest.TestCase):
     )
 
     def _functions_defined_in(self, content):
-        return {
-            a or b
-            for a, b in self._FILE_DEFINED_FUNCS.findall(content)
-        }
+        return {a or b for a, b in self._FILE_DEFINED_FUNCS.findall(content)}
 
     def test_chrome_scripting_executeScript_rejects_model_supplied_js(self):
         """`chrome.scripting.executeScript` may never run model-supplied JS.

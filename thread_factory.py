@@ -455,9 +455,14 @@ def _model_chat(model: str, system: str, user: str, *, timeout: float = 240.0) -
 
         if hasattr(master_ai, "ask_model_router"):
             # Same rationale as the harvest calls above: master_ai.py is a
-            # large, pre-existing, untyped module -- this optional call into
-            # it is a real no-untyped-call under --strict, scoped here.
-            text, _elapsed = master_ai.ask_model_router(  # type: ignore[no-untyped-call]
+            # large, pre-existing, untyped module. 2026-10-14: the old
+            # `# type: ignore[no-untyped-call]` here was flagged UNUSED by
+            # the thread-factory CI job (mypy --strict
+            # --follow-imports=silent treats master_ai as Any -- and so
+            # does the repo's own gate, same flags plus the baseline), so
+            # it was deleted. No invocation in either pipeline reports an
+            # error for this call without it.
+            text, _elapsed = master_ai.ask_model_router(
                 messages, model=model, max_tokens=LLM_NUM_PREDICT
             )
             if text and text.strip():

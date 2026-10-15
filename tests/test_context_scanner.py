@@ -1,10 +1,8 @@
 """Tests for context_scanner trust-level behavior."""
-import pytest
 
 from scripts.context_scanner import (
     ContextFileStatus,
     ScanAction,
-    ScanResult,
     scan_context_content,
 )
 
@@ -16,7 +14,9 @@ class TestScanContextContent:
         """Clean content loads normally regardless of trust level."""
         content = "# My Constitution\n\nBe helpful and harmless."
         for user_authored in (True, False):
-            result = scan_context_content(content, "test.md", user_authored=user_authored)
+            result = scan_context_content(
+                content, "test.md", user_authored=user_authored
+            )
             assert result.action == ScanAction.LOAD
             assert result.content == content
             assert result.status_label == "loaded"

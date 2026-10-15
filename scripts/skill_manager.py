@@ -4,23 +4,24 @@ Portable design: validate names before lock acquisition; lock files keyed on
 sha256(basename) so length/chars never hit filesystem limits and no residue on failure.
 """
 
+import fcntl
 import hashlib
 import json
 import os
-import fcntl
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional, Dict, Any
 
-
-SKILLS_DIR = Path(os.environ.get("SENSEI_SKILLS_DIR", Path.home() / ".sensei" / "skills"))
+SKILLS_DIR = Path(
+    os.environ.get("SENSEI_SKILLS_DIR", Path.home() / ".sensei" / "skills")
+)
 LOCKS_DIR = SKILLS_DIR / ".locks"
 LOCKS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ---- Name validation ---------------------------------------------------------
 
-def _validate_name(name: str) -> Optional[str]:
+
+def _validate_name(name: str) -> str | None:
     """
     Validate a skill name. Returns error message string if invalid, None if valid.
     Mirrors upstream: rejects empty, NUL, traversal, and over-long names.
@@ -47,6 +48,7 @@ def _basename(name: str) -> str:
 
 
 # ---- Digest-keyed locking ----------------------------------------------------
+
 
 def _skill_lock_path(name: str) -> Path:
     """
@@ -77,6 +79,7 @@ def _skill_lock(name: str):
 
 # ---- Skill filesystem helpers ------------------------------------------------
 
+
 def _skill_dir(name: str) -> Path:
     """Resolve the skill directory path (skills/<name>)."""
     return SKILLS_DIR / name
@@ -87,7 +90,7 @@ def _skill_exists(name: str) -> bool:
     return _skill_dir(name).is_dir()
 
 
-def _find_skill(name: str) -> Optional[Path]:
+def _find_skill(name: str) -> Path | None:
     """
     Find a skill by name or basename. Returns the skill directory path or None.
     Used for read/update/delete actions where the user may provide just the basename.
@@ -101,14 +104,17 @@ def _find_skill(name: str) -> Optional[Path]:
     for candidate in SKILLS_DIR.rglob(base):
         if candidate.is_dir() and candidate.name == base:
             # Ensure it's not in excluded dirs
-            if not any(part.startswith(".") for part in candidate.relative_to(SKILLS_DIR).parts):
+            if not any(
+                part.startswith(".") for part in candidate.relative_to(SKILLS_DIR).parts
+            ):
                 return candidate
     return None
 
 
 # ---- Public API --------------------------------------------------------------
 
-def skill_manage(action: str, name: str, content: Optional[str] = None) -> str:
+
+def skill_manage(action: str, name: str, content: str | None = None) -> str:
     """
     Manage skills: create, read, update, delete.
     Returns JSON string with {success: bool, error?: str, data?: any}.
@@ -129,13 +135,15 @@ def skill_manage(action: str, name: str, content: Optional[str] = None) -> str:
         return _skill_manage_locked(action, name, content)
 
 
-def _skill_manage_locked(action: str, name: str, content: Optional[str]) -> str:
+def _skill_manage_locked(action: str, name: str, content: str | None) -> str:
     """Internal implementation assuming lock is already held."""
     skill_path = _skill_dir(name)
 
     if action == "create":
         if skill_path.exists():
-            return json.dumps({"success": False, "error": f"skill '{name}' already exists"})
+            return json.dumps(
+                {"success": False, "error": f"skill '{name}' already exists"}
+            )
         skill_path.mkdir(parents=True, exist_ok=True)
         (skill_path / "skill.md").write_text(content or "")
         return json.dumps({"success": True, "data": {"path": str(skill_path)}})
@@ -148,17 +156,27 @@ def _skill_manage_locked(action: str, name: str, content: Optional[str]) -> str:
     if action == "read":
         skill_md = resolved / "skill.md"
         if not skill_md.exists():
-            return json.dumps({"success": False, "error": f"skill '{name}' has no skill.md"})
-        return json.dumps({"success": True, "data": {"content": skill_md.read_text(), "path": str(resolved)}})
+            return json.dumps(
+                {"success": False, "error": f"skill '{name}' has no skill.md"}
+            )
+        return json.dumps(
+            {
+                "success": True,
+                "data": {"content": skill_md.read_text(), "path": str(resolved)},
+            }
+        )
 
     if action == "update":
         if content is None:
-            return json.dumps({"success": False, "error": "content required for update"})
+            return json.dumps(
+                {"success": False, "error": "content required for update"}
+            )
         (resolved / "skill.md").write_text(content)
         return json.dumps({"success": True, "data": {"path": str(resolved)}})
 
     if action == "delete":
         import shutil
+
         shutil.rmtree(resolved)
         # Clean up empty parent directories
         parent = resolved.parent
@@ -172,12 +190,27 @@ def _skill_manage_locked(action: str, name: str, content: Optional[str]) -> str:
 
 # ---- Exclusion sets for other subsystems ------------------------------------
 
-EXCLUDED_SKILL_DIRS = frozenset((
-    ".git", ".github", ".hub", ".archive", ".curator_backups", ".locks",
-    ".venv", "venv", "node_modules", "site-packages", "__pycache__",
-    ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache",
-))
+EXCLUDED_SKILL_DIRS = frozenset(
+    (
+        ".git",
+        ".github",
+        ".hub",
+        ".archive",
+        ".curator_backups",
+        ".locks",
+        ".venv",
+        "venv",
+        "node_modules",
+        "site-packages",
+        "__pycache__",
+        ".tox",
+        ".nox",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+    )
+)
 
-SCAN_SKIP_PARTS = {'.git', '.github', '.hub', '.archive', '.locks'}
+SCAN_SKIP_PARTS = {".git", ".github", ".hub", ".archive", ".locks"}
 NON_PACKAGE_TOPS = {".curator_backups", ".hub", ".archive", ".locks"}
 SKIP_PARTS = {".archive", ".hub", ".locks", "node_modules", ".git"}

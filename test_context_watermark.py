@@ -133,6 +133,11 @@ def test_a_1m_model_is_not_over_100_percent_at_400k_chars():
 
 
 def test_windows_produce_different_budgets_not_one_constant():
+    # 2026-10-14: this was the one catalog-backed check missing its skip
+    # premise; without the OpenRouter cache both models resolve to the same
+    # static fallback and the ">= 2 distinct percentages" assertion fails
+    # on CI rather than skipping.
+    _catalog_loaded()
     pcts = {
         "qwen2.5vl:3b": _pct_at_probe("qwen2.5vl:3b"),
         "perceptron/perceptron-mk1.5": _pct_at_probe("perceptron/perceptron-mk1.5"),

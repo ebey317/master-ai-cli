@@ -4,16 +4,13 @@ Invariants:
 1. parse_blueprint roundtrip: frontmatter -> SkillBlueprint -> suggestion entry
 2. desktop_preview path fallback: terminal mode returns absolute file:// URL
 """
-import json
+
 import tempfile
 from pathlib import Path
-from datetime import datetime
 
-import pytest
-
-from scripts.skill_metadata import SkillMetadata, SkillBlueprint, SkillManifest
-from scripts.optional_skills_catalog import OptionalSkillsCatalog, SuggestionEntry
 from scripts.desktop_preview import DesktopPreview
+from scripts.optional_skills_catalog import OptionalSkillsCatalog
+from scripts.skill_metadata import SkillMetadata
 
 
 class TestSkillBlueprintParsing:

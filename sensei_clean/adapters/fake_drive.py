@@ -27,6 +27,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 
+from ..classify import matches_tokens
 from ..schemas import (
     AccessGrant,
     ActionRecord,
@@ -106,11 +107,9 @@ def _suffix(name: str) -> str:
 
 def _classify(name: str, mime: str) -> tuple[str, str]:
     lower = name.lower()
-    if any(
-        t in lower for t in ("resume", "cv", "career", "cover_letter", "transcript")
-    ):
+    if matches_tokens(lower, ("resume", "cv", "career", "cover_letter", "transcript")):
         return "career", "Career"
-    if any(t in lower for t in ("tax", "w2", "w-2", "paystub", "1099")):
+    if matches_tokens(lower, ("tax", "w2", "w-2", "paystub", "1099")):
         return "financial", "Forms"
     if mime.startswith("image/"):
         return "photos", "Photos"

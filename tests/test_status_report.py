@@ -6,9 +6,10 @@ the status_lines renderer includes every common value.
 """
 
 import datetime as dt
+
 import pytest
 
-from scripts.status_report import build_status_fields, status_lines, StatusFields
+from scripts.status_report import StatusFields, build_status_fields, status_lines
 
 
 class DummyAgent:
@@ -95,7 +96,9 @@ def test_build_status_fields_unparseable_timestamps_fallback_to_now():
     """Unparseable started_at falls back to created_fallback or now()."""
     meta = {"started_at": "not-a-timestamp", "updated_at": "also-bad"}
     fallback = dt.datetime(2024, 1, 1, 12, 0, tzinfo=dt.timezone.utc)
-    fields = build_status_fields("sess-bad", session_meta=meta, created_fallback=fallback)
+    fields = build_status_fields(
+        "sess-bad", session_meta=meta, created_fallback=fallback
+    )
     assert fields.created_dt == fallback
     assert fields.last_activity_dt == fallback
 
@@ -160,7 +163,9 @@ def test_sabotage_builder_dropping_tokens():
 
 def test_sabotage_renderer_hand_formatting_model():
     """If renderer hand-formats model line instead of using fields, test fails."""
-    fields = build_status_fields("sess-model", model="custom-model", provider="custom-provider")
+    fields = build_status_fields(
+        "sess-model", model="custom-model", provider="custom-provider"
+    )
     lines = status_lines(fields)
     # Ensure the line uses the structured field, not a hardcoded string
     model_lines = [l for l in lines if l.strip().startswith("Model:")]

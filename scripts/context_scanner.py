@@ -6,6 +6,7 @@ agent writes go through approval gates, no repo checkout can plant them.
 Project-sourced files (AGENTS.md, .cursorrules, etc.) arrive with a clone and
 keep strict blocking behavior.
 """
+
 from __future__ import annotations
 
 import logging
@@ -39,14 +40,16 @@ THREAT_PATTERNS: Final[list[re.Pattern]] = [
 
 class ScanAction(Enum):
     """What to do with scanned content."""
-    LOAD = "load"           # Clean, load normally
-    FLAGGED = "flagged"     # User-authored, matched patterns → load + warn
-    BLOCKED = "blocked"     # Project file, matched patterns → block
+
+    LOAD = "load"  # Clean, load normally
+    FLAGGED = "flagged"  # User-authored, matched patterns → load + warn
+    BLOCKED = "blocked"  # Project file, matched patterns → block
 
 
 @dataclass(frozen=True)
 class ScanResult:
     """Result of scanning a context file."""
+
     action: ScanAction
     findings: tuple[str, ...]
     content: str  # Original content (for LOAD/FLAGGED) or blocked marker (for BLOCKED)
@@ -98,7 +101,7 @@ def scan_context_content(
     if not findings:
         return ScanResult(
             action=ScanAction.LOAD,
-            findings=tuple(),
+            findings=(),
             content=content,
             status_label="loaded",
         )
@@ -137,6 +140,7 @@ def scan_context_content(
 
 class ContextFileStatus(Enum):
     """Manifest status for /context listing."""
+
     LOADED = "loaded"
     TRUNCATED = "truncated"
     FLAGGED = "flagged"
@@ -174,12 +178,17 @@ class ContextFileStatus(Enum):
 
     @property
     def loaded(self) -> bool:
-        return self in (ContextFileStatus.LOADED, ContextFileStatus.TRUNCATED, ContextFileStatus.FLAGGED)
+        return self in (
+            ContextFileStatus.LOADED,
+            ContextFileStatus.TRUNCATED,
+            ContextFileStatus.FLAGGED,
+        )
 
 
 @dataclass(frozen=True)
 class ContextFileEntry:
     """Single entry for the context file manifest."""
+
     label: str
     path: str
     chars: int
@@ -202,7 +211,9 @@ def estimate_tokens_rough(text: str) -> int:
     return max(1, len(text) // 4)
 
 
-def load_context_file(path: Path, max_chars: int | None = None) -> tuple[str, ContextFileStatus]:
+def load_context_file(
+    path: Path, max_chars: int | None = None
+) -> tuple[str, ContextFileStatus]:
     """
     Load a context file with size limit.
 

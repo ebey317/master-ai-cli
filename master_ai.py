@@ -3956,13 +3956,17 @@ def duckduckgo_search(query: Any, max_results: int = 4) -> Any:
         DDGS = _DDGS
     except ImportError:
         pass
-    # Fall back to the old name if installed.
+    # Fall back to the old name if installed. Import the module and read the
+    # DDGS attribute so a package that is installed but lacks DDGS (AttributeError)
+    # is handled the same as one that is simply absent (ImportError). Reading
+    # the attribute instead of `from ... import DDGS` also avoids a mypy
+    # no-redef on _DDGS from the two parallel import forms above.
     if DDGS is None:
         try:
-            from duckduckgo_search import DDGS as _DDGS
+            import duckduckgo_search as _ddg_mod
 
-            DDGS = _DDGS
-        except ImportError:
+            DDGS = _ddg_mod.DDGS
+        except (ImportError, AttributeError):
             log("DDG_SEARCH_ERROR: neither 'ddgs' nor 'duckduckgo_search' is installed")
             return None
     try:
@@ -7474,7 +7478,9 @@ def speak(text: str) -> Any:
     # untagged aplay call is invisible to it and plays to completion no
     # matter when the trigger is pressed. voice_bridge.py's mpv fallback
     # carries the same tag via --force-media-title for the same reason.
-    tmp = tempfile.NamedTemporaryFile(prefix="AI_TTS_BARGE_", suffix=".wav", delete=False)
+    tmp = tempfile.NamedTemporaryFile(
+        prefix="AI_TTS_BARGE_", suffix=".wav", delete=False
+    )
     tmp.close()
     # 2026-09-02: RT/F13 barge-in (ptt_pynput._mute_tts) kills aplay/mpv/
     # ffplay by exact binary name on every press, and this file's own

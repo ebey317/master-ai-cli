@@ -1,12 +1,12 @@
 """Tests for the plugin catalog loader."""
+
 import tempfile
 import textwrap
 from pathlib import Path
 
 import pytest
 
-from scripts.plugin_catalog import PluginCatalog, PluginEntry, PluginType, PluginTier
-
+from scripts.plugin_catalog import PluginCatalog, PluginType
 
 SAMPLE_CATALOG = textwrap.dedent("""\
     schema_version: 1

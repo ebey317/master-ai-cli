@@ -17,6 +17,20 @@ requires-python = ">=3.10"
 dependencies = [
     "ddgs>=0.8.0",
     "prompt_toolkit>=3.0.0",
+    # 2026-10-13: imported at module scope by scripts/plugin_catalog.py and
+    # scripts/skill_metadata.py (both shipped runtime code, both reachable
+    # from scripts/optional_skills_catalog.py) but never declared anywhere,
+    # so it only worked because the dev box happened to have PyYAML lying
+    # around. A clean `pip install -e .` gave ModuleNotFoundError on the
+    # plugin catalog and every skill-metadata load. Core, not dev: this is
+    # imported on the normal runtime path, not only by tests.
+    "PyYAML>=6.0",
+    # 2026-10-14: imported at module scope by sensei_structured_aux.py and
+    # by the streaming-resilience tests, but never declared -- same disease
+    # as PyYAML above. CI surfaced it as ModuleNotFoundError in 5 tests on
+    # a clean `pip install -e .[dev]`; it only ever worked on boxes that
+    # happened to have httpx already. Runtime path for the aux provider.
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
@@ -39,6 +53,11 @@ dev = [
     # server surface against the real SDK; CI installs .[dev] and
     # would otherwise collect-error on the missing module.
     "mcp>=1.2.0",
+    # 2026-10-14: async-def tests (test_context_propagation,
+    # test_mcp_session_cwd) need the plugin explicitly; CI installs only
+    # this dev extra plus bare pytest, so without it they all fail with
+    # "async def functions are not natively supported" on the runner.
+    "pytest-asyncio>=1.0.0",
     # The type gate (tools/mypy_gate.py) is a `language: system`
     # pre-commit hook, so it runs against whatever interpreter is on
     # PATH rather than a hook-private venv. That means mypy has to be a
@@ -46,6 +65,10 @@ dev = [
     # in CI at all. Pinned to the exact rev the old mirrors-mypy hook
     # used, so results do not shift when PyPI ships a new mypy.
     "mypy==1.10.0",
+    # Type stubs only -- the runtime PyYAML dep is in [project.dependencies].
+    # Without types-PyYAML the gate reports import-untyped for every yaml
+    # import, which is noise rather than a real defect.
+    "types-PyYAML>=6.0",
 ]
 
 [project.scripts]

@@ -43,6 +43,7 @@ import shutil
 import subprocess
 from collections.abc import Iterator
 
+from ..classify import matches_tokens
 from ..schemas import (
     AccessGrant,
     ActionRecord,
@@ -396,16 +397,13 @@ def _classify_cloud(name: str, mime: str, rel_path: str) -> tuple[str, str]:
     """Same shape as LocalFSAdapter._classify but path-aware for
     cloud-style relative paths (no /home prefix)."""
     lower = (name + "/" + rel_path).lower()
-    if any(
-        t in lower for t in ("resume", "cv", "career", "cover_letter", "transcript")
-    ):
+    if matches_tokens(lower, ("resume", "cv", "career", "cover_letter", "transcript")):
         return "career", "Career"
-    if any(
-        t in lower
-        for t in ("tax", "w2", "w-2", "paystub", "1099", "passport", "license")
+    if matches_tokens(
+        lower, ("tax", "w2", "w-2", "paystub", "1099", "passport", "license")
     ):
         return "financial", "Forms"
-    if any(t in lower for t in ("private", "intimate", "nsfw")):
+    if matches_tokens(lower, ("private", "intimate", "nsfw")):
         return "private", "Private"
     if mime.startswith("image/"):
         return "photos", "Photos"

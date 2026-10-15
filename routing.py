@@ -85,7 +85,14 @@ _SCRAPPY_CACHE = ""
 _SCRAPPY_TS = 0.0
 
 
-DEFAULT_LOCAL_MODEL = os.environ.get("MASTER_AI_LOCAL_MODEL", "") or None
+# 2026-10-13: the `or None` here existed only to make the `if not` below
+# fall through to the hardware probe when the env var was unset or empty. It
+# left the inferred type `str | None`, which propagated into master_ai.py's
+# MODEL_MENU (whose first entry is DEFAULT_LOCAL_MODEL) and produced three
+# downstream union-attr/arg-type errors on a value that can never actually be
+# None past this block -- both branches below assign a str. Use "" instead:
+# same falsy fallthrough, honest type.
+DEFAULT_LOCAL_MODEL = os.environ.get("MASTER_AI_LOCAL_MODEL", "") or ""
 if not DEFAULT_LOCAL_MODEL:
     try:
         import hardware_model as _hardware_model_early
@@ -232,7 +239,8 @@ def _choose_route(candidates: Any, reason_prefix: str = "scored") -> dict:
 
 def format_router_stats() -> str:
     events = _router_recent_events(limit=ROUTER_METRICS_MAX_SCAN)
-    model_rows = {}
+    # model -> accumulated call/ok counters and total latency.
+    model_rows: dict[str, dict[str, float]] = {}
     exec_ok = exec_total = 0
     decisions = 0
     for e in events:
@@ -314,7 +322,9 @@ def _is_explicit_vision_request(text: str) -> bool:
 def detect_route(text: str, has_image: bool = False) -> tuple:
     global PINNED_MODEL
     t = text.lower()
-    words = set(re.sub(r"[^\w\s]", "", t).split())  # strip punctuation so "weather?" matches WEB_WORDS
+    words = set(
+        re.sub(r"[^\w\s]", "", t).split()
+    )  # strip punctuation so "weather?" matches WEB_WORDS
 
     if PINNED_MODEL:
         if _is_key_backed_model(PINNED_MODEL):
@@ -380,8 +390,13 @@ def _classify_intent_fast(
     if not text or len(text) > 800 or not _fast_classifier_enabled():
         return None
     model = model or MODELS["fast"]
+    # 2026-10-13: the env fallback can be any str, and timeout_s may arrive as
+    # str | None. Coerce to float first, then let float() parse either shape,
+    # so a non-numeric env value raises here rather than deep inside the call.
     timeout_s = float(
-        timeout_s or os.environ.get("SENSEI_FAST_CLASSIFIER_TIMEOUT", "4")
+        timeout_s
+        if timeout_s is not None
+        else (os.environ.get("SENSEI_FAST_CLASSIFIER_TIMEOUT") or "4")
     )
     system = (
         "Classify one user message for a local computer-control agent. "

@@ -214,6 +214,13 @@ def test_semantic_match_survives_with_no_shared_tokens(index, monkeypatch):
 
 def test_unrelated_query_ranks_last(index, monkeypatch):
     _embed_all(index, monkeypatch)
+    # 2026-10-14: doc 3 ("Tokyo") shares no tokens with the query, so only
+    # the vector list can find it; without a local embedding model that
+    # list is empty (retrieval._vector_hits returns [] when embed() is
+    # None) and the assertion can't hold. Matches this module's stated
+    # policy: model-backed checks skip when the model is absent.
+    if not embeddings.available():
+        pytest.skip("local embedding model not reachable; doc 3 is vector-only")
     results = retrieval.search("router port 8791", limit=5)
     ids = [item["id"] for item in results]
     assert 3 in ids  # Tokyo: present, but worst

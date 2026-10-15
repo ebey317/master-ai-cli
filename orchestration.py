@@ -970,7 +970,7 @@ def handle(
     _INTERRUPT_EVENT = _ma_mod._INTERRUPT_EVENT
     # ── mutable state (read as locals; writes go through setattr) ──
     _VERIFY_STOP_ATTEMPTS = getattr(_ma_mod, "_VERIFY_STOP_ATTEMPTS", 0)
-    _TURN_EDITED_PATHS = getattr(_ma_mod, "_TURN_EDITED_PATHS", set())
+    _TURN_EDITED_PATHS: set[str] = getattr(_ma_mod, "_TURN_EDITED_PATHS", set())
     _LAST_MEMORY_SLICE_HASH = getattr(_ma_mod, "_LAST_MEMORY_SLICE_HASH", "")
     _LAST_MEMORY_SLICE_AT_S = getattr(_ma_mod, "_LAST_MEMORY_SLICE_AT_S", 0.0)
     # ── functions ──
@@ -1171,7 +1171,7 @@ def handle(
         "whole_file_requested"
     ):
         _slicer_path = Path(ctx_meta["big_file_no_symbol_match"][0]).name
-        decision = {
+        decision: dict[str, Any] = {
             "route": "ask_user",
             "question": (
                 f"You mentioned {_slicer_path}. Which heading, function, class, "
@@ -1186,6 +1186,15 @@ def handle(
     else:
         # ── Smart orchestrator: short-circuit special routes before model dispatch ─
         # Call through _ma_mod so tests can mock master_ai.orchestrate cleanly.
+        #
+        # 2026-10-13: annotate `decision` at its widest point. Every branch
+        # below/above assigns a plain dict, but the shapes differ (some carry
+        # "candidates"/"score", some "question", some "original_query"), so
+        # mypy was inferring the first branch's exact dict type and then
+        # reporting the later ones as incompatible assignments -- which in
+        # turn poisoned every `decision[...]` / `decision.get(...)` read
+        # downstream with union-attr and index errors. dict[str, Any] states
+        # what the contract actually is: a heterogeneous mapping.
         decision = _ma_mod.orchestrate(history, user_text, image_path=image_path)
 
     # ── Whole-file escape (>15k chars injected) on local route → cloud bias if

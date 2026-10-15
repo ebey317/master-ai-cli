@@ -1,13 +1,14 @@
 """
 Tests for the process-shared database registry.
 """
+
 import tempfile
 import threading
 from pathlib import Path
 
 import pytest
 
-from scripts.db_registry import acquire, release, session, SessionDB, _registry
+from scripts.db_registry import SessionDB, _registry, acquire, release, session
 
 
 @pytest.fixture
@@ -42,8 +43,10 @@ def test_reader_separate_from_writer(temp_db):
 def test_read_only_no_write_lock(temp_db):
     """Read-only connections can coexist with writer transactions."""
     with session(temp_db, read_only=False) as w:
-        w.execute("INSERT INTO sessions (id, title, cwd, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-                  ("s1", "Test", "/tmp", "model", 1.0, 1.0))
+        w.execute(
+            "INSERT INTO sessions (id, title, cwd, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("s1", "Test", "/tmp", "model", 1.0, 1.0),
+        )
         w.commit()
 
         # This should not block
@@ -67,12 +70,17 @@ def test_refcount_cleanup(temp_db):
 def test_concurrent_readers(temp_db):
     """Multiple read-only connections work concurrently."""
     with session(temp_db, read_only=False) as w:
-        w.execute("INSERT INTO sessions (id, title, cwd, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-                  ("s1", "Test", "/tmp", "model", 1.0, 1.0))
+        w.execute(
+            "INSERT INTO sessions (id, title, cwd, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("s1", "Test", "/tmp", "model", 1.0, 1.0),
+        )
 
     readers = [acquire(temp_db, read_only=True) for _ in range(10)]
     for r in readers:
-        assert r.execute("SELECT title FROM sessions WHERE id='s1'").fetchone()[0] == "Test"
+        assert (
+            r.execute("SELECT title FROM sessions WHERE id='s1'").fetchone()[0]
+            == "Test"
+        )
     for _ in readers:
         release(temp_db, read_only=True)
 
@@ -86,7 +94,14 @@ def test_concurrent_access_threads(temp_db):
             with session(temp_db, read_only=False) as conn:
                 conn.execute(
                     "INSERT INTO sessions (id, title, cwd, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    (f"s{threading.current_thread().ident}", "t", "/tmp", "m", 1.0, 1.0)
+                    (
+                        f"s{threading.current_thread().ident}",
+                        "t",
+                        "/tmp",
+                        "m",
+                        1.0,
+                        1.0,
+                    ),
                 )
         except Exception as e:
             errors.append(e)
@@ -114,7 +129,7 @@ def test_session_context_manager_commits(temp_db):
     with session(temp_db, read_only=False) as conn:
         conn.execute(
             "INSERT INTO sessions (id, title, cwd, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-            ("s1", "Test", "/tmp", "model", 1.0, 1.0)
+            ("s1", "Test", "/tmp", "model", 1.0, 1.0),
         )
     # New session should see the data
     with session(temp_db, read_only=True) as conn:
@@ -128,7 +143,7 @@ def test_session_context_manager_rolls_back(temp_db):
         with session(temp_db, read_only=False) as conn:
             conn.execute(
                 "INSERT INTO sessions (id, title, cwd, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-                ("s1", "Test", "/tmp", "model", 1.0, 1.0)
+                ("s1", "Test", "/tmp", "model", 1.0, 1.0),
             )
             raise ValueError("intentional")
     except ValueError:
@@ -144,7 +159,7 @@ def test_legacy_sessiondb_wrapper(temp_db):
     with SessionDB(temp_db, read_only=False) as db:
         db.execute(
             "INSERT INTO sessions (id, title, cwd, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-            ("s1", "Legacy", "/tmp", "model", 1.0, 1.0)
+            ("s1", "Legacy", "/tmp", "model", 1.0, 1.0),
         )
     with SessionDB(temp_db, read_only=True) as db:
         row = db.execute("SELECT title FROM sessions WHERE id='s1'").fetchone()
