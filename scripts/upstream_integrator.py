@@ -60,7 +60,7 @@ MSG_LIMIT = 1500
 DIFF_LINES = 500
 DIFF_CHARS = 8000
 # Must end in ":free" -- see the free-only gate in _ask_cloud().
-PLAN_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
+PLAN_MODEL = "dots-studio/dots-3-note-preview:free"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 BATCH = 3
 
