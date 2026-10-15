@@ -61,7 +61,8 @@ DIFF_LINES = 200
 DIFF_CHARS = 4000
 # Must end in ":free" -- see the free-only gate in _ask_cloud().
 PLAN_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
-OPENCODEGO_URL = "http://127.0.0.1:8793/v1"
+OPENCODEGO_URL = "http://127.0.0.1:8793/v1/chat/completions"
+OPENCODEGO_MODEL = "glm-5.3-flash"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 BATCH = 3
 
@@ -185,7 +186,7 @@ def _ask_cloud(messages, timeout=300):
     """
     key = _opencodego_key()
     url = OPENCODEGO_URL
-    model = "kimi-k2.7-code"
+    model = OPENCODEGO_MODEL
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {key}",
