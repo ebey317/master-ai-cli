@@ -61,6 +61,7 @@ DIFF_LINES = 200
 DIFF_CHARS = 4000
 # Must end in ":free" -- see the free-only gate in _ask_cloud().
 PLAN_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
+OPENCODEGO_URL = "https://opencode.ai/zen/go/v1/chat/completions"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 BATCH = 3
 
@@ -131,22 +132,122 @@ def _openrouter_key():
     return ""
 
 
+def _opencodego_key():
+    """OPENCODE_API_KEY from master keychain first, then env, then ~/.hermes/.env."""
+    keychain = Path.home() / ".master_ai_keys"
+    if keychain.exists():
+        text = keychain.read_text(errors="replace")
+        try:
+            k = _clean_key(json.loads(text).get("opencode", ""))
+            if k:
+                return k
+        except Exception:
+            for ln in text.splitlines():
+                s = ln.strip()
+                if s.startswith("OPENCODE_API_KEY="):
+                    k = _clean_key(s.split("=", 1)[1])
+                    if k:
+                        return k
+    k = _clean_key(os.environ.get("OPENCODE_API_KEY", ""))
+    if k:
+        return k
+    env = Path.home() / ".hermes" / ".env"
+    if env.exists():
+        for ln in env.read_text(errors="replace").splitlines():
+            s = ln.strip()
+            if s.startswith("export "):
+                s = s[len("export ") :].strip()
+            if s.startswith("OPENCODE_API_KEY="):
+                k = _clean_key(s.split("=", 1)[1])
+                if k:
+                    return k
+    return ""
+
+
 def _ask_cloud(messages, timeout=300):
-    """OpenRouter free-tier plan call with retry + diagnostics.
+    """Plan call via OpenCode Go (paid/cheap lane) with OpenRouter free fallback.
 
-    Lane: https://openrouter.ai/api/v1 (Bearer OPENROUTER_API_KEY), model
-    PLAN_MODEL. Hard-gated to ":free"-suffixed models — master_ai.py's own
-    _ask_openrouter() enforces the same rule at its chokepoint (operator,
-    2026-08-27: "we're using only the slash free models, nothing else");
-    this cron job gets no exemption from that.
-
-    Flakiness modes seen in production on this relay (guarded here):
-      - thinking models return everything in `reasoning_content`, `content` empty
-      - completion hits max_tokens mid-reasoning -> truncated/empty answer
-      - transient 429/5xx or empty generation (free-tier 550B models are slow)
-    Strategy: extract from content, fall back to reasoning_content, detect
-    max-token cutoff and widen on retry, 3 attempts with backoff.
+    Tries OpenCode Go first using the master keychain OPENCODE_API_KEY;
+    falls back to OpenRouter free tier if Go is unavailable or fails.
     """
+    key = _opencodego_key()
+    url = OPENCODEGO_URL
+    model = "kimi-k2.7-code"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {key}",
+        "x-opencode-session": "master-ai-upstream-integrator",
+    }
+    if not key:
+        print("  cloud: no OPENCODE_API_KEY; falling back to OpenRouter free", flush=True)
+        url = OPENROUTER_URL
+        model = PLAN_MODEL
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {_openrouter_key()}",
+            "HTTP-Referer": "http://localhost",
+            "X-Title": "master-ai-upstream-integrator",
+            "User-Agent": "master-ai-upstream-integrator/1.0",
+        }
+    max_tokens = 4096
+    last_err = "unknown"
+    for attempt in range(1, 4):
+        payload = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "stream": False,
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode(),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                d = json.loads(r.read())
+            msg = (d.get("choices") or [{}])[0].get("message", {})
+            content = (msg.get("content") or "").strip()
+            if not content:
+                content = (msg.get("reasoning_content") or "").strip()
+                if content:
+                    print(
+                        f"  cloud: content empty, using reasoning_content "
+                        f"({len(content)} chars)",
+                        flush=True,
+                    )
+            if content:
+                ct = (d.get("usage") or {}).get("completion_tokens") or 0
+                if ct >= int(max_tokens * 0.98):
+                    print(
+                        f"  cloud: hit max_tokens ({ct}); widening to 16384", flush=True
+                    )
+                    max_tokens = 16384
+                    last_err = f"max_tokens cutoff at {ct}"
+                    time.sleep(10)
+                    continue
+                return content
+            last_err = "empty content and reasoning_content"
+            print(f"  cloud: empty response (attempt {attempt}/3)", flush=True)
+        except urllib.error.HTTPError as e:
+            last_err = f"HTTP {e.code}"
+            print(f"  cloud: HTTP {e.code} (attempt {attempt}/3)", flush=True)
+        except Exception as e:
+            last_err = str(e)[:120]
+            print(f"  cloud error: {last_err} (attempt {attempt}/3)", flush=True)
+        if attempt < 3:
+            time.sleep(20 * attempt)
+    # Fallback to OpenRouter free if Go failed
+    if url != OPENROUTER_URL and _openrouter_key():
+        print("  cloud: OpenCode Go failed, trying OpenRouter free", flush=True)
+        return _ask_cloud_openrouter(messages, timeout)
+    print(f"  cloud: giving up after 3 attempts ({last_err})", flush=True)
+    return None
+
+
+def _ask_cloud_openrouter(messages, timeout=300):
+    """OpenRouter free-tier fallback plan call with retry + diagnostics."""
     if not PLAN_MODEL.endswith(":free"):
         print(f"  cloud: refusing non-free model '{PLAN_MODEL}'", flush=True)
         return None
@@ -191,7 +292,6 @@ def _ask_cloud(messages, timeout=300):
             if content:
                 ct = (d.get("usage") or {}).get("completion_tokens") or 0
                 if ct >= int(max_tokens * 0.98):
-                    # generation was cut off; widen and retry once more
                     print(
                         f"  cloud: hit max_tokens ({ct}); widening to 16384", flush=True
                     )
