@@ -51,6 +51,8 @@ _KV_KEY_MAP = {
     # permanently on the "key not set" path. Mapped here so the kv parser
     # picks up the real key once restored.
     "FIRECRAWL_API_KEY": "firecrawl",
+    # 2026-10-15: xAI Grok SDK key (legacy keychain line was `grok xai-...`).
+    "XAI_API_KEY": "xai",
 }
 
 # Reverse map (short name -> canonical uppercase env-style name), used by
