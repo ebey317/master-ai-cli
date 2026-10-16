@@ -827,7 +827,7 @@ class SenseiApp:
         # input station returns focus there.
         self._output_frame = Frame(
             self._output_window,
-            title=" 🥋  chat ",
+            title=" chat ",
             style="class:frame",
             modal=False,
         )
@@ -849,7 +849,7 @@ class SenseiApp:
         self._status_window = Window(
             content=self._status_control,
             height=1,
-            align=WindowAlign.RIGHT,
+            align=WindowAlign.CENTER,
             style="class:status",
         )
 
@@ -885,11 +885,16 @@ class SenseiApp:
         # it to sit directly above the input box puts CTX% (the thing he
         # specifically needs to see coming) right where he's already
         # looking every time he's about to type.
+        #
+        # 2026-10-15: add a subtle horizontal rule between the floating tip
+        # and the status/input stack so the input station reads as one
+        # anchored panel instead of a stack of loose rows.
         input_stack = HSplit(
             [
                 ConditionalContainer(
                     self._tip_window, filter=Condition(self._show_tip_row)
                 ),
+                Window(height=1, char="─", style="class:sep"),
                 self._status_window,
                 self._input,
                 self._legend_window,
@@ -1005,7 +1010,7 @@ class SenseiApp:
         # Elijah locked 2026-04-20 after the full tuning walk (#8b1a1a →
         # #b91c1c → #ef4444 → #dc2626 → #ef4444 → #dc143c → #ef4444 →
         # #c0392b → #ef4444 → #cc0000). Do NOT re-tune without his ask.
-        "plan": "#cc0000",  # true red — STOP: drafting only, no execution. Approved hex 2026-04-20.
+        "plan": "#9e2a2b",  # deep muted red — STOP: drafting only, no execution. Less glare than #cc0000.
         "review": "#c7761a",  # amber — CAUTION: per-command confirm, press 1/Enter to approve each
         "auto": "#1a7a3a",  # forest green — GO: runs without asking (destructive still pauses)
     }
@@ -1173,7 +1178,7 @@ class SenseiApp:
         width = max(10, _term_size().columns - 2)
         fields = self._status or []
         narrow = width < 82
-        sep_text = " and " if narrow else "  and  "
+        sep_text = " · " if narrow else "  ·  "
 
         clean_fields = []
         for field in fields:
@@ -1207,22 +1212,23 @@ class SenseiApp:
         width = max(10, _term_size().columns)
         clock = time.strftime("%m/%d/%Y %I:%M:%S %p")
         title = (
-            f" MASTER AI - SENSEI  {clock} "
+            f"MASTER AI — SENSEI {clock}"
             if width < 76
-            else f" 🥷  MASTER  AI  —  SENSEI  {clock} "
+            else f"🥷 MASTER AI — SENSEI {clock}"
         )
-        return FormattedText([("class:header", _fit_text(title, width))])
+        # Truncate only; don't pad to full width so the Window can actually center it.
+        return FormattedText([("class:header", _fit_text(title, width).rstrip())])
 
     def _render_label(self):
         width = max(10, _term_size().columns - 6)
-        focus = "[chat]" if self._chat_focused else "[input]"
         chat_id = self._chat_id or ""
+        focus = "●" if self._chat_focused else "○"
         if self._label and chat_id:
-            lbl = f" ✏ {self._label} · id:{chat_id} {focus}"
+            lbl = f" ✏ {self._label} · {chat_id} {focus}"
         elif self._label:
             lbl = f" ✏ {self._label} {focus}"
         elif chat_id:
-            lbl = f" id:{chat_id} {focus}"
+            lbl = f" {chat_id} {focus}"
         else:
             lbl = f" {focus}"
         lbl = _fit_text(lbl, min(width, 56 if width >= 100 else width))
@@ -1248,13 +1254,17 @@ class SenseiApp:
 
     def _render_legend(self):
         # Single slash-command namespace. The legend advertises the one
-        # prefix that opens the command palette, plus the edit-label shortcut.
+        # prefix that opens the command palette, plus a few core shortcuts.
         current_mode = getattr(self, "_mode", "plan").upper()
         return FormattedText(
             [
-                ("class:legend", f"MODE:{current_mode}"),
-                ("class:sep", "  and  "),
-                ("class:legend", "slash"),
+                ("class:legend", f"MODE {current_mode}"),
+                ("class:sep", " · "),
+                ("class:legend", "/help"),
+                ("class:sep", " · "),
+                ("class:legend", "/model"),
+                ("class:sep", " · "),
+                ("class:legend", "Shift+Tab mode"),
             ]
         )
 
