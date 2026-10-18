@@ -41,7 +41,6 @@ IMAP_PORT = 993
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
 CREDS_FILE = os.path.expanduser("~/.gmail_imap.gpg")
-PASSPHRASE_CMD = f"echo '{os.uname().nodename}-gmail-imap-key'"
 
 # Thunderbird's registered Google OAuth2 client (public — in Thunderbird open source)
 CLIENT_ID = "406964657835-aq8lmia8j95dhl1a2bvharmfk3t1hgqj.apps.googleusercontent.com"
@@ -55,7 +54,7 @@ def get_stored_creds():
         print("ERROR: ~/.gmail_imap.gpg not found.", file=sys.stderr)
         print("Run first: python3 ~/scripts/gmail_init.py", file=sys.stderr)
         sys.exit(1)
-    passphrase = subprocess.check_output(PASSPHRASE_CMD, shell=True).decode().strip()
+    passphrase = f"{os.uname().nodename}-gmail-imap-key"
     result = (
         subprocess.check_output(
             [
@@ -78,7 +77,7 @@ def get_stored_creds():
 
 
 def save_refresh_token(user, new_refresh_token):
-    passphrase = subprocess.check_output(PASSPHRASE_CMD, shell=True).decode().strip()
+    passphrase = f"{os.uname().nodename}-gmail-imap-key"
     data = f"{user}:{new_refresh_token}"
     proc = subprocess.Popen(
         [

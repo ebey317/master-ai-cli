@@ -131,11 +131,20 @@ class HookRegistry:
                             blocked=True, reason=res.reason or "blocked", hook_id=h.id
                         )
                 elif h.shell:
-                    cmd = h.shell.replace("{target}", str(target))
+                    # The hook template is user-authored and may use shell
+                    # features (pipes, redirects); only the interpolated
+                    # value gets quoted.
+                    cmd = h.shell.replace("{target}", shlex.quote(str(target)))
                     try:
+                        # Explicit shell invocation: the hook template is
+                        # user-authored (from ~/.master_ai_hooks.json) and may
+                        # legitimately use pipes/redirects, so a shell is
+                        # genuinely required. The only interpolated value
+                        # ({target}) is shlex.quote'd above, so it cannot
+                        # break out of its quoted context.
                         r = subprocess.run(
-                            cmd,
-                            shell=True,
+                            [sh, -c, cmd],
+                            shell=False,
                             capture_output=True,
                             text=True,
                             timeout=h.timeout_s,

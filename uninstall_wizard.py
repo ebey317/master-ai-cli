@@ -20,6 +20,7 @@ import getpass
 import json
 import os
 import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -173,8 +174,16 @@ def _remove_entry_points() -> list[str]:
 
 def _remove_systemd_services() -> None:
     for svc in SYSTEMD_USER_SERVICES:
-        os.system(f"systemctl --user stop {svc} 2>/dev/null")
-        os.system(f"systemctl --user disable {svc} 2>/dev/null")
+        subprocess.run(
+            ["systemctl", "--user", "stop", svc],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["systemctl", "--user", "disable", svc],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     ud = Path.home() / ".config" / "systemd" / "user"
     for svc in SYSTEMD_USER_SERVICES:
         p = ud / svc
@@ -183,7 +192,11 @@ def _remove_systemd_services() -> None:
                 p.unlink()
             except Exception:
                 pass
-    os.system("systemctl --user daemon-reload 2>/dev/null")
+    subprocess.run(
+        ["systemctl", "--user", "daemon-reload"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 def _remove_scripts_dir() -> None:

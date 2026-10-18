@@ -2173,10 +2173,13 @@ def notify_desktop(args: Any | None = None) -> Any:
             error="wrapper_missing",
         )
 
-    cmd = f"{shlex.quote(str(wrapper_path))} {shlex.quote(title)} {shlex.quote(body)} {shlex.quote(urgency)}"
+    cmd = " ".join(shlex.quote(p) for p in (str(wrapper_path), title, body, urgency))
     try:
         result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=10
+            [str(wrapper_path), title, body, urgency],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         if result.returncode == 0:
             log(f"NOTIFY: {title!r} body={body!r} urgency={urgency}")
@@ -8691,7 +8694,8 @@ def read_nav_key(prompt: Any) -> Any:
 
 
 def cache_key(text: str) -> Any:
-    return hashlib.md5(text.strip().lower().encode()).hexdigest()
+    # non-security use: cache/dedup key only
+    return hashlib.md5(text.strip().lower().encode(), usedforsecurity=False).hexdigest()
 
 
 def _is_error_reply(r: str) -> Any:
@@ -16837,12 +16841,16 @@ def _handle_project_cmd(lo: str, cmd: Any) -> bool:
             "AI will write paths relative to this project.\n"
             "Git branch + recent commits also auto-injected.",
         )
-        struct = subprocess.run(
-            f"find {proj} -type f | grep -v -E '(node_modules|\\.git|__pycache__)' | head -50",
-            shell=True,
+        _find_out = subprocess.run(
+            ["find", proj, "-type", "f"],
             capture_output=True,
             text=True,
-        ).stdout.strip()
+        ).stdout.splitlines()
+        _exclude_re = re.compile(r"node_modules|\.git|__pycache__")
+        struct = "\n".join(
+            f for f in _find_out if not _exclude_re.search(f)
+        ).splitlines()[:50]
+        struct = "\n".join(struct).strip()
         print(f"  {C}Files:{X}")
         for f in struct.splitlines():
             print(f"    {W}{f}{X}")

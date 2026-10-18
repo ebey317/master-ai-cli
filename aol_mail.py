@@ -22,11 +22,10 @@ from email.header import decode_header
 IMAP_HOST = "imap.aol.com"
 IMAP_PORT = 993
 CREDS_FILE = os.path.expanduser("~/.aol_imap.gpg")
-PASSPHRASE_CMD = f"echo '{os.uname().nodename}-aol-imap-key'"
 
 
 def get_credentials():
-    passphrase = subprocess.check_output(PASSPHRASE_CMD, shell=True).decode().strip()
+    passphrase = f"{os.uname().nodename}-aol-imap-key"
     result = (
         subprocess.check_output(
             [

@@ -94,7 +94,9 @@ def build_findings(items: list[ItemRecord], run_id: str) -> list[FindingRecord]:
         if len(members) < 2:
             continue
         item_ids = [item.item_id for item in members]
-        finding_id = hashlib.sha1(("dup:" + sha256).encode("utf-8")).hexdigest()
+        finding_id = hashlib.sha1(
+            ("dup:" + sha256).encode("utf-8"), usedforsecurity=False
+        ).hexdigest()
         findings.append(
             FindingRecord(
                 schema_version="sensei.finding.v1",
@@ -132,7 +134,8 @@ def build_actions(
             item = item_by_id[item_id]
             destination = quarantine_root / "duplicates" / item.display_name
             action_id = hashlib.sha1(
-                (item.item_id + str(destination)).encode("utf-8")
+                (item.item_id + str(destination)).encode("utf-8"),
+                usedforsecurity=False,
             ).hexdigest()
             is_sensitive = item.sensitivity in MONITORED_SENSITIVITIES
             lane = "monitored" if is_sensitive else "unattended"

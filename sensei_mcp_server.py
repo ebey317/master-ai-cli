@@ -299,8 +299,16 @@ def tool_run(args):
     if not cmd:
         return {"content": [{"type": "text", "text": "run: cmd is required"}]}
     try:
+        args = shlex.split(cmd)
+    except ValueError as e:
+        return {
+            "content": [
+                {"type": "text", "text": f"run error: could not parse command: {e}"}
+            ]
+        }
+    try:
         result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30
+            args, shell=False, capture_output=True, text=True, timeout=30
         )
         out = (result.stdout or "").strip()
         err = (result.stderr or "").strip()
@@ -333,12 +341,16 @@ def tool_notify(args):
             ],
             "isError": True,
         }
-    # Always route through bash so the wrapper's env exports apply, and pass
-    # urgency as the third positional arg the wrapper forwards to notify-send.
-    cmd = f"{shlex.quote(wrapper)} {shlex.quote(title)} {shlex.quote(body)} {shlex.quote(urgency)}"
+    # Run the wrapper directly: it has a #!/bin/bash shebang and sets its
+    # own env exports internally, so no shell is needed. Each argument is
+    # passed as a separate argv entry, which is also injection-safe.
     try:
         result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=10
+            [wrapper, title, body, urgency],
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         out = (result.stdout or "").strip()
         err = (result.stderr or "").strip()

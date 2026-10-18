@@ -27,14 +27,13 @@ from email.header import decode_header
 IMAP_HOST = "outlook.office365.com"
 IMAP_PORT = 993
 CREDS_FILE = os.path.expanduser("~/.outlook_imap.gpg")
-PASSPHRASE_CMD = f"echo '{os.uname().nodename}-outlook-imap-key'"
 CLIENT_ID = "9e5f94bc-e8a4-4e73-b8be-63364c29d753"
 TOKEN_ENDPOINT = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
 IMAP_SCOPE = "https://outlook.office.com/IMAP.AccessAsUser.All offline_access"
 
 
 def get_stored_creds():
-    passphrase = subprocess.check_output(PASSPHRASE_CMD, shell=True).decode().strip()
+    passphrase = f"{os.uname().nodename}-outlook-imap-key"
     result = (
         subprocess.check_output(
             [
@@ -57,7 +56,7 @@ def get_stored_creds():
 
 
 def save_refresh_token(user, new_refresh_token):
-    passphrase = subprocess.check_output(PASSPHRASE_CMD, shell=True).decode().strip()
+    passphrase = f"{os.uname().nodename}-outlook-imap-key"
     data = f"{user}:{new_refresh_token}"
     proc = subprocess.Popen(
         [

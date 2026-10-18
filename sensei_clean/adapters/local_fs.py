@@ -146,7 +146,7 @@ class LocalFSAdapter(BaseAdapter):
         # Pathological case — return a hash-suffixed name as last resort
         return (
             parent
-            / f"{stem}.{hashlib.sha1(str(dest).encode()).hexdigest()[:8]}{suffix}"
+            / f"{stem}.{hashlib.sha1(str(dest).encode(), usedforsecurity=False).hexdigest()[:8]}{suffix}"
         )
 
     def open_view(self, item: ItemRecord) -> str:
@@ -292,7 +292,9 @@ class LocalFSAdapter(BaseAdapter):
         return min(100, max(0, int(base + (1.0 - confidence) * 20)))
 
     def _stable_id(self, path: Path) -> str:
-        digest = hashlib.sha1(str(path).encode("utf-8")).hexdigest()
+        digest = hashlib.sha1(
+            str(path).encode("utf-8"), usedforsecurity=False
+        ).hexdigest()
         return f"{self.name}:{digest}"
 
     def _sha256(self, path: Path) -> str:

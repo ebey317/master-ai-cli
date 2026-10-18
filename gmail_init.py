@@ -23,7 +23,6 @@ import sys
 from pathlib import Path
 
 CREDS_FILE = os.path.expanduser("~/.gmail_imap.gpg")
-PASSPHRASE_CMD = f"echo '{os.uname().nodename}-gmail-imap-key'"
 THUNDERBIRD_PROFILE = os.path.expanduser("~/.thunderbird/47nuc58i.default-release")
 
 
@@ -120,7 +119,7 @@ def find_gmail_creds(profile_dir: str):
 
 
 def save_creds(email: str, refresh_token: str):
-    passphrase = subprocess.check_output(PASSPHRASE_CMD, shell=True).decode().strip()
+    passphrase = f"{os.uname().nodename}-gmail-imap-key"
     data = f"{email}:{refresh_token}"
     proc = subprocess.Popen(
         [

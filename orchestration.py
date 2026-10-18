@@ -2482,8 +2482,10 @@ def handle(
         )
         if memory_slice:
             try:
+                # non-security use: dedup recent memory slices only
                 h = hashlib.sha1(
-                    memory_slice.encode("utf-8", errors="ignore")
+                    memory_slice.encode("utf-8", errors="ignore"),
+                    usedforsecurity=False,
                 ).hexdigest()
                 now = time.time()
                 if (

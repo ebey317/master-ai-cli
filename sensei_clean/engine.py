@@ -71,7 +71,9 @@ def build_findings(items: list[ItemRecord], run_id: str) -> list[FindingRecord]:
         if len(members) < 2:
             continue
         item_ids = [item.item_id for item in members]
-        finding_id = hashlib.sha1((f"dup:{algo}:" + value).encode("utf-8")).hexdigest()
+        finding_id = hashlib.sha1(
+            (f"dup:{algo}:" + value).encode("utf-8"), usedforsecurity=False
+        ).hexdigest()
         findings.append(
             FindingRecord(
                 schema_version="sensei.finding.v1",
@@ -127,7 +129,8 @@ def build_actions(
                 action_type = "quarantine_move"
                 is_monitored = item.sensitivity in MONITORED_SENSITIVITIES
             action_id = hashlib.sha1(
-                (item.item_id + destination_str).encode("utf-8")
+                (item.item_id + destination_str).encode("utf-8"),
+                usedforsecurity=False,
             ).hexdigest()
             lane = "monitored" if is_monitored else "unattended"
             actions.append(
@@ -211,7 +214,9 @@ def build_organize_actions(
             continue
 
         dest = organize_root / bucket / src_path.name
-        action_id = hashlib.sha1((item.item_id + str(dest)).encode("utf-8")).hexdigest()
+        action_id = hashlib.sha1(
+            (item.item_id + str(dest)).encode("utf-8"), usedforsecurity=False
+        ).hexdigest()
         is_sensitive = item.sensitivity in MONITORED_SENSITIVITIES
         allowed_unattended = (
             unattended_root_basenames is None or root_base in unattended_root_basenames

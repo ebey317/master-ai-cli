@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -224,8 +225,12 @@ def _run_directive(spec: dict[str, Any], context: dict[str, Any]) -> dict[str, A
         if any(d in lowered for d in dangerous):
             return {"error": f"blocked dangerous command: {cmd}"}
         try:
+            args = shlex.split(cmd)
+        except ValueError as e:
+            return {"error": f"could not parse command: {e}"}
+        try:
             r = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True, timeout=60
+                args, shell=False, capture_output=True, text=True, timeout=60
             )
             out = (r.stdout or "") + (r.stderr or "")
             return {"output": out[:4000], "returncode": r.returncode}

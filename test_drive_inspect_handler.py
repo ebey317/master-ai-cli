@@ -73,7 +73,7 @@ class WS:
         if b" 101 " not in head:
             raise RuntimeError(f"WS handshake failed: {head[:200]!r}")
         expected = base64.b64encode(
-            hashlib.sha1((key + _WS_MAGIC).encode()).digest()
+            hashlib.sha1((key + _WS_MAGIC).encode(), usedforsecurity=False).digest()
         ).decode()
         if expected.lower() not in head.decode("latin-1").lower():
             raise RuntimeError("WS handshake missing Sec-WebSocket-Accept")

@@ -9,6 +9,7 @@ Run:
 """
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -37,4 +38,8 @@ def features():
 {{AI_SNIPPET}}
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(
+        host="0.0.0.0",
+        port=5000,
+        debug=os.environ.get("FLASK_DEBUG", "0") == "1",
+    )

@@ -23,10 +23,11 @@ MEMORY_FILE = HOME / ".master_ai_memory"
 MEMORY_INDEX = HOME / ".claude/projects/-home-elijah/memory/MEMORY.md"
 
 
-def run(cmd, timeout=5):
+def run(args, timeout=5):
+    """Run a command given as an argv list. No shell is used."""
     try:
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=timeout
+            args, shell=False, capture_output=True, text=True, timeout=timeout
         )
         return r.stdout.strip()
     except Exception:
@@ -38,8 +39,9 @@ def check_services():
     services = {}
 
     # Process-based checks
+    # pgrep -f takes an ERE pattern, so the alternation needs no shell.
     procs = run(
-        "pgrep -a -f 'ollama|master_ai|pupil|piper|jellyfin|soffice|mpv' 2>/dev/null"
+        ["pgrep", "-a", "-f", "ollama|master_ai|pupil|piper|jellyfin|soffice|mpv"]
     )
     services["ollama"] = "ollama" in procs
     services["master_ai"] = "master_ai.py" in procs
@@ -48,10 +50,14 @@ def check_services():
     services["tts"] = "piper" in procs
 
     # Port-based checks (faster than curl)
-    ports = run(
-        "ss -tuln 2>/dev/null | awk '{print $5}' | grep -oE ':[0-9]+$' | tr -d ':'"
-    )
-    open_ports = set(ports.splitlines())
+    ports = run(["ss", "-tuln"])
+    open_ports = set()
+    for line in ports.splitlines():
+        cols = line.split()
+        if len(cols) >= 5:
+            port = cols[4].rsplit(":", 1)[-1]
+            if port.isdigit():
+                open_ports.add(port)
     services["pupil_ui"] = "8080" in open_ports
     services["ollama_api"] = "11434" in open_ports
     services["tts_api"] = "5050" in open_ports
@@ -62,10 +68,14 @@ def check_services():
 
 def recent_changes(hours=24):
     """Files changed in ~/scripts in last N hours."""
-    out = run(
-        f"find {SCRIPTS} -maxdepth 1 -name '*.py' -o -name '*.sh' | xargs ls -t 2>/dev/null | head -5"
-    )
-    return [p.replace(str(HOME) + "/", "~/") for p in out.splitlines() if p][:5]
+    try:
+        files = [
+            p for p in SCRIPTS.iterdir() if p.is_file() and p.suffix in (".py", ".sh")
+        ]
+    except OSError:
+        return []
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return [str(p).replace(str(HOME) + "/", "~/") for p in files[:5]]
 
 
 def read_memory():
@@ -81,7 +91,15 @@ def read_portfolio():
     """Read business portfolio from ODS via LibreOffice CSV conversion."""
     try:
         run(
-            f"libreoffice --headless --convert-to csv '{ODS_FILE}' --outdir /tmp 2>/dev/null",
+            [
+                "libreoffice",
+                "--headless",
+                "--convert-to",
+                "csv",
+                str(ODS_FILE),
+                "--outdir",
+                "/tmp",
+            ],
             timeout=15,
         )
         csv = pathlib.Path("/tmp/MasterAI_Office.csv")

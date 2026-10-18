@@ -63,7 +63,8 @@ MODEL_COLORS = {
 
 
 def clear():
-    os.system("clear" if os.name != "nt" else "cls")
+    # ANSI escape: clear screen + move cursor home (no shell needed)
+    print("\033[2J\033[H", end="")
 
 
 def load_entries():
