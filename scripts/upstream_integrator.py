@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 """
-Sensei-native upstream integrator.
+Sensei-native upstream integrator — PROPOSAL-ONLY (2026-10-18).
 
 Reads the ranked queue at memory/upstream-integration-queue.json, takes the
 top N unprocessed commits, fetches each patch, and asks Sensei's own cloud
 lane (OpenRouter free tier, nemotron-3-ultra-550b) to reimplement the
-underlying design idea inside master-ai-cli. Generated files are
-py_compile-gated, committed to a review branch, and tested before anything
-merges.
+underlying design idea inside master-ai-cli. Writes a proposal doc under
+memory/upstream-plans/<sha>.md and logs it. **Never touches git, never
+writes a file into the live repo, never branches, never commits, never
+merges.** Prior behavior (auto-branch, py_compile-gate, auto-merge into
+main when tests passed) is retired as of 2026-10-18 — it left the repo
+stranded off master at least once and committed unreviewed code into a
+live working tree. Operator's own call: "flip it to proposal-only," so this
+script's only output is a markdown proposal for a human (or a reviewed
+no-mistakes/CodeRabbit pass) to act on later. This is also the mechanism
+behind the "Muse-style" passive check-in/reminder behavior the operator
+wants from master_ai — surface, don't act.
 
 2026-09-25: moved off the $10/mo OpenCode Go plan (kimi-k2.7-code) onto
 OpenRouter's free tier — Elijah: "let's put it to a free model that's
@@ -24,14 +32,12 @@ This is Elijah's self-update loop: Sensei reads upstream code, learns the
 idea, and adapts it to its own codebase. No external framework involved.
 
 Usage:
-    python3 /home/elijah/master-ai-cli/scripts/upstream_integrator.py [--batch N] [--dry-run]
+    python3 /home/elijah/master-ai-cli/scripts/upstream_integrator.py [--batch N]
 """
 
 import json
 import os
-import py_compile
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -45,7 +51,6 @@ MEM = REPO / "memory"
 QUEUE = MEM / "upstream-integration-queue.json"
 LOG = MEM / "upstream-integration-log.jsonl"
 PLANS = MEM / "upstream-plans"
-BRANCH_BASE = "upstream-learn"
 
 CORE_ENGINE_FILES = {
     "master_ai.py",
@@ -417,24 +422,12 @@ def _path_allowed(p):
     return root in (rel, "scripts", "tests") or "/" not in rel
 
 
-def integrate_one(item, dry_run=False, base_branch=None):
+def integrate_one(item):
     owner, repo, sha = item["owner"], item["repo"], item["sha"]
     print(f"\n=== {owner}/{repo}@{sha[:8]} (score {item.get('score')})", flush=True)
-    # never entangle the operator's WIP: refuse to branch when TRACKED files
-    # are modified. Untracked runtime artifacts (memory/) are ignored.
-    rc, dirty, _ = _git("status", "--porcelain", "--untracked-files=no")
-    if dirty:
-        n = len(dirty.splitlines())
-        _log_line(
-            {
-                "ts": datetime.now().isoformat(),
-                "sha": sha,
-                "status": "deferred",
-                "detail": f"dirty working tree ({n} files) — commit or stash first",
-            }
-        )
-        print(f"  deferred: dirty working tree ({n} files) — not branching", flush=True)
-        return "", "deferred"
+    # Proposal-only: this never touches git or the working tree, so there is
+    # no "dirty tree" case to defer on anymore — it's safe to run alongside
+    # a live editing session.
     patch = _fetch_patch(owner, repo, sha)
     if not patch:
         _log_line(
@@ -502,212 +495,33 @@ def integrate_one(item, dry_run=False, base_branch=None):
         )
         return "", "manual-review"
 
-    # gate: only safe paths, then py_compile every .py
-    staged = []
-    for path, body in blocks:
-        if not _path_allowed(path):
-            _log_line(
-                {
-                    "ts": datetime.now().isoformat(),
-                    "sha": sha,
-                    "status": "blocked",
-                    "detail": f"unsafe path {path}",
-                }
-            )
-            return "", "blocked"
-        staged.append((path, body))
+    # Proposal-only: sanity-check which paths WOULD be touched, but never
+    # write, branch, commit, or merge anything. The plan doc written above
+    # (PLANS / f"{sha[:8]}.md") is the actual deliverable — this just records
+    # a structured summary of it in the log.
+    staged, unsafe = [], []
+    for path, _body in blocks:
+        (staged if _path_allowed(path) else unsafe).append(path)
 
-    if dry_run:
-        print("  dry-run: would write", [p for p, _ in staged], flush=True)
-        return "", "dry-run"
-
-    # branch
-    branch = f"{BRANCH_BASE}/{sha[:8]}"
-    _git("stash", "list", "-0")  # touch no state; just fail fast if git broken
-    _git("checkout", "-b", branch) if _git("rev-parse", "--verify", branch)[
-        0
-    ] != 0 else _git("checkout", branch)
-
-    ok_files = []
-    try:
-        for path, body in staged:
-            fpath = REPO / path
-            if path.endswith(".py"):
-                tmp = fpath.with_suffix(".py.compile-tmp")
-                tmp.parent.mkdir(parents=True, exist_ok=True)
-                tmp.write_text(body)
-                try:
-                    py_compile.compile(str(tmp), doraise=True)
-                except py_compile.PyCompileError as e:
-                    tmp.unlink(missing_ok=True)
-                    _log_line(
-                        {
-                            "ts": datetime.now().isoformat(),
-                            "sha": sha,
-                            "status": "failed",
-                            "detail": f"py_compile {path}: {e}",
-                        }
-                    )
-                    _git("checkout", "-", cwd=REPO)
-                    return "", "failed"
-                tmp.rename(fpath)
-            else:
-                fpath.parent.mkdir(parents=True, exist_ok=True)
-                fpath.write_text(body)
-            ok_files.append(path)
-
-        _git("add", "--", *ok_files)
-        rc, _, err = _git(
-            "commit",
-            "--no-verify",
-            "-m",
-            f"upstream-learn: port idea from {owner}/{repo}@{sha[:8]}",
-        )
-        if rc != 0:
-            _log_line(
-                {
-                    "ts": datetime.now().isoformat(),
-                    "sha": sha,
-                    "status": "failed",
-                    "detail": f"commit: {err[:200]}",
-                }
-            )
-            return "", "failed"
-
-        # test gate
-        test_ok, test_out = run_tests()
-        if not test_ok:
-            _log_line(
-                {
-                    "ts": datetime.now().isoformat(),
-                    "sha": sha,
-                    "status": "manual-review",
-                    "detail": f"tests failed on {branch}; branch kept",
-                }
-            )
-            return branch, "manual-review"
-        if touched_core_check(ok_files):
-            _log_line(
-                {
-                    "ts": datetime.now().isoformat(),
-                    "sha": sha,
-                    "status": "manual-review",
-                    "detail": f"core engine files {ok_files}; branch {branch} left for review",
-                }
-            )
-            return branch, "manual-review"
-
-        # auto-merge: tests pass, no core engine files touched
-        _git("checkout", base_branch or "main", cwd=REPO)
-        rc, _, merr = _git("merge", "--no-ff", "--no-edit", branch)
-        if rc != 0:
-            _log_line(
-                {
-                    "ts": datetime.now().isoformat(),
-                    "sha": sha,
-                    "status": "manual-review",
-                    "detail": f"merge conflict on {branch}; left unmerged",
-                }
-            )
-            _git("merge", "--abort") if _git(
-                "rev-parse", "-q", "--verify", "MERGE_HEAD"
-            )[0] == 0 else None
-            return branch, "manual-review"
-        _log_line(
-            {
-                "ts": datetime.now().isoformat(),
-                "sha": sha,
-                "status": "merged",
-                "detail": f"auto-merged {branch}: {', '.join(ok_files)}; tests pass",
-            }
-        )
-        return branch, "merged"
-    finally:
-        # Return to the base branch by NAME. A relative checkout - would
-        # bounce to whatever branch we were on before this item (i.e. the
-        # PREVIOUS upstream-learn/* branch), landing the NEXT item's merge
-        # on that side branch and leaving the repo stranded off-base.
-        _git("checkout", base_branch or "main", cwd=REPO)
-
-
-def _autostash_tracked():
-    """Set aside dirty TRACKED files (never untracked/new files) so a live
-    session's WIP doesn't block the whole nightly batch. Returns True if a
-    stash was created (caller must restore it), False if the tree was
-    already clean. Never touches the operator's history: this is a stash,
-    not a commit, and the exact same diff comes back via _autostash_restore.
-    """
-    rc, dirty, _ = _git("status", "--porcelain", "--untracked-files=no")
-    if not dirty:
-        return False
-    label = f"upstream-integrator-autostash-{datetime.now().isoformat()}"
-    rc, _, err = _git("stash", "push", "-m", label)
-    if rc != 0:
-        print(f"  autostash failed, proceeding without it: {err[:200]}", flush=True)
-        return False
+    detail = f"proposal: {PLANS / f'{sha[:8]}.md'}; would touch {staged}"
+    if unsafe:
+        detail += f"; UNSAFE paths excluded from proposal: {unsafe}"
+    _log_line(
+        {
+            "ts": datetime.now().isoformat(),
+            "sha": sha,
+            "status": "proposal",
+            "detail": detail,
+        }
+    )
     print(
-        f"  autostashed {len(dirty.splitlines())} dirty tracked file(s): {label}",
+        f"  proposal only — would touch {staged} (full plan: {PLANS / f'{sha[:8]}.md'})",
         flush=True,
     )
-    return True
-
-
-def _autostash_restore(stashed):
-    if not stashed:
-        return
-    rc, _, err = _git("stash", "pop")
-    if rc != 0:
-        # Conflict or other failure: do NOT drop the stash. Leave it in
-        # `git stash list` for manual recovery rather than risk losing it.
-        print(
-            f"  WARNING: autostash pop failed, WIP left on stash (not lost): {err[:300]}",
-            flush=True,
-        )
-
-
-def touched_core_check(files):
-    return bool(set(files) & CORE_ENGINE_FILES)
-
-
-def run_tests():
-    # fast gate: compile everything, then run the pytest suite (~4s, 260 tests)
-    try:
-        c = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "py_compile",
-                str(REPO / "master_ai.py"),
-                str(REPO / "hooks.py"),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        if c.returncode != 0:
-            return False, c.stderr[:300]
-    except Exception:
-        pass
-    pytest_bin = shutil.which("pytest") or str(
-        Path.home() / ".local" / "bin" / "pytest"
-    )
-    try:
-        c = subprocess.run(
-            [pytest_bin, "tests/", "-q", "-p", "no:cacheprovider"],
-            capture_output=True,
-            text=True,
-            timeout=300,
-            cwd=str(REPO),
-        )
-        return c.returncode == 0, (c.stdout + c.stderr)[-500:]
-    except FileNotFoundError as e:
-        return False, f"pytest not found: {e}"
-    except Exception as e:
-        return False, f"test run failed: {e}"
+    return "", "proposal"
 
 
 def main():
-    dry = "--dry-run" in sys.argv
     batch = BATCH
     if "--batch" in sys.argv:
         batch = int(sys.argv[sys.argv.index("--batch") + 1])
@@ -717,45 +531,28 @@ def main():
         for ln in LOG.read_text().splitlines():
             try:
                 d = json.loads(ln)
-                if d.get("status") in ("branch-ready", "merged", "skipped"):
+                if d.get("status") in ("proposal", "skipped"):
                     done_shas.add(d.get("sha"))
             except Exception:
                 pass
     todo = [it for it in items if it["sha"] not in done_shas]
     print(f"queue={len(items)} pending={len(todo)} batch={batch}", flush=True)
-    # capture the branch everything should land on BEFORE any checkout dance
-    rc, out, _ = _git("rev-parse", "--abbrev-ref", "HEAD")
-    base = out.strip() if rc == 0 else ""
-    if not base or base.startswith(f"{BRANCH_BASE}/"):
-        print(
-            f"REFUSING: launch from the base branch, not '{base or 'detached HEAD'}'",
-            flush=True,
-        )
-        return
-    branches = []
-    stashed = _autostash_tracked()
-    try:
-        for it in todo[:batch]:
-            try:
-                b, outcome = integrate_one(it, dry_run=dry, base_branch=base)
-            except Exception as e:
-                _log_line(
-                    {
-                        "ts": datetime.now().isoformat(),
-                        "sha": it.get("sha"),
-                        "status": "failed",
-                        "detail": f"integrate_one exception: {e}",
-                    }
-                )
-                continue
-            if outcome in ("merged", "branch-ready"):
-                branches.append(b)
-    finally:
-        _autostash_restore(stashed)
+    # Proposal-only: no git state to capture or guard, nothing branches.
+    for it in todo[:batch]:
+        try:
+            integrate_one(it)
+        except Exception as e:
+            _log_line(
+                {
+                    "ts": datetime.now().isoformat(),
+                    "sha": it.get("sha"),
+                    "status": "failed",
+                    "detail": f"integrate_one exception: {e}",
+                }
+            )
     # drop TERMINAL items from the queue; retryable ones stay:
-    #   merged/skipped/manual-review/blocked -> done (branch or N/A exists)
+    #   proposal/skipped/manual-review/blocked -> done (proposal exists or N/A)
     #   failed -> stays until 3 failed attempts, then retired
-    #   deferred -> stays (dirty tree; retries next run)
     processed = set()
     attempts = {}
     if LOG.exists():
@@ -765,7 +562,7 @@ def main():
             except Exception:
                 continue
             st = d.get("status")
-            if st in ("merged", "skipped", "manual-review", "blocked"):
+            if st in ("proposal", "skipped", "manual-review", "blocked"):
                 processed.add(d.get("sha"))
             elif st == "failed":
                 attempts[d.get("sha")] = attempts.get(d.get("sha"), 0) + 1
@@ -775,7 +572,7 @@ def main():
                 processed.add(sha)
     remaining = [it for it in items if it.get("sha") not in processed]
     _save_queue(remaining)
-    print(f"\nDone. branches={branches} remaining_queue={len(remaining)}", flush=True)
+    print(f"\nDone. remaining_queue={len(remaining)}", flush=True)
 
 
 if __name__ == "__main__":
