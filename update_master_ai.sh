@@ -2,6 +2,10 @@
 # Customer-safe Master AI updater.
 # This is deliberately not a git updater. Customer installs may not be git
 # repos, and "update Master AI" must never turn into `git fetch --all`.
+#
+# SECURITY: release archives require a SHA256 checksum manifest at the same URL
+# plus `.sha256`. If the manifest is missing or the hash does not match, the update
+# aborts. Set MASTER_AI_SKIP_CHECKSUM=1 only on your own machine.
 set -euo pipefail
 
 HOME_DIR="${HOME:-/home/user}"
@@ -10,6 +14,7 @@ BACKUP_ROOT="$HOME_DIR/.master_ai_update_backups"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 BACKUP_DIR="$BACKUP_ROOT/$STAMP"
 RELEASE_URL="${MASTER_AI_UPDATE_URL:-}"
+SKIP_CHECKSUM="${MASTER_AI_SKIP_CHECKSUM:-0}"
 
 echo "Master AI updater"
 echo "Mode: customer-safe release update"
@@ -38,8 +43,34 @@ echo "[2/5] Checking release source"
 if [ -n "$RELEASE_URL" ]; then
     tmp="$(mktemp -d -t master_ai_update_XXXXXX)"
     archive="$tmp/master-ai-release.tgz"
+    checksum_url="${RELEASE_URL}.sha256"
+    checksum_file="$tmp/master-ai-release.tgz.sha256"
     echo "  downloading: $RELEASE_URL"
     curl -fL "$RELEASE_URL" -o "$archive"
+
+    echo "  downloading checksum: $checksum_url"
+    if curl -fL "$checksum_url" -o "$checksum_file" 2>/dev/null; then
+        expected=$(awk '{print $1}' "$checksum_file" | tr -d '[:space:]' | head -n1)
+        actual=$(sha256sum "$archive" | awk '{print $1}')
+        if [ -n "$expected" ] && [ "$expected" != "$actual" ]; then
+            echo "ERROR: checksum mismatch." >&2
+            echo "  Expected: $expected" >&2
+            echo "  Actual:   $actual" >&2
+            echo "  The release archive has NOT been extracted." >&2
+            rm -rf "$tmp"
+            exit 1
+        fi
+        echo "  checksum verified: $actual"
+    elif [ "$SKIP_CHECKSUM" = "1" ]; then
+        echo "WARNING: MASTER_AI_SKIP_CHECKSUM=1 — continuing without verification (unsafe)." >&2
+    else
+        echo "ERROR: no checksum manifest found at $checksum_url" >&2
+        echo "  Set MASTER_AI_SKIP_CHECKSUM=1 to bypass (unsafe for distributed builds)." >&2
+        echo "  The release archive has NOT been extracted." >&2
+        rm -rf "$tmp"
+        exit 1
+    fi
+
     echo "  unpacking into: $SCRIPTS_DIR"
     tar -xzf "$archive" -C "$SCRIPTS_DIR"
     rm -rf "$tmp"
