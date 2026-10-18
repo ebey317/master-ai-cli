@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-69%20files-green)](tests/)
+[![Tests](https://img.shields.io/badge/tests-64%20files-green)](tests/)
 [![Platform](https://img.shields.io/badge/Platform-Linux-blue)]()
 
 **Two surfaces, one brain:**
@@ -39,7 +39,7 @@ Use it as:
 | **Memory system** | Persistent cross-session memory for projects, preferences, and user context. |
 | **Subagent system** | Spawns specialized workers: code review, file discovery, test execution, context inspection, spend tracking. |
 | **Safety layer** | Approval queue for destructive actions, irreversible-action heuristics, privacy-cloud guard, permission modes. |
-| **Voice I/O** | TTS server and STT server for talking to and hearing back from the agent. |
+| **Voice I/O** | TTS server for agent speech output; STT handled by the desktop voice pipeline. |
 | **Vision** | Image understanding via LLaVA and image generation through the image engine. |
 | **Skill runtime** | State-machine execution for reusable skills adapted from existing libraries (4 shipped: Google Workspace, web search, codebase inspection, debugging). Self-authoring a new skill from experience isn't built yet. |
 | **Multi-user profiles** | Up to 4 users per machine with isolated memory and config. |
@@ -70,16 +70,19 @@ flowchart LR
 
 | File | Lines | Responsibility |
 |---|---|---|
-| `master_ai.py` | ~14K | Core agent loop: `handle → process_reply → dispatch` |
+| `master_ai.py` | ~8K | Thin delegate wrappers; legacy loop entry |
+| `orchestration.py` | ~4K | REPL loop: `handle → orchestrate` |
+| `dispatch.py` | ~2.9K | Reply parsing and typed-action dispatch |
+| `context.py` | ~375 | Compaction, memory, and session summarization |
+| `routing.py` | ~546 | Model routing and provider selection |
+| `runtime_host.py` | ~150 | Thread-local caller binding for lane-isolated copies |
 | `sensei_tui.py` | ~1.1K | Terminal UI |
-| `stt_server.py` | ~4.1K | Speech-to-text server |
 | `sensei_reasoning_loop.py` | ~465 | Browser-turn reasoning |
 | `skill_runtime.py` | ~476 | Skill state machine |
 | `approval_queue.py` | ~403 | Safety: destructive-action approval |
 | `hooks.py` | ~428 | Pre/post file-operation guards |
 | `capabilities.py` | ~227 | Hardware capability detection |
 | `observability.py` | ~214 | Monitoring and audit logging |
-| `loop_fsm.py` | ~260 | Server-authoritative loop termination |
 | `router.py` | ~111 | Model selection (local vs cloud) |
 | `subagent_registry.py` | ~149 | Subagent registration and dispatch |
 | `tts_server.py` | ~84 | Text-to-speech server |
@@ -100,8 +103,8 @@ flowchart LR
 | Shell lines | ~10,000 |
 | JavaScript lines | ~7,900 |
 | HTML lines | ~2,200 |
-| Test files | 57 |
-| Total files | 236 |
+| Test files | 64 |
+| Total files | 470 |
 
 ---
 
@@ -194,7 +197,6 @@ I'm a self-taught developer. HVAC installer by day, building AI systems by night
 | CLI / TUI | `master-ai`, `sensei` | Interactive agent session |
 | Headless | `master-ai --task ... --headless` | CI, automation, delegation from other agents |
 | TTS server | `tts_server.py` | Text-to-speech output |
-| STT server | `stt_server.py` | Speech-to-text input |
 | Vision | LLaVA / image engine | Image understanding and generation |
 | Browser extension | `sensei_extension/` | Visual surface via Chrome side panel |
 | MCP | Model Context Protocol | Universal tool interoperability |
