@@ -6,6 +6,7 @@ KV-cache prefix (which serializes tools[] before the system prompt) remains
 valid. Tools that the new surface did not load are annotated in a one-shot
 system note so the model does not plan around unavailable capabilities.
 """
+
 from __future__ import annotations
 
 import json
@@ -32,9 +33,7 @@ def _agent_tool_names(agent: Any) -> list[str]:
     return names
 
 
-def _merge_preserving_prefix(
-    pinned: list[str], newly_built: list[str]
-) -> list[str]:
+def _merge_preserving_prefix(pinned: list[str], newly_built: list[str]) -> list[str]:
     """
     Return a tool list that keeps the pinned prefix and appends any new tools
     from the freshly-built list that aren't already present.

@@ -193,7 +193,9 @@ def _ask_cloud(messages, timeout=300):
         "x-opencode-session": "master-ai-upstream-integrator",
     }
     if not key:
-        print("  cloud: no OPENCODE_API_KEY; falling back to OpenRouter free", flush=True)
+        print(
+            "  cloud: no OPENCODE_API_KEY; falling back to OpenRouter free", flush=True
+        )
         url = OPENROUTER_URL
         model = PLAN_MODEL
         headers = {

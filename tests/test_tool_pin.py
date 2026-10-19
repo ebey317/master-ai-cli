@@ -1,8 +1,6 @@
 """Tests for tool-prefix pinning behavior."""
-import json
-from unittest.mock import MagicMock
 
-import pytest
+import json
 
 from scripts.tool_pin import (
     _agent_tool_names,

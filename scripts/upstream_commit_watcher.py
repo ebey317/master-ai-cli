@@ -249,13 +249,18 @@ def _queue_item(commit: dict, owner: str, repo: str) -> dict:
         "repo": repo,
         "sha": commit.get("sha", ""),
         "score": _score_commit(commit),
-        "url": commit.get("html_url", f"https://github.com/{owner}/{repo}/commit/{commit.get('sha', '')}"),
+        "url": commit.get(
+            "html_url",
+            f"https://github.com/{owner}/{repo}/commit/{commit.get('sha', '')}",
+        ),
         "message": c.get("message", ""),
         "date": c.get("committer", {}).get("date", ""),
     }
 
 
-def _merge_into_queue(queue: list[dict], new_items: list[dict]) -> tuple[list[dict], int, int]:
+def _merge_into_queue(
+    queue: list[dict], new_items: list[dict]
+) -> tuple[list[dict], int, int]:
     """Merge new items into queue, dedupe by sha, re-sort deterministically."""
     seen = {it["sha"]: it for it in queue}
     added = 0
@@ -269,7 +274,9 @@ def _merge_into_queue(queue: list[dict], new_items: list[dict]) -> tuple[list[di
             continue
         seen[it["sha"]] = it
         added += 1
-    merged = sorted(seen.values(), key=lambda it: (-int(it.get("score", 0)), it.get("sha", "")))
+    merged = sorted(
+        seen.values(), key=lambda it: (-int(it.get("score", 0)), it.get("sha", ""))
+    )
     return merged, added, skipped
 
 
@@ -432,7 +439,9 @@ def main() -> int:
         print(
             f"  {owner}/{repo}: {len(relevant)} relevant / {len(commits)} new commits"
         )
-    print(f"Integration queue: {original_queue_size} -> {len(queue)} (+{added} new, {skipped} already queued)")
+    print(
+        f"Integration queue: {original_queue_size} -> {len(queue)} (+{added} new, {skipped} already queued)"
+    )
 
     return 0
 

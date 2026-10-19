@@ -12,8 +12,7 @@ Claude-Code's `{"decision": "approve"}` means auto-ALLOW and is deliberately NOT
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Optional
-
+from typing import Any
 
 # Dialects ordered by precedence (first match wins)
 _PRE_TOOL_DIALECTS = [
@@ -25,7 +24,7 @@ _PRE_TOOL_DIALECTS = [
 ]
 
 
-def _parse_block_or_modify(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _parse_block_or_modify(data: dict[str, Any]) -> dict[str, Any] | None:
     """Parse block/modify dialects shared with Claude-Code compatibility."""
     for verb, expected, _, payload_key in _PRE_TOOL_DIALECTS:
         if data.get(verb) == expected:
@@ -35,11 +34,15 @@ def _parse_block_or_modify(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             if isinstance(payload, dict) and payload_key == "tool_input":
                 return {"action": "modify", "args": payload}
             if isinstance(payload, str) and payload_key in ("message", "reason"):
-                return {"action": "block", "message": payload.strip()} if payload.strip() else {"action": "block"}
+                return (
+                    {"action": "block", "message": payload.strip()}
+                    if payload.strip()
+                    else {"action": "block"}
+                )
     return None
 
 
-def parse_pre_tool_call(stdout: str) -> Optional[Dict[str, Any]]:
+def parse_pre_tool_call(stdout: str) -> dict[str, Any] | None:
     """
     Parse a shell hook's stdout for pre_tool_call directives.
 
@@ -71,17 +74,17 @@ def parse_pre_tool_call(stdout: str) -> Optional[Dict[str, Any]]:
     # 2. Hermes-only: escalate to human approval gate
     #    Claude-Code's `{"decision": "approve"}` means auto-ALLOW and is NOT mapped here.
     if data.get("action") == "approve":
-        directive: Dict[str, Any] = {"action": "approve"}
+        approve: dict[str, Any] = {"action": "approve"}
         for key in ("message", "rule_key"):
             value = data.get(key)
             if isinstance(value, str) and value.strip():
-                directive[key] = value.strip()
-        return directive
+                approve[key] = value.strip()
+        return approve
 
     return None
 
 
-def parse_post_tool_call(stdout: str) -> Optional[Dict[str, Any]]:
+def parse_post_tool_call(stdout: str) -> dict[str, Any] | None:
     """Parse a shell hook's stdout for post_tool_call directives (future extensibility)."""
     if not stdout or not stdout.strip():
         return None
@@ -95,7 +98,7 @@ def parse_post_tool_call(stdout: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def parse_pre_llm_call(stdout: str) -> Optional[Dict[str, Any]]:
+def parse_pre_llm_call(stdout: str) -> dict[str, Any] | None:
     """Parse a shell hook's stdout for pre_llm_call directives."""
     if not stdout or not stdout.strip():
         return None

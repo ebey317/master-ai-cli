@@ -20,12 +20,12 @@ Instead, resolve the env against the DESTINATION home:
 Return a refusal string on failure (target home unreadable, broken secrets
 source) instead of raising — the fan-out delivery lane does not catch.
 """
+
 from __future__ import annotations
 
 import os
 import re
 from pathlib import Path
-from typing import Dict, Optional, Tuple
 
 # Env var substrings that mark launcher residue and must not reach a child
 # acting for another profile.
@@ -45,10 +45,10 @@ _RESIDUE_SUBSTRINGS = (
 )
 
 _CREDENTIAL_VALUE_PATTERNS = (
-    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),      # JWT-by-convention keys
-    re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\."),     # JWTs
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"), # GitHub tokens
-    re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b"),    # Google keys
+    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),  # JWT-by-convention keys
+    re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\."),  # JWTs
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),  # GitHub tokens
+    re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b"),  # Google keys
 )
 
 
@@ -62,17 +62,16 @@ def _is_routed_home(home: Path) -> bool:
         return False
 
 
-def _strip_residue(env: Dict[str, str]) -> Dict[str, str]:
+def _strip_residue(env: dict[str, str]) -> dict[str, str]:
     return {
-        k: v for k, v in env.items()
-        if not any(s in k for s in _RESIDUE_SUBSTRINGS)
+        k: v for k, v in env.items() if not any(s in k for s in _RESIDUE_SUBSTRINGS)
     }
 
 
-def _scrub_secret_values(env: Dict[str, str]) -> Dict[str, str]:
+def _scrub_secret_values(env: dict[str, str]) -> dict[str, str]:
     """Value-based scrub: credentials injected by systemd/Compose/the shell
     under innocuous names survive a name-based strip."""
-    clean: Dict[str, str] = {}
+    clean: dict[str, str] = {}
     for k, v in env.items():
         if any(p.search(v) for p in _CREDENTIAL_VALUE_PATTERNS):
             continue
@@ -81,8 +80,8 @@ def _scrub_secret_values(env: Dict[str, str]) -> Dict[str, str]:
 
 
 def _overlay_profile_secrets(
-    env: Dict[str, str], home: Path
-) -> Tuple[Dict[str, str], Optional[str]]:
+    env: dict[str, str], home: Path
+) -> tuple[dict[str, str], str | None]:
     """Overlay the destination profile's own env file, like a standalone
     `sensei -p <profile>` run would."""
     env_file = home / ".env"
@@ -103,9 +102,9 @@ def _overlay_profile_secrets(
 
 def destination_child_env(
     home: Path,
-    base_env: Optional[Dict[str, str]] = None,
+    base_env: dict[str, str] | None = None,
     inherit_credentials: bool = False,
-) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
+) -> tuple[dict[str, str] | None, str | None]:
     """Return (env, refusal). Exactly one is None.
 
     `home` is the DELIVERY TARGET — do not re-resolve it from SENSEI_HOME or
@@ -120,11 +119,18 @@ def destination_child_env(
     try:
         home / ".probe-safe"
     except OSError:
-        return None, f"delivery target unreadable (per-user 0700?): {home}; do not resend"
+        return (
+            None,
+            f"delivery target unreadable (per-user 0700?): {home}; do not resend",
+        )
 
     # 1. Minimal delegated base — never os.environ verbatim when spawning
     #    cross-profile. The caller may pass a sanitized base.
-    env = dict(base_env if base_env is not None else {"PATH": os.environ.get("PATH", os.defpath)})
+    env = dict(
+        base_env
+        if base_env is not None
+        else {"PATH": os.environ.get("PATH", os.defpath)}
+    )
 
     # 2. Strip launch residue resolved against the REAL target. A no-target
     #    strip resolves against the ambient override — the SENDER's home on
