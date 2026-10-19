@@ -157,3 +157,55 @@ def test_gather_all_combines_both_sources(tmp_path, monkeypatch):
         src, "gather_stale_projects", lambda: [Candidate(source="s", headline="h")]
     )
     assert len(src.gather_all()) == 1
+
+
+def test_vocalization_off_by_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(src, "VOCALIZE_FLAG", tmp_path / "flag")
+    assert src.vocalization_enabled() is False
+
+
+def test_set_vocalization_toggles_the_flag_file(tmp_path, monkeypatch):
+    flag = tmp_path / "flag"
+    monkeypatch.setattr(src, "VOCALIZE_FLAG", flag)
+    src.set_vocalization(True)
+    assert flag.exists()
+    assert src.vocalization_enabled() is True
+    src.set_vocalization(False)
+    assert not flag.exists()
+    assert src.vocalization_enabled() is False
+
+
+def test_deliver_default_never_calls_voice_when_off(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(src, "VOCALIZE_FLAG", tmp_path / "flag")  # does not exist
+    called = []
+    monkeypatch.setattr(src.subprocess, "run", lambda *a, **k: called.append(a))
+    src.deliver_default(Candidate(source="s", headline="quiet nudge"))
+    assert called == []
+    assert "quiet nudge" in capsys.readouterr().out
+
+
+def test_deliver_default_calls_voice_when_enabled(tmp_path, monkeypatch, capsys):
+    flag = tmp_path / "flag"
+    flag.touch()
+    monkeypatch.setattr(src, "VOCALIZE_FLAG", flag)
+    monkeypatch.setattr(src, "NOTIFY_VOICE", tmp_path / "notify_voice.sh")
+    (tmp_path / "notify_voice.sh").touch()
+    called = []
+    monkeypatch.setattr(src.subprocess, "run", lambda *a, **k: called.append(a))
+    src.deliver_default(Candidate(source="s", headline="loud nudge"))
+    assert len(called) == 1
+    assert "loud nudge" in called[0][0]
+
+
+def test_deliver_default_voice_failure_never_raises(tmp_path, monkeypatch, capsys):
+    flag = tmp_path / "flag"
+    flag.touch()
+    monkeypatch.setattr(src, "VOCALIZE_FLAG", flag)
+    monkeypatch.setattr(src, "NOTIFY_VOICE", tmp_path / "notify_voice.sh")
+    (tmp_path / "notify_voice.sh").touch()
+
+    def _boom(*a, **k):
+        raise OSError("tts server down")
+
+    monkeypatch.setattr(src.subprocess, "run", _boom)
+    src.deliver_default(Candidate(source="s", headline="should not crash"))  # no raise

@@ -19,6 +19,17 @@ REPO = Path(__file__).resolve().parent
 UPSTREAM_LOG = REPO / "memory" / "upstream-integration-log.jsonl"
 UPSTREAM_PLANS = REPO / "memory" / "upstream-plans"
 
+# Operator's rule (2026-10-19): suggestive thinking stays silent by default.
+# Voice is opt-in, toggled by this touch-file's presence -- "vocalize
+# suggestive thinking" -- not a setting buried in a config file.
+VOCALIZE_FLAG = Path.home() / ".master_ai_vocalize_suggestive_thinking"
+
+# NOTE: CLAUDE.md and feedback_attention_signal_tiers.md both reference
+# ~/scripts/speak.sh as the voice channel -- that file does not exist on
+# disk (verified 2026-10-19). The real, working mechanism is notify_voice.sh,
+# which POSTs to the local TTS server on :5050.
+NOTIFY_VOICE = Path.home() / "scripts" / "notify_voice.sh"
+
 # Scope-locked to exactly the two in-progress finish-line items (HANDOFF.md
 # "CURRENT FOCUS"), NOT every repo on disk. Scanning the other businesses
 # (BioVega, Fair Chance, etc.) for staleness would violate the operator's own
@@ -158,20 +169,67 @@ def recall_suppress_recent_repeats(
     return [c for c in candidates if c.source not in recent_sources]
 
 
+def vocalization_enabled() -> bool:
+    """Off by default. On only when VOCALIZE_FLAG exists -- a plain
+    `touch`/`rm`, not a setting buried in config, so turning voice on or off
+    is a literal one-line command from anywhere."""
+    return VOCALIZE_FLAG.exists()
+
+
+def set_vocalization(on: bool) -> None:
+    if on:
+        VOCALIZE_FLAG.touch()
+    else:
+        VOCALIZE_FLAG.unlink(missing_ok=True)
+
+
+def deliver_default(candidate: Candidate) -> None:
+    """Always: print to stdout (run_loop's own _log_decision already writes
+    every verdict to the jsonl log regardless of this function). Only
+    additionally speaks it aloud when vocalization_enabled() -- silent
+    otherwise, per the operator's explicit rule."""
+    print(f"[SUGGEST] {candidate.headline}")
+    if vocalization_enabled() and NOTIFY_VOICE.exists():
+        try:
+            subprocess.run([str(NOTIFY_VOICE), candidate.headline], timeout=10)
+        except Exception:
+            pass  # voice is a nice-to-have; never let it break the loop
+
+
 def main() -> int:
     """Manual/cron entrypoint: one real wake cycle using the real sources
-    above. DELIVER still uses run_loop's default (prints "[SUGGEST] ...") —
-    routing through feedback_attention_signal_tiers.md's real urgency tiers
-    is a separate next step, not wired here. No scheduler/cron unit is
-    installed by this file; it's invokable, not yet automatically run."""
+    above, delivering through deliver_default (silent unless vocalization
+    is turned on). No scheduler/cron unit is installed by this file; it's
+    invokable, not yet automatically run.
+
+    Usage:
+        python3 suggestive_thinking_sources.py                 # run one cycle
+        python3 suggestive_thinking_sources.py --vocalize on    # turn voice on
+        python3 suggestive_thinking_sources.py --vocalize off   # turn voice off
+    """
+    import sys
+
     from suggestive_thinking import run_loop
 
+    if "--vocalize" in sys.argv:
+        idx = sys.argv.index("--vocalize")
+        arg = sys.argv[idx + 1] if idx + 1 < len(sys.argv) else ""
+        if arg not in ("on", "off"):
+            print("usage: --vocalize on|off")
+            return 1
+        set_vocalization(arg == "on")
+        print(f"vocalization {'enabled' if arg == 'on' else 'disabled'}")
+        return 0
+
     results = run_loop(
-        gather=gather_all, recall=lambda cs: recall_suppress_recent_repeats(cs)
+        gather=gather_all,
+        recall=lambda cs: recall_suppress_recent_repeats(cs),
+        deliver=deliver_default,
     )
     surfaced = sum(1 for r in results if r.surfaced)
     print(
         f"suggestive-thinking: {len(results)} candidate(s) considered, {surfaced} surfaced"
+        f" (voice {'on' if vocalization_enabled() else 'off'})"
     )
     return 0
 
