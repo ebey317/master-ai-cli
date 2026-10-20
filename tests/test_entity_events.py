@@ -1,5 +1,3 @@
-import json
-import os
 import shutil
 import tempfile
 import unittest
@@ -30,8 +28,7 @@ class TestEntityEvents(unittest.TestCase):
     def test_append_only_history_replay(self):
         bus = self._bus()
         for i in range(3):
-            bus.tool_call({"tool": "ls", "turn_id": "t1",
-                           "tool_call_id": f"c{i}"})
+            bus.tool_call({"tool": "ls", "turn_id": "t1", "tool_call_id": f"c{i}"})
         h = bus.history(after_seq=0)
         self.assertEqual(len(h["messages"]), 3)
         self.assertFalse(h["has_more"])
@@ -44,8 +41,7 @@ class TestEntityEvents(unittest.TestCase):
         bus = self._bus()
         for t in ("t1", "t2"):
             for _ in range(5):
-                bus.delta({"kind": "assistant", "text": "x" * 90000,
-                           "turn_id": t})
+                bus.delta({"kind": "assistant", "text": "x" * 90000, "turn_id": t})
         h = bus.history(after_seq=0)
         self.assertTrue(h["has_more"])
         turn_ids = {m["turn_id"] for m in h["messages"]}

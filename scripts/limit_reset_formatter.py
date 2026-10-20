@@ -14,10 +14,10 @@ No scheduled/automatic retry is performed — informational only.
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, Optional
+from typing import Any
 
 
-def extract_resets_at(error: Any) -> Optional[float]:
+def extract_resets_at(error: Any) -> float | None:
     """Best-effort extraction of the moment the usage limit lifts (epoch s).
 
     Accepts:
@@ -45,18 +45,19 @@ def extract_resets_at(error: Any) -> Optional[float]:
     return _parse_message(message)
 
 
-def _parse_retry_after(raw: str) -> Optional[float]:
+def _parse_retry_after(raw: str) -> float | None:
     raw = str(raw).strip()
     if raw.isdigit():
         return time.time() + int(raw)
     try:
         from email.utils import parsedate_to_datetime
+
         return parsedate_to_datetime(raw).timestamp()
     except Exception:
         return None
 
 
-def _parse_message(message: str) -> Optional[float]:
+def _parse_message(message: str) -> float | None:
     if "resets_at=" not in message:
         return None
     try:
@@ -76,7 +77,7 @@ def format_human_delta(seconds: float) -> str:
     return f"{s}s"
 
 
-def format_limit_reset(resets_at: Optional[float], now: Optional[float] = None) -> Optional[str]:
+def format_limit_reset(resets_at: float | None, now: float | None = None) -> str | None:
     """One plain line for text surfaces, or None if unknown/already passed."""
     if resets_at is None:
         return None
@@ -88,7 +89,7 @@ def format_limit_reset(resets_at: Optional[float], now: Optional[float] = None) 
     return f"Limit resets at {hhmm} (in {format_human_delta(remaining)})."
 
 
-def build_hook_payload(error: Any) -> Dict[str, Any]:
+def build_hook_payload(error: Any) -> dict[str, Any]:
     """Payload for hooks.emit(..., LIMIT_RESET_EVENT) so any consumer can render it."""
     resets_at = extract_resets_at(error)
     return {
