@@ -60,7 +60,7 @@ async def generate_completion_response(
             max_tokens=thread_config.max_tokens,
             stop=["<|endoftext|>"],
         )
-        reply = response.choices[0].message.content.strip()
+        reply = (response.choices[0].message.content or "").strip()
         if reply:
             flagged_str, blocked_str = moderate_message(
                 message=(rendered[-1]["content"] + reply)[-500:], user=user

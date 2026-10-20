@@ -16850,9 +16850,9 @@ def _handle_project_cmd(lo: str, cmd: Any) -> bool:
         struct = "\n".join(
             f for f in _find_out if not _exclude_re.search(f)
         ).splitlines()[:50]
-        struct = "\n".join(struct).strip()
+        struct_text = "\n".join(struct).strip()
         print(f"  {C}Files:{X}")
-        for f in struct.splitlines():
+        for f in struct_text.splitlines():
             print(f"    {W}{f}{X}")
     else:
         print(f"  {R}❌ Directory not found: {proj}{X}")
