@@ -143,7 +143,7 @@ class HookRegistry:
                         # ({target}) is shlex.quote'd above, so it cannot
                         # break out of its quoted context.
                         r = subprocess.run(
-                            [sh, -c, cmd],
+                            ["/bin/sh", "-c", cmd],
                             shell=False,
                             capture_output=True,
                             text=True,
