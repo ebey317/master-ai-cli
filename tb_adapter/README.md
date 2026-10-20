@@ -1,32 +1,31 @@
 # Terminal-Bench — Master AI (Option A: live /chat)
 
-Adapter `terminal_bench/master_ai_adapter.py` drives the **live** Master AI `/chat` server on `127.0.0.1:8080` (same path Eval v2 validated at 96%). The harness runs on the host, so no Docker networking changes are needed.
+Adapter `tb_adapter/master_ai_adapter.py` drives the **live** Master AI `/chat` server on `127.0.0.1:8080` (same path Eval v2 validated at 96%). The harness runs on the host, so no Docker networking changes are needed.
 
 ## Prereqs
 
 ```bash
 # host: Master AI HTTP server must be up
-systemctl --user status stt_server  # or however you launch it on :8080
 curl -s http://127.0.0.1:8080/health
 
-# harness deps (once)
-pip install terminal-bench
-pip install -e ~/master-ai-cli  # so TB can import terminal_bench.master_ai_adapter
+# harness deps (once) — use Python 3.12 (tb 0.2.18 is broken on 3.14)
+~/.pyenv/versions/3.12.8/bin/pip install terminal-bench
+~/.pyenv/versions/3.12.8/bin/pip install -e ~/master-ai-cli  # so TB can import tb_adapter.master_ai_adapter
 ```
 
 ## Run
 
 ```bash
 # single task smoke
-tb run \
-  --agent "terminal_bench.master_ai_adapter:MasterAIAgent" \
+~/.pyenv/versions/3.12.8/bin/tb run \
+  --agent "tb_adapter.master_ai_adapter:MasterAIAgent" \
   --model master-ai \
   --task-id <id> \
   --n-concurrent 1
 
 # full suite
-tb run \
-  --agent "terminal_bench.master_ai_adapter:MasterAIAgent" \
+~/.pyenv/versions/3.12.8/bin/tb run \
+  --agent "tb_adapter.master_ai_adapter:MasterAIAgent" \
   --model master-ai \
   --dataset-name terminal-bench-core --dataset-version 0.1.1
 ```

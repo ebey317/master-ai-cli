@@ -38,29 +38,59 @@ USER_AGENT = "master-ai-cli/1.0 (Sensei agent loop)"
 PORT = int(os.environ.get("OPENCODE_GO_RELAY_PORT", "8793"))
 
 KEYCHAIN_FILE = Path.home() / "Desktop" / "Projects" / "keychain" / "master_ai_keys"
+OPENCODE_AUTH_FILE = Path.home() / ".local" / "share" / "opencode" / "auth.json"
+FALLBACK_KEY_FILES = [
+    Path.home() / ".master_ai_keys",
+    Path.home() / ".hermes" / ".env",
+]
 
 
 def _load_key() -> str:
-    """Same keychain master-ai-cli itself reads from (KEYS.get('opencode_go'))."""
+    """Return the freshest OpenCode Go API key available.
+
+    Priority:
+      1. OpenCode CLI's own auth file (~/.local/share/opencode/auth.json)
+         so the relay tracks live `opencode login` sessions without manual edits.
+      2. Primary keychain line: `opencode go <key>`.
+      3. Fallback keychain/env files with `OPENCODE_API_KEY=<key>`.
+      4. Environment variable `OPENCODE_API_KEY`.
+    """
+    # 1. Live OpenCode CLI auth file (preferred — auto-refresh on re-login)
+    try:
+        auth = json.loads(OPENCODE_AUTH_FILE.read_text())
+        ogo = auth.get("opencode-go", {})
+        if ogo.get("type") == "api" and ogo.get("key"):
+            return ogo["key"].strip()
+    except Exception:
+        pass
+
+    # 2. Primary keychain: `opencode go <key>`
     try:
         for line in KEYCHAIN_FILE.read_text().splitlines():
+            if line.strip().startswith("#"):
+                continue
             parts = line.split()
             if len(parts) >= 3 and parts[0] == "opencode" and parts[1] == "go":
                 return parts[2].strip()
     except Exception as e:
-        print(
-            f"[opencode_go_relay] FATAL: could not read keychain: {e}", file=sys.stderr
-        )
-    return ""
+        print(f"[opencode_go_relay] could not read keychain: {e}", file=sys.stderr)
+
+    # 3. Fallback files: `OPENCODE_API_KEY=<key>`
+    for path in FALLBACK_KEY_FILES:
+        try:
+            for line in path.read_text().splitlines():
+                if line.strip().startswith("#"):
+                    continue
+                if line.startswith("OPENCODE_API_KEY="):
+                    return line.split("=", 1)[1].strip().strip("\"'")
+        except Exception:
+            pass
+
+    # 4. Environment variable
+    return os.environ.get("OPENCODE_API_KEY", "")
 
 
 API_KEY = _load_key()
-if not API_KEY:
-    print(
-        "[opencode_go_relay] FATAL: no opencode_go key found in keychain",
-        file=sys.stderr,
-    )
-    sys.exit(1)
 
 
 class RelayHandler(BaseHTTPRequestHandler):
@@ -73,8 +103,22 @@ class RelayHandler(BaseHTTPRequestHandler):
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length) if content_length else None
 
+        # Reload key every request so keychain rotations / opencode re-logins
+        # take effect without a relay restart.
+        api_key = _load_key()
+        if not api_key:
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {"error": {"message": "OpenCode Go API key not configured"}}
+                ).encode()
+            )
+            return
+
         headers = {
-            "Authorization": f"Bearer {API_KEY}",
+            "Authorization": f"Bearer {api_key}",
             "x-opencode-session": SESSION_ID,
             "User-Agent": USER_AGENT,
             "Accept": self.headers.get("Accept", "application/json"),
