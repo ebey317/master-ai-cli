@@ -5,13 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#08090a">
   <link rel="manifest" href="/pupil.webmanifest">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%2308090a'/%3E%3Ccircle cx='16' cy='16' r='8' fill='%23e5e5e5'/%3E%3Ccircle cx='16' cy='16' r='3.5' fill='%2308090a'/%3E%3C/svg%3E">
   <title>Pupil IDE - Master AI</title>
   <style>
     /* ─────────────────────────────────────────────────────────────
        Pupil IDE — standalone product surface for the Master AI stack.
        2026-09-26. Sibling product to Sensei (terminal) — Pupil is the
-       web IDE: chat + terminal + skills + models + status panels,
-       slash commands, 6 themes. Backend: stt_server.py (:8080).
+       web GUI: chat + skills + models + status panels, slash commands,
+       7 themes. Backend: stt_server.py (:8080). (The old single-shot
+       /exec "terminal" panel was removed 2026-10-19 — not IDE-grade.)
        Design language: Linear-class dark (popular-web-designs skill).
        ───────────────────────────────────────────────────────────── */
 
@@ -509,10 +511,6 @@
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v6A1.5 1.5 0 0 1 12.5 11H6l-3.2 2.7c-.4.3-.8.1-.8-.4V3.5z"/></svg>
       Chat
     </button>
-    <button class="nav-item" data-view="terminal">
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M4 6l2.5 2L4 10M8.5 10H12"/></svg>
-      Terminal
-    </button>
     <button class="nav-item" data-view="skills">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1.8l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.6l-3.8 2 .7-4.3-3.1-3 4.3-.6L8 1.8z"/></svg>
       Skills
@@ -552,7 +550,7 @@
       <div class="chip-row">
         <span class="chip">Health <strong id="healthText">checking</strong></span>
         <span class="chip">Mode <strong id="modeText">plan</strong></span>
-        <span class="chip">Model <strong id="modelText">master-ai</strong></span>
+        <span class="chip">Local model <strong id="modelText">master-ai</strong></span>
       </div>
       <span class="spacer"></span>
       <div class="mode-buttons" role="group" aria-label="Mode">
@@ -599,29 +597,13 @@
             </div>
             <textarea id="prompt" name="prompt" autocomplete="off" placeholder="Ask Pupil anything. / for commands · Ctrl+Enter sends · Enter = newline"></textarea>
             <div class="send-row">
-              <span class="hint">Native web controls stay intact. No terminal emulation here.</span>
+              <span class="hint">Native web controls stay intact — this is a GUI, not a terminal.</span>
               <button type="submit" id="sendButton">Send</button>
             </div>
           </form>
         </div>
         </div>
         </div>
-      </section>
-
-      <!-- TERMINAL -->
-      <section id="view-terminal" class="panel-view" aria-label="Pupil terminal">
-        <div class="panel-head">
-          <h2>Terminal</h2>
-          <div><button type="button" class="ghost-btn" id="termClear">Clear</button></div>
-        </div>
-        <div id="termOut" class="term-out" tabindex="0">Pupil terminal · commands run via stt_server /exec (bash, 60s cap, home dir)
-</div>
-        <div class="term-input-row">
-          <span class="ps1" id="termPs1">$</span>
-          <input id="termInput" class="term-input" autocomplete="off" spellcheck="false" placeholder="type a command…">
-          <button type="button" class="ghost-btn" id="termRun">Run</button>
-        </div>
-        <div class="term-note">↑/↓ history · output capped 256KB · 60s timeout · exit code shown per command</div>
       </section>
 
       <!-- SKILLS -->
@@ -738,10 +720,7 @@
       modelsProvider: "",
       skills: [],
       mcpLoaded: false,
-      sessionId: "",
-      termHistory: [],
-      termHistIdx: -1,
-      termBusy: false
+      sessionId: ""
     };
 
     const $ = (sel) => document.querySelector(sel);
@@ -751,7 +730,6 @@
     const voiceToggle = $("#voiceToggle"), shortcutsDialog = $("#shortcutsDialog");
     const healthDot = $("#healthDot"), modelSelect = $("#modelSelect");
     const slashPalette = $("#slashPalette");
-    const termOut = $("#termOut"), termInput = $("#termInput"), termRun = $("#termRun");
 
     /* ── Themes (belt system) ── */
     const THEMES = ["white-belt", "yellow-belt", "blue-belt", "green-belt", "purple-belt", "brown-belt", "black-belt"];
@@ -782,7 +760,11 @@
     document.querySelectorAll(".nav-item").forEach((n) => {
       n.addEventListener("click", () => showView(n.dataset.view));
     });
-    showView(localStorage.getItem("pupil-view") || "chat");
+    // Guard stale view names (e.g. the removed Terminal panel) so the panel
+    // router never lands on a view that no longer exists.
+    const _storedView = localStorage.getItem("pupil-view");
+    const _validViews = new Set([...document.querySelectorAll(".nav-item")].map((n) => n.dataset.view));
+    showView(_validViews.has(_storedView) ? _storedView : "chat");
 
     /* ── Sidebar collapse toggle ── */
     const sidebar = document.querySelector(".sidebar");
@@ -809,9 +791,17 @@
       try {
         const res = await fetch("/sessions", { cache: "no-store" });
         const data = await res.json();
-        const sessions = data.sessions || [];
+        const all = data.sessions || [];
+        // 2026-10-19: hide automated test artifacts from the saved-chats
+        // sidebar (pupil_plan-block-test-*, pupil_wedge-regression, and
+        // *.state.json snapshots). Files on disk are never deleted — they
+        // just shouldn't be a buyer's first impression.
+        const TEST_SESSION_RE = /(?:pupil_)?(?:plan-block-test|wedge-regression)[^/]*$|\.state\.json$/i;
+        const sessions = all.filter((s) => !TEST_SESSION_RE.test(String(s.file || s.name || "")));
+        const hiddenCount = all.length - sessions.length;
         if (!sessions.length) {
-          list.innerHTML = '<div class="session-row muted">No saved chats yet</div>';
+          list.innerHTML = '<div class="session-row muted">No saved chats yet</div>' +
+            (hiddenCount ? `<div class="session-row muted">${hiddenCount} test session(s) hidden</div>` : "");
           return;
         }
         list.innerHTML = "";
@@ -825,6 +815,12 @@
           row.title = s.file;
           row.addEventListener("click", () => openSession(s.file));
           list.appendChild(row);
+        }
+        if (hiddenCount) {
+          const note = document.createElement("div");
+          note.className = "session-row muted";
+          note.textContent = `${hiddenCount} test session(s) hidden`;
+          list.appendChild(note);
         }
       } catch (e) {
         list.innerHTML = `<div class="session-row muted">Sessions unavailable: ${e.message}</div>`;
@@ -981,7 +977,6 @@
       { cmd: "/clear",     desc: "Clear conversation", scope: "local", run: () => { messages.innerHTML = ""; appendMessage("system", "Conversation cleared in this browser tab only."); } },
       { cmd: "/shortcuts", desc: "Keyboard shortcuts", scope: "local", run: () => shortcutsDialog.showModal() },
       { cmd: "/sessions",   desc: "Reload saved chats",  scope: "local", run: () => { showView("chat"); loadSessions(); } },
-      { cmd: "/terminal",  desc: "Go to Terminal panel", scope: "nav", run: () => showView("terminal") },
       { cmd: "/skills",    desc: "Go to Skills panel", scope: "nav",   run: () => showView("skills") },
       { cmd: "/models",    desc: "Go to Models panel", scope: "nav",   run: () => showView("models") },
       { cmd: "/status",    desc: "Go to Status panel", scope: "nav",   run: () => showView("status") }
@@ -1160,6 +1155,28 @@
         : "Model override cleared — router decides per message.");
     });
 
+    // 2026-10-19: reflect the server's REAL model state on load. /models
+    // reports the active pin (`auto:false` + `active:<id>`), but the composer
+    // used to always show "Auto (router)" — a GUI claiming auto while the
+    // server is hard-pinned to e.g. poolside/laguna. Show the pin when set.
+    async function syncModelState() {
+      try {
+        const res = await fetch("/models", { cache: "no-store" });
+        const body = await res.json();
+        refreshComposerSelect([]);
+        if (body && body.auto === false && body.active) {
+          const opt = document.createElement("option");
+          opt.value = body.active;
+          opt.textContent = `Pinned — ${body.active}`;
+          opt.selected = true;
+          modelSelect.appendChild(opt);
+          state.modelOverride = body.active;
+        }
+      } catch (_error) {
+        // Offline: leave the composer at "Auto (router)".
+      }
+    }
+
     /* ── Skills panel ── */
     /* ── MCP (headless, server-side via Sensei's catalog) ── */
     async function loadMcp(probe) {
@@ -1251,62 +1268,11 @@
     $("#modelsRefresh").addEventListener("click", loadModels);
     $("#statusRefresh").addEventListener("click", () => { loadStatus(); loadMetrics(); });
 
-    /* ── Terminal panel ── */
-    function termAppend(html) {
-      termOut.innerHTML += html;
-      termOut.scrollTop = termOut.scrollHeight;
-    }
-    function esc(s) {
-      return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    }
-    async function runTerm() {
-      const cmd = termInput.value.trim();
-      if (!cmd || state.termBusy) return;
-      state.termBusy = true;
-      termInput.disabled = true; termRun.disabled = true;
-      state.termHistory.push(cmd);
-      state.termHistIdx = state.termHistory.length;
-      termAppend(`<span class="cmd">$ ${esc(cmd)}</span>\n`);
-      termInput.value = "";
-      try {
-        const res = await fetch("/exec", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cmd })
-        });
-        const body = await res.json();
-        if (!res.ok) throw new Error(body.error || "exec failed");
-        if (body.stdout) termAppend(esc(body.stdout) + "\n");
-        if (body.stderr) termAppend(`<span class="stderr">${esc(body.stderr)}</span>\n`);
-        const ok = body.exit_code === 0;
-        termAppend(`<span class="${ok ? "exit-ok" : "exit-bad"}">[exit ${body.exit_code}]</span>\n\n`);
-      } catch (error) {
-        termAppend(`<span class="stderr">error: ${esc(error.message)}</span>\n\n`);
-      } finally {
-        state.termBusy = false;
-        termInput.disabled = false; termRun.disabled = false;
-        termInput.focus();
-      }
-    }
-    termRun.addEventListener("click", runTerm);
-    termInput.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") { event.preventDefault(); runTerm(); }
-      if (event.key === "ArrowUp") {
-        event.preventDefault();
-        if (state.termHistory.length) {
-          state.termHistIdx = Math.max(0, state.termHistIdx - 1);
-          termInput.value = state.termHistory[state.termHistIdx] || "";
-        }
-      }
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        state.termHistIdx = Math.min(state.termHistory.length, state.termHistIdx + 1);
-        termInput.value = state.termHistory[state.termHistIdx] || "";
-      }
-    });
-    $("#termClear").addEventListener("click", () => {
-      termOut.textContent = "Pupil terminal · commands run via stt_server /exec (bash, 60s cap, home dir)\n";
-    });
+    /* ── Terminal panel — REMOVED 2026-10-19 ──
+       The old panel was a single-shot /exec box (bash, 60s cap, no PTY, no
+       persistent shell), not IDE-grade terminal work. The operator's call:
+       don't ship a half-terminal in the GUI. The /exec API stays for other
+       consumers; a real PTY-backed terminal can return as its own feature. */
 
     /* ── Events (SSE) ── */
     function connectEvents() {
@@ -1368,6 +1334,7 @@
     loadSkills();
     loadMetrics();
     loadSessions();
+    syncModelState();
     connectEvents();
     setInterval(loadStatus, 15000);
     setInterval(loadMetrics, 60000);
