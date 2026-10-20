@@ -250,7 +250,7 @@
       position: absolute; inset: 0; display: none; overflow: auto;
     }
     .panel-view.active { display: flex; }
-    #view-chat.active, #view-terminal.active { flex-direction: column; }
+    #view-chat.active { flex-direction: column; }
     #view-skills, #view-models, #view-status { flex-direction: column; }
 
     /* ── Chat: sessions rail + main column ── */
@@ -485,16 +485,19 @@
 
     /* ── Responsive ── */
     @media (max-width: 860px) {
-      body { flex-direction: column; height: auto; overflow: auto; }
-      .sidebar { width: 100%; min-width: 0; flex-direction: row; align-items: center; padding: 8px 10px; overflow-x: auto; }
+      /* 2026-10-20 GUI eval: the old flow layout (height:auto/overflow:auto,
+         panels static) let a long transcript grow the page, pushing the
+         composer + Send below the fold — typing required scrolling past the
+         whole conversation. Keep the app viewport-height on phones so the
+         transcript scrolls inside .messages and the composer stays pinned. */
+      body { flex-direction: column; height: 100vh; height: 100dvh; overflow: hidden; }
+      .sidebar { width: 100%; min-width: 0; flex-direction: row; align-items: center; padding: 8px 10px; overflow-x: auto; flex-shrink: 0; }
       .side-brand { padding: 0 8px 0 0; }
       .side-brand .sub { display: none; }
       .nav-item { width: auto; padding: 6px 10px; white-space: nowrap; }
       .nav-item .badge { display: none; }
       .side-footer { display: none; }
-      .panels { position: static; }
-      .panel-view.active { position: relative; min-height: 80vh; }
-      #view-chat.active, #view-terminal.active { min-height: 70vh; }
+      .main { min-height: 0; }
     }
   </style>
 </head>
