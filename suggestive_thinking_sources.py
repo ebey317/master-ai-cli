@@ -15,9 +15,19 @@ from pathlib import Path
 
 from suggestive_thinking import LOG, Candidate
 
-REPO = Path(__file__).resolve().parent
-UPSTREAM_LOG = REPO / "memory" / "upstream-integration-log.jsonl"
-UPSTREAM_PLANS = REPO / "memory" / "upstream-plans"
+# Deliberately NOT Path(__file__).resolve().parent. This script's scheduled
+# copy runs from a pinned worktree (~/.master_ai_scheduled_jobs, see
+# HANDOFF.md "DONE 2026-10-19 -- scheduled, natively") so a branch switch in
+# the live repo can't break the schedule -- but that means __file__'s own
+# directory is NOT the live repo, and the real upstream-integration-log /
+# upstream-plans / git history this module needs to read only exist in the
+# live one. Found 2026-10-20: this cost a full day of zero real GATHER
+# results (log file didn't exist at the worktree path at all, and the
+# worktree's own .git is a file, not a directory, so the old
+# REPO-as-master-ai-cli stale-check silently skipped every run).
+LIVE_REPO = Path.home() / "master-ai-cli"
+UPSTREAM_LOG = LIVE_REPO / "memory" / "upstream-integration-log.jsonl"
+UPSTREAM_PLANS = LIVE_REPO / "memory" / "upstream-plans"
 
 # Operator's rule (2026-10-19): suggestive thinking stays silent by default.
 # Voice is opt-in, toggled by this touch-file's presence -- "vocalize
@@ -38,7 +48,7 @@ NOTIFY_VOICE = Path.home() / "scripts" / "notify_voice.sh"
 # (feedback_leave_biovega_alone.md). Widen this list only when the operator
 # says the lock is lifted.
 STALE_PROJECT_REPOS = [
-    REPO,  # master-ai-cli
+    LIVE_REPO,  # master-ai-cli -- the live repo, not wherever this script runs from
     Path.home() / "ai-controller",  # the Linux reference implementation
 ]
 STALE_AFTER_DAYS = 3
