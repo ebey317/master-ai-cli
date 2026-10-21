@@ -764,7 +764,10 @@ except Exception:
 # ~/.master_ai_memprobe.jsonl. REMOVE by deleting the MEMPROBE line.
 def _maybe_start_memprobe() -> None:
     try:
-        if not _settings_path.exists() or "MEMPROBE=1" not in _settings_path.read_text():
+        if (
+            not _settings_path.exists()
+            or "MEMPROBE=1" not in _settings_path.read_text()
+        ):
             return
         import gc
         import threading as _th
@@ -774,7 +777,9 @@ def _maybe_start_memprobe() -> None:
         _tm.start(8)
         _probe_file = Path.home() / ".master_ai_memprobe.jsonl"
         with _probe_file.open("a") as _fh:
-            _fh.write(f'{{"ts": {_time.time()}, "event": "probe-armed", "pid": {os.getpid()}}}\n')
+            _fh.write(
+                f'{{"ts": {_time.time()}, "event": "probe-armed", "pid": {os.getpid()}}}\n'
+            )
 
         def _memprobe_loop() -> None:
             while True:
@@ -790,11 +795,13 @@ def _maybe_start_memprobe() -> None:
                     top = []
                     for stat in snap.statistics("lineno")[:6]:
                         frame = stat.traceback[0]
-                        top.append({
-                            "size_mb": round(stat.size / 1048576, 2),
-                            "count": stat.count,
-                            "where": f"{frame.filename}:{frame.lineno}",
-                        })
+                        top.append(
+                            {
+                                "size_mb": round(stat.size / 1048576, 2),
+                                "count": stat.count,
+                                "where": f"{frame.filename}:{frame.lineno}",
+                            }
+                        )
                     rec = {"ts": round(_time.time(), 1), **st, "top": top}
                     with _probe_file.open("a") as fh:
                         fh.write(json.dumps(rec) + "\n")
