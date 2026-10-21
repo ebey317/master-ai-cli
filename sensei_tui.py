@@ -1209,14 +1209,47 @@ class SenseiApp:
         never exceed what the control's fragment_lines actually contains.
         Prevents `list index out of range` in FormattedTextControl when
         output is appended between render-cycle getter calls.
+
+        2026-10-21: cursor sits INSIDE the viewport (`- 1`) — the last
+        visible row, not one past it. A cursor one row below the viewport
+        bottom makes Window auto-scroll re-adjust every paint and fight the
+        glide set in _apply_scroll_to_render (flicker/jank on wheel).
         """
         # Ensure cache is populated for this frame. If _render_output
         # hasn't been called yet this tick (cold start), populate now.
         if self._output_render_cache is None:
             self._render_output()
         total = self._output_render_lines
-        y = max(0, total - self._scroll_offset)
+        y = max(0, total - self._scroll_offset - 1)
         return Point(x=0, y=y)
+
+    def _apply_scroll_to_render(self, offset_int: int) -> None:
+        """Force the output window's scroll position from the glide state.
+
+        prompt_toolkit 3.0.52 keeps scroll state on WindowRenderInfo between
+        renders, and its auto-scroll only guarantees the cursor stays
+        VISIBLE — it never tracks the glide. With the invisible-cursor
+        architecture that meant the first wheel notches moved the cursor
+        through an unchanged viewport (dead notches) and the view then
+        re-snapped only at viewport edges — the "stolen/teleporting" feel.
+
+        Setting `info.vertical_scroll` per glide frame IS honored across
+        renders (sandbox-proven on the engine's 3.0.52), so every notch
+        animates immediately: viewport rows shown =
+        [total - window_height - offset, total - offset).
+        """
+        window = getattr(self, "_output_window", None)
+        if window is None:
+            return
+        info = getattr(window, "render_info", None)
+        if info is None or info.window_height is None:
+            return
+        total = self._output_render_lines
+        if not total:
+            return
+        want = max(0, total - info.window_height - offset_int)
+        if info.vertical_scroll != want:
+            info.vertical_scroll = want
 
     def _render_status(self):
         # 2026-09-24: every field gets its OWN color instead of the whole
@@ -1725,7 +1758,11 @@ class SenseiApp:
     def _scroll_offset(self, v) -> None:
         with self._scroll_anim_lock:
             self._scroll_disp = float(max(0, v))
-            self._scroll_target = self._scroll_disp  # animator sees equal → self-stops
+            self._scroll_target = self._scroll_disp  # animator sees equal → converges
+        # Apply immediately (idempotent; one extra converged frame at most).
+        # Without this, follow-driven offset changes (text arrival while the
+        # user is scrolled up) would sit unapplied until the next wheel notch.
+        self._start_scroll_anim()
 
     def _request_scroll(self, delta: int) -> None:
         """User scroll input: move the target, let the animator glide there.
@@ -1769,11 +1806,15 @@ class SenseiApp:
                 disp = self._scroll_disp
                 target = self._scroll_target
                 if disp == target:
-                    # Converged: self-stop the frame loop. Nothing ticks when
-                    # the pane is static — idle cost is zero.
+                    # Converged: self-stop the frame loop — but land the final
+                    # position first so the last notch always takes effect
+                    # even when the glide had zero frames left to run.
                     self._scroll_anim_active = False
+                    self._apply_scroll_to_render(int(round(disp)))
                     return
                 self._scroll_disp = _eased_scroll_step(disp, target, dt)
+                disp = self._scroll_disp
+            self._apply_scroll_to_render(int(round(disp)))
             try:
                 self._app.invalidate()
             except Exception:
