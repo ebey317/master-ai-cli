@@ -757,6 +757,65 @@ except Exception:
     os.environ.setdefault("SENSEI_MOUSE", "1")
 
 
+# ── TEMP memory probe (2026-10-21): catch the ~380MB/min leak red-handed ──
+# File-gated: MEMPROBE=1 in ~/.master_ai_settings arms it (read once at
+# boot → change requires a restart). Every 20s: RSS/threads + gc.collect()
+# + tracemalloc top-6 allocation sites, appended to
+# ~/.master_ai_memprobe.jsonl. REMOVE by deleting the MEMPROBE line.
+def _maybe_start_memprobe() -> None:
+    try:
+        if (
+            not _settings_path.exists()
+            or "MEMPROBE=1" not in _settings_path.read_text()
+        ):
+            return
+        import gc
+        import threading as _th
+        import time as _time
+        import tracemalloc as _tm
+
+        _tm.start(8)
+        _probe_file = Path.home() / ".master_ai_memprobe.jsonl"
+        with _probe_file.open("a") as _fh:
+            _fh.write(
+                f'{{"ts": {_time.time()}, "event": "probe-armed", "pid": {os.getpid()}}}\n'
+            )
+
+        def _memprobe_loop() -> None:
+            while True:
+                _time.sleep(20)
+                try:
+                    st: dict = {}
+                    for line in Path("/proc/self/status").read_text().splitlines():
+                        if line.startswith(("VmRSS:", "VmSwap:", "Threads:")):
+                            k, v, *_ = line.split()
+                            st[k.rstrip(":")] = v
+                    gc.collect()
+                    snap = _tm.take_snapshot()
+                    top = []
+                    for stat in snap.statistics("lineno")[:6]:
+                        frame = stat.traceback[0]
+                        top.append(
+                            {
+                                "size_mb": round(stat.size / 1048576, 2),
+                                "count": stat.count,
+                                "where": f"{frame.filename}:{frame.lineno}",
+                            }
+                        )
+                    rec = {"ts": round(_time.time(), 1), **st, "top": top}
+                    with _probe_file.open("a") as fh:
+                        fh.write(json.dumps(rec) + "\n")
+                except Exception:
+                    pass
+
+        _th.Thread(target=_memprobe_loop, name="sensei-memprobe", daemon=True).start()
+    except Exception:
+        pass
+
+
+_maybe_start_memprobe()
+
+
 def _ensure_sensei_app() -> Any:
     """Lazily create the SenseiApp when TUI mode is actually entered."""
     global _SENSEI_APP, _SENSEI_ENABLED
