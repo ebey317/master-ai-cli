@@ -93,11 +93,20 @@ def main():
 
     event = type("E", (), {"app": app._app})
     before = app._scroll_offset
+    # 2026-10-21 smooth scroll: handlers set a TARGET; an animator glides the
+    # visible offset there (Elijah: old per-event teleports felt like
+    # "ticks"). So the handler's immediate contract is target movement, and
+    # the visible offset equals the target once the glide settles.
     global_up.handler(event)
+    assert app._scroll_target == before + 1, (
+        f"global Up should scroll chat (target): {app._scroll_target}"
+    )
+    assert app._wait_scroll_settled(2.0), "scroll glide did not settle"
     assert app._scroll_offset == before + 1, (
-        f"global Up should scroll chat: {app._scroll_offset}"
+        f"global Up should scroll chat (glided): {app._scroll_offset}"
     )
     global_down.handler(event)
+    assert app._wait_scroll_settled(2.0), "scroll glide did not settle"
     assert app._scroll_offset == before, (
         f"global Down should un-scroll chat: {app._scroll_offset}"
     )
@@ -119,13 +128,58 @@ def main():
         "global Down must not match once input is refocused"
     )
 
-    # Scroll public API still works
+    # Scroll public API still works (target + glide settle)
     app.scroll("up", n=5)
+    assert app._scroll_target == 5, f"scroll up target failed: {app._scroll_target}"
+    assert app._wait_scroll_settled(2.0), "scroll glide did not settle"
     assert app._scroll_offset == 5, f"scroll up failed: {app._scroll_offset}"
     app.scroll("down", n=2)
+    assert app._wait_scroll_settled(2.0), "scroll glide did not settle"
     assert app._scroll_offset == 3, f"scroll down failed: {app._scroll_offset}"
     app.scroll("bottom")
+    assert app._wait_scroll_settled(2.0), "scroll glide did not settle"
     assert app._scroll_offset == 0, "scroll bottom failed"
+
+    # 2026-10-21 easing kernel: pure-function guarantees
+    from sensei_tui import _eased_scroll_step
+
+    disp = 0.0
+    frames = 0
+    while disp != 100.0:
+        delta = 100.0 - disp
+        new = _eased_scroll_step(disp, 100.0, 1 / 60)
+        progress = new - disp
+        if delta <= 0.75:
+            # snap window: the frame lands EXACTLY on target
+            assert abs(progress - delta) < 1e-9, f"missed snap: {progress} vs {delta}"
+        else:
+            # never stalls: progress ≥ min_step (0.5) while far from target
+            assert progress >= 0.49, f"stall at disp={disp}: step={progress}"
+        assert new > disp, "non-monotonic glide"
+        disp = new
+        frames += 1
+        assert frames < 1000, "easing failed to converge"
+    assert disp == 100.0
+
+    # glide up from 0: monotonic convergence + never negative
+    disp = 0.0
+    frames = 0
+    while disp != 100.0:
+        disp = _eased_scroll_step(disp, 100.0, 1 / 60)
+        assert disp >= 0.0, "went negative"
+        frames += 1
+        assert frames < 1000, "easing failed to converge"
+    disp = 50.0
+    while abs(0.0 - disp) > 0:
+        new = _eased_scroll_step(disp, 0.0, 1 / 60)
+        assert new <= disp, f"non-monotonic decay at {disp}"
+        assert new >= 0.0, f"clamped below 0: {new}"
+        disp = new
+        frames += 1
+        assert frames < 2000, "easing failed to converge"
+
+    # dt hiccup clamp: an absurd dt behaves exactly like 0.1 s
+    assert _eased_scroll_step(0.0, 50.0, 1e6) == _eased_scroll_step(0.0, 50.0, 0.1)
 
     print("PASS: focus-aware chat scroll is wired correctly")
 
