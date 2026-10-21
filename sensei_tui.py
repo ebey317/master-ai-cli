@@ -30,6 +30,7 @@ Public API (used by master_ai.py):
 from __future__ import annotations
 
 import itertools
+import math
 import os
 import re
 import shutil
@@ -70,6 +71,51 @@ from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Box, Dialog, Frame, RadioList, TextArea
 
 HISTORY_FILE = str(Path.home() / ".master_ai_history")
+
+# ── Smooth scrolling (2026-10-21) ─────────────────────────────────────────
+# Elijah: scroll felt like "ticks" — every wheel notch / page key teleported
+# the viewport in one instant repaint. Industry-standard for cell-grid TUIs
+# (Neovim scroll smoothing, kitty, Claude Code's pane UX): user input updates
+# a TARGET offset, an animator glides the VISIBLE offset toward it at ~60fps
+# with time-constant easing, self-stopping the frame loop the moment it
+# converges — zero CPU while idle. `_eased_scroll_step` is pure so tests can
+# verify convergence/no-stall/clamp without building the TUI.
+SCROLL_FPS = 60.0
+SCROLL_TAU = 0.05  # seconds — time constant of the glide (~3.5 frames to 50%)
+
+
+def _eased_scroll_step(
+    disp: float,
+    target: float,
+    dt: float,
+    tau: float = SCROLL_TAU,
+    min_step: float = 0.5,
+    snap: float = 0.75,
+) -> float:
+    """Advance a float scroll position toward *target* for one frame.
+
+    Exponential approach (frame-rate independent via dt), with two guards:
+    - never stalls: if a frame's eased step is smaller than *min_step* but the
+      remaining distance is still ≥ 1 line, take min_step instead;
+    - snaps shut: within *snap* lines of target, land exactly (renders final
+      frame immediately instead of creeping).
+
+    Returns the new position (negative result clamped to 0 — the offset can
+    never go above the bottom of the buffer; overscroll upward is clamped by
+    the renderer, same as before).
+    """
+    dt = max(0.0, min(dt, 0.1))  # clamp hiccups; a paused thread ≠ a leap
+    delta = target - disp
+    if delta == 0:
+        return disp
+    if abs(delta) <= snap:
+        return max(0.0, target)
+    step = delta * (1.0 - math.exp(-dt / max(1e-6, tau)))
+    if abs(step) < min_step:
+        step = math.copysign(min_step, delta)
+    disp += step
+    return max(0.0, disp)
+
 
 COMMAND_MENU_HINTS = {
     "hub": "open full command menu",
@@ -706,6 +752,11 @@ class SenseiApp:
         self._thinking_last = 0.0
         self._thinking_interval = 1.8
         self._thinking_started = 0.0
+        self._scroll_disp = 0.0  # animated float position (source of truth)
+        self._scroll_target = 0.0  # input writes here; animator glides here
+        self._scroll_anim_lock = threading.Lock()
+        self._scroll_anim_thread = None
+        self._scroll_anim_active = False
         self._scroll_offset = 0  # lines scrolled up from bottom
         self._chat_focused = False  # True when user clicked/activated chat pane
 
@@ -803,14 +854,14 @@ class SenseiApp:
         # wheel would otherwise snap back every repaint. Overriding these
         # two methods keeps wheel and page-up/down on the same offset.
         def _wheel_up():
-            self._scroll_offset += 3
+            self._request_scroll(3)
             try:
                 self._app.invalidate()
             except Exception:
                 pass
 
         def _wheel_down():
-            self._scroll_offset = max(0, self._scroll_offset - 3)
+            self._request_scroll(-3)
             try:
                 self._app.invalidate()
             except Exception:
@@ -1504,12 +1555,12 @@ class SenseiApp:
         # scrolling exactly like before.
         @kb.add("down", filter=Condition(lambda: self._chat_focused))
         def _global_down(event):
-            self._scroll_offset = max(0, self._scroll_offset - 1)
+            self._request_scroll(-1)
             event.app.invalidate()
 
         @kb.add("up", filter=Condition(lambda: self._chat_focused))
         def _global_up(event):
-            self._scroll_offset += 1
+            self._request_scroll(1)
             event.app.invalidate()
 
         @kb.add("c-c")
@@ -1611,15 +1662,13 @@ class SenseiApp:
         @kb.add("s-up", filter=Condition(lambda: not self._chat_focused))
         @kb.add("pageup", filter=Condition(lambda: not self._chat_focused))
         def _scroll_up_shift(event):
-            self._scroll_offset += max(8, _term_size().lines - 8)
+            self._request_scroll(max(8, _term_size().lines - 8))
             event.app.invalidate()
 
         @kb.add("s-down", filter=Condition(lambda: not self._chat_focused))
         @kb.add("pagedown", filter=Condition(lambda: not self._chat_focused))
         def _scroll_down_shift(event):
-            self._scroll_offset = max(
-                0, self._scroll_offset - max(8, _term_size().lines - 8)
-            )
+            self._request_scroll(-max(8, _term_size().lines - 8))
             event.app.invalidate()
 
         # Chat-pane focus, plain Up/Down: owned by the global _global_up/
@@ -1628,24 +1677,24 @@ class SenseiApp:
         # handlers per keypress (2 lines scrolled instead of 1).
         @kb.add("pageup", filter=Condition(lambda: self._chat_focused))
         def _chat_page_up(event):
-            self._scroll_offset += max(8, _term_size().lines - 8)
+            self._request_scroll(max(8, _term_size().lines - 8))
             event.app.invalidate()
 
         @kb.add("pagedown", filter=Condition(lambda: self._chat_focused))
         def _chat_page_down(event):
-            self._scroll_offset = max(
-                0, self._scroll_offset - max(8, _term_size().lines - 8)
-            )
+            self._request_scroll(-max(8, _term_size().lines - 8))
             event.app.invalidate()
 
         @kb.add("home", filter=Condition(lambda: self._chat_focused))
         def _chat_scroll_top(event):
-            self._scroll_offset = 10_000
+            # 10000 = "far enough to hit the top" (render clamps at 0). Eased
+            # glide to the top beats the old teleport.
+            self._scroll_to(10_000)
             event.app.invalidate()
 
         @kb.add("end", filter=Condition(lambda: self._chat_focused))
         def _chat_scroll_bottom(event):
-            self._scroll_offset = 0
+            self._scroll_to(0)
             event.app.invalidate()
 
         # Clicking the input frame or pressing Escape returns focus to input.
@@ -1658,6 +1707,88 @@ class SenseiApp:
         return kb
 
     # ── helpers ────────────────────────────────────────────────
+
+    @property
+    def _scroll_offset(self) -> int:
+        """Lines the viewport sits above the bottom of the buffer.
+
+        Read what the renderer/scrollbar read (unchanged contract). Backed by
+        the float `_scroll_disp` the animator glides; rounds to an int for the
+        cursor math. Writes snap BOTH the float and `_scroll_target` — used by
+        text-arrival follow (write(), new lines keep the viewport pinned) and
+        instant snags (clear_output, submit), NOT by user scroll inputs, which
+        go through _request_scroll()/_scroll_to() so the glide can animate.
+        """
+        return int(round(self._scroll_disp))
+
+    @_scroll_offset.setter
+    def _scroll_offset(self, v) -> None:
+        with self._scroll_anim_lock:
+            self._scroll_disp = float(max(0, v))
+            self._scroll_target = self._scroll_disp  # animator sees equal → self-stops
+
+    def _request_scroll(self, delta: int) -> None:
+        """User scroll input: move the target, let the animator glide there.
+
+        Rapid wheel events / held page keys keep extending the target while a
+        glide is already in flight, which composes into one continuous, fast
+        motion with a natural decel — the momentum feel the old per-event
+        teleports couldn't produce.
+        """
+        with self._scroll_anim_lock:
+            self._scroll_target = max(0.0, self._scroll_target + float(delta))
+        self._start_scroll_anim()
+
+    def _scroll_to(self, offset: int) -> None:
+        """Absolute target — top/bottom jumps glide instead of teleporting."""
+        with self._scroll_anim_lock:
+            self._scroll_target = max(0.0, float(offset))
+        self._start_scroll_anim()
+
+    def _start_scroll_anim(self) -> None:
+        # Cheap (called from input handlers): set the flag if idle and spawn
+        # one daemon thread. A running animator picks up the newer target on
+        # its next frame — repeated starts are no-ops.
+        with self._scroll_anim_lock:
+            if self._scroll_anim_active:
+                return
+            self._scroll_anim_active = True
+        threading.Thread(
+            target=self._animate_scroll, name="sensei-scroll-anim", daemon=True
+        ).start()
+
+    def _animate_scroll(self) -> None:
+        last = time.perf_counter()
+        frame = 1.0 / SCROLL_FPS
+        while True:
+            time.sleep(frame)
+            now = time.perf_counter()
+            dt = now - last
+            last = now
+            with self._scroll_anim_lock:
+                disp = self._scroll_disp
+                target = self._scroll_target
+                if disp == target:
+                    # Converged: self-stop the frame loop. Nothing ticks when
+                    # the pane is static — idle cost is zero.
+                    self._scroll_anim_active = False
+                    return
+                self._scroll_disp = _eased_scroll_step(disp, target, dt)
+            try:
+                self._app.invalidate()
+            except Exception:
+                pass
+
+    def _wait_scroll_settled(self, timeout: float = 2.0) -> bool:
+        """Block until the glide converges (tests; callers needing a settled
+        viewport). False on timeout."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with self._scroll_anim_lock:
+                if self._scroll_disp == self._scroll_target:
+                    return True
+            time.sleep(0.005)
+        return False
 
     def _record_history_entry(self, text: str) -> None:
         """Make `text` recallable via Up/Down this session — operator:
@@ -1946,13 +2077,13 @@ class SenseiApp:
 
     def scroll(self, direction: str, n: int = 10) -> None:
         if direction == "up":
-            self._scroll_offset += n
+            self._request_scroll(n)
         elif direction == "down":
-            self._scroll_offset = max(0, self._scroll_offset - n)
+            self._request_scroll(-n)
         elif direction == "top":
-            self._scroll_offset = 10_000
+            self._scroll_to(10_000)
         elif direction == "bottom":
-            self._scroll_offset = 0
+            self._scroll_to(0)
         try:
             self._app.invalidate()
         except Exception:
