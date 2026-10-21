@@ -77,6 +77,17 @@ class StripArgXmlNoiseTests(unittest.TestCase):
     def test_unclosed_tag_keeps_content_after_it(self):
         self.assertEqual(strip_arg_xml_noise("<arg_value>ls foo"), "ls foo")
 
+    def test_empty_value_element_does_not_mask_a_later_one(self):
+        # An EMPTY <arg_value> must be skipped, not captured -- otherwise
+        # the first (empty) element wins and the real payload later in
+        # the string is never reached.
+        self.assertEqual(
+            strip_arg_xml_noise(
+                "<arg_value></arg_value><arg_value>content</arg_value>"
+            ),
+            "content",
+        )
+
     def test_whitespace_and_attribute_variants(self):
         self.assertEqual(
             strip_arg_xml_noise("< arg_value >ls foo</ arg_value >"), "ls foo"
@@ -185,6 +196,79 @@ class DirectiveDispatchTests(unittest.TestCase):
         )
         self.assertTrue(history, "expected a repair message to be fed back")
         self.assertIn("repair", str(history[-1].get("content", "")).lower())
+
+
+class BrowserDirectiveTests(unittest.TestCase):
+    """The BROWSER_* path had the same defect, and worse.
+
+    Two separate ways it went wrong, both reproduced live:
+
+    1. has_directives omitted browser_actions (even though
+       _any_directive_found included it), so a BROWSER-only reply whose
+       prose carried a leaked XML fragment tripped the repair detector
+       and returned None -- BEFORE browser actions dispatch -- silently
+       dropping an action the model had correctly emitted.
+    2. _extract_browser_actions never applied the shared arg-XML strip,
+       so a wrapped payload became the literal tag text as a URL.
+    """
+
+    def setUp(self):
+        self.dispatched = []
+        self._saved = {
+            name: getattr(master_ai, name)
+            for name in (
+                "log",
+                "render_reply",
+                "_is_noop_cmd",
+                "confirm_browser_action",
+                "_action_ok",
+            )
+        }
+        master_ai.log = lambda *a, **k: None
+        master_ai.render_reply = lambda *a, **k: None
+        master_ai._is_noop_cmd = lambda s: False
+        # Assert on what actually REACHED the browser, not on what was
+        # parsed. Parsing succeeds even in the broken case -- the action
+        # is extracted and then dropped on the floor by the repair
+        # detector, so an extraction-level assertion would pass against
+        # the bug it is supposed to catch.
+        master_ai.confirm_browser_action = lambda kind, target, value: (
+            self.dispatched.append((kind, target, value)),
+            True,
+        )[1]
+        master_ai._action_ok = lambda r: True
+
+    def tearDown(self):
+        for name, value in self._saved.items():
+            setattr(master_ai, name, value)
+
+    def test_browser_action_survives_leaked_xml_in_prose(self):
+        # The action is correctly parsed -- it must actually DISPATCH too.
+        # Before the fix the repair detector returned None before the
+        # browser dispatch loop ran, so nothing was ever sent.
+        dispatch.process_reply(
+            "BROWSER_NAV: https://example.com\nsome prose <arg_key>x</arg_key>",
+            [],
+            streamed=False,
+        )
+        self.assertEqual(len(self.dispatched), 1)
+        self.assertEqual(self.dispatched[0][0], "BROWSER_NAV")
+        self.assertEqual(self.dispatched[0][1], "https://example.com")
+
+    def test_wrapped_browser_payload_yields_a_clean_target(self):
+        # The dispatched target must be the URL, not the literal tag text.
+        dispatch.process_reply(
+            "BROWSER_NAV: <arg_value>https://example.com</arg_value>",
+            [],
+            streamed=False,
+        )
+        self.assertEqual(len(self.dispatched), 1)
+        self.assertEqual(self.dispatched[0][1], "https://example.com")
+
+    def test_plain_browser_directive_still_works(self):
+        dispatch.process_reply("BROWSER_NAV: https://example.com", [], streamed=False)
+        self.assertEqual(len(self.dispatched), 1)
+        self.assertEqual(self.dispatched[0][1], "https://example.com")
 
 
 if __name__ == "__main__":

@@ -106,13 +106,17 @@ def strip_arg_xml_noise(payload: str) -> str:
     #    content -- in the pair shape (<arg_key>name</arg_key>
     #    <arg_value>content</arg_value>) the value is the payload and the
     #    key is just the parameter name.
+    #
+    #    An EMPTY <arg_value> element is skipped rather than captured, so
+    #    the loop keeps looking: "<arg_value></arg_value>
+    #    <arg_value>content</arg_value>" must yield "content", not "".
     value_match = None
     key_match = None
     for m in _ARG_ELEMENT_RE.finditer(payload):
         if m.group(1).lower() == "value":
-            if value_match is None:
+            if value_match is None and m.group(2).strip():
                 value_match = m
-        elif key_match is None:
+        elif key_match is None and m.group(2).strip():
             key_match = m
 
     if value_match is not None:

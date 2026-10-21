@@ -1617,11 +1617,21 @@ def process_reply(
         # running the search. Visible only once the payload could actually
         # be extracted -- e.g. "SEARCH: <arg_value>query</arg_value>",
         # where the wrapped payload used to truncate to "" and leave
-        # search_queries empty. Same omission applies to the other
-        # directive families the detector can outrun.
+        # search_queries empty.
         or search_queries
         or subagent_goals
         or screenshot_requests
+        # 2026-10-21: browser_actions was missing here too, and had been
+        # since before this bool existed -- _any_directive_found
+        # (dispatch.py:1384) DOES include it. A BROWSER-only reply whose
+        # prose also carries a leaked <arg_key>/<arg_value> fragment left
+        # has_directives False, so the repair detector fired and returned
+        # None -- BEFORE browser actions dispatch at dispatch.py:2809 --
+        # silently suppressing a browser action the model had correctly
+        # emitted. Reproduced live: "BROWSER_NAV: https://example.com"
+        # plus prose containing <arg_key>x</arg_key> extracted the action
+        # fine and then dropped it on the floor.
+        or browser_actions
     )
 
     # ── Tier-1 pre-dispatch validation gate (2026-09-28) ──────────────
@@ -3066,6 +3076,15 @@ def _extract_browser_actions(lines: Any) -> Any:
         if not m:
             continue
         kind, payload = m.group(1), m.group(2).strip()
+        if not payload:
+            continue
+        # 2026-10-21: the BROWSER path never applied the shared
+        # arg-XML-noise strip, so a wrapped payload became the literal tag
+        # text as a URL: "BROWSER_NAV: <arg_value>https://example.com
+        # </arg_value>" produced target "<arg_value>https://example.com
+        # </arg_value>". Same defect the other directive extractors
+        # already had fixed -- reuse the shared helper, do not fork it.
+        payload = _strip_arg_xml_noise(payload)
         if not payload:
             continue
         parts = _BROWSER_SEP_RE.split(payload, maxsplit=1)
