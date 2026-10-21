@@ -15,16 +15,15 @@ from pathlib import Path
 
 from suggestive_thinking import LOG, Candidate
 
-# Deliberately NOT Path(__file__).resolve().parent. This script's scheduled
-# copy runs from a pinned worktree (~/.master_ai_scheduled_jobs, see
-# HANDOFF.md "DONE 2026-10-19 -- scheduled, natively") so a branch switch in
-# the live repo can't break the schedule -- but that means __file__'s own
-# directory is NOT the live repo, and the real upstream-integration-log /
-# upstream-plans / git history this module needs to read only exist in the
-# live one. Found 2026-10-20: this cost a full day of zero real GATHER
-# results (log file didn't exist at the worktree path at all, and the
-# worktree's own .git is a file, not a directory, so the old
-# REPO-as-master-ai-cli stale-check silently skipped every run).
+# Deliberately NOT Path(__file__).resolve().parent: the scheduled daily
+# job's copy runs from a pinned worktree (~/.master_ai_scheduled_jobs) so a
+# branch switch in the live repo can't break the schedule -- but that means
+# __file__'s own directory is NOT the live repo, and the real
+# upstream-integration-log / upstream-plans / git history this module needs
+# to read only exist in the live one. Found 2026-10-20: this cost a full
+# day of zero real GATHER results (log file didn't exist at the worktree
+# path at all, and the worktree's own .git is a file, not a directory, so
+# the old REPO-as-master-ai-cli stale-check silently skipped every run).
 LIVE_REPO = Path.home() / "master-ai-cli"
 UPSTREAM_LOG = LIVE_REPO / "memory" / "upstream-integration-log.jsonl"
 UPSTREAM_PLANS = LIVE_REPO / "memory" / "upstream-plans"
@@ -308,10 +307,9 @@ SENSEI_CHATS_STALE_AFTER_DAYS = 2
 
 
 def gather_sensei_chats() -> list[Candidate]:
-    """GATHER: Sensei's own saved session transcripts (2026-10-20: operator
-    named ~/.master_ai_chats specifically, not Claude Code or Hermes
-    history -- see reference_read_live_sensei_thread.md, this IS the
-    canonical live-thread location).
+    """GATHER: Sensei's own saved session transcripts (~/.master_ai_chats,
+    confirmed by operator 2026-10-20 as the canonical live-thread location,
+    not Claude Code or Hermes history).
 
     Deliberately NOT content analysis of what's "unresolved" inside a
     transcript -- free-form terminal output has no structure reliable
@@ -356,8 +354,8 @@ def gather_stale_projects(
     repos: list[Path] | None = None, stale_after_days: int = STALE_AFTER_DAYS
 ) -> list[Candidate]:
     """GATHER: every discovered repo with no commit in stale_after_days+ days,
-    capped to the MAX_STALE_SURFACED_PER_RUN most-stale (see module docstring
-    for why the cap exists). `repos=None` means discover live via
+    capped to the MAX_STALE_SURFACED_PER_RUN most-stale (see the comment
+    above MAX_STALE_SURFACED_PER_RUN for why the cap exists). `repos=None` means discover live via
     _discover_all_repos() — pass an explicit list (tests do) to bypass disk
     discovery entirely."""
     repos = _discover_all_repos() if repos is None else repos
@@ -495,9 +493,13 @@ def deliver_default(candidate: Candidate) -> None:
 
 def main() -> int:
     """Manual/cron entrypoint: one real wake cycle using the real sources
-    above, delivering through deliver_default (silent unless vocalization
-    is turned on). No scheduler/cron unit is installed by this file; it's
-    invokable, not yet automatically run.
+    above, delivering through deliver_default (unconditional desktop popup
+    via sensei-notify.sh, plus voice only when vocalization is enabled).
+
+    The scheduled daily job runs from a pinned worktree at
+    ~/.master_ai_scheduled_jobs (see the LIVE_REPO comment above), so a
+    branch switch in the live repo can't break the schedule; this copy is
+    also directly invokable.
 
     Usage:
         python3 suggestive_thinking_sources.py                 # run one cycle
