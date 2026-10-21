@@ -20,8 +20,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from directive_xml_noise import strip_arg_xml_noise as _strip_arg_xml_noise
 from sensei_tables import (
-    _ARG_XML_TAG_RE,
     _COMPACT_KEEP_RECENT,
     _RECALL_TRIGGERS,
     _THINK_TAG_RE,
@@ -360,9 +360,10 @@ def summarize_session(history: Any) -> tuple:
         # if there's nothing usable left after truncating, or it never had
         # a real bullet to begin with, don't save it — a missing summary
         # is honest, a corrupted one silently poisons the next session.
-        arg_xml = _ARG_XML_TAG_RE.search(result)
-        if arg_xml:
-            result = result[: arg_xml.start()].rstrip()
+        #
+        # 2026-10-21: shared with the dispatch seam via
+        # strip_arg_xml_noise() -- same helper, same wrapped-shape fix.
+        result = _strip_arg_xml_noise(result)
         think_tag = _THINK_TAG_RE.search(result)
         if think_tag:
             result = result[: think_tag.start()].rstrip()
