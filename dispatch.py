@@ -38,6 +38,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from directive_xml_noise import strip_arg_xml_noise as _strip_arg_xml_noise
 from sensei_tables import (
     _ARG_XML_TAG_RE,
     _BARE_KEYWORD_ARG_RE,
@@ -1067,9 +1068,17 @@ def process_reply(
         if len(parts) != 2:
             return ""
         s = _strip_command_wrap(parts[1])
-        arg_xml = _ARG_XML_TAG_RE.search(s)
-        if arg_xml:
-            s = s[: arg_xml.start()].rstrip()
+        # 2026-10-21: the old inline "truncate at the first
+        # _ARG_XML_TAG_RE match" assumed leaked tags always trailed AFTER
+        # real content. When the model wraps the WHOLE payload in its own
+        # <arg_value>...</arg_value> (reproduced live against this exact
+        # dispatch path: a wrapped RUN produced zero executions, silently,
+        # because has_directives is already True so the stall detector
+        # never saw it either), truncating at the first tag wiped the
+        # payload to "" and the directive vanished. strip_arg_xml_noise()
+        # resolves the payload properly -- trailing noise, wrapped noise,
+        # and the key/value pair shape all included.
+        s = _strip_arg_xml_noise(s)
         think_tag = _THINK_TAG_RE.search(s)
         if think_tag:
             s = s[: think_tag.start()].rstrip()
@@ -1600,6 +1609,29 @@ def process_reply(
         or task_done_targets
         or send_email_specs
         or send_telegram_specs
+        # 2026-10-21: search_queries was missing from this bool. A
+        # SEARCH-only reply therefore left has_directives False, and the
+        # malformed-directive detector below (which fires when
+        # has_directives is False AND the narrative contains a leaked
+        # <arg_key>/<arg_value> fragment) then forced a retry instead of
+        # running the search. Visible only once the payload could actually
+        # be extracted -- e.g. "SEARCH: <arg_value>query</arg_value>",
+        # where the wrapped payload used to truncate to "" and leave
+        # search_queries empty.
+        or search_queries
+        or subagent_goals
+        or screenshot_requests
+        # 2026-10-21: browser_actions was missing here too, and had been
+        # since before this bool existed -- _any_directive_found
+        # (dispatch.py:1384) DOES include it. A BROWSER-only reply whose
+        # prose also carries a leaked <arg_key>/<arg_value> fragment left
+        # has_directives False, so the repair detector fired and returned
+        # None -- BEFORE browser actions dispatch at dispatch.py:2809 --
+        # silently suppressing a browser action the model had correctly
+        # emitted. Reproduced live: "BROWSER_NAV: https://example.com"
+        # plus prose containing <arg_key>x</arg_key> extracted the action
+        # fine and then dropped it on the floor.
+        or browser_actions
     )
 
     # ── Tier-1 pre-dispatch validation gate (2026-09-28) ──────────────
@@ -1876,9 +1908,12 @@ def process_reply(
         # this READ-specific parser never got that same protection — so a
         # genuine path with XML noise trailing it just silently fails to
         # match any real file on disk instead of being cleaned first.
-        arg_xml = _ARG_XML_TAG_RE.search(target)
-        if arg_xml:
-            target = target[: arg_xml.start()].rstrip()
+        #
+        # 2026-10-21: shared the fix with _extract_directive via
+        # strip_arg_xml_noise(), which also handles the WRAPPED shape
+        # (<arg_value>/path/file.py</arg_value>) that the old
+        # truncate-at-first-tag logic turned into an empty target.
+        target = _strip_arg_xml_noise(target)
         think_tag = _THINK_TAG_RE.search(target)
         if think_tag:
             target = target[: think_tag.start()].rstrip()
@@ -3041,6 +3076,15 @@ def _extract_browser_actions(lines: Any) -> Any:
         if not m:
             continue
         kind, payload = m.group(1), m.group(2).strip()
+        if not payload:
+            continue
+        # 2026-10-21: the BROWSER path never applied the shared
+        # arg-XML-noise strip, so a wrapped payload became the literal tag
+        # text as a URL: "BROWSER_NAV: <arg_value>https://example.com
+        # </arg_value>" produced target "<arg_value>https://example.com
+        # </arg_value>". Same defect the other directive extractors
+        # already had fixed -- reuse the shared helper, do not fork it.
+        payload = _strip_arg_xml_noise(payload)
         if not payload:
             continue
         parts = _BROWSER_SEP_RE.split(payload, maxsplit=1)
