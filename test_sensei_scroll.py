@@ -181,6 +181,72 @@ def main():
     # dt hiccup clamp: an absurd dt behaves exactly like 0.1 s
     assert _eased_scroll_step(0.0, 50.0, 1e6) == _eased_scroll_step(0.0, 50.0, 0.1)
 
+    # ── 2026-10-21 v2: vertical_scroll force-apply + in-viewport cursor ──
+    # ptk auto-scroll only keeps the invisible cursor VISIBLE — it never
+    # glides, so wheel notches moved nothing until cursors crossed viewport
+    # edges. The animator now forces vertical_scroll per frame; these
+    # assertions pin the math (viewport = [vtotal - h - off, vtotal - off))
+    # and the safe no-op when render_info is absent (never rendered).
+    from types import SimpleNamespace
+
+    real_window = app._output_window  # restored at the very end of v2
+    app._output_window = SimpleNamespace(
+        render_info=SimpleNamespace(vertical_scroll=48, window_height=12)
+    )
+    app._output_render_lines = 60
+    app._apply_scroll_to_render(9)
+    assert app._output_window.render_info.vertical_scroll == 39, "glide apply failed"
+    app._apply_scroll_to_render(0)
+    assert app._output_window.render_info.vertical_scroll == 48, "return to bottom failed"
+    app._apply_scroll_to_render(1000)  # clamp at the top of the buffer
+    assert app._output_window.render_info.vertical_scroll == 0, "top clamp failed"
+    app._output_window.render_info.vertical_scroll = 39
+    app._apply_scroll_to_render(9)  # idempotent no-op must not re-invalidate
+    assert app._output_window.render_info.vertical_scroll == 39, "idempotence failed"
+
+    # No render yet (render_info=None) → helper must be a silent no-op
+    app._output_window = SimpleNamespace(render_info=None)
+    app._apply_scroll_to_render(3)  # must not raise
+
+    # Empty buffer → silent no-op
+    app._output_window = SimpleNamespace(
+        render_info=SimpleNamespace(vertical_scroll=0, window_height=12)
+    )
+    app._output_render_lines = 0
+    app._apply_scroll_to_render(5)
+    assert app._output_window.render_info.vertical_scroll == 0, "empty-buffer no-op failed"
+
+    # ── cursor math against a REAL 60-line buffer (cache warms here) ──
+    # NOTE: _output_render_lines is derived from the rendered cache, not an
+    # independent pin — swapping the number manually never affects the next
+    # render; drive it through write()/clear_output() (the render cache is
+    # keyed to _output_version, so new writes always re-warm it correctly).
+    app.clear_output()
+    for i in range(60):
+        app.write(f"row {i:03d}\n")
+    app._scroll_offset = 0  # bottom (also converges the animator)
+    assert app._wait_scroll_settled(2.0), "reset glide did not settle"
+    assert app._get_output_cursor().y == 59, (
+        f"cursor should sit on the last visible row: {app._get_output_cursor().y}"
+    )
+
+    # Cursor stays INSIDE the viewport so Window auto-scroll never fights
+    # the glide: cursor y = total - offset - 1 (last visible row).
+    app._scroll_offset = 20  # setter drives the animator; also converges
+    assert app._wait_scroll_settled(2.0), "setter glide did not settle"
+    assert app._scroll_offset == 20, f"setter offset failed: {app._scroll_offset}"
+    assert app._get_output_cursor().y == 39, "cursor not inside viewport after setter"
+    # The animator's force-apply lands within one 60fps frame after converge;
+    # poll for it (disp==target flips BEFORE the apply finishes — race-safe).
+    import time as _time
+    _deadline = _time.time() + 2.0
+    while app._output_window.render_info.vertical_scroll != 28 and _time.time() < _deadline:
+        _time.sleep(0.01)
+    assert app._output_window.render_info.vertical_scroll == 28, (
+        f"animator must force vscroll: {app._output_window.render_info.vertical_scroll}"
+    )
+    app._output_window = real_window
+
     print("PASS: focus-aware chat scroll is wired correctly")
 
 
