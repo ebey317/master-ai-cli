@@ -177,6 +177,91 @@ def test_gather_gmail_unread_missing_binaries_returns_empty(tmp_path, monkeypatc
     assert src.gather_gmail_unread() == []
 
 
+def _write_bridge_creds(path, accounts):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"accounts": accounts}))
+
+
+def test_gather_email_bridge_unread_skips_gmail_and_reports_others(
+    tmp_path, monkeypatch
+):
+    creds = tmp_path / "credentials.json"
+    _write_bridge_creds(
+        creds,
+        {
+            "gmail": {"provider": "gmail", "username": "a@gmail.com", "password": "x"},
+            "outlook": {
+                "provider": "outlook",
+                "username": "b@outlook.com",
+                "password": "x",
+                "display_name": "Elijah",
+            },
+            "aol": {"provider": "aol", "username": "c@aol.com", "password": "x"},
+        },
+    )
+    monkeypatch.setattr(src, "EMAIL_BRIDGE_CREDS", creds)
+
+    def fake_count(acct):
+        # gmail must never be asked -- it's skipped before this is called.
+        assert acct.get("provider") != "gmail"
+        return 3 if acct.get("provider") == "outlook" else 0
+
+    monkeypatch.setattr(src, "_email_bridge_unread_count", fake_count)
+    candidates = src.gather_email_bridge_unread()
+    assert len(candidates) == 1
+    assert candidates[0].source == "email-bridge:outlook:3"
+    assert "Elijah" in candidates[0].headline
+
+
+def test_gather_email_bridge_unread_no_creds_file_returns_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(src, "EMAIL_BRIDGE_CREDS", tmp_path / "missing.json")
+    assert src.gather_email_bridge_unread() == []
+
+
+def test_email_bridge_unread_count_returns_none_on_connect_failure(monkeypatch):
+    class _BoomIMAP:
+        def __init__(self, *a, **k):
+            raise OSError("host unreachable")
+
+    import imaplib
+
+    monkeypatch.setattr(imaplib, "IMAP4_SSL", _BoomIMAP)
+    acct = {
+        "provider": "aol",
+        "username": "c@aol.com",
+        "password": "x",
+        "imap_host": "imap.aol.com",
+        "imap_port": 993,
+    }
+    assert src._email_bridge_unread_count(acct) is None
+
+
+def test_gather_sensei_chats_flags_stale_newest_chat(tmp_path, monkeypatch):
+    monkeypatch.setattr(src, "SENSEI_CHATS_DIR", tmp_path)
+    old_chat = tmp_path / "old-session.chat"
+    old_chat.write_text("transcript")
+    old_ts = (datetime.now() - timedelta(days=5)).timestamp()
+    import os
+
+    os.utime(old_chat, (old_ts, old_ts))
+    candidates = src.gather_sensei_chats()
+    assert len(candidates) == 1
+    assert candidates[0].source == "sensei-chat-stale"
+    assert "5 days" in candidates[0].headline
+    assert "old-session" in candidates[0].headline
+
+
+def test_gather_sensei_chats_recent_chat_surfaces_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr(src, "SENSEI_CHATS_DIR", tmp_path)
+    (tmp_path / "fresh.chat").write_text("transcript")
+    assert src.gather_sensei_chats() == []
+
+
+def test_gather_sensei_chats_missing_dir_returns_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(src, "SENSEI_CHATS_DIR", tmp_path / "does-not-exist")
+    assert src.gather_sensei_chats() == []
+
+
 def test_recall_suppress_recent_repeats_drops_recently_logged_sources(
     tmp_path, monkeypatch
 ):
@@ -233,6 +318,8 @@ def test_gather_all_combines_both_sources(tmp_path, monkeypatch):
         src, "gather_stale_projects", lambda: [Candidate(source="s", headline="h")]
     )
     monkeypatch.setattr(src, "gather_gmail_unread", lambda: [])
+    monkeypatch.setattr(src, "gather_email_bridge_unread", lambda: [])
+    monkeypatch.setattr(src, "gather_sensei_chats", lambda: [])
     assert len(src.gather_all()) == 1
 
 

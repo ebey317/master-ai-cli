@@ -48,6 +48,24 @@ GOOGLE_API_PYTHON = Path(
 )
 GMAIL_UNREAD_QUERY = "is:unread in:inbox -category:promotions -category:social"
 
+# The operator's actual multi-address "sensei email bridge" (2026-10-20:
+# "I've got multiple email addresses") -- ~/scripts/email_mcp/server.py,
+# an IMAP/SMTP MCP server covering accounts beyond the one Gmail OAuth
+# token above already reaches. Read its own credentials file directly with
+# stdlib imaplib rather than importing server.py: that module does
+# `from fastmcp import FastMCP` at top level, a dependency only the
+# scheduler's own /usr/bin/python3 has installed -- not every interpreter
+# that might run this script. The "gmail" account there is the SAME
+# ebey317@gmail.com gather_gmail_unread() already watches via the Workspace
+# API, so it's deliberately excluded here to avoid reporting one inbox twice.
+EMAIL_BRIDGE_CREDS = Path.home() / ".config" / "email_mcp" / "credentials.json"
+EMAIL_BRIDGE_PROVIDER_DEFAULTS = {
+    "gmail": {"imap_host": "imap.gmail.com", "imap_port": 993},
+    "outlook": {"imap_host": "outlook.office365.com", "imap_port": 993},
+    "aol": {"imap_host": "imap.aol.com", "imap_port": 993},
+}
+EMAIL_BRIDGE_SKIP_ACCOUNTS = {"gmail"}
+
 # Operator's rule (2026-10-19): suggestive thinking stays silent by default.
 # Voice is opt-in, toggled by this touch-file's presence -- "vocalize
 # suggestive thinking" -- not a setting buried in a config file.
@@ -209,6 +227,131 @@ def gather_gmail_unread() -> list[Candidate]:
     ]
 
 
+def _email_bridge_unread_count(acct: dict) -> int | None:
+    """One account, stdlib imaplib only. Returns None on any connection
+    failure (bad creds, host down, ...) so gather_email_bridge_unread can
+    skip that account without crashing the whole GATHER cycle -- a dead
+    AOL login, say, must never block the Gmail/Outlook checks next to it."""
+    import imaplib
+
+    provider = acct.get("provider", "")
+    defaults = EMAIL_BRIDGE_PROVIDER_DEFAULTS.get(provider, {})
+    host = acct.get("imap_host") or defaults.get("imap_host")
+    port = acct.get("imap_port") or defaults.get("imap_port")
+    username = acct.get("username")
+    password = acct.get("password")
+    if not (
+        isinstance(host, str)
+        and isinstance(port, int)
+        and isinstance(username, str)
+        and isinstance(password, str)
+    ):
+        return None
+    try:
+        conn = imaplib.IMAP4_SSL(host, port, timeout=15)
+        try:
+            conn.login(username, password)
+            conn.select("INBOX", readonly=True)
+            status, data = conn.search(None, "UNSEEN")
+            if status != "OK":
+                return None
+            ids = data[0].split() if data and data[0] else []
+            return len(ids)
+        finally:
+            conn.logout()
+    except Exception:
+        return None
+
+
+def gather_email_bridge_unread() -> list[Candidate]:
+    """GATHER: the operator's actual multi-address bridge (2026-10-20: "I've
+    got multiple email addresses") -- every configured account in
+    ~/.config/email_mcp/credentials.json except "gmail" (already covered by
+    gather_gmail_unread via the Workspace API; see EMAIL_BRIDGE_SKIP_ACCOUNTS).
+
+    One candidate per account with nonzero unread -- these are genuinely
+    separate identities (personal Outlook, AOL, the Fair Chance relay
+    inbox), not one blended fact the way a single inbox's count is. Count
+    only, via IMAP SEARCH UNSEEN -- never a FETCH, so no subject/snippet/
+    body text is ever read by this function at all."""
+    if not EMAIL_BRIDGE_CREDS.exists():
+        return []
+    try:
+        creds = json.loads(EMAIL_BRIDGE_CREDS.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+    candidates: list[Candidate] = []
+    for name, acct in (creds.get("accounts") or {}).items():
+        if name in EMAIL_BRIDGE_SKIP_ACCOUNTS:
+            continue
+        count = _email_bridge_unread_count(acct)
+        if not count:
+            continue
+        label = acct.get("display_name") or name
+        count_str = str(count)  # IMAP SEARCH returns the real count, no cap to flag
+        candidates.append(
+            Candidate(
+                source=f"email-bridge:{name}:{count_str}",
+                headline=f"{count_str} unread email(s) in {label} ({name})",
+                detail="",
+                novelty=1.0,
+                actionable=1.0,
+                timely=0.75,
+                interruption_worthy=0.6,
+            )
+        )
+    return candidates
+
+
+SENSEI_CHATS_DIR = Path.home() / ".master_ai_chats"
+SENSEI_CHATS_STALE_AFTER_DAYS = 2
+
+
+def gather_sensei_chats() -> list[Candidate]:
+    """GATHER: Sensei's own saved session transcripts (2026-10-20: operator
+    named ~/.master_ai_chats specifically, not Claude Code or Hermes
+    history -- see reference_read_live_sensei_thread.md, this IS the
+    canonical live-thread location).
+
+    Deliberately NOT content analysis of what's "unresolved" inside a
+    transcript -- free-form terminal output has no structure reliable
+    enough to tell a finished conversation from a dropped one without real
+    risk of a wrong, confusing nudge. Mirrors gather_stale_projects'
+    honest, conservative shape instead: surface only that the newest saved
+    chat is old enough that it's probably not still open in your head."""
+    if not SENSEI_CHATS_DIR.is_dir():
+        return []
+    chats = sorted(
+        (p for p in SENSEI_CHATS_DIR.glob("*.chat") if p.is_file()),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not chats:
+        return []
+    newest = chats[0]
+    age_days = (datetime.now() - datetime.fromtimestamp(newest.stat().st_mtime)).days
+    if age_days < SENSEI_CHATS_STALE_AFTER_DAYS:
+        return []
+    return [
+        Candidate(
+            # Fixed key, not keyed by age_days (unlike gmail-unread's moving
+            # count) -- this mirrors stale-project: the headline's day count
+            # changes daily but it's the same underlying fact being
+            # reconsidered, not a new one, so recall should suppress repeats.
+            source="sensei-chat-stale",
+            headline=(
+                f"your newest saved Sensei chat ({newest.stem}) is {age_days} days old — "
+                "anything in it still open?"
+            ),
+            detail=str(newest),
+            novelty=1.0,
+            actionable=0.7,
+            timely=min(1.0, age_days / 7),
+            interruption_worthy=0.6,
+        )
+    ]
+
+
 def gather_stale_projects(
     repos: list[Path] | None = None, stale_after_days: int = STALE_AFTER_DAYS
 ) -> list[Candidate]:
@@ -260,7 +403,13 @@ def gather_stale_projects(
 
 
 def gather_all() -> list[Candidate]:
-    return gather_upstream_proposals() + gather_stale_projects() + gather_gmail_unread()
+    return (
+        gather_upstream_proposals()
+        + gather_stale_projects()
+        + gather_gmail_unread()
+        + gather_email_bridge_unread()
+        + gather_sensei_chats()
+    )
 
 
 def _recent_log_entries(within_days: int) -> list[dict]:
