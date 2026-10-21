@@ -740,7 +740,14 @@ _SENSEI_APP = None
 _SENSEI_ENABLED = os.environ.get("SENSEI_TUI", "1") != "0"
 try:
     _settings_path = Path.home() / ".master_ai_settings"
-    if "SENSEI_MOUSE" not in os.environ and _settings_path.exists():
+    # 2026-10-21: the settings file is the SOURCE OF TRUTH for SENSEI_MOUSE.
+    # The pane supervisor wrapper exports SENSEI_MOUSE once at its own launch
+    # (grep of this file) and never re-reads it, so an inherited env value
+    # must NOT pin behavior for the wrapper's lifetime — `mouse remote` /
+    # `mouse local` persist here and MUST reach the next launch even when
+    # env is already set (execvp on toggle preserves env too). File wins;
+    # env only fills the default when the file says nothing.
+    if _settings_path.exists():
         for _line in _settings_path.read_text().splitlines():
             if _line.startswith("SENSEI_MOUSE="):
                 os.environ["SENSEI_MOUSE"] = _line.split("=", 1)[1].strip() or "1"
