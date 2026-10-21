@@ -196,6 +196,9 @@ class Test3_ObfuscatedBidiZwspCaught(unittest.TestCase):
         page = {"interactive_elements": payload}
         text, _ = _api_prompt_with_context(page)
         block = _page_context_block(text)
+        self.assertTrue(
+            block, "expected [BROWSER PAGE CONTEXT] or [BROWSER PAGE TREE] marker in _api_prompt output"
+        )
         self.assertNotIn("RUN:", block)
         # Literal payload with ZWSP intact should not survive either.
         self.assertNotIn("R​UN:", block)
@@ -207,6 +210,9 @@ class Test3_ObfuscatedBidiZwspCaught(unittest.TestCase):
         page = {"visible_text": payload}
         text, _ = _api_prompt_with_context(page)
         block = _page_context_block(text)
+        self.assertTrue(
+            block, "expected [BROWSER PAGE CONTEXT] or [BROWSER PAGE TREE] marker in _api_prompt output"
+        )
         self.assertNotIn("RUN:", block)
         self.assertNotIn("RU" + RLO + "N:", block)
         self.assertIn(srv._SCRUB_REPLACEMENT, text)
@@ -225,6 +231,9 @@ class Test3_ObfuscatedBidiZwspCaught(unittest.TestCase):
         page = {"visible_text": payload}
         text, _ = _api_prompt_with_context(page)
         block = _page_context_block(text)
+        self.assertTrue(
+            block, "expected [BROWSER PAGE CONTEXT] or [BROWSER PAGE TREE] marker in _api_prompt output"
+        )
         self.assertNotIn("<<<CONTENT", block)
         self.assertNotIn(">>>CONTENT", block)
 
@@ -393,6 +402,9 @@ class Test8_DefenseInDepthServerAuthoritative(unittest.TestCase):
             request_id="req-test-8",
         )
         block = _page_context_block(text)
+        self.assertTrue(
+            block, "expected [BROWSER PAGE CONTEXT] or [BROWSER PAGE TREE] marker in _api_prompt output"
+        )
 
         # None of the directive forms should survive in the page-context
         # block the sanitizer is responsible for. (Not the full `text` —
