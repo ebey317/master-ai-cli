@@ -1248,19 +1248,39 @@ class SenseiApp:
         renders (sandbox-proven on the engine's 3.0.52), so every notch
         animates immediately: viewport rows shown =
         [total - window_height - offset, total - offset).
+
+        2026-10-22: the mutation itself now runs via call_soon_threadsafe on
+        the app's own event loop instead of directly from this method's
+        caller (_animate_scroll, a background daemon thread at ~60fps).
+        prompt_toolkit's own render pass reads AND writes this same
+        WindowRenderInfo on the main thread during its paint cycle;
+        mutating it concurrently from a second thread races that, which is
+        exactly the class of bug behind "scrolling feels broken/stuck" —
+        Application.invalidate() already solves the identical problem this
+        same way internally (loop.call_soon_threadsafe), so this mirrors
+        prompt_toolkit's own proven pattern rather than inventing a new one.
         """
-        window = getattr(self, "_output_window", None)
-        if window is None:
-            return
-        info = getattr(window, "render_info", None)
-        if info is None or info.window_height is None:
-            return
-        total = self._output_render_lines
-        if not total:
-            return
-        want = max(0, total - info.window_height - offset_int)
-        if info.vertical_scroll != want:
-            info.vertical_scroll = want
+        app = getattr(self, "_app", None)
+        loop = getattr(app, "loop", None) if app is not None else None
+
+        def _do_apply() -> None:
+            window = getattr(self, "_output_window", None)
+            if window is None:
+                return
+            info = getattr(window, "render_info", None)
+            if info is None or info.window_height is None:
+                return
+            total = self._output_render_lines
+            if not total:
+                return
+            want = max(0, total - info.window_height - offset_int)
+            if info.vertical_scroll != want:
+                info.vertical_scroll = want
+
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(_do_apply)
+        else:
+            _do_apply()
 
     def _render_status(self):
         # 2026-09-24: every field gets its OWN color instead of the whole

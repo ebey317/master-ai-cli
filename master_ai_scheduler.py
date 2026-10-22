@@ -61,15 +61,23 @@ def _next_time(when: str, cadence: str, now: datetime | None = None):
     Once `now` catches up to that boundary, it fires; see _scheduler_loop.
     """
     now = now or datetime.now()
+    cad = (cadence or "daily").lower()
+    # "hourly" means every hour FROM THE LAST RUN, not "today at `when`,
+    # rolled forward by an hour if that's already past" -- the old code
+    # anchored to `when`'s hour:minute first (meant for daily/weekly/
+    # monthly, where `when` is a real time-of-day), so on any run after
+    # roughly 9am it computed a boundary already in the past and the
+    # scheduler re-fired on every ~30s poll instead of waiting an hour.
+    # Caught live: added an hourly schedule, it re-triggered within
+    # seconds instead of after an hour.
+    if cad == "hourly":
+        return now + timedelta(hours=1)
     m = re.match(r"(\d{1,2}):(\d{2})", when)
     hour = int(m.group(1)) if m else 0
     minute = int(m.group(2)) if m else 0
     nxt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if nxt <= now:
-        cad = (cadence or "daily").lower()
-        if cad == "hourly":
-            nxt += timedelta(hours=1)
-        elif cad == "weekly":
+        if cad == "weekly":
             nxt += timedelta(days=7)
         elif cad == "monthly":
             # naive month step

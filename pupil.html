@@ -317,6 +317,31 @@
       width: 100%; background: transparent; border-color: transparent;
       color: var(--text4); font-size: 12px; font-family: var(--mono);
     }
+    /* AG-UI Phase 1: tool-call cards (see /agui/run) */
+    .tool-card {
+      width: min(760px, 100%);
+      margin: 0 0 12px; padding: 8px 14px;
+      border-radius: 10px; border: 1px solid var(--line-subtle);
+      background: var(--surface); color: var(--text3);
+      font-size: 13px; font-family: var(--mono);
+    }
+    .tool-card .tool-card-name { color: var(--text2); font-weight: 600; }
+    .tool-card[data-state="running"] .tool-card-name::after { content: " · running…"; color: var(--text4); font-weight: 400; }
+    .tool-card[data-state="done"] .tool-card-name::after { content: " · done"; color: var(--text4); font-weight: 400; }
+    .tool-card[data-state="blocked"] {
+      border-color: color-mix(in srgb, var(--plan) 60%, var(--line-subtle));
+      background: color-mix(in srgb, var(--plan) 8%, var(--surface));
+    }
+    .tool-card[data-state="blocked"] .tool-card-name::after { content: " · blocked"; color: var(--plan); font-weight: 400; }
+    .tool-card-detail { margin-top: 4px; color: var(--text4); white-space: pre-wrap; overflow-wrap: break-word; }
+    .tool-card-approve, .tool-card-decline {
+      margin-top: 6px; margin-right: 8px; padding: 4px 12px;
+      border-radius: 6px; border: 1px solid var(--line); cursor: pointer;
+      font-size: 12px; font-family: var(--mono);
+    }
+    .tool-card-approve { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .tool-card-decline { background: transparent; color: var(--text3); }
+    .tool-card-approve:disabled, .tool-card-decline:disabled { opacity: 0.5; cursor: default; }
     .composer-wrap { position: relative; flex-shrink: 0; }
     .composer { padding: 12px 14px 14px; border-top: 1px solid var(--line-subtle); background: var(--soft); }
     .composer-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
@@ -883,6 +908,77 @@
       messages.scrollTop = messages.scrollHeight;
     }
 
+    /* AG-UI Phase 1: tool-call cards (see /agui/run's TOOL_CALL_* events) */
+    function appendToolCallCard(name, args) {
+      const node = document.createElement("div");
+      node.className = "tool-card";
+      node.dataset.state = "running";
+      const nameEl = document.createElement("div");
+      nameEl.className = "tool-card-name";
+      nameEl.textContent = name || "action";
+      node.appendChild(nameEl);
+      if (args && Object.keys(args).length) {
+        const detail = document.createElement("div");
+        detail.className = "tool-card-detail";
+        detail.textContent = JSON.stringify(args);
+        node.appendChild(detail);
+      }
+      messages.appendChild(node);
+      messages.scrollTop = messages.scrollHeight;
+      return node;
+    }
+
+    function updateToolCallCard(node, { result, blocked, reason } = {}) {
+      if (!node) return;
+      node.dataset.state = blocked ? "blocked" : "done";
+      const detail = document.createElement("div");
+      detail.className = "tool-card-detail";
+      detail.textContent = blocked ? (reason || "blocked") : JSON.stringify(result ?? null);
+      node.appendChild(detail);
+      messages.scrollTop = messages.scrollHeight;
+    }
+
+    /* Real execution: reuses the Chrome extension's existing, already
+       safety-gated dispatcher (master_ai's confirm_run/confirm_create/etc
+       under the hood) instead of inventing a second one. */
+    async function decideToolCall(node, actionId, action, verdict, buttonRow) {
+      if (buttonRow) buttonRow.remove();
+      try {
+        const res = await fetch("/extension/approve_action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action_id: actionId, action, verdict, mode_at_decision: state.mode })
+        });
+        const body = await res.json();
+        updateToolCallCard(node, { result: body.envelope ?? body });
+      } catch (error) {
+        updateToolCallCard(node, { blocked: true, reason: `approve_action failed: ${error.message}` });
+      }
+    }
+
+    function addApprovalControls(node, actionId, action) {
+      const row = document.createElement("div");
+      row.className = "tool-card-detail";
+      const approve = document.createElement("button");
+      approve.textContent = "Approve";
+      approve.className = "tool-card-approve";
+      const decline = document.createElement("button");
+      decline.textContent = "Decline";
+      decline.className = "tool-card-decline";
+      approve.addEventListener("click", () => {
+        approve.disabled = true; decline.disabled = true;
+        decideToolCall(node, actionId, action, "accept", row);
+      });
+      decline.addEventListener("click", () => {
+        approve.disabled = true; decline.disabled = true;
+        decideToolCall(node, actionId, action, "reject", row);
+      });
+      row.appendChild(approve);
+      row.appendChild(decline);
+      node.appendChild(row);
+      messages.scrollTop = messages.scrollHeight;
+    }
+
     function setModeButtons(mode) {
       state.mode = mode || "plan";
       modeText.textContent = state.mode;
@@ -944,26 +1040,133 @@
       appendMessage("system", `Mode changed to ${body.mode}.`);
     }
 
+    /* AG-UI Phase 1: parses the same "event: name\ndata: json\n\n" framing
+       /events already uses, just over a POST body (EventSource can't do
+       POST, so this is a small manual reader instead). */
+    async function* parseSseStream(reader) {
+      const decoder = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf("\n\n")) !== -1) {
+          const block = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          const lines = block.split("\n");
+          const evt = { name: "message", data: "" };
+          for (const line of lines) {
+            if (line.startsWith("event:")) evt.name = line.slice(6).trim();
+            else if (line.startsWith("data:")) evt.data = line.slice(5).trim();
+          }
+          if (evt.data) yield evt;
+        }
+      }
+    }
+
     async function sendChat(prompt) {
       sendButton.disabled = true;
       appendMessage("user", prompt);
       appendMessage("system", "Pupil is waiting for Master AI...");
+      const toolCards = new Map();
+      let assistantText = "";
+      let sawAnyEvent = false;
+      let runInfo = null;
       try {
         const body = { prompt, mode: state.mode, session_id: state.sessionId, source: "pupil" };
         if (state.modelOverride) body.model = state.modelOverride;
-        const res = await fetch("/chat", {
+        const res = await fetch("/agui/run", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body)
         });
-        const data = await res.json();
-        messages.lastElementChild.remove();
-        if (!res.ok) throw new Error(data.error || "chat failed");
-        appendMessage("assistant", data.reply || "(empty reply)");
-        appendMessage("system", `Route: ${data.route || "unknown"} | Model: ${data.model || "unknown"} | ${data.latency_ms ?? 0} ms`);
+        if (!res.ok || !res.body) throw new Error(`chat failed (${res.status})`);
+        const reader = res.body.getReader();
+        for await (const evt of parseSseStream(reader)) {
+          const payload = JSON.parse(evt.data);
+          if (!sawAnyEvent) { messages.lastElementChild.remove(); sawAnyEvent = true; }
+          switch (evt.name) {
+            case "TOOL_CALL_START":
+              toolCards.set(payload.toolCallId, appendToolCallCard(payload.toolCallName, null));
+              break;
+            case "TOOL_CALL_ARGS": {
+              const node = toolCards.get(payload.toolCallId);
+              if (node) {
+                const detail = document.createElement("div");
+                detail.className = "tool-card-detail";
+                detail.textContent = JSON.stringify(payload.args);
+                node.appendChild(detail);
+                let kind = (payload.args || {}).kind || "";
+                let dispatchArgs = payload.args;
+                if (kind === "BROWSER_NAV") {
+                  // /extension/approve_action only dispatches RUN/RUNTERM/
+                  // READ/CREATE/EDIT -- BROWSER_* needs the Chrome extension's
+                  // content script, which Pupil's own page doesn't have. But
+                  // "open a URL" is exactly what `xdg-open <url>` already does
+                  // (proven live: the same model's RUN: xdg-open fallback
+                  // actually opened Facebook and z.ai in earlier tests), so
+                  // translate BROWSER_NAV into that same already-working RUN
+                  // path instead of a dead-end "not supported" note. Single-
+                  // quoted and escaped so a URL can't break out into a second
+                  // shell command.
+                  const url = String(payload.args.target || "");
+                  const quoted = "'" + url.replace(/'/g, "'\\''") + "'";
+                  kind = "RUN";
+                  dispatchArgs = { ...payload.args, kind: "RUN", target: "xdg-open " + quoted };
+                }
+                if (kind.startsWith("BROWSER_")) {
+                  const note = document.createElement("div");
+                  note.className = "tool-card-detail";
+                  note.textContent = "Not supported outside the Chrome extension yet.";
+                  node.appendChild(note);
+                } else {
+                  // Pupil never actually executes actions[] itself -- the
+                  // stream's own TOOL_CALL_RESULT that follows is always
+                  // {result: null}. Mark this card as approval-managed so
+                  // that meaningless null doesn't clobber the real result
+                  // decideToolCall() fills in (immediately, or after a
+                  // click), which lands well after this stream has moved on.
+                  node.dataset.managed = "1";
+                  if (dispatchArgs.requires_confirm) {
+                    addApprovalControls(node, payload.toolCallId, dispatchArgs);
+                  } else {
+                    decideToolCall(node, payload.toolCallId, dispatchArgs, "accept");
+                  }
+                }
+              }
+              break;
+            }
+            case "TOOL_CALL_RESULT":
+              { const node = toolCards.get(payload.toolCallId);
+                if (node && !node.dataset.managed) updateToolCallCard(node, { result: payload.result }); }
+              break;
+            case "CUSTOM":
+              if (payload.blocked) {
+                updateToolCallCard(toolCards.get(payload.toolCallId), { blocked: true, reason: payload.reason });
+              }
+              break;
+            case "TEXT_MESSAGE_CONTENT":
+              assistantText += payload.delta || "";
+              break;
+            case "RUN_FINISHED":
+              runInfo = payload;
+              break;
+            case "RUN_ERROR":
+              throw new Error(payload.message || "chat failed");
+          }
+        }
+        if (!sawAnyEvent) messages.lastElementChild.remove();
+        appendMessage("assistant", assistantText || "(empty reply)");
+        if (runInfo) {
+          appendMessage("system", `Route: ${runInfo.route || "unknown"} | Model: ${runInfo.model || "unknown"} | ${runInfo.latency_ms ?? 0} ms`);
+        }
         loadStatus();
       } catch (error) {
-        messages.lastElementChild.remove();
+        // Only the "waiting..." placeholder is still unremoved if nothing
+        // streamed yet -- once a real event arrived, sawAnyEvent already
+        // dropped it, so don't blow away a real tool-call card here.
+        if (!sawAnyEvent && messages.lastElementChild) messages.lastElementChild.remove();
         appendMessage("system", `Chat failed: ${error.message}`);
       } finally {
         sendButton.disabled = false;

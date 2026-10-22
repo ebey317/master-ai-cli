@@ -4615,6 +4615,69 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
             except Exception as e:
                 self._json({'error': str(e)}, 500); return
 
+        # POST /agui/run — Phase 1 AG-UI wiring for Pupil (2026-10-21).
+        # Same turn as /chat (api_handle, untouched), reported as a short
+        # AG-UI event sequence over SSE instead of one blocking JSON blob,
+        # so Pupil can render tool-call cards and run lifecycle instead of
+        # a single "waiting..." spinner. Text arrives as one full-string
+        # TEXT_MESSAGE_CONTENT delta, not token-by-token -- true incremental
+        # streaming needs the model-call layer itself instrumented, which is
+        # a separate, later change. /chat and /chat/continue are unchanged.
+        if self.path == '/agui/run':
+            if not self._require_extension_auth():
+                return
+            self.send_response(200)
+            self._cors()
+            self.send_header('Content-Type', 'text/event-stream')
+            self.send_header('Cache-Control', 'no-cache')
+            # Unlike /events (a deliberately long-lived heartbeat stream),
+            # this is a one-shot run: it must close after RUN_FINISHED/
+            # RUN_ERROR or a client's reader sits waiting for more data
+            # forever. Confirmed live: curl hung past RUN_FINISHED until
+            # killed, before this header + close_connection were added.
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            self.close_connection = True
+            run_id = str(uuid.uuid4())
+
+            def emit(name, payload):
+                self.wfile.write(f"event: {name}\ndata: {json.dumps(payload)}\n\n".encode())
+                self.wfile.flush()
+
+            try:
+                emit('RUN_STARTED', {'runId': run_id, 'ts': datetime.now().astimezone().isoformat(timespec='seconds')})
+                payload = json.loads(data or b'{}')
+                result = api_handle(payload)
+                for a in result.get('actions', []) or []:
+                    tool_call_id = str(uuid.uuid4())
+                    emit('TOOL_CALL_START', {'toolCallId': tool_call_id, 'toolCallName': a.get('kind', 'action')})
+                    emit('TOOL_CALL_ARGS', {'toolCallId': tool_call_id, 'args': a})
+                    emit('TOOL_CALL_RESULT', {'toolCallId': tool_call_id, 'result': a.get('result')})
+                for b in result.get('blocked_actions', []) or []:
+                    tool_call_id = str(uuid.uuid4())
+                    emit('TOOL_CALL_START', {'toolCallId': tool_call_id, 'toolCallName': b.get('kind', 'action')})
+                    emit('TOOL_CALL_ARGS', {'toolCallId': tool_call_id, 'args': b})
+                    emit('CUSTOM', {'toolCallId': tool_call_id, 'blocked': True, 'reason': b.get('reason')})
+                msg_id = str(uuid.uuid4())
+                emit('TEXT_MESSAGE_START', {'messageId': msg_id, 'role': 'assistant'})
+                emit('TEXT_MESSAGE_CONTENT', {'messageId': msg_id, 'delta': result.get('reply', '')})
+                emit('TEXT_MESSAGE_END', {'messageId': msg_id})
+                emit('RUN_FINISHED', {
+                    'runId': run_id,
+                    'route': result.get('route'),
+                    'model': result.get('model'),
+                    'latency_ms': result.get('latency_ms'),
+                })
+            except ApiHandleBusy as e:
+                emit('RUN_ERROR', {'runId': run_id, 'message': str(e), 'code': 'system_busy'})
+            except ValueError as e:
+                emit('RUN_ERROR', {'runId': run_id, 'message': str(e)})
+            except _CLIENT_DISCONNECTS:
+                pass
+            except Exception as e:
+                emit('RUN_ERROR', {'runId': run_id, 'message': str(e)})
+            return
+
         # POST /chat/continue — M9 Agentic Continuation Loop (2026-05-12).
         # The extension calls this AFTER dispatching the prior round's actions
         # and reporting their results to /extension/action_result. Body shape:
