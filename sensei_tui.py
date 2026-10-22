@@ -83,6 +83,16 @@ HISTORY_FILE = str(Path.home() / ".master_ai_history")
 SCROLL_FPS = 60.0
 SCROLL_TAU = 0.05  # seconds — time constant of the glide (~3.5 frames to 50%)
 
+# 2026-10-22: bounded chat buffer. _output_chunks is append-only; the
+# renderer joins the WHOLE list on every version bump and prompt_toolkit
+# re-splits the full text on every paint — a single idle TUI sat at 1.2GB+
+# anonymous heap overnight (py-spy caught MainThread in split_lines on the
+# full buffer; arena fragmentation keeps freed space mapped forever).
+# Cap: keep the newest ~3MB of chat, trim oldest-first with one marker.
+_OUTPUT_BUFFER_CAP_BYTES = 4_000_000
+_OUTPUT_BUFFER_TRIM_TO = 3_000_000
+_OUTPUT_BUFFER_MARKER = "\n[older output trimmed — buffer capped to keep memory flat]\n"
+
 
 def _eased_scroll_step(
     disp: float,
@@ -728,6 +738,7 @@ class SenseiApp:
         self._output_render_cache = None
         self._output_render_cache_version = -1
         self._output_render_lines = 0
+        self._output_bytes = 0  # running size of _output_chunks (bounded via trim)
         self._output_version = 0
         self._tip_cycle = itertools.cycle(IDLE_TIPS)
         self._tip = next(self._tip_cycle)
@@ -1984,15 +1995,42 @@ class SenseiApp:
             if self._scroll_offset > 0:
                 self._scroll_offset += add_lines
             self._output_chunks.append(str(text))
+            self._output_bytes += len(str(text))
+            self._trim_output_buffer_locked()
             self._output_version += 1
         try:
             self._app.invalidate()
         except Exception:
             pass
 
+    def _trim_output_buffer_locked(self) -> None:
+        """Bound the chat buffer in memory. Called with _output_lock held.
+
+        Keeps the newest _OUTPUT_BUFFER_TRIM_TO bytes, oldest first-out,
+        leaving ONE marker line where old text was cut. Offset semantics
+        make this safe while the user is scrolled up: offset counts lines
+        above the BOTTOM of the buffer, and the bottom tail is exactly what
+        the trim preserves — the viewport stays put; the (now smaller)
+        buffer just has less history above it.
+        """
+        total = self._output_bytes
+        if total <= _OUTPUT_BUFFER_CAP_BYTES:
+            return
+        kept: list[str] = []
+        running = 0
+        for chunk in reversed(self._output_chunks):
+            kept.append(chunk)
+            running += len(chunk)
+            if running >= _OUTPUT_BUFFER_TRIM_TO:
+                break
+        kept.reverse()
+        self._output_chunks = [_OUTPUT_BUFFER_MARKER, *kept]
+        self._output_bytes = sum(len(c) for c in self._output_chunks)
+
     def clear_output(self) -> None:
         with self._output_lock:
             self._output_chunks.clear()
+            self._output_bytes = 0
             self._scroll_offset = 0
             self._output_version += 1
         try:
