@@ -1,0 +1,328 @@
+"""
+Structured auxiliary provider for Sensei.
+
+Routes specific auxiliary tasks (approvals, confirmations, routing decisions)
+through bounded structured decisions instead of free-form LLM calls.
+Fails open: any request it cannot express as a structured decision raises,
+so Sensei falls back to the primary model provider.
+"""
+from __future__ import annotations
+
+import os
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Literal, Protocol
+
+import httpx
+
+
+class AuxTaskType(Enum):
+    """Types of auxiliary tasks that can use structured decisions."""
+    APPROVAL = "approval"           # User approval prompts
+    CONFIRMATION = "confirmation"   # Yes/no confirmations
+    ROUTING = "routing"             # Model/tool routing decisions
+    COMPRESSION = "compression"     # Context compression decisions
+    MCP_SAMPLING = "mcp_sampling"   # MCP sampling decisions
+
+
+class StructuredDecisionError(Exception):
+    """Raised when a request cannot be expressed as a bounded decision."""
+    pass
+
+
+@dataclass(frozen=True)
+class DecisionOption:
+    """A single option in a bounded decision."""
+    id: str
+    label: str
+    description: str = ""
+
+
+@dataclass(frozen=True)
+class StructuredDecisionRequest:
+    """A request for a bounded decision."""
+    task_type: AuxTaskType
+    prompt: str
+    options: tuple[DecisionOption, ...]
+    context: dict[str, Any] | None = None
+    default_option: str | None = None
+
+
+@dataclass(frozen=True)
+class StructuredDecisionResponse:
+    """Response from a bounded decision."""
+    chosen_option_id: str
+    confidence: float
+    reasoning: str | None = None
+
+
+class ModelProvider(Protocol):
+    """Protocol for any model provider (primary or structured)."""
+    async def chat_completion(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> str: ...
+
+
+class StructuredAuxProvider(ABC):
+    """
+    Abstract base for structured auxiliary providers.
+    
+    Translates auxiliary tasks into bounded decisions.
+    Subclasses implement the actual decision mechanism (local heuristic,
+    small model, rule-based, etc.).
+    """
+    
+    @abstractmethod
+    async def decide(self, request: StructuredDecisionRequest) -> StructuredDecisionResponse:
+        """Make a bounded decision for the given request."""
+        ...
+
+    def can_handle(self, request: StructuredDecisionRequest) -> bool:
+        """Check if this provider can express the request as a bounded decision."""
+        return bool(request.options) and len(request.options) >= 2
+
+
+class OpenRouterJevProvider(StructuredAuxProvider):
+    """
+    Structured aux provider using OpenRouter with Jev-style bounded decisions.
+    
+    Maps auxiliary tasks to structured decision calls on OpenRouter.
+    Requires OPENROUTER_API_KEY in environment.
+    """
+    
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str = "openrouter/auto",
+        base_url: str = "https://openrouter.ai/api/v1",
+        timeout: float = 30.0,
+    ):
+        self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self._client: httpx.AsyncClient | None = None
+    
+    async def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                base_url=self.base_url,
+                headers={"Authorization": f"Bearer {self.api_key}"} if self.api_key else {},
+                timeout=self.timeout,
+            )
+        return self._client
+    
+    async def decide(self, request: StructuredDecisionRequest) -> StructuredDecisionResponse:
+        if not self.can_handle(request):
+            raise StructuredDecisionError(
+                f"Cannot express {request.task_type.value} as bounded decision: "
+                f"need at least 2 options, got {len(request.options)}"
+            )
+        
+        # Build a structured prompt that forces a bounded choice
+        options_text = "\n".join(
+            f"  {opt.id}: {opt.label} - {opt.description}" for opt in request.options
+        )
+        
+        system_prompt = (
+            "You are a decision engine. Choose exactly ONE option from the list below. "
+            "Respond with ONLY the option ID, confidence (0-1), and brief reasoning in this format:\n"
+            "CHOICE: <id>\nCONFIDENCE: <float>\nREASONING: <text>"
+        )
+        
+        user_prompt = (
+            f"Task: {request.task_type.value}\n"
+            f"Context: {request.context or {} }\n"
+            f"Prompt: {request.prompt}\n\n"
+            f"Options:\n{options_text}\n"
+            f"{f'Default: {request.default_option}' if request.default_option else ''}"
+        )
+        
+        client = await self._get_client()
+        response = await client.post(
+            "/chat/completions",
+            json={
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.1,
+                "max_tokens": 100,
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+        content = data["choices"][0]["message"]["content"].strip()
+        
+        # Parse structured response
+        choice_id = None
+        confidence = 0.5
+        reasoning = None
+        
+        for line in content.splitlines():
+            line = line.strip()
+            if line.startswith("CHOICE:"):
+                choice_id = line.split(":", 1)[1].strip()
+            elif line.startswith("CONFIDENCE:"):
+                try:
+                    confidence = float(line.split(":", 1)[1].strip())
+                except ValueError:
+                    pass
+            elif line.startswith("REASONING:"):
+                reasoning = line.split(":", 1)[1].strip()
+        
+        if not choice_id:
+            raise StructuredDecisionError(f"Failed to parse decision from response: {content}")
+        
+        # Validate choice is in options
+        valid_ids = {opt.id for opt in request.options}
+        if choice_id not in valid_ids:
+            # Fall back to default or first option
+            choice_id = request.default_option or request.options[0].id
+            confidence = 0.3
+            reasoning = f"Invalid choice '{choice_id}', fell back to '{choice_id}'"
+        
+        return StructuredDecisionResponse(
+            chosen_option_id=choice_id,
+            confidence=confidence,
+            reasoning=reasoning,
+        )
+    
+    async def close(self) -> None:
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+
+
+class FallbackAuxProvider:
+    """
+    Wrapper that tries structured aux first, falls back to primary provider.
+    
+    This is the "fail open" behavior: any structured decision failure
+    delegates to the primary model provider using free-form chat.
+    """
+    
+    def __init__(
+        self,
+        structured_provider: StructuredAuxProvider,
+        primary_provider: ModelProvider,
+        primary_model: str = "gpt-4o-mini",
+    ):
+        self.structured = structured_provider
+        self.primary = primary_provider
+        self.primary_model = primary_model
+    
+    async def decide(self, request: StructuredDecisionRequest) -> StructuredDecisionResponse:
+        """Try structured decision, fall back to primary on any failure."""
+        try:
+            if self.structured.can_handle(request):
+                return await self.structured.decide(request)
+        except StructuredDecisionError:
+            pass  # Fall through to primary
+        except Exception:
+            pass  # Any other error also falls back
+        
+        # Fallback: use primary provider with free-form prompt
+        return await self._fallback_decide(request)
+    
+    async def _fallback_decide(self, request: StructuredDecisionRequest) -> StructuredDecisionResponse:
+        """Use primary model for free-form decision."""
+        options_text = "\n".join(
+            f"- {opt.id}: {opt.label} ({opt.description})" for opt in request.options
+        )
+        
+        prompt = (
+            f"Task: {request.task_type.value}\n"
+            f"Context: {request.context or {} }\n"
+            f"Question: {request.prompt}\n\n"
+            f"Options:\n{options_text}\n\n"
+            f"Choose the best option. Respond with just the option ID."
+        )
+        
+        response = await self.primary.chat_completion(
+            messages=[{"role": "user", "content": prompt}],
+            model=self.primary_model,
+            temperature=0.3,
+            max_tokens=50,
+        )
+        
+        # Extract option ID from response
+        choice_id = response.strip().split()[0] if response.strip() else ""
+        valid_ids = {opt.id for opt in request.options}
+        
+        if choice_id not in valid_ids:
+            choice_id = request.default_option or request.options[0].id
+        
+        return StructuredDecisionResponse(
+            chosen_option_id=choice_id,
+            confidence=0.6,  # Medium confidence for free-form fallback
+            reasoning="Fallback to primary provider (free-form)",
+        )
+
+
+# Convenience function for common auxiliary tasks
+async def quick_approval(
+    provider: FallbackAuxProvider,
+    prompt: str,
+    context: dict[str, Any] | None = None,
+) -> bool:
+    """Quick yes/no approval decision."""
+    request = StructuredDecisionRequest(
+        task_type=AuxTaskType.APPROVAL,
+        prompt=prompt,
+        options=(
+            DecisionOption(id="yes", label="Yes", description="Approve the action"),
+            DecisionOption(id="no", label="No", description="Reject the action"),
+        ),
+        context=context,
+        default_option="no",
+    )
+    response = await provider.decide(request)
+    return response.chosen_option_id == "yes"
+
+
+async def quick_confirmation(
+    provider: FallbackAuxProvider,
+    prompt: str,
+    context: dict[str, Any] | None = None,
+) -> bool:
+    """Quick confirmation (proceed/cancel)."""
+    request = StructuredDecisionRequest(
+        task_type=AuxTaskType.CONFIRMATION,
+        prompt=prompt,
+        options=(
+            DecisionOption(id="proceed", label="Proceed", description="Continue with the action"),
+            DecisionOption(id="cancel", label="Cancel", description="Abort the action"),
+        ),
+        context=context,
+        default_option="cancel",
+    )
+    response = await provider.decide(request)
+    return response.chosen_option_id == "proceed"
+
+
+async def quick_routing(
+    provider: FallbackAuxProvider,
+    prompt: str,
+    choices: list[tuple[str, str, str]],  # (id, label, description)
+    context: dict[str, Any] | None = None,
+) -> str:
+    """Quick routing decision among multiple options."""
+    request = StructuredDecisionRequest(
+        task_type=AuxTaskType.ROUTING,
+        prompt=prompt,
+        options=tuple(
+            DecisionOption(id=cid, label=label, description=desc)
+            for cid, label, desc in choices
+        ),
+        context=context,
+        default_option=choices[0][0] if choices else None,
+    )
+    response = await provider.decide(request)
+    return response.chosen_option_id

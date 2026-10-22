@@ -30,9 +30,27 @@ import urllib.request
 from pathlib import Path
 
 OLLAMA_URL = "http://127.0.0.1:11434"
-VISION_MODEL = os.environ.get("INSPECTOR_VISION_MODEL", "llava:latest")
+VISION_MODEL = os.environ.get("INSPECTOR_VISION_MODEL", "qwen2.5vl:3b")
 TEXT_MODEL = os.environ.get("INSPECTOR_TEXT_MODEL", "qwen2.5:3b")
 BRIDGE_URL = "http://localhost:8080"
+
+# 2026-10-21: the local VLM above is CPU-only and too slow for an
+# exit-validator round trip, so cloud vision is tried first for now --
+# deepseek-v4-flash-vision-exp is free on both the opencode-go relay and
+# OpenRouter. Falls back to the local VLM automatically (no key, rate
+# limit, network error) so this still works fully offline.
+CLOUD_VISION_MODEL = os.environ.get(
+    "INSPECTOR_CLOUD_VISION_MODEL", "deepseek-v4-flash-vision-exp"
+)
+# Second free cloud option, tried if the opencode-go relay is unreachable
+# or out of key -- OpenRouter's own catalog, filtered to ":free" slugs
+# with image input support (confirmed live against their public /models
+# endpoint 2026-10-21; operator policy is free-tier-only, never a paid
+# OpenRouter model, see the matching gate in master_ai.py's _ask_openrouter).
+OPENROUTER_VISION_MODEL = os.environ.get(
+    "INSPECTOR_OPENROUTER_VISION_MODEL", "nvidia/nemotron-3.5-super-vl:free"
+)
+_KEYCHAIN_FILE = Path.home() / "Desktop" / "Projects" / "keychain" / "master_ai_keys"
 
 
 # ── evidence capture ─────────────────────────────────────────────────────────
@@ -102,9 +120,126 @@ _INSPECTOR_PROMPT = (
 )
 
 
+def _ask_vision_cloud(goal: str, b64: str) -> tuple[bool, str] | None:
+    """Free deepseek-v4-flash-vision-exp via the opencode-go relay. Returns
+    None (not a verdict) on any failure so the caller falls back to the
+    local VLM instead of reporting a false NO."""
+    try:
+        from opencode_go_relay import _load_key
+    except Exception:
+        return None
+    key = _load_key()
+    if not key:
+        return None
+    prompt = _INSPECTOR_PROMPT.format(goal=goal, evidence_label="[screenshot attached]")
+    payload = {
+        "model": CLOUD_VISION_MODEL,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{b64}"},
+                    },
+                ],
+            }
+        ],
+        # this model reasons at length before answering (observed 2000+
+        # chars of reasoning_content) -- 64 tokens cut it off mid-thought
+        # every time, leaving `content` empty. 1536 gives it room to
+        # actually finish and land the YES/NO in `content` like a normal
+        # reply, confirmed live.
+        "max_tokens": 1536,
+        "stream": False,
+    }
+    try:
+        req = urllib.request.Request(
+            "https://opencode.ai/zen/go/v1/chat/completions",
+            data=json.dumps(payload).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {key}",
+                "x-opencode-session": "inspector",
+                "User-Agent": "master-ai-cli/1.0 (Sensei agent loop)",
+                "Accept": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=60) as r:
+            text = json.loads(r.read())["choices"][0]["message"]["content"].strip()
+        return _parse_verdict(text)
+    except Exception:
+        return None
+
+
+def _openrouter_key() -> str:
+    """Read OPENROUTER_API_KEY straight from the keychain file -- inspector.py
+    stays import-independent from master_ai.py on purpose (it's meant to be
+    a fresh, isolated check), so this reads the same source master_ai.py's
+    own key loader does rather than importing it."""
+    try:
+        for line in _KEYCHAIN_FILE.read_text().splitlines():
+            s = line.strip()
+            if s.startswith("OPENROUTER_API_KEY="):
+                val = s.split("=", 1)[1].strip()
+                if val and not val.startswith("«"):  # skip «redacted» placeholders
+                    return val
+    except Exception:
+        pass
+    return ""
+
+
+def _ask_vision_openrouter(goal: str, b64: str) -> tuple[bool, str] | None:
+    """Second free option, tried if the opencode-go relay didn't answer.
+    Same None-on-any-failure contract as _ask_vision_cloud."""
+    key = _openrouter_key()
+    if not key:
+        return None
+    prompt = _INSPECTOR_PROMPT.format(goal=goal, evidence_label="[screenshot attached]")
+    payload = {
+        "model": OPENROUTER_VISION_MODEL,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{b64}"},
+                    },
+                ],
+            }
+        ],
+        "max_tokens": 1536,
+    }
+    try:
+        req = urllib.request.Request(
+            "https://openrouter.ai/api/v1/chat/completions",
+            data=json.dumps(payload).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {key}",
+                "HTTP-Referer": "http://localhost",
+                "X-Title": "master-ai",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=60) as r:
+            text = json.loads(r.read())["choices"][0]["message"]["content"].strip()
+        return _parse_verdict(text)
+    except Exception:
+        return None
+
+
 def _ask_vision(goal: str, image_path: str) -> tuple[bool, str]:
     with open(image_path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode()
+
+    for cloud_call in (_ask_vision_cloud, _ask_vision_openrouter):
+        verdict = cloud_call(goal, b64)
+        if verdict is not None:
+            return verdict
+
     prompt = _INSPECTOR_PROMPT.format(goal=goal, evidence_label="[screenshot attached]")
     payload = {
         "model": VISION_MODEL,

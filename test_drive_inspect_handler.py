@@ -200,6 +200,8 @@ def _run_handler_on_fixture(fixture_url, action):
         [
             chrome,
             "--headless=new",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
             "--disable-gpu",
             "--no-first-run",
             "--no-default-browser-check",
@@ -208,7 +210,7 @@ def _run_handler_on_fixture(fixture_url, action):
             "about:blank",
         ],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=None,
     )
 
     try:
@@ -279,6 +281,8 @@ def _run_context_on_fixture(fixture_url, options):
         [
             chrome,
             "--headless=new",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
             "--disable-gpu",
             "--no-first-run",
             "--no-default-browser-check",
@@ -287,7 +291,7 @@ def _run_context_on_fixture(fixture_url, options):
             "about:blank",
         ],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=None,
     )
 
     try:
