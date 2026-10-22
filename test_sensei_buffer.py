@@ -14,10 +14,8 @@ from sensei_tui import SenseiApp
 
 def main():
     from sensei_tui import (
-        SenseiApp,
         _OUTPUT_BUFFER_CAP_BYTES,
         _OUTPUT_BUFFER_MARKER,
-        _OUTPUT_BUFFER_TRIM_TO,
     )
 
     app = SenseiApp()
