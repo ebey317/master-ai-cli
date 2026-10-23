@@ -1885,7 +1885,7 @@ def _api_parse_actions(reply, *, mode="plan", model="", source="", session_id=""
     # too, which is rarer and far less harmful than the observed glued pair.
     reply = re.sub(
         r"(?<=\S)[ \t]+(?=(?:RUNTERM|RUN|READ|CREATE|EDIT|REMEMBER|DONE|"
-        r"SEND_EMAIL|SEND_TELEGRAM|BROWSER_[A-Z_]+)\s*:)",
+        r"SEND_EMAIL|SEND_TELEGRAM|FBPOST|BROWSER_[A-Z_]+)\s*:)",
         "\n",
         reply or "",
     )

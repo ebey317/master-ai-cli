@@ -143,15 +143,18 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import approval_queue
 import orchestration as _orchestration_mod  # noqa: E402 — after sensei_tables
 import perpetual_review
 import runtime_host
+from command_registry import COMMANDS as _REGISTRY_COMMANDS
 from sensei_tables import (  # noqa: F401
     _A_APPEAR,
     _A_AUTO,
@@ -429,6 +432,15 @@ try:
     import harvest  # local cache + few-shot injection; ~/scripts/harvest.py
 except Exception:
     harvest = None  # type: ignore[assignment]
+
+try:
+    # Lane health: which cloud lane is fast and alive right now. Lets the
+    # chain order itself by measured health instead of a static list, and
+    # lets a slow/unproven PIN be raced against a backup so latency does
+    # not depend on which model the operator pinned.
+    import lane_health  # type: ignore[assignment]
+except Exception:
+    lane_health = None  # type: ignore[assignment]
 
 try:
     import readline
@@ -1524,6 +1536,96 @@ def send_telegram_message(chat_id: Any, text: Any, silent: bool = False) -> Any:
             "error": f"telegram_client failed: {e}",
             "message_id": None,
         }
+
+
+# ── facebook_client interface ─────────────────────────────────
+# 2026-10-22: FBPOST directive — model posts to a Facebook Page's feed via
+# the Graph API. Page-feed posting needs a PAGE access token with
+# pages_manage_posts + pages_read_engagement; the Messenger-only
+# FB_ACCESS_TOKEN already in the keychain lacks those scopes (confirmed
+# live: Graph API returned a permissions error for /feed with that token).
+# Elijah: "it should go primarily through the api key" — no browser
+# automation, no third-party subscription (Muse), straight Graph API call
+# like send_telegram_message/send_email_via_smtp above.
+def post_to_facebook_page(
+    message: Any, *, link: Any | None = None, page_id: Any | None = None
+) -> dict:
+    """POST one message to a Facebook Page's /feed. Returns
+    {ok, error, post_id, page_id}. page_id defaults to KEYS['fb_page_id']
+    (~/.master_ai_keys FB_PAGE_ID=...); the token is always
+    KEYS['fb_access_token'] (FB_ACCESS_TOKEN=...) — same keychain file,
+    Page-scoped token required, see keychain_kv.py.
+    """
+    keys = load_keys()
+    token = keys.get("fb_access_token")
+    page_id = page_id or keys.get("fb_page_id")
+    if not token:
+        return {
+            "ok": False,
+            "error": "no fb_access_token in ~/.master_ai_keys",
+            "post_id": None,
+            "page_id": page_id,
+        }
+    if not page_id:
+        return {
+            "ok": False,
+            "error": "no fb_page_id in ~/.master_ai_keys — which Page?",
+            "post_id": None,
+            "page_id": None,
+        }
+    payload = {"message": message}
+    if link:
+        payload["link"] = link
+    data = urllib.parse.urlencode(payload).encode()
+    req = urllib.request.Request(
+        f"https://graph.facebook.com/v21.0/{page_id}/feed",
+        data=data,
+        headers={"Authorization": f"Bearer {token}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            result = json.loads(r.read().decode())
+        return {
+            "ok": True,
+            "error": None,
+            "post_id": result.get("id"),
+            "page_id": page_id,
+        }
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode()[:500]
+        except Exception:
+            pass
+        # Facebook's Graph API error body is {"error": {"message", "type",
+        # "code", "error_subcode", "fbtrace_id"}}. Translate the codes that
+        # actually change what the user should DO next; fall through to
+        # the raw message for everything else rather than guessing.
+        fb_err: dict = {}
+        try:
+            fb_err = json.loads(body).get("error", {}) if body else {}
+        except Exception:
+            fb_err = {}
+        code = fb_err.get("code")
+        fb_message = fb_err.get("message", "")
+        if code == 190:
+            error = f"Facebook token expired or invalid — generate a new Page access token. ({fb_message})"
+        elif code == 200 or "permission" in fb_message.lower():
+            error = (
+                "Facebook token is missing a required permission — "
+                "re-generate it with pages_manage_posts + pages_read_engagement "
+                f"in the Graph API Explorer. ({fb_message})"
+            )
+        elif code in (4, 17, 32):
+            error = f"Facebook rate limit hit — try again shortly. ({fb_message})"
+        elif fb_message:
+            error = f"Facebook error {code}: {fb_message}"
+        else:
+            error = f"HTTP {e.code}: {body}"
+        return {"ok": False, "error": error, "post_id": None, "page_id": page_id}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "post_id": None, "page_id": page_id}
 
 
 def _email_provider_for_sender(sender: str) -> Any:
@@ -5677,6 +5779,10 @@ def _ask_nvidia(messages: Any, model: Any, label: Any, timeout: int = 90) -> Any
     provider_key = f"nvidia/{label}"
     if not _cloud_allowed(provider_key):
         return None
+    if _tombstone_is_dead("nvidia", model):
+        # 2026-10-22: already known-dead (function retired for the account) —
+        # do not burn a fresh 404 round-trip on it this turn.
+        return None
     keys = [k for k in (KEYS.get("nvidia"), KEYS.get("nvidia2")) if k]
     if not keys:
         return None
@@ -5712,6 +5818,11 @@ def _ask_nvidia(messages: Any, model: Any, label: Any, timeout: int = 90) -> Any
                 402: "OUT OF CREDITS",
             }.get(code, f"HTTP {code}")
             log(f"NVIDIA_ERROR [{label}]: {diag}")
+            if code == 404:
+                # 2026-10-22: the function behind the slug was retired for THIS
+                # account ("/v1/models" still advertises it) — tombstone so the
+                # remaining turns/lanes skip the dead model instantly.
+                _tombstone_mark("nvidia", model, "404 not found for account")
             if code == 429 and key != keys[-1]:
                 # Ping-pong to the next key instead of tripping the circuit.
                 log(f"NVIDIA_PINGPONG [{label}]: 429 on key, trying next key")
@@ -5745,6 +5856,9 @@ def _ask_qwen(messages: Any, model: Any, label: Any, timeout: int = 90) -> Any:
         "messages": messages,
         "max_tokens": 8192,
         "stream": False,
+        # /reasoning knob (2026-10-22): QwenCloud toggle is binary —
+        # off disables thinking entirely, every other level keeps it on.
+        "chat_template_kwargs": {"enable_thinking": _reasoning_think_value()},
     }
     data = json.dumps(payload).encode()
     log(f"CLOUD [qwen/{label}]")
@@ -5781,13 +5895,43 @@ def _ask_qwen(messages: Any, model: Any, label: Any, timeout: int = 90) -> Any:
 
 
 def ask_cloud_nvidia(messages: Any) -> Any:
-    # 2026-08-27: llama-3.1-nemotron-70b-instruct's NIM function was
-    # retired (404 "Function ... Not found for account") — verified live
-    # against the real /v1/models catalog + a real completion before
-    # swapping. nemotron-3-super-120b-a12b confirmed working the same day.
+    # 2026-10-22: nemotron-3-super-120b-a12b was RETIRED FOR THE ACCOUNT —
+    # HTTP 404 "Not found for account" on every completion call even though
+    # /v1/models still advertises it (same class as the 2026-08-27 70b
+    # retirement). Verified live against a real completion before swapping:
+    # nemotron-3-ultra-550b-a55b answers 200. Tombstones + this lane's
+    # catalog check handle the next retirement automatically.
+    if _tombstone_is_dead(
+        "nvidia", "nvidia/nemotron-3-ultra-550b-a55b"
+    ) and not _tombstone_is_dead("nvidia", "nvidia/nemotron-3-super-120b-a12b"):
+        # Ultra is tombstoned but the (older, account-retired) super is not —
+        # prefer a live /v1/models nemotron listing rather than a blind retry.
+        for slug in _nvidia_live_nemotron_slugs():
+            if not _tombstone_is_dead("nvidia", slug):
+                return _ask_nvidia(messages, slug, slug.split("/")[-1])
     return _ask_nvidia(
-        messages, "nvidia/nemotron-3-super-120b-a12b", "nemotron-3-super-120b"
+        messages, "nvidia/nemotron-3-ultra-550b-a55b", "nemotron-3-ultra-550b"
     )
+
+
+def _nvidia_live_nemotron_slugs() -> Any:
+    """Best-effort live listing of nemotron* slugs on the NVIDIA NIM catalog.
+    Empty list on any failure — callers treat that as 'no alternative'."""
+    key = KEYS.get("nvidia") or ""
+    if not key:
+        return []
+    try:
+        req = urllib.request.Request(
+            "https://integrate.api.nvidia.com/v1/models",
+            headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read())
+        ids = [m.get("id") for m in data.get("data", [])]
+        return [i for i in ids if i and "nemotron" in i.lower()]
+    except Exception as e:
+        log(f"NVIDIA_CATALOG_ERROR: {e}")
+        return []
 
 
 def ask_cloud_nvidia_nano(messages: Any) -> Any:
@@ -5814,6 +5958,128 @@ def _opencode_session_id() -> Any:
     return "sensei-bridge"
 
 
+# ── Reasoning-depth knob (2026-10-22) ──
+# /reasoning off|low|medium|high|max|auto — persisted in
+# ~/.master_ai_reasoning.json. Verified live against the relays before
+# wiring: opencode Go + ollama-cloud accept `reasoning_effort` (low|medium|
+# high), both relays REJECT `reasoning: {...}` and `thinking: {...}` objects
+# (HTTP 400 unsupported param), and local /api/chat accepts `think: <bool>`
+# (off). QwenCloud is binary via chat_template_kwargs.enable_thinking.
+_REASONING_FILE = Path.home() / ".master_ai_reasoning.json"
+_REASONING_LEVELS = ("off", "low", "medium", "high", "max")
+_REASONING_CACHE = {"ts": None, "level": ""}
+
+
+def _reasoning_level(force: bool = False) -> str:
+    """Current reasoning depth: off|low|medium|high|max|auto (default auto).
+    Cached by file mtime so every asker can consult it per call, cheaply."""
+    try:
+        mtime = _REASONING_FILE.stat().st_mtime if _REASONING_FILE.exists() else 0.0
+        c = _REASONING_CACHE
+        if not force and c["ts"] == mtime and c["level"]:
+            return c["level"]
+        level = "auto"
+        if mtime:
+            data = json.loads(_REASONING_FILE.read_text())
+            lvl = str(data.get("level", "auto")).strip().lower()
+            if lvl in _REASONING_LEVELS or lvl == "auto":
+                level = lvl
+        c["ts"], c["level"] = mtime, level
+        return level
+    except Exception:
+        return "auto"
+
+
+def _reasoning_effort_param() -> str:
+    """Value for lanes that accept `reasoning_effort` (opencode Go/Zen,
+    ollama-cloud) — empty string means "send nothing", for off/max/auto."""
+    lvl = _reasoning_level()
+    return lvl if lvl in ("low", "medium", "high") else ""
+
+
+def _reasoning_think_value() -> bool:
+    """Binary thinking lanes (qwen enable_thinking, local think): off → False,
+    everything else → True (auto keeps the model's default-on behavior)."""
+    return _reasoning_level() != "off"
+
+
+def _set_reasoning_level(level: str) -> str:
+    level = (level or "").strip().lower()
+    if level not in _REASONING_LEVELS and level != "auto":
+        return ""
+    _REASONING_FILE.write_text(json.dumps({"level": level}) + "\n")
+    _REASONING_CACHE["ts"] = None  # force reload next read
+    return level
+
+
+# ── Dead-model tombstones (2026-10-22) ──
+# After a provider deprecates/retires a model (OpenCode rotated ling and
+# minimax off within weeks; NVIDIA retired the 120b super function), the old
+# code re-probed the dead slug EVERY turn, and the fallback chain paid for it
+# with a fresh round of 410/404s before anything real answered. Tombstones
+# keep a (provider, model) dead-list with a TTL so the chain self-heals after
+# each provider rotation.
+_TOMBSTONE_FILE = Path.home() / ".master_ai_model_tombstones.json"
+_TOMBSTONE_TTL = 24 * 3600
+
+
+def _tombstones() -> Any:
+    try:
+        return json.loads(_TOMBSTONE_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def _tombstone_is_dead(provider: Any, model: Any) -> bool:
+    if not provider or not model:
+        return False
+    hit = _tombstones().get(f"{provider}/{model}")
+    if hit is None:
+        return False
+    try:
+        if time.time() - float(hit.get("ts", 0) or 0) > _TOMBSTONE_TTL:
+            return False
+    except Exception:
+        return False
+    return True
+
+
+def _tombstone_mark(provider: Any, model: Any, reason: str = "") -> None:
+    try:
+        t = _tombstones()
+        t[f"{provider}/{model}"] = {"ts": time.time(), "reason": reason}
+        _TOMBSTONE_FILE.write_text(json.dumps(t, indent=1))
+        log(f"TOMBSTONE: {provider}/{model} marked dead ({reason or 'provider error'})")
+    except Exception as e:
+        log(f"TOMBSTONE_MARK_ERROR: {e}")
+
+
+def _pin_model_clear_deprecated(model: Any) -> None:
+    """A PINNED model that the provider itself says is gone (410 ModelDeprecated)
+    must stop being pinned — otherwise every turn walks the dead chain until the
+    operator notices. Clear the pin to AUTO (same file Sensei's `model` command
+    and Pupil's /models both write), log it, and notify."""
+    try:
+        pin = (
+            ACTIVE_MODEL_FILE.read_text().strip() if ACTIVE_MODEL_FILE.exists() else ""
+        )
+        if pin and pin.split("::")[-1] == model:
+            ACTIVE_MODEL_FILE.write_text("")
+            log(
+                f"PIN_CLEARED: {pin} reported dead by provider (410/deprecated) "
+                "— active model reset to AUTO to stop per-turn chain walks."
+            )
+            notify_desktop(
+                SimpleNamespace(
+                    title="Sensei",
+                    body=f"Pinned model {model} was deprecated by its provider — pin cleared (AUTO).",
+                    urgency="normal",
+                )
+            )
+    except Exception as e:
+        log(f"PIN_CLEAR_ERROR: {e}")
+
+
 def _ask_opencode_zen(messages: Any, model: Any, label: Any, timeout: int = 60) -> Any:
     """Generic OpenCode Zen relay caller — keyless, takes an explicit model id
     so the plan-debate fallback can reach mimo-v2.5-free (a clean
@@ -5830,6 +6096,11 @@ def _ask_opencode_zen(messages: Any, model: Any, label: Any, timeout: int = 60) 
         "max_tokens": 8192,
         "stream": False,
     }
+    # /reasoning knob (2026-10-22): relay accepts reasoning_effort
+    # low|medium|high; off/max/auto send nothing.
+    _eff = _reasoning_effort_param()
+    if _eff:
+        payload["reasoning_effort"] = _eff
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         "https://opencode.ai/zen/v1/chat/completions",
@@ -5852,8 +6123,17 @@ def _ask_opencode_zen(messages: Any, model: Any, label: Any, timeout: int = 60) 
             result = json.loads(resp.read())
             msg = result["choices"][0]["message"]
             content = msg.get("content") or ""
+            # 2026-10-22: reasoning models (beam-free, ollama-cloud reasoning
+            # models…) put ALL their tokens in `reasoning_content` — the old
+            # "reasoning" key does not exist on these relays, so a reasoning-only
+            # response returned "" and the engine walked the fallback chain on
+            # the pin EVERY turn. Read the real field name first.
             if not content.strip():
-                content = msg.get("reasoning") or ""
+                content = msg.get("reasoning_content") or msg.get("reasoning") or ""
+                # A reply that is ONLY the model's reasoning is not an
+                # answer — flag it so the race prefers a real answer and
+                # the operator is never handed a thought as a finished reply.
+                _set_reasoning_only(True)
             _record_real_ctx_tokens(
                 model, (result.get("usage") or {}).get("total_tokens")
             )
@@ -5875,6 +6155,11 @@ def _ask_opencode_zen(messages: Any, model: Any, label: Any, timeout: int = 60) 
             _cloud_trip(
                 provider_key, "free tier blocked (403) — outside OpenCode", 3600
             )
+            # 2026-10-22: OpenCode closed the keyless Zen relay to outside
+            # clients entirely (every model now returns this 403). The circuit
+            # dies with the process; a tombstone keeps later restarts from
+            # paying the same dead probe again for this model.
+            _tombstone_mark("opencode-free", model, body[:100])
         return None
     except Exception as e:
         log(f"OPENCODE_FREE_ERROR [{label}]: {e}")
@@ -5886,13 +6171,38 @@ def _ask_opencode_zen(messages: Any, model: Any, label: Any, timeout: int = 60) 
 def ask_cloud_opencode_free(messages: Any) -> Any:
     """OpenCode's free Zen relay — keyless (no account, nothing to leak or
     run out of, not subject to any other provider's shared rate limits).
-    2026-09-06: 'laguna-s-2.1-free' (and the whole 2026-08-27 free cohort)
-    was rotated off the relay and now 401s. 'ling-3.0-flash-fin-free' is
-    the current working keyless model — clean content, no leaked reasoning,
-    2-7s responses. Matches sensei_bridge.py's _OPENCODE_FREE_MODEL."""
-    return _ask_opencode_zen(
-        messages, "ling-3.0-flash-fin-free", "ling-3.0-flash-fin-free"
-    )
+
+    2026-10-22: model selection is now LIVE-CATALOG driven. The relay rotates
+    its free cohort frequently and every prior hardcode died within weeks
+    ('laguna-s-2.1-free' 2026-08, then 'ling-3.0-flash-fin-free' 2026-10 with
+    "Upstream request failed: Model is unavailable"). Preference order picks
+    a fast clean-content instruction follower from the live Zen catalog,
+    tombstones are skipped, and the catalog's first remaining -free entry is
+    the catch-all."""
+    catalog = _opencode_zen_model_catalog() or []
+    pref = [
+        "glm-5.3-flash-free",
+        "mimo-v2.6-flash-free",
+        "flint-40b-free",
+        "jev-1.13-free",
+    ]
+    picked = ""
+    for m in pref:
+        if m in catalog and not _tombstone_is_dead("opencode-free", m):
+            picked = m
+            break
+    if not picked:
+        for m in catalog:
+            if (m or "").endswith("-free") and not _tombstone_is_dead(
+                "opencode-free", m
+            ):
+                picked = m
+                break
+    if not picked:
+        # Last resort: the (likely-dead) legacy slug — the 400/410 it now
+        # returns just walks the chain; it cannot make anything worse.
+        picked = "ling-3.0-flash-fin-free"
+    return _ask_opencode_zen(messages, picked, picked)
 
 
 # ── OpenCode Go ($10/mo subscription, https://opencode.ai/go) ──
@@ -6057,7 +6367,19 @@ def _ask_opencode_go(messages: Any, model: Any, label: Any, timeout: int = 120) 
     """OpenCode Go relay — paid $10/mo subscription lane. Authenticated
     via Bearer key; failure paths mirror the Zen free relay (rate-limit
     trips, network-error backoff) so the fallback chain treats it
-    identically."""
+    identically.
+
+    2026-10-22 fixes:
+    - Tombstoned (provider-deprecated / account-retired) models are not
+      re-probed — this lane returns None instantly so the chain skips on.
+    - finish_reason=="length" responses with zero content (reasoning models
+      like beam-free exhausting the bucket) retry once at 24,576 tokens
+      instead of returning "" and walking the chain.
+    - Empty-content responses log usage/finish_reason diagnostics.
+    - A PINNED model killed by 410 ModelDeprecated is auto-cleared to AUTO.
+    """
+    if _tombstone_is_dead("opencode-go", model):
+        return None
     provider_key = f"opencode-go/{label}"
     if not _cloud_allowed(provider_key):
         return None
@@ -6066,50 +6388,90 @@ def _ask_opencode_go(messages: Any, model: Any, label: Any, timeout: int = 120) 
         log("OPENCODE_GO_ERROR: no OPENCODE_API_KEY")
         return None
     log(f"CLOUD [opencode-go/{label}]")
-    payload = {
-        "model": model,
-        "messages": _inject_identity(messages),
-        "max_tokens": 8192,
-        "stream": False,
-    }
-    data = json.dumps(payload).encode()
-    req = urllib.request.Request(
-        "https://opencode.ai/zen/go/v1/chat/completions",
-        data=data,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}",
-            "x-opencode-session": _opencode_session_id(),
-            "User-Agent": "master-ai-cli/1.0 (Sensei agent loop)",
-            "Accept": "application/json",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            result = json.loads(resp.read())
-            msg = result["choices"][0]["message"]
-            content = msg.get("content") or ""
-            if not content.strip():
-                content = msg.get("reasoning") or ""
-            _record_real_ctx_tokens(
-                model, (result.get("usage") or {}).get("total_tokens")
-            )
-            return content
-    except urllib.error.HTTPError as e:
-        body = ""
+    budgets = [8192, 24576]
+    for attempt, budget in enumerate(budgets):
+        payload = {
+            "model": model,
+            "messages": _inject_identity(messages),
+            "max_tokens": budget,
+            "stream": False,
+        }
+        # /reasoning knob (2026-10-22): relay accepts reasoning_effort
+        # low|medium|high; off/max/auto send nothing.
+        _eff = _reasoning_effort_param()
+        if _eff:
+            payload["reasoning_effort"] = _eff
+        data = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            "https://opencode.ai/zen/go/v1/chat/completions",
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {key}",
+                "x-opencode-session": _opencode_session_id(),
+                "User-Agent": "master-ai-cli/1.0 (Sensei agent loop)",
+                "Accept": "application/json",
+            },
+        )
         try:
-            body = e.read().decode("utf-8", errors="replace")[:200]
-        except Exception:
-            pass
-        log(f"OPENCODE_GO_ERROR [{label}]: HTTP {e.code} — {body}")
-        if e.code == 429:
-            _cloud_trip(provider_key, "rate limit", 30)
-        return None
-    except Exception as e:
-        log(f"OPENCODE_GO_ERROR [{label}]: {e}")
-        if _network_error(e):
-            _cloud_trip_network(e, 60)
-        return None
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                result = json.loads(resp.read())
+            choices = result.get("choices") or []
+            msg = (choices[0].get("message") or {}) if choices else {}
+            content = msg.get("content") or ""
+            # 2026-10-22: reasoning models (beam-free…) put ALL their tokens
+            # in `reasoning_content` — the old "reasoning" key does not exist
+            # on this relay, so reasoning-only responses returned "" and the
+            # engine walked the fallback chain on the pin EVERY turn.
+            if not str(content).strip():
+                content = msg.get("reasoning_content") or msg.get("reasoning") or ""
+                _set_reasoning_only(True)
+            if str(content).strip():
+                _record_real_ctx_tokens(
+                    model, (result.get("usage") or {}).get("total_tokens")
+                )
+                return content
+            finish = ""
+            if choices:
+                finish = choices[0].get("finish_reason") or ""
+            usage = result.get("usage") or {}
+            details = usage.get("completion_tokens_details") or {}
+            log(
+                f"OPENCODE_GO_EMPTY [{label}]: status=200 finish={finish} "
+                f"attempt={attempt + 1}/{len(budgets)} budget={budget} "
+                f"prompt_tokens={usage.get('prompt_tokens')} "
+                f"completion_tokens={usage.get('completion_tokens')} "
+                f"reasoning_tokens={details.get('reasoning_tokens')}"
+            )
+            if finish != "length" or attempt + 1 >= len(budgets):
+                # Empty for a reason a bigger bucket cannot fix (or the
+                # ladder is exhausted) — honest failure, walk the chain.
+                return None
+            # finish_reason=length with zero content → retry once, bigger budget.
+        except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode("utf-8", errors="replace")[:200]
+            except Exception:
+                pass
+            log(f"OPENCODE_GO_ERROR [{label}]: HTTP {e.code} — {body}")
+            low = body.lower()
+            if e.code == 429:
+                _cloud_trip(provider_key, "rate limit", 30)
+            if e.code == 410 and "deprecated" in low:
+                _tombstone_mark("opencode-go", model, body[:80])
+                _pin_model_clear_deprecated(model)
+            elif e.code in (400, 404) and (
+                "unavailable" in low or "not found" in low or "deprecated" in low
+            ):
+                _tombstone_mark("opencode-go", model, body[:80])
+            return None
+        except Exception as e:
+            log(f"OPENCODE_GO_ERROR [{label}]: {e}")
+            if _network_error(e):
+                _cloud_trip_network(e, 60)
+            return None
+    return None
 
 
 def ask_cloud_openai(messages: Any) -> Any:
@@ -6502,6 +6864,8 @@ def _ask_poolside(messages: Any, model: Any, label: Any, timeout: int = 90) -> A
     text = message.get("content") or ""
     if not text and not message.get("tool_calls"):
         text = message.get("reasoning_content") or message.get("reasoning") or ""
+        if text:
+            _set_reasoning_only(True)
     return text or None
 
 
@@ -6724,6 +7088,11 @@ def _ask_ollama_cloud(messages: Any, model: str, label: Any, timeout: int = 120)
         "max_tokens": 8192,
         "stream": False,
     }
+    # /reasoning knob (2026-10-22): ollama-cloud /v1 accepts reasoning_effort
+    # (verified 200); off/max/auto send nothing.
+    _eff = _reasoning_effort_param()
+    if _eff:
+        payload["reasoning_effort"] = _eff
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         "https://ollama.com/v1/chat/completions",
@@ -6739,8 +7108,14 @@ def _ask_ollama_cloud(messages: Any, model: str, label: Any, timeout: int = 120)
             result = json.loads(resp.read())
             msg = result["choices"][0]["message"]
             content = msg.get("content") or ""
+            # 2026-10-22: reasoning models (beam-free, ollama-cloud reasoning
+            # models…) put ALL their tokens in `reasoning_content` — the old
+            # "reasoning" key does not exist on these relays, so a reasoning-only
+            # response returned "" and the engine walked the fallback chain on
+            # the pin EVERY turn. Read the real field name first.
             if not content.strip():
-                content = msg.get("reasoning") or ""
+                content = msg.get("reasoning_content") or msg.get("reasoning") or ""
+                _set_reasoning_only(True)
             return content
     except urllib.error.HTTPError as e:
         code = e.code
@@ -6813,6 +7188,251 @@ def _ask_claf(messages: Any, timeout: int = 90) -> Any:
 _CLOUD_CALL_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=32, thread_name_prefix="cloud-call"
 )
+
+
+# ── 2026-10-22: latency that does not depend on the pin ───────────────
+# Elijah: "none of this should be dependent upon the model that i use. it
+# should just be what it is. i should be able to use whatever model."
+#
+# The three knobs below turn that into behaviour:
+#
+#   _CLOUD_TURN_BUDGET_S  One wall-clock ceiling for a whole cloud turn
+#                         (the pin plus every fallback). Before this each
+#                         hop independently got _CLOUD_HARD_TIMEOUT (150s),
+#                         so a 5-hop chain could take 12.5 minutes — which
+#                         is exactly the "10 to 20 minutes" it used to.
+#
+#   _HEDGE_SLOWER_THAN_S  A lane slower than this gets a backup raced
+#                         against it, so pinning a slow model stops
+#                         costing latency.
+#
+#   _REASONING_ONLY_*     A reply that is only the model's reasoning is
+#                         not an answer. It is used only if nothing better
+#                         ever arrives.
+try:
+    _CLOUD_TURN_BUDGET_S = float(os.environ.get("MASTER_AI_CLOUD_BUDGET_S", "25"))
+except Exception:
+    _CLOUD_TURN_BUDGET_S = 25.0
+try:
+    _HEDGE_SLOWER_THAN_S = float(os.environ.get("MASTER_AI_HEDGE_SLOWER_THAN_S", "10"))
+except Exception:
+    _HEDGE_SLOWER_THAN_S = 10.0
+_REASONING_ONLY_FLAG = "_LAST_REASONING_ONLY"
+
+# Per-thread so a hedged race (two lanes in flight at once) cannot have one
+# lane's flag overwrite the other's while we are deciding which answer won.
+_LANE_STATE = threading.local()
+
+
+def _reasoning_only_here() -> bool:
+    try:
+        return bool(getattr(_LANE_STATE, "reasoning_only", False))
+    except Exception:
+        return False
+
+
+def _lane_note(lane: Any, ok: Any, latency_s: Any) -> None:
+    """Feed one call's outcome into the lane-health memory. Never raises."""
+    if lane_health is None:
+        return
+    try:
+        lane_health.record(str(lane), bool(ok), float(latency_s or 0.0))
+    except Exception:
+        pass
+
+
+def _lane_rank(lanes: Any) -> Any:
+    """Order lanes by measured health (fast + alive first). Falls back to
+    the caller's order when there is no health data yet."""
+    try:
+        lanes = list(lanes)
+    except Exception:
+        return []
+    if lane_health is None:
+        return lanes
+    try:
+        return lane_health.rank(lanes)
+    except Exception:
+        return lanes
+
+
+def _lane_known_fast(lane: Any) -> bool:
+    if lane_health is None:
+        return False
+    try:
+        return bool(lane_health.known_fast(str(lane), _HEDGE_SLOWER_THAN_S))
+    except Exception:
+        return False
+
+
+def _lane_best_alternative(lanes: Any, exclude: Any = ()) -> Any:
+    if lane_health is None:
+        return ""
+    try:
+        return lane_health.best_alternative(list(lanes), set(exclude or ()))
+    except Exception:
+        return ""
+
+
+def _is_reasoning_only() -> bool:
+    """True when the last cloud reply was the model's REASONING rather than
+    an answer. Reasoning models (beam-free, the nemotron family…) sometimes
+    return a thought with no answer attached; handing that to the operator
+    as if it were the answer is worse than waiting for a real one."""
+    return bool(globals().get(_REASONING_ONLY_FLAG))
+
+
+def _set_reasoning_only(flag: bool) -> None:
+    """Record whether the reply produced by THIS thread was reasoning-only.
+    Thread-local so a hedged race (two lanes in flight at once) cannot have
+    one lane's flag overwrite the other's while we decide which answer won.
+    """
+    try:
+        _LANE_STATE.reasoning_only = bool(flag)
+    except Exception:
+        pass
+    try:
+        globals()[_REASONING_ONLY_FLAG] = bool(flag)
+    except Exception:
+        pass
+
+
+def _lane_reply(fn: Any, messages: Any) -> Any:
+    """Call a lane and report (text, reasoning_only) for THAT call."""
+    _set_reasoning_only(False)
+    try:
+        text = fn(messages)
+    except Exception:
+        raise
+    return (text, _reasoning_only_here())
+
+
+def _pick_backup_lanes(fn_map: Any, exclude: Any = (), count: int = 2) -> Any:
+    """Choose the backup lanes to race against an unproven/slow pin.
+
+    The candidate pool is the operator's OWN saved fallback chain, not every
+    lane the code knows about — the saved chain is how cost control is
+    expressed, and a race must not quietly start spending on a lane the
+    operator never put in it. If the saved chain yields nothing usable we
+    fall back to the full lane list rather than having no backup at all.
+
+    Within the pool: lanes that have actually answered before come first
+    (they are the ones we know work), lanes we have never tried keep the
+    operator's order behind them, and lanes proven dead are dropped.
+    """
+    try:
+        exclude_set = set(exclude or ())
+    except Exception:
+        exclude_set = set()
+    # A pin like "ollama-cloud::nemotron-3-super" and the chain lane
+    # "ollama-cloud" are the same provider — racing them against each
+    # other would just make two calls to one provider and bill twice for
+    # the same model family.
+    for _ex in list(exclude_set):
+        if "::" in str(_ex):
+            exclude_set.add(str(_ex).split("::", 1)[0])
+    pool = []
+    try:
+        pool = [
+            n for n in _load_fallback_order() if n in fn_map and n not in exclude_set
+        ]
+    except Exception:
+        pool = []
+    if not pool:
+        try:
+            pool = [n for n in fn_map if n not in exclude_set]
+        except Exception:
+            pool = []
+    if not pool:
+        return []
+    ranked = _lane_rank(pool)
+    snap = {}
+    try:
+        if lane_health is not None:
+            snap = lane_health.snapshot()
+    except Exception:
+        snap = {}
+    proven = [l for l in ranked if l in snap and not snap[l].get("bad")]
+    cold = [l for l in ranked if l not in proven]
+    return (proven + cold)[: max(1, count)]
+
+
+def _race_first_answer(
+    primary_fn: Any,
+    primary_lane: Any,
+    backups: Any,
+    messages: Any,
+    deadline: Any,
+) -> Any:
+    """Run the pinned lane and one or more healthy backups concurrently; the
+    first REAL answer wins and the losers are abandoned.
+
+    This is what makes latency independent of the pin: a slow pin is simply
+    outrun by a backup, and a dead pin is skipped outright by the tombstone
+    check before it is ever called.
+
+    The losers are plain model completions — no tools are dispatched from
+    them, because tool directives are parsed from the single string this
+    function returns. Discarding a loser's text cannot double-execute
+    anything. The cost is that a loser's request may still bill.
+    """
+    futures = {}
+    started = {}
+    try:
+        fut = _CLOUD_CALL_EXECUTOR.submit(_lane_reply, primary_fn, messages)
+        futures[fut] = (primary_lane, True)
+        started[fut] = time.time()
+        for lane, fn in list(backups or []):
+            f2 = _CLOUD_CALL_EXECUTOR.submit(_lane_reply, fn, messages)
+            futures[f2] = (lane, False)
+            started[f2] = time.time()
+    except Exception as e:
+        log(f"CLOUD_RACE_SUBMIT_ERROR: {e}")
+        return None
+    pending = dict(futures)
+    outcomes = {}
+    fallback_answer = None
+    while pending:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        try:
+            done, _still = concurrent.futures.wait(
+                list(pending.keys()),
+                timeout=min(0.25, max(0.01, remaining)),
+                return_when=concurrent.futures.FIRST_COMPLETED,
+            )
+        except Exception as e:
+            log(f"CLOUD_RACE_WAIT_ERROR: {e}")
+            break
+        if not done:
+            continue
+        for fut in done:
+            lane, _is_primary = pending.pop(fut, (None, False))
+            _lat = round(time.time() - started.get(fut, time.time()), 3)
+            try:
+                text, reasoning_only = fut.result()
+            except Exception as e:
+                log(f"CLOUD_RACE_ERROR [{lane}]: {type(e).__name__}: {e}")
+                outcomes[lane] = (False, _lat)
+                continue
+            if not text or not str(text).strip():
+                outcomes[lane] = (False, _lat)
+                continue
+            outcomes[lane] = (True, _lat)
+            if reasoning_only:
+                # Keep it as a last resort, but prefer a real answer.
+                if fallback_answer is None:
+                    fallback_answer = (text, lane, True)
+                continue
+            for f in list(pending.keys()):
+                f.cancel()
+            return (text, lane, False, outcomes)
+    # Nothing real arrived. If a reasoning-only reply came back, use it
+    # rather than handing the operator nothing.
+    if fallback_answer is not None:
+        return (fallback_answer[0], fallback_answer[1], True, outcomes)
+    return None
 
 
 def _call_with_hard_timeout(
@@ -7118,6 +7738,15 @@ def ask_cloud(messages: Any, provider: str = "opencode") -> Any:
         "glm-5.3-flash": lambda msgs: _ask_opencode_go(
             msgs, "glm-5.3-flash", "glm-5.3-flash"
         ),
+        # Ollama Cloud — the same paid subscription Hermes already uses.
+        # It is here as a CHAIN lane, not just as a pin, so a fast lane is
+        # always available no matter which model the operator pinned.
+        # Measured live 2026-10-22: ~5s for a realistic master-ai prompt,
+        # with real answer content (unlike the Go relay's beam-free, which
+        # returns reasoning only).
+        "ollama-cloud": lambda msgs: _ask_ollama_cloud(
+            msgs, "nemotron-3-super", "nemotron-3-super"
+        ),
         "nvidia": ask_cloud_nvidia,
         "nvidia-nano": ask_cloud_nvidia_nano,
         "hermes-405b": ask_cloud_openrouter_405b,
@@ -7201,23 +7830,65 @@ def ask_cloud(messages: Any, provider: str = "opencode") -> Any:
         _asker = lambda msgs, _m=provider: _ask_openrouter(msgs, _m, _m)
     else:
         _asker = ask_cloud_opencode_free
-    r = (
-        None
-        if not _cloud_allowed(provider)
-        else _call_with_hard_timeout(_asker, messages, cloud_provider=provider)
-    )
+    # ── 2026-10-22: latency that does not depend on the pin ──────────
+    # The pin is a PREFERENCE, not a dependency. If the pinned lane has
+    # proven itself (repeated successes, recent mean latency we are happy
+    # to wait for) we just call it — no extra traffic, no extra cost. If it
+    # has NOT proven itself — slow, unknown, or dead — we race a healthy
+    # backup alongside it and take the first REAL answer. A slow pin then
+    # costs nothing, because the backup simply outruns it.
+    _turn_deadline = time.time() + _CLOUD_TURN_BUDGET_S
+    _race_deadline = time.time() + max(_CLOUD_TURN_BUDGET_S, 150.0)
+    _raced = False
+    _winner_lane = provider
+    if not _cloud_allowed(provider):
+        r = None
+    elif _lane_known_fast(provider):
+        r = _call_with_hard_timeout(
+            _asker, messages, cloud_provider=provider, timeout=_CLOUD_HARD_TIMEOUT
+        )
+    else:
+        _backup_lanes = _pick_backup_lanes(fn_map, exclude=(provider,), count=2)
+        _backups = [(l, fn_map[l]) for l in _backup_lanes if l in fn_map]
+        if _backups:
+            _raced = True
+            _won = _race_first_answer(
+                _asker, provider, _backups, messages, _race_deadline
+            )
+            if _won:
+                r, _winner_lane, _reasoning_only, _outcomes = _won
+                globals()["_LAST_REASONING_ONLY"] = _reasoning_only
+                if _winner_lane != provider:
+                    globals()["_LAST_MODEL"] = f"cloud/{_winner_lane}"
+                    _notice_backup_answered(provider, _winner_lane)
+                # Health is recorded PER LANE from what that lane actually
+                # did — a pin that lost the race must NOT be recorded as a
+                # success, or the next turn would trust it again.
+                for _lane_name, (_ok, _lat) in (_outcomes or {}).items():
+                    _lane_note(_lane_name, _ok, _lat)
+            else:
+                r = None
+        else:
+            r = _call_with_hard_timeout(
+                _asker, messages, cloud_provider=provider, timeout=_CLOUD_HARD_TIMEOUT
+            )
+    _lat = round(time.time() - _t0, 3)
     _router_metric(
         "model_call",
         model=provider,
         route="cloud",
         task_type="cloud",
         ok=bool(r),
-        latency_s=round(time.time() - _t0, 3),
+        latency_s=_lat,
         chars=len(r or ""),
     )
+    # Remember how this lane behaved so the next turn can order itself by
+    # measurement instead of by a hand-written list.
+    if not _raced:
+        _lane_note(provider, bool(r), _lat)
     if r:
-        _record(r, provider)
-        globals()["_LAST_MODEL"] = f"cloud/{provider}"
+        _record(r, _winner_lane)
+        globals()["_LAST_MODEL"] = f"cloud/{_winner_lane}"
         # 2026-09-07: continuation feature — Elijah: "make it max out at
         # that one, make it load up and start again... continue from
         # where it maxes out at." finish_reason=="length" means the model
@@ -7236,8 +7907,14 @@ def ask_cloud(messages: Any, provider: str = "opencode") -> Any:
         _so_far = r
         _cont_messages = list(messages)
         _rounds = 0
+        # Only continue a reply that came from the lane we are going to
+        # continue with. If a backup lane won the race, continuing with the
+        # PINNED lane's asker would splice two different models' output
+        # together.
+        _can_continue = _winner_lane == provider
         while (
-            globals().get("_LAST_FINISH_REASON") == "length"
+            _can_continue
+            and globals().get("_LAST_FINISH_REASON") == "length"
             and _rounds < _MAX_AUTO_CONTINUATIONS
         ):
             _rounds += 1
@@ -7303,9 +7980,27 @@ def ask_cloud(messages: Any, provider: str = "opencode") -> Any:
     # unchanged unless the operator actually customizes it. Built from
     # fn_map (already validated real cloud lanes) so an override can
     # never reference a function that doesn't exist.
-    fallback_order = [
-        (name, fn_map[name]) for name in _load_fallback_order() if name in fn_map
-    ]
+    # ── 2026-10-22: the chain orders ITSELF by measured health ───────
+    # The operator's saved order is still the SEED and the tiebreak, but it
+    # no longer overrides what the CLI has actually measured. Before this,
+    # a 122-second OpenRouter free-tier lane sat ahead of a 1.3-second
+    # NVIDIA lane, so every question paid 122 seconds before reaching the
+    # fast one. Now the fast lane is tried first because it MEASURED fast.
+    #
+    # The chain also runs under ONE wall-clock budget instead of giving
+    # every hop its own 150s. Five hops x 150s was 12.5 minutes — the
+    # "10 to 20 minutes" it used to take.
+    _seed_order = [name for name in _load_fallback_order() if name in fn_map]
+    _ordered = _lane_rank(_seed_order)
+    fallback_order = [(name, fn_map[name]) for name in _ordered if name in fn_map]
+    if [n for n, _f in fallback_order] != _seed_order:
+        log(
+            "CHAIN_REORDERED: "
+            + " → ".join(_seed_order)
+            + "  ==>  "
+            + " → ".join(n for n, _f in fallback_order)
+        )
+    _chain_deadline = _turn_deadline
     seen_fallbacks = set()
     for used_model, fn in fallback_order:
         if _INTERRUPT_EVENT.is_set():
@@ -7314,17 +8009,31 @@ def ask_cloud(messages: Any, provider: str = "opencode") -> Any:
         if used_model in seen_fallbacks:
             continue
         seen_fallbacks.add(used_model)
+        _remaining = _chain_deadline - time.time()
+        if _remaining <= 0.5:
+            log(
+                f"CLOUD_CHAIN_BUDGET_EXHAUSTED: {used_model} skipped — "
+                f"{_CLOUD_TURN_BUDGET_S:.0f}s turn budget already spent"
+            )
+            break
         _t0 = time.time()
-        r = _call_with_hard_timeout(fn, messages, cloud_provider=used_model)
+        r = _call_with_hard_timeout(
+            fn,
+            messages,
+            cloud_provider=used_model,
+            timeout=max(1.0, min(_CLOUD_HARD_TIMEOUT, _remaining)),
+        )
+        _lat = round(time.time() - _t0, 3)
         _router_metric(
             "model_call",
             model=used_model,
             route="cloud",
             task_type="fallback",
             ok=bool(r),
-            latency_s=round(time.time() - _t0, 3),
+            latency_s=_lat,
             chars=len(r or ""),
         )
+        _lane_note(used_model, bool(r), _lat)
         if r:
             _record(r, used_model)
             globals()["_LAST_MODEL"] = f"cloud/{used_model}"
@@ -7376,6 +8085,31 @@ def ask_model_router(
         )
     ):
         text = ask_cloud(messages, provider=model)
+        if not text:
+            # ── 2026-10-22: the local floor ────────────────────────────
+            # Whatever the cloud lanes did — dead pin, dead chain, budget
+            # exhausted — there is ALWAYS a local model on this box. A turn
+            # must never end in silence just because every cloud lane was
+            # unhealthy at that moment. This is the "it should just be what
+            # it is" guarantee at its outermost edge: the answer does not
+            # depend on any particular model being reachable.
+            _local_model = DEFAULT_LOCAL_MODEL or None
+            try:
+                text = _call_with_hard_timeout(
+                    ask_local,
+                    messages,
+                    model=_local_model,
+                    timeout=_LOCAL_HARD_TIMEOUT,
+                )
+            except Exception as e:
+                log(f"LOCAL_FLOOR_ERROR: {e}")
+                text = None
+            if text:
+                globals()["_LAST_MODEL"] = "local"
+                log(
+                    "LOCAL_FLOOR: no cloud lane answered — the local model "
+                    "answered instead"
+                )
     else:
         # Local Ollama. If max_tokens is set, call directly so we can pass
         # num_predict; otherwise reuse ask_local.
@@ -10434,8 +11168,9 @@ def show_hub() -> Any:
         ("help", "full command reference"),
         ("tips", "quick-start tips screen"),
         ("tutorial", "replay feature walkthrough"),
-        ("model", "pick AI model (11 models)"),
+        ("model", "pick AI model — live cloud + local picker"),
         ("mode", "switch safe / plan / auto"),
+        ("reasoning", "AI reasoning depth — low / medium / high / max / off"),
         ("memory", "view / edit facts AI remembers"),
         ("tasks", "task list"),
         ("chats", "browse saved sessions"),
@@ -10457,9 +11192,9 @@ def show_hub() -> Any:
     groups = [
         ("COMMUNICATE", [0, 1, 2]),
         ("AI & MODE", [3, 4, 5]),
-        ("WORK", [6, 7, 8]),
-        ("RECOVERY", [9, 10, 11]),
-        ("SYSTEM", [12, 13, 14, 15, 16, 17, 18]),
+        ("WORK", [6, 7, 8, 9]),
+        ("RECOVERY", [10, 11, 12]),
+        ("SYSTEM", [13, 14, 15, 16, 17, 18, 19, 20]),
     ]
     gidx = 0
     total = len(groups)
@@ -10604,6 +11339,18 @@ def show_help() -> Any:
     typed a question mid-help (caller should treat it as a new message)."""
     hidden = _load_hidden_help_sections()
     all_sections = [
+        # 2026-10-22: exhaustive A–Z reference rendered from the command
+        # registry — the same source the / palette and hub use, so the
+        # three surfaces can never drift apart again.
+        (
+            "ALL COMMANDS (A–Z)",
+            [
+                (r[0] + (" <args>" if r[2] else ""), r[1] or "—")
+                for r in sorted(_REGISTRY_COMMANDS, key=lambda x: x[0].lower())
+                if r[0] != "/"
+            ]
+            + [("…", "live palette — just type / in the input bar")],
+        ),
         (
             "THE CAST",
             [
@@ -14432,6 +15179,51 @@ def confirm_send_telegram(spec: dict) -> Any:
     return {"ok": False, "error": "user cancelled", "chat_id": chat_id}
 
 
+@_awaiting_confirm
+def confirm_fb_post(spec: dict) -> Any:
+    """Irreversible public post — prompt once in review/auto, refuse in plan.
+    Same gate shape as confirm_send_telegram; posting to a Page feed is at
+    least as visible/irreversible as a DM."""
+    message = spec.get("message", "")
+    link = spec.get("link")
+    page_id = spec.get("page_id")
+    mode = globals().get("MODE", "plan")
+    if mode == "plan":
+        print(_pill("BLOCKED", f"{D}plan mode refuses FBPOST{X}"))
+        _audit("FBPOST-PLAN-REFUSE", f"page_id={page_id or ''}")
+        return {"ok": False, "error": "refused in plan mode", "post_id": None}
+    preview = (message[:300] + " …") if len(message) > 300 else message
+    print(f"\n{D}╔══════════════════════════════════════════════════════╗{X}")
+    print(f"{D}║  📘 {BOLD}AI wants to post to Facebook Page:{X}")
+    print(f"{D}║  Page: {Y}{page_id or '(default from keychain)'}{X}")
+    if link:
+        print(f"{D}║  Link: {Y}{link}{X}")
+    print(f"{D}╠══════════════════════════════════════════════════════╣{X}")
+    for ln in preview.splitlines()[:20]:
+        print(f"{D}║  {ln}{X}")
+    print(f"{D}╠══════════════════════════════════════════════════════╣{X}")
+    print(f"{D}║  1) Post  2) Cancel{X}")
+    print(f"{D}╚══════════════════════════════════════════════════════╝{X}")
+    ans = (input("> ") or "").strip().lower()
+    if ans in ("1", "y", "yes", "post"):
+        result = post_to_facebook_page(message, link=link, page_id=page_id)
+        if result.get("ok"):
+            print(_pill("SENT", f"{D}post_id={result.get('post_id')}{X}"))
+            _audit(
+                "FBPOST-OK",
+                f"page_id={result.get('page_id')} post_id={result.get('post_id')}",
+            )
+        else:
+            print(_pill("FAILED", f"{R}{result.get('error', '')}{X}"))
+            _audit(
+                "FBPOST-FAIL", f"page_id={page_id or ''} err={result.get('error', '')}"
+            )
+        return result
+    print(_pill("CANCELLED"))
+    _audit("FBPOST-CANCELLED", f"page_id={page_id or ''}")
+    return {"ok": False, "error": "user cancelled", "post_id": None}
+
+
 # ── FILE EDIT CONFIRM ────────────────────────────────────────
 @_awaiting_confirm
 def confirm_edit(filepath: Any, find_text: str, replace_text: str) -> bool:
@@ -15396,18 +16188,32 @@ def draw_status_bar(history: Any | None = None) -> Any:
                 ctx_pct = round(100 * total_chars / _wm) if _wm else 0
         except Exception:
             ctx_pct = 0
+
     # 2026-08-24: PINNED_MODEL only reflects an explicit `model <name>` pin —
     # in AUTO (the common case) this used to just print the literal word
     # "AUTO" forever, never saying which model actually answered. _LAST_MODEL
     # is now set by ask_local/ask_local_stream/ask_cloud on every successful
     # call, so AUTO mode shows the real resolved backend (e.g.
     # "AUTO→cloud/openrouter") instead of leaving Elijah guessing.
+    # 2026-10-22: abbreviate for the status bar specifically — a long
+    # resolved model id (e.g. "opencode-go::minimax-m3.1-flash-free") pushed
+    # the whole badge row past the terminal width often enough that it fell
+    # back to plain, uncolored text more than the real content ever
+    # justified. This only affects the status-bar label; _LAST_MODEL/
+    # PINNED_MODEL themselves are untouched, so routing/logging still see
+    # the real id.
+    def _short_model_for_status(name: str, max_len: int = 22) -> str:
+        name = name.split("::", 1)[-1]  # the provider prefix matters less at a glance
+        if len(name) > max_len:
+            name = name[: max_len - 1] + "…"
+        return name
+
     model_pinned = bool(PINNED_MODEL)
     if PINNED_MODEL:
-        model_label = PINNED_MODEL
+        model_label = _short_model_for_status(PINNED_MODEL)
     else:
         _last = globals().get("_LAST_MODEL") or ""
-        model_label = f"AUTO→{_last}" if _last else "AUTO"
+        model_label = f"AUTO→{_short_model_for_status(_last)}" if _last else "AUTO"
     tts_on = os.path.exists(Path.home() / ".master_ai_tts_on")
 
     # 2026-09-24: each field now carries its OWN fixed style key instead of
@@ -15437,6 +16243,11 @@ def draw_status_bar(history: Any | None = None) -> Any:
             ("model_pinned" if model_pinned else "model_auto", model_label),
         ]
     )
+    # 2026-10-22: /reasoning badge — only when it's not auto, so the bar
+    # stays clean the rest of the time. Reuses the model style tags.
+    _r_badge = _reasoning_level()
+    if _r_badge != "auto":
+        parts.append([("model_label", f"REASON:{_r_badge[:4].upper()}")])
     if ctx_pct is not None:
         parts.append([("ctx", f"CTX:{ctx_pct}%")])
     if mem:
@@ -17681,6 +18492,47 @@ def main() -> None:
             _handle_tutor(cmd)
             continue
 
+        if lo == "reasoning" or lo.startswith("reasoning "):
+            _arg = (
+                " ".join(lo.split(" ")[1:]).strip()
+                if lo.startswith("reasoning ")
+                else ""
+            )
+            if not _arg or _arg == "status":
+                _rl = _reasoning_level()
+                print(f"  {BC}reasoning{X} depth: {BW}{_rl}{X}")
+                print(
+                    f"     {D}opencode Go/Zen:{X} reasoning_effort="
+                    f"{_reasoning_effort_param() or '(model default)'}\n"
+                    f"     {D}ollama-cloud:{X} reasoning_effort="
+                    f"{_reasoning_effort_param() or '(model default)'}\n"
+                    f"     {D}qwen-cloud:{X} enable_thinking="
+                    f"{str(_reasoning_think_value())[:1].upper() + str(_reasoning_think_value())[1:]}\n"
+                    f"     {D}local:{X} uses its own thinking-lines config"
+                )
+                print(
+                    f"  {D}change it:{X} /reasoning off | low | medium | high | max | auto"
+                )
+            elif _set_reasoning_level(_arg):
+                _rl = _reasoning_level(force=True)
+                print(f"  {G}reasoning depth set:{X} {BW}{_rl}{X}")
+                log(f"REASONING_LEVEL: {_rl}")
+                try:
+                    notify_desktop(
+                        SimpleNamespace(
+                            title="Sensei",
+                            body=f"Reasoning depth: {_rl}",
+                            urgency="normal",
+                        )
+                    )
+                except Exception:
+                    pass
+            else:
+                print(
+                    f"  {R}unknown level {_arg!r}.{X} "
+                    f"{D}use: off, low, medium, high, max, auto{X}"
+                )
+            continue
         if lo == "help":
             maybe_msg = show_help()
             if maybe_msg:

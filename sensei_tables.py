@@ -1517,17 +1517,28 @@ _MAX_AUTO_CONTINUATIONS = 3
 _FALLBACK_ORDER_FILE = Path.home() / ".master_ai_fallback_order.json"
 
 _DEFAULT_FALLBACK_ORDER = [
-    "opencode",
+    # 2026-10-22: the order here is only a SEED — the chain re-sorts itself
+    # by measured health at runtime (see lane_health.py), and a lane that
+    # starts failing is tombstoned and skipped. What this list still
+    # decides is WHICH lanes are eligible at all, so it should carry the
+    # lanes that actually work: the Zen free lane was returning
+    # FreeTierError on every model it tried (3/3, tombstoned), so it is no
+    # longer a useful default.
+    "ollama-cloud",
+    "opencode-go",
+    "nvidia",
     "nemotron",
     "openrouter",
     "deepseek-r1",
     "hermes-405b",
-    "nvidia",
     "nvidia-nano",
 ]
 
 _VALID_FALLBACK_NAMES = {
     "opencode",
+    "opencode-go",
+    "glm-5.3-flash",
+    "ollama-cloud",
     "nvidia",
     "nvidia-nano",
     "hermes-405b",
@@ -1536,6 +1547,8 @@ _VALID_FALLBACK_NAMES = {
     "qwen3-coder",
     "deepseek-r1",
     "openrouter",
+    "poolside-s",
+    "poolside-xs",
 }
 
 ASK_CLOUD_BARE_PROVIDERS = frozenset(
@@ -1543,6 +1556,7 @@ ASK_CLOUD_BARE_PROVIDERS = frozenset(
         "opencode",
         "opencode-go",
         "glm-5.3-flash",
+        "ollama-cloud",
         "nvidia",
         "nvidia-nano",
         "hermes-405b",
@@ -1958,7 +1972,7 @@ BLOCKED_PATTERNS = [
 ]
 
 _EMBEDDED_DIRECTIVE_RE = re.compile(
-    r'(?<=[^\s\'"` ])(RUN|RUNTERM|READ|CREATE|EDIT|SEND_EMAIL|REMEMBER):',
+    r'(?<=[^\s\'"` ])(RUN|RUNTERM|READ|CREATE|EDIT|SEND_EMAIL|FBPOST|REMEMBER):',
     re.IGNORECASE,
 )
 
@@ -2350,7 +2364,7 @@ _DIRECTIVE_KEYWORDS_RE = re.compile(
     # disambiguates real directives from prose sharing a substring.
     r"(RUN_SKILL|RUNTERM|RUN|READ|CREATE|EDIT|ASK|DONE|REMEMBER|SEARCH|"
     r"TASK_ADD|TASK_DONE|"
-    r"SEND_EMAIL|REMOTE_MCP|SEND_TELEGRAM|BROWSER_[A-Z_]+):(?=\s|$)"
+    r"SEND_EMAIL|REMOTE_MCP|SEND_TELEGRAM|FBPOST|BROWSER_[A-Z_]+):(?=\s|$)"
 )
 
 _TOOL_CALL_TAG_RE = re.compile(r"</?\s*tool_calls?\s*>", re.IGNORECASE)
@@ -2410,7 +2424,7 @@ _MISTRAL_TOOL_CALLS_RE = re.compile(
 _BARE_KEYWORD_LINE_RE = re.compile(
     r"^\s*(?:<\s*tool_calls?\s*>\s*)?"
     r"(RUN_SKILL|RUNTERM|RUN|READ|CREATE|EDIT|ASK|DONE|REMEMBER|SEARCH|"
-    r"TASK_ADD|TASK_DONE|SEND_EMAIL|REMOTE_MCP|SEND_TELEGRAM|BROWSER_[A-Z_]+)"
+    r"TASK_ADD|TASK_DONE|SEND_EMAIL|REMOTE_MCP|SEND_TELEGRAM|FBPOST|BROWSER_[A-Z_]+)"
     r"\s*$",
     re.IGNORECASE,
 )
@@ -2429,6 +2443,7 @@ _GATE_KIND_BY_LIST = {
     "runterm_cmds": "RUNTERM",
     "send_email_specs": "SEND_EMAIL",
     "send_telegram_specs": "SEND_TELEGRAM",
+    "fbpost_specs": "FBPOST",
 }
 
 _WHATSNEW_STATE = Path.home() / ".master_ai_whatsnew_state.json"

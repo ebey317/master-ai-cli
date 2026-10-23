@@ -53,6 +53,12 @@ _KV_KEY_MAP = {
     "FIRECRAWL_API_KEY": "firecrawl",
     # 2026-10-15: xAI Grok SDK key (legacy keychain line was `grok xai-...`).
     "XAI_API_KEY": "xai",
+    # 2026-10-22: Facebook Page feed posting (FBPOST directive). Needs a
+    # Page access token with pages_manage_posts + pages_read_engagement —
+    # a plain user token (e.g. the pre-existing Messenger FB_ACCESS_TOKEN)
+    # does not have those scopes and will 403 at post time.
+    "FB_ACCESS_TOKEN": "fb_access_token",
+    "FB_PAGE_ID": "fb_page_id",
 }
 
 # Reverse map (short name -> canonical uppercase env-style name), used by

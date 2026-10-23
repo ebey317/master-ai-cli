@@ -113,6 +113,7 @@ def save_session(
             "[SUBAGENT ERROR]",
             "[SEND_EMAIL RESULT]",
             "[SEND_TELEGRAM RESULT]",
+            "[FBPOST RESULT]",
             "[BROWSER RESULT]",
             "[TOOL BLOCKED]",
             "[TOOL FAILED]",
@@ -147,6 +148,8 @@ def save_session(
             return "EMAIL"
         if c.startswith("[SEND_TELEGRAM RESULT]"):
             return "TELEGRAM"
+        if c.startswith("[FBPOST RESULT]"):
+            return "FBPOST"
         if c.startswith("[BROWSER RESULT]"):
             return "BROWSER"
         if c.startswith("[TOOL BLOCKED]") or c.startswith("[HOOK BLOCKED]"):

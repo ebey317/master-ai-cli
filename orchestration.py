@@ -1757,6 +1757,7 @@ def handle(
         "BROWSER_EXTRACT_LIST: <drive|page>       — extract visible list/grid rows as structured items\n"
         "BROWSER_DRIVE_INSPECT_FOLDER: <json|query> — extract the current Google Drive view only (items, empty flag, selectors); it does not search or open folders\n"
         'SEND_EMAIL: to=<addr> subject="<...>" body="<...>" attach=<optional path> from=<optional sender addr> — send via Gmail/AOL/Outlook SMTP; provider routed from `from=` domain (gmail.com → Gmail, aol.com → AOL, outlook.com/hotmail.com → Outlook); default sender = Gmail; irreversible action, dispatcher always prompts; see EMAIL COMPOSITION DISCIPLINE below\n'
+        'FBPOST: message="<...>" link=<optional url> page_id=<optional, defaults to keychain FB_PAGE_ID> — post to a Facebook Page feed via the Graph API (not Messenger, not a browser action); irreversible + public, dispatcher always prompts; requires a Page access token with pages_manage_posts in ~/.master_ai_keys (FB_ACCESS_TOKEN)\n'
         "RUN_SKILL: <skill-name> <optional params-json> — start or resume a persisted skill state machine; the dispatcher expands its pending directives\n"
         'REMOTE_MCP: {"server":"name-or-url","method":"tools/list"|"tools/call","params":{...}} — call a configured remote MCP server after extension-side REMOTE_MCP approval\n'
         "REMEMBER: <fact>                         — save a durable note to memory\n"
