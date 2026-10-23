@@ -172,7 +172,9 @@ def build_comparison_report(
         try:
             harbor_result = json.loads(result_path.read_text())
         except Exception as e:
-            rows.append({"task_name": task_name, "error": f"unreadable result.json: {e}"})
+            rows.append(
+                {"task_name": task_name, "error": f"unreadable result.json: {e}"}
+            )
             continue
 
         reward = harbor_result.get("reward")
@@ -201,9 +203,21 @@ def build_comparison_report(
     n = len(rows)
     passed = sum(1 for r in rows if r.get("passed"))
     rewards = [r["reward"] for r in rows if isinstance(r.get("reward"), (int, float))]
-    elapsed = [r["our_elapsed_sec"] for r in rows if isinstance(r.get("our_elapsed_sec"), (int, float))]
-    tokens = [r["our_est_total_tokens"] for r in rows if isinstance(r.get("our_est_total_tokens"), (int, float))]
-    costs = [r["harbor_cost_usd"] for r in rows if isinstance(r.get("harbor_cost_usd"), (int, float))]
+    elapsed = [
+        r["our_elapsed_sec"]
+        for r in rows
+        if isinstance(r.get("our_elapsed_sec"), (int, float))
+    ]
+    tokens = [
+        r["our_est_total_tokens"]
+        for r in rows
+        if isinstance(r.get("our_est_total_tokens"), (int, float))
+    ]
+    costs = [
+        r["harbor_cost_usd"]
+        for r in rows
+        if isinstance(r.get("harbor_cost_usd"), (int, float))
+    ]
 
     return {
         "job_dir": str(job_dir),
@@ -234,7 +248,9 @@ def format_comparison_report(report: dict[str, Any]) -> str:
         if "error" in r:
             lines.append(f"  {r['task_name']}: ERROR — {r['error']}")
             continue
-        status = "PASS" if r.get("passed") else "FAIL" if r.get("passed") is False else "?"
+        status = (
+            "PASS" if r.get("passed") else "FAIL" if r.get("passed") is False else "?"
+        )
         lines.append(
             f"  [{status}] {r['task_name']}  "
             f"turns={r.get('our_turns_used')}  "

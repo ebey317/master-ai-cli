@@ -197,7 +197,9 @@ def main():
     app._apply_scroll_to_render(9)
     assert app._output_window.render_info.vertical_scroll == 39, "glide apply failed"
     app._apply_scroll_to_render(0)
-    assert app._output_window.render_info.vertical_scroll == 48, "return to bottom failed"
+    assert app._output_window.render_info.vertical_scroll == 48, (
+        "return to bottom failed"
+    )
     app._apply_scroll_to_render(1000)  # clamp at the top of the buffer
     assert app._output_window.render_info.vertical_scroll == 0, "top clamp failed"
     app._output_window.render_info.vertical_scroll = 39
@@ -214,7 +216,9 @@ def main():
     )
     app._output_render_lines = 0
     app._apply_scroll_to_render(5)
-    assert app._output_window.render_info.vertical_scroll == 0, "empty-buffer no-op failed"
+    assert app._output_window.render_info.vertical_scroll == 0, (
+        "empty-buffer no-op failed"
+    )
 
     # ── cursor math against a REAL 60-line buffer (cache warms here) ──
     # NOTE: _output_render_lines is derived from the rendered cache, not an
@@ -239,8 +243,12 @@ def main():
     # The animator's force-apply lands within one 60fps frame after converge;
     # poll for it (disp==target flips BEFORE the apply finishes — race-safe).
     import time as _time
+
     _deadline = _time.time() + 2.0
-    while app._output_window.render_info.vertical_scroll != 28 and _time.time() < _deadline:
+    while (
+        app._output_window.render_info.vertical_scroll != 28
+        and _time.time() < _deadline
+    ):
         _time.sleep(0.01)
     assert app._output_window.render_info.vertical_scroll == 28, (
         f"animator must force vscroll: {app._output_window.render_info.vertical_scroll}"
