@@ -312,7 +312,7 @@ def test_recall_suppress_recent_repeats_ignores_entries_outside_window(
     assert len(result) == 1
 
 
-def test_gather_all_combines_both_sources(tmp_path, monkeypatch):
+def test_gather_all_combines_all_sources(tmp_path, monkeypatch):
     monkeypatch.setattr(src, "UPSTREAM_LOG", tmp_path / "nope.jsonl")
     monkeypatch.setattr(
         src, "gather_stale_projects", lambda: [Candidate(source="s", headline="h")]
@@ -320,7 +320,15 @@ def test_gather_all_combines_both_sources(tmp_path, monkeypatch):
     monkeypatch.setattr(src, "gather_gmail_unread", lambda: [])
     monkeypatch.setattr(src, "gather_email_bridge_unread", lambda: [])
     monkeypatch.setattr(src, "gather_sensei_chats", lambda: [])
-    assert len(src.gather_all()) == 1
+    monkeypatch.setattr(
+        src, "gather_grant_deadlines", lambda: [Candidate(source="g", headline="gh")]
+    )
+    monkeypatch.setattr(
+        src, "gather_money_org", lambda: [Candidate(source="m", headline="mh")]
+    )
+    results = src.gather_all()
+    assert len(results) == 3
+    assert {r.source for r in results} == {"s", "g", "m"}
 
 
 def test_vocalization_off_by_default(tmp_path, monkeypatch):

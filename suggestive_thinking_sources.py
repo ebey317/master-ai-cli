@@ -757,6 +757,8 @@ def gather_all() -> list[Candidate]:
         + gather_gmail_unread()
         + gather_email_bridge_unread()
         + gather_sensei_chats()
+        + gather_grant_deadlines()
+        + gather_money_org()
     )
 
 
