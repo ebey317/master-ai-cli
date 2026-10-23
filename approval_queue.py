@@ -343,7 +343,11 @@ def _load_handlers():
     if _sys_path_add not in sys.path:
         sys.path.insert(0, _sys_path_add)
     # Each import is optional — missing consumers don't block the CLI.
-    for mod_name in ("sensei_extractor", "master_ai"):
+    # 2026-10-23: suggestive_thinking_sources added — its grant_packet /
+    # money_org_check / repo_test_check handlers register only when this
+    # module is imported, and without it approvals resolve
+    # APPROVED_NO_HANDLER (the pipeline flagged the missing consumer line).
+    for mod_name in ("sensei_extractor", "master_ai", "suggestive_thinking_sources"):
         try:
             __import__(mod_name)
         except Exception as e:
