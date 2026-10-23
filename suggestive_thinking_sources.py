@@ -13,6 +13,7 @@ from collections.abc import Iterable
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import approval_queue
 from suggestive_thinking import LOG, Candidate
 
 # Deliberately NOT Path(__file__).resolve().parent: the scheduled daily
@@ -350,6 +351,42 @@ def gather_sensei_chats() -> list[Candidate]:
     ]
 
 
+@approval_queue.register_handler("repo_test_check")
+def _run_repo_test_check(entry: dict) -> str:
+    """Executor for the 'stale repo' proposal's Yes: run whatever test
+    runner the repo actually has and report pass/fail. Auto-detects
+    pytest (conftest.py / pytest.ini / a tests/ dir) over npm test
+    (package.json) since every active repo on this box is Python-first;
+    reports plainly if neither is present rather than guessing a command.
+
+    Scope note (2026-10-23): this runs the suite and reports red/green —
+    it does NOT auto-fix failures yet. "Fix what's red" as a fully
+    autonomous repair loop is a materially bigger feature (a coding
+    subagent loop against the failures) and is called out as a separate
+    next step in HANDOFF.md rather than being half-built here.
+    """
+    repo = Path(entry["payload"]["repo_path"])
+    if (
+        (repo / "conftest.py").exists()
+        or (repo / "pytest.ini").exists()
+        or (repo / "tests").is_dir()
+    ):
+        cmd = ["python3", "-m", "pytest", "-q"]
+    elif (repo / "package.json").exists():
+        cmd = ["npm", "test", "--silent"]
+    else:
+        return (
+            f"no recognized test runner in {repo} (no pytest/tests/, no package.json)"
+        )
+    try:
+        out = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, timeout=600)
+    except Exception as e:
+        return f"test run failed to start: {e}"
+    tail = (out.stdout + out.stderr).strip().splitlines()[-15:]
+    status = "GREEN" if out.returncode == 0 else "RED"
+    return f"{status} (exit {out.returncode}) — {' / '.join(cmd)}\n" + "\n".join(tail)
+
+
 def gather_stale_projects(
     repos: list[Path] | None = None, stale_after_days: int = STALE_AFTER_DAYS
 ) -> list[Candidate]:
@@ -357,7 +394,15 @@ def gather_stale_projects(
     capped to the MAX_STALE_SURFACED_PER_RUN most-stale (see the comment
     above MAX_STALE_SURFACED_PER_RUN for why the cap exists). `repos=None` means discover live via
     _discover_all_repos() — pass an explicit list (tests do) to bypass disk
-    discovery entirely."""
+    discovery entirely.
+
+    2026-10-23 fix order: converted from a notice ("haven't touched X,
+    pick it up or let it go?") into a work proposal with a real executable
+    action — action_type="repo_test_check" runs the suite and reports
+    red/green on approval, via the handler above. outcome=0.8: running
+    down a real repo's test health is shipped-repo-work-adjacent progress,
+    not pure information.
+    """
     repos = _discover_all_repos() if repos is None else repos
     scored: list[tuple[int, Candidate]] = []
     now = datetime.now()
@@ -379,6 +424,7 @@ def gather_stale_projects(
         days_stale = (now - last_commit).days
         if days_stale < stale_after_days:
             continue
+        question = f"Want me to run {repo.name}'s test suite and fix what's red?"
         scored.append(
             (
                 days_stale,
@@ -389,10 +435,15 @@ def gather_stale_projects(
                         "pick it back up or let it go?"
                     ),
                     detail=f"last commit {last_commit.isoformat()}",
+                    question=question,
+                    deliverable=f"a pass/fail report on {repo.name}'s test suite",
+                    action_type="repo_test_check",
+                    action_payload={"repo_path": str(repo)},
                     novelty=1.0,
                     actionable=1.0,
                     timely=min(1.0, days_stale / 7),
                     interruption_worthy=0.65,
+                    outcome=0.8,
                 ),
             )
         )
@@ -474,21 +525,43 @@ def deliver_default(candidate: Candidate) -> None:
     surfaced-but-undelivered suggestion is a bug, not a quiet success.
     sensei-notify.sh exists specifically to reach a real desktop popup from
     a daemon with no inherited display/dbus env (see its own header). Voice
-    stays a separate, louder, still-opt-in channel on top of this."""
-    print(f"[SUGGEST] {candidate.headline}")
+    stays a separate, louder, still-opt-in channel on top of this.
+
+    2026-10-23 fix order: delivers `candidate.question` (the "Want me to
+    <X>?" form), not the bare headline -- falls back to headline only for
+    old-shape candidates that never set question. When action_type is set,
+    this is also where the proposal becomes real: it queues an
+    approval_queue.py entry whose approval runs the registered handler, so
+    saying yes actually executes instead of just being acknowledged.
+    """
+    message = candidate.question or candidate.headline
+    if candidate.deliverable:
+        message = f"{message} ({candidate.deliverable})"
+    print(f"[SUGGEST] {message}")
     if NOTIFY_DESKTOP.exists():
         try:
             subprocess.run(
-                [str(NOTIFY_DESKTOP), "Master AI", candidate.headline, "normal"],
+                [str(NOTIFY_DESKTOP), "Master AI", message, "normal"],
                 timeout=10,
             )
         except Exception:
             pass  # desktop popup is best-effort; never let it break the loop
     if vocalization_enabled() and NOTIFY_VOICE.exists():
         try:
-            subprocess.run([str(NOTIFY_VOICE), candidate.headline], timeout=10)
+            subprocess.run([str(NOTIFY_VOICE), message], timeout=10)
         except Exception:
             pass  # voice is a nice-to-have; never let it break the loop
+    if candidate.action_type:
+        approval_queue.queue(
+            entry_type=candidate.action_type,
+            who="suggestive_thinking",
+            what=candidate.deliverable or candidate.headline,
+            where=candidate.source,
+            why=candidate.detail or candidate.headline,
+            how=candidate.question,
+            payload=candidate.action_payload or {},
+            trigger="suggestive-thinking wake cycle",
+        )
 
 
 def main() -> int:

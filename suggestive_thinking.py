@@ -26,7 +26,16 @@ LOG = Path.home() / "master-ai-cli" / "memory" / "suggestive-thinking-log.jsonl"
 
 @dataclass
 class Candidate:
-    """One thing the loop is considering surfacing to the operator."""
+    """One thing the loop is considering surfacing to the operator.
+
+    2026-10-23 fix order (Lijah via Osiris): a surfaced candidate has to be
+    a proposal, not a fact — "Want me to <X>? I can handle it, get it done,
+    you keep doing what you're doing." `question`/`deliverable` carry that
+    shape; `action_type`/`action_payload` are what make it real instead of
+    rhetorical — when set, DELIVER queues an approval_queue.py entry whose
+    approval actually runs the thing. A Candidate with no action_type is
+    pure information and the outcome gate below is built to reject it.
+    """
 
     source: str  # e.g. "upstream-proposal", "stale-project", "cron-failure"
     headline: str  # the one-line nudge, e.g. "haven't touched the RV in 6 days"
@@ -35,7 +44,21 @@ class Candidate:
     actionable: float = 0.0  # 0-1: is there something to do/decide/approve?
     timely: float = 0.0  # 0-1: does it matter now vs. stale?
     interruption_worthy: float = 0.0  # 0-1: worth breaking silence for?
+    # 0-1: does ACTING on this plausibly produce money, grant progress,
+    # shipped repo work, or organizational progress? A count/status/FYI with
+    # nothing to execute stays at the 0.0 default and the outcome gate below
+    # blocks it — this is the mechanical fix for "all he ever sees is
+    # unread-email counts."
+    outcome: float = 0.0
     time_critical: bool = False  # money/legal/safety/deadline-today override
+    question: str = (
+        ""  # "Want me to <specific action>?" -- empty falls back to headline
+    )
+    deliverable: str = ""  # the concrete thing he gets if he says yes
+    action_type: str = (
+        ""  # approval_queue.py entry_type to queue; "" = no executable action
+    )
+    action_payload: dict | None = None  # passed through to the registered handler
 
 
 @dataclass
@@ -45,7 +68,7 @@ class FilterResult:
     reason: str
 
 
-RELEVANCE_THRESHOLD = 0.6  # each of the four scores must clear this to surface
+RELEVANCE_THRESHOLD = 0.6  # each of the five scores must clear this to surface
 
 
 def passes_relevance_filter(candidate: Candidate) -> tuple[bool, str]:
@@ -56,8 +79,10 @@ def passes_relevance_filter(candidate: Candidate) -> tuple[bool, str]:
     threshold and the time-critical bypass, both made here:
 
     - time_critical (money/legal/safety/deadline-today) always surfaces,
-      regardless of the other four scores — the clock makes it matter, not
-      how well-understood or well-timed it is to the operator.
+      regardless of the other scores — the clock makes it matter, not how
+      well-understood or well-timed it is to the operator. A genuine
+      time-critical item already implies real-world consequence, so it's
+      exempt from the outcome score too, not just the original four.
     - RELEVANCE_THRESHOLD=0.6 is a deliberately conservative default. Per the
       spec's attention-budget rule ("default to silence... a silent run
       that found nothing worth surfacing is a successful run"), it's
@@ -65,6 +90,18 @@ def passes_relevance_filter(candidate: Candidate) -> tuple[bool, str]:
       tune out the channel. Tune this one constant if it's surfacing too
       much or too little; the AND-gate shape itself follows the spec text
       directly and shouldn't need to change.
+
+    2026-10-23 fix order: added `outcome` as a fifth required score. Lijah's
+    own verdict on the shipped version — "all he ever sees is unread-email
+    counts, that's information, not suggestive thinking" — was a gate gap,
+    not a delivery bug: nothing in the original four scores asked whether
+    acting on a candidate produces money, grant progress, shipped repo
+    work, or organizational progress. A count can score high on
+    novelty/actionable/timely/interruption_worthy and still be pure FYI.
+    `outcome` defaults to 0.0 on the Candidate dataclass, so any gather
+    source that doesn't explicitly score it (the email counts, stale-chat
+    nudge) now fails here by construction — no source code needed to
+    change to stop them surfacing.
     """
     if candidate.time_critical:
         return True, "time_critical override"
@@ -74,12 +111,13 @@ def passes_relevance_filter(candidate: Candidate) -> tuple[bool, str]:
         "actionable": candidate.actionable,
         "timely": candidate.timely,
         "interruption_worthy": candidate.interruption_worthy,
+        "outcome": candidate.outcome,
     }
     failing = {k: v for k, v in scores.items() if v < RELEVANCE_THRESHOLD}
     if failing:
         worst = min(failing, key=lambda k: failing[k])
         return False, f"{worst}={failing[worst]:.2f} below {RELEVANCE_THRESHOLD}"
-    return True, "all four scores clear threshold"
+    return True, "all five scores clear threshold"
 
 
 def _log_decision(result: FilterResult) -> None:
@@ -98,8 +136,10 @@ def _log_decision(result: FilterResult) -> None:
                         "actionable": result.candidate.actionable,
                         "timely": result.candidate.timely,
                         "interruption_worthy": result.candidate.interruption_worthy,
+                        "outcome": result.candidate.outcome,
                         "time_critical": result.candidate.time_critical,
                     },
+                    "action_type": result.candidate.action_type,
                 }
             )
             + "\n"

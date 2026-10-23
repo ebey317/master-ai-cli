@@ -384,3 +384,126 @@ def test_deliver_default_voice_failure_never_raises(tmp_path, monkeypatch, capsy
 
     monkeypatch.setattr(src.subprocess, "run", _boom)
     src.deliver_default(Candidate(source="s", headline="should not crash"))  # no raise
+
+
+# ── 2026-10-23 fix order: proposals-not-facts, outcome gate, real execution ──
+
+
+def test_gather_stale_projects_produces_a_proposal_shaped_candidate(tmp_path):
+    stale = tmp_path / "stale-repo"
+    _init_repo(stale, commit_age_days=10)
+    [candidate] = src.gather_stale_projects(repos=[stale], stale_after_days=3)
+    assert (
+        candidate.question
+        == "Want me to run stale-repo's test suite and fix what's red?"
+    )
+    assert "pass/fail report" in candidate.deliverable
+    assert candidate.action_type == "repo_test_check"
+    assert candidate.action_payload == {"repo_path": str(stale)}
+    assert candidate.outcome == 0.8
+
+
+def test_repo_test_check_handler_reports_green_for_passing_pytest_suite(tmp_path):
+    repo = tmp_path / "toy-repo"
+    repo.mkdir()
+    (repo / "test_toy.py").write_text("def test_ok():\n    assert True\n")
+    (repo / "pytest.ini").write_text("[pytest]\n")
+    result = src._run_repo_test_check({"payload": {"repo_path": str(repo)}})
+    assert result.startswith("GREEN (exit 0)")
+
+
+def test_repo_test_check_handler_reports_red_for_failing_pytest_suite(tmp_path):
+    repo = tmp_path / "toy-repo"
+    repo.mkdir()
+    (repo / "test_toy.py").write_text("def test_fail():\n    assert False\n")
+    (repo / "pytest.ini").write_text("[pytest]\n")
+    result = src._run_repo_test_check({"payload": {"repo_path": str(repo)}})
+    assert result.startswith("RED")
+
+
+def test_repo_test_check_handler_reports_no_runner_honestly(tmp_path):
+    repo = tmp_path / "empty-repo"
+    repo.mkdir()
+    result = src._run_repo_test_check({"payload": {"repo_path": str(repo)}})
+    assert "no recognized test runner" in result
+
+
+def test_deliver_default_speaks_the_question_not_the_headline(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(src, "VOCALIZE_FLAG", tmp_path / "flag")  # does not exist
+    monkeypatch.setattr(src, "NOTIFY_DESKTOP", tmp_path / "no-desktop.sh")
+    candidate = Candidate(
+        source="s",
+        headline="fact-shaped headline, should not be spoken",
+        question="Want me to do the real thing?",
+        deliverable="a finished real thing",
+    )
+    src.deliver_default(candidate)
+    out = capsys.readouterr().out
+    assert "Want me to do the real thing?" in out
+    assert "a finished real thing" in out
+    assert "fact-shaped headline" not in out
+
+
+def test_deliver_default_queues_an_approval_entry_when_action_type_set(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(src, "VOCALIZE_FLAG", tmp_path / "flag")
+    monkeypatch.setattr(src, "NOTIFY_DESKTOP", tmp_path / "no-desktop.sh")
+    queued = []
+    monkeypatch.setattr(
+        src.approval_queue,
+        "queue",
+        lambda **kw: queued.append(kw) or "fake-id",
+    )
+    candidate = Candidate(
+        source="stale-project:foo",
+        headline="headline",
+        question="Want me to run foo's test suite?",
+        deliverable="a pass/fail report",
+        action_type="repo_test_check",
+        action_payload={"repo_path": "/tmp/foo"},
+    )
+    src.deliver_default(candidate)
+    assert len(queued) == 1
+    assert queued[0]["entry_type"] == "repo_test_check"
+    assert queued[0]["payload"] == {"repo_path": "/tmp/foo"}
+    assert queued[0]["who"] == "suggestive_thinking"
+
+
+def test_deliver_default_does_not_queue_when_action_type_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(src, "VOCALIZE_FLAG", tmp_path / "flag")
+    monkeypatch.setattr(src, "NOTIFY_DESKTOP", tmp_path / "no-desktop.sh")
+    queued = []
+    monkeypatch.setattr(src.approval_queue, "queue", lambda **kw: queued.append(kw))
+    src.deliver_default(Candidate(source="s", headline="pure info, no action"))
+    assert queued == []
+
+
+def test_gmail_unread_candidate_fails_the_outcome_gate_by_default(
+    tmp_path, monkeypatch
+):
+    """Mechanical proof of the 'zero email-count suggestions' requirement:
+    gather_gmail_unread never sets outcome, so passes_relevance_filter
+    (imported fresh here, not monkeypatched) rejects it even though the
+    original four scores are all high."""
+    import suggestive_thinking as st
+
+    messages = [{"subject": "hi", "from": "x@example.com"}]
+    monkeypatch.setattr(src, "GOOGLE_API_PY", tmp_path / "google_api.py")
+    (tmp_path / "google_api.py").touch()
+    monkeypatch.setattr(src, "GOOGLE_API_PYTHON", tmp_path / "python")
+    (tmp_path / "python").touch()
+    monkeypatch.setattr(
+        src.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(
+            args=a, returncode=0, stdout=json.dumps(messages), stderr=""
+        ),
+    )
+    [candidate] = src.gather_gmail_unread()
+    assert candidate.outcome == 0.0
+    surfaced, reason = st.passes_relevance_filter(candidate)
+    assert surfaced is False
+    assert reason.startswith("outcome=")
