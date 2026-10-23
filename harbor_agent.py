@@ -99,9 +99,7 @@ class MasterAICliAgent(BaseAgent):
                 break
 
             for action in actions:
-                result, failed = await self._execute_in_environment(
-                    action, environment
-                )
+                result, failed = await self._execute_in_environment(action, environment)
                 actions_executed += 1
                 if failed:
                     actions_failed += 1
@@ -146,7 +144,9 @@ class MasterAICliAgent(BaseAgent):
             command = d.get("command", "")
             if not command:
                 return "Error: empty command", True
-            result = await environment.exec(command, timeout_sec=DEFAULT_EXEC_TIMEOUT_SEC)
+            result = await environment.exec(
+                command, timeout_sec=DEFAULT_EXEC_TIMEOUT_SEC
+            )
             out = result.stdout or ""
             if result.stderr:
                 out += f"\n[stderr]\n{result.stderr}"
@@ -198,6 +198,9 @@ class MasterAICliAgent(BaseAgent):
             # (filesystem scans, local test runners) with no meaning
             # inside a Terminal-Bench container — refuse rather than
             # silently no-op.
-            return f"subagent `{d.get('name', '')}` not available in Harbor trials", True
+            return (
+                f"subagent `{d.get('name', '')}` not available in Harbor trials",
+                True,
+            )
 
         return f"Unknown action type: {kind}", True

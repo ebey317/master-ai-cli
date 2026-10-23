@@ -72,12 +72,12 @@ class ModelProvider(Protocol):
 class StructuredAuxProvider(ABC):
     """
     Abstract base for structured auxiliary providers.
-    
+
     Translates auxiliary tasks into bounded decisions.
     Subclasses implement the actual decision mechanism (local heuristic,
     small model, rule-based, etc.).
     """
-    
+
     @abstractmethod
     async def decide(self, request: StructuredDecisionRequest) -> StructuredDecisionResponse:
         """Make a bounded decision for the given request."""
@@ -91,11 +91,11 @@ class StructuredAuxProvider(ABC):
 class OpenRouterJevProvider(StructuredAuxProvider):
     """
     Structured aux provider using OpenRouter with Jev-style bounded decisions.
-    
+
     Maps auxiliary tasks to structured decision calls on OpenRouter.
     Requires OPENROUTER_API_KEY in environment.
     """
-    
+
     def __init__(
         self,
         api_key: str | None = None,
@@ -108,7 +108,7 @@ class OpenRouterJevProvider(StructuredAuxProvider):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self._client: httpx.AsyncClient | None = None
-    
+
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
@@ -117,25 +117,25 @@ class OpenRouterJevProvider(StructuredAuxProvider):
                 timeout=self.timeout,
             )
         return self._client
-    
+
     async def decide(self, request: StructuredDecisionRequest) -> StructuredDecisionResponse:
         if not self.can_handle(request):
             raise StructuredDecisionError(
                 f"Cannot express {request.task_type.value} as bounded decision: "
                 f"need at least 2 options, got {len(request.options)}"
             )
-        
+
         # Build a structured prompt that forces a bounded choice
         options_text = "\n".join(
             f"  {opt.id}: {opt.label} - {opt.description}" for opt in request.options
         )
-        
+
         system_prompt = (
             "You are a decision engine. Choose exactly ONE option from the list below. "
             "Respond with ONLY the option ID, confidence (0-1), and brief reasoning in this format:\n"
             "CHOICE: <id>\nCONFIDENCE: <float>\nREASONING: <text>"
         )
-        
+
         user_prompt = (
             f"Task: {request.task_type.value}\n"
             f"Context: {request.context or {} }\n"
@@ -143,7 +143,7 @@ class OpenRouterJevProvider(StructuredAuxProvider):
             f"Options:\n{options_text}\n"
             f"{f'Default: {request.default_option}' if request.default_option else ''}"
         )
-        
+
         client = await self._get_client()
         response = await client.post(
             "/chat/completions",
@@ -160,12 +160,12 @@ class OpenRouterJevProvider(StructuredAuxProvider):
         response.raise_for_status()
         data = response.json()
         content = data["choices"][0]["message"]["content"].strip()
-        
+
         # Parse structured response
         choice_id = None
         confidence = 0.5
         reasoning = None
-        
+
         for line in content.splitlines():
             line = line.strip()
             if line.startswith("CHOICE:"):
@@ -177,10 +177,10 @@ class OpenRouterJevProvider(StructuredAuxProvider):
                     pass
             elif line.startswith("REASONING:"):
                 reasoning = line.split(":", 1)[1].strip()
-        
+
         if not choice_id:
             raise StructuredDecisionError(f"Failed to parse decision from response: {content}")
-        
+
         # Validate choice is in options
         valid_ids = {opt.id for opt in request.options}
         if choice_id not in valid_ids:
@@ -188,13 +188,13 @@ class OpenRouterJevProvider(StructuredAuxProvider):
             choice_id = request.default_option or request.options[0].id
             confidence = 0.3
             reasoning = f"Invalid choice '{choice_id}', fell back to '{choice_id}'"
-        
+
         return StructuredDecisionResponse(
             chosen_option_id=choice_id,
             confidence=confidence,
             reasoning=reasoning,
         )
-    
+
     async def close(self) -> None:
         if self._client and not self._client.is_closed:
             await self._client.aclose()
@@ -203,11 +203,11 @@ class OpenRouterJevProvider(StructuredAuxProvider):
 class FallbackAuxProvider:
     """
     Wrapper that tries structured aux first, falls back to primary provider.
-    
+
     This is the "fail open" behavior: any structured decision failure
     delegates to the primary model provider using free-form chat.
     """
-    
+
     def __init__(
         self,
         structured_provider: StructuredAuxProvider,
@@ -217,7 +217,7 @@ class FallbackAuxProvider:
         self.structured = structured_provider
         self.primary = primary_provider
         self.primary_model = primary_model
-    
+
     async def decide(self, request: StructuredDecisionRequest) -> StructuredDecisionResponse:
         """Try structured decision, fall back to primary on any failure."""
         try:
@@ -227,16 +227,16 @@ class FallbackAuxProvider:
             pass  # Fall through to primary
         except Exception:
             pass  # Any other error also falls back
-        
+
         # Fallback: use primary provider with free-form prompt
         return await self._fallback_decide(request)
-    
+
     async def _fallback_decide(self, request: StructuredDecisionRequest) -> StructuredDecisionResponse:
         """Use primary model for free-form decision."""
         options_text = "\n".join(
             f"- {opt.id}: {opt.label} ({opt.description})" for opt in request.options
         )
-        
+
         prompt = (
             f"Task: {request.task_type.value}\n"
             f"Context: {request.context or {} }\n"
@@ -244,21 +244,21 @@ class FallbackAuxProvider:
             f"Options:\n{options_text}\n\n"
             f"Choose the best option. Respond with just the option ID."
         )
-        
+
         response = await self.primary.chat_completion(
             messages=[{"role": "user", "content": prompt}],
             model=self.primary_model,
             temperature=0.3,
             max_tokens=50,
         )
-        
+
         # Extract option ID from response
         choice_id = response.strip().split()[0] if response.strip() else ""
         valid_ids = {opt.id for opt in request.options}
-        
+
         if choice_id not in valid_ids:
             choice_id = request.default_option or request.options[0].id
-        
+
         return StructuredDecisionResponse(
             chosen_option_id=choice_id,
             confidence=0.6,  # Medium confidence for free-form fallback

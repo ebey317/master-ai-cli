@@ -312,7 +312,7 @@ def test_recall_suppress_recent_repeats_ignores_entries_outside_window(
     assert len(result) == 1
 
 
-def test_gather_all_combines_both_sources(tmp_path, monkeypatch):
+def test_gather_all_combines_all_sources(tmp_path, monkeypatch):
     monkeypatch.setattr(src, "UPSTREAM_LOG", tmp_path / "nope.jsonl")
     monkeypatch.setattr(
         src, "gather_stale_projects", lambda: [Candidate(source="s", headline="h")]
@@ -320,7 +320,15 @@ def test_gather_all_combines_both_sources(tmp_path, monkeypatch):
     monkeypatch.setattr(src, "gather_gmail_unread", lambda: [])
     monkeypatch.setattr(src, "gather_email_bridge_unread", lambda: [])
     monkeypatch.setattr(src, "gather_sensei_chats", lambda: [])
-    assert len(src.gather_all()) == 1
+    monkeypatch.setattr(
+        src, "gather_grant_deadlines", lambda: [Candidate(source="g", headline="gh")]
+    )
+    monkeypatch.setattr(
+        src, "gather_money_org", lambda: [Candidate(source="m", headline="mh")]
+    )
+    results = src.gather_all()
+    assert len(results) == 3
+    assert {r.source for r in results} == {"s", "g", "m"}
 
 
 def test_vocalization_off_by_default(tmp_path, monkeypatch):
@@ -384,3 +392,423 @@ def test_deliver_default_voice_failure_never_raises(tmp_path, monkeypatch, capsy
 
     monkeypatch.setattr(src.subprocess, "run", _boom)
     src.deliver_default(Candidate(source="s", headline="should not crash"))  # no raise
+
+
+# ── 2026-10-23 fix order: proposals-not-facts, outcome gate, real execution ──
+
+
+def test_gather_stale_projects_produces_a_proposal_shaped_candidate(tmp_path):
+    stale = tmp_path / "stale-repo"
+    _init_repo(stale, commit_age_days=10)
+    [candidate] = src.gather_stale_projects(repos=[stale], stale_after_days=3)
+    assert (
+        candidate.question
+        == "Want me to run stale-repo's test suite and fix what's red?"
+    )
+    assert "pass/fail report" in candidate.deliverable
+    assert candidate.action_type == "repo_test_check"
+    assert candidate.action_payload == {"repo_path": str(stale)}
+    assert candidate.outcome == 0.8
+
+
+def test_repo_test_check_handler_reports_green_for_passing_pytest_suite(tmp_path):
+    repo = tmp_path / "toy-repo"
+    repo.mkdir()
+    (repo / "test_toy.py").write_text("def test_ok():\n    assert True\n")
+    (repo / "pytest.ini").write_text("[pytest]\n")
+    result = src._run_repo_test_check({"payload": {"repo_path": str(repo)}})
+    assert result.startswith("GREEN (exit 0)")
+
+
+def test_repo_test_check_handler_reports_red_for_failing_pytest_suite(tmp_path):
+    repo = tmp_path / "toy-repo"
+    repo.mkdir()
+    (repo / "test_toy.py").write_text("def test_fail():\n    assert False\n")
+    (repo / "pytest.ini").write_text("[pytest]\n")
+    result = src._run_repo_test_check({"payload": {"repo_path": str(repo)}})
+    assert result.startswith("RED")
+
+
+def test_repo_test_check_handler_reports_no_runner_honestly(tmp_path):
+    repo = tmp_path / "empty-repo"
+    repo.mkdir()
+    result = src._run_repo_test_check({"payload": {"repo_path": str(repo)}})
+    assert "no recognized test runner" in result
+
+
+def test_deliver_default_speaks_the_question_not_the_headline(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(src, "VOCALIZE_FLAG", tmp_path / "flag")  # does not exist
+    monkeypatch.setattr(src, "NOTIFY_DESKTOP", tmp_path / "no-desktop.sh")
+    candidate = Candidate(
+        source="s",
+        headline="fact-shaped headline, should not be spoken",
+        question="Want me to do the real thing?",
+        deliverable="a finished real thing",
+    )
+    src.deliver_default(candidate)
+    out = capsys.readouterr().out
+    assert "Want me to do the real thing?" in out
+    assert "a finished real thing" in out
+    assert "fact-shaped headline" not in out
+
+
+def test_deliver_default_queues_an_approval_entry_when_action_type_set(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(src, "VOCALIZE_FLAG", tmp_path / "flag")
+    monkeypatch.setattr(src, "NOTIFY_DESKTOP", tmp_path / "no-desktop.sh")
+    queued = []
+    monkeypatch.setattr(
+        src.approval_queue,
+        "queue",
+        lambda **kw: queued.append(kw) or "fake-id",
+    )
+    candidate = Candidate(
+        source="stale-project:foo",
+        headline="headline",
+        question="Want me to run foo's test suite?",
+        deliverable="a pass/fail report",
+        action_type="repo_test_check",
+        action_payload={"repo_path": "/tmp/foo"},
+    )
+    src.deliver_default(candidate)
+    assert len(queued) == 1
+    assert queued[0]["entry_type"] == "repo_test_check"
+    assert queued[0]["payload"] == {"repo_path": "/tmp/foo"}
+    assert queued[0]["who"] == "suggestive_thinking"
+
+
+def test_deliver_default_does_not_queue_when_action_type_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(src, "VOCALIZE_FLAG", tmp_path / "flag")
+    monkeypatch.setattr(src, "NOTIFY_DESKTOP", tmp_path / "no-desktop.sh")
+    queued = []
+    monkeypatch.setattr(src.approval_queue, "queue", lambda **kw: queued.append(kw))
+    src.deliver_default(Candidate(source="s", headline="pure info, no action"))
+    assert queued == []
+
+
+def test_gmail_unread_candidate_fails_the_outcome_gate_by_default(
+    tmp_path, monkeypatch
+):
+    """Mechanical proof of the 'zero email-count suggestions' requirement:
+    gather_gmail_unread never sets outcome, so passes_relevance_filter
+    (imported fresh here, not monkeypatched) rejects it even though the
+    original four scores are all high."""
+    import suggestive_thinking as st
+
+    messages = [{"subject": "hi", "from": "x@example.com"}]
+    monkeypatch.setattr(src, "GOOGLE_API_PY", tmp_path / "google_api.py")
+    (tmp_path / "google_api.py").touch()
+    monkeypatch.setattr(src, "GOOGLE_API_PYTHON", tmp_path / "python")
+    (tmp_path / "python").touch()
+    monkeypatch.setattr(
+        src.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(
+            args=a, returncode=0, stdout=json.dumps(messages), stderr=""
+        ),
+    )
+    [candidate] = src.gather_gmail_unread()
+    assert candidate.outcome == 0.0
+    surfaced, reason = st.passes_relevance_filter(candidate)
+    assert surfaced is False
+    assert reason.startswith("outcome=")
+
+
+# ---------------------------------------------------------------------------
+# 2026-10-23 fix order, Hermes half: GRANTS + MONEY/ORG sources.
+# State files live under tmp_path -- never the real workspace state.
+# ---------------------------------------------------------------------------
+
+
+def test_grant_deadlines_surface_within_window(tmp_path):
+    index = tmp_path / "grant-deadlines.json"
+    _write_grants(
+        index,
+        [
+            {
+                "id": "galaxy-grant",
+                "name": "Galaxy Grant",
+                "amount": "$2,500",
+                "deadline": (datetime.now() + timedelta(days=5)).strftime("%Y-%m-%d"),
+                "url": "https://x.example",
+                "status": "open",
+                "note": "n",
+            }
+        ],
+    )
+    candidates = src.gather_grant_deadlines(index)
+    assert len(candidates) == 1
+    c = candidates[0]
+    assert c.source == "grant-deadline:galaxy-grant"
+    assert c.action_type == "grant_packet"
+    assert (
+        c.question == "Want me to assemble the ready-to-submit packet for Galaxy Grant?"
+    )
+    assert "application packet" in c.deliverable
+    assert c.outcome == 0.9
+    assert not c.time_critical
+    import suggestive_thinking as st
+
+    surfaced, _ = st.passes_relevance_filter(c)
+    assert surfaced
+
+
+def _write_grants(path, items):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"items": items}))
+
+
+def test_grant_deadline_inside_3_days_is_time_critical(tmp_path):
+    index = tmp_path / "grant-deadlines.json"
+    _write_grants(
+        index,
+        [
+            {
+                "id": "d-prize",
+                "name": "D-Prize",
+                "amount": "$20k",
+                "deadline": (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d"),
+                "url": "https://x.example",
+                "status": "open",
+                "note": "",
+            }
+        ],
+    )
+    c = src.gather_grant_deadlines(index)[0]
+    assert c.time_critical is True
+
+
+def test_grant_deadline_past_or_outside_window_dropped(tmp_path):
+    index = tmp_path / "grant-deadlines.json"
+    _write_grants(
+        index,
+        [
+            {
+                "id": "old",
+                "deadline": (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"),
+                "status": "open",
+            },
+            {
+                "id": "far",
+                "deadline": (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d"),
+                "status": "open",
+            },
+            {"id": "baddate", "deadline": "not-a-date", "status": "open"},
+        ],
+    )
+    assert src.gather_grant_deadlines(index) == []
+
+
+def test_grant_deadline_only_open_statuses(tmp_path):
+    index = tmp_path / "grant-deadlines.json"
+    soon = (datetime.now() + timedelta(days=4)).strftime("%Y-%m-%d")
+    _write_grants(
+        index,
+        [
+            {"id": "skipped", "deadline": soon, "status": "skip"},
+            {"id": "closedg", "deadline": soon, "status": "closed"},
+            {"id": "pipe", "deadline": soon, "status": "pipeline"},
+        ],
+    )
+    candidates = src.gather_grant_deadlines(index)
+    assert [c.source for c in candidates] == ["grant-deadline:pipe"]
+
+
+def test_grant_deadlines_capped_to_three_worst_clock_first(tmp_path):
+    index = tmp_path / "grant-deadlines.json"
+    # deadlines 9..5 days out: the three CLOSEST clocks are g4(5), g3(6), g2(7)
+    items = [
+        {
+            "id": f"g{i}",
+            "name": f"G{i}",
+            "deadline": (datetime.now() + timedelta(days=9 - i)).strftime("%Y-%m-%d"),
+            "status": "open",
+        }
+        for i in range(5)
+    ]
+    _write_grants(index, items)
+    cands = src.gather_grant_deadlines(index)
+    assert len(cands) == src.GRANT_CAP_PER_RUN
+    assert [c.source for c in cands] == [
+        "grant-deadline:g4",
+        "grant-deadline:g3",
+        "grant-deadline:g2",
+    ]
+
+
+def test_grant_missing_or_malformed_index_returns_empty(tmp_path):
+    assert src.gather_grant_deadlines(tmp_path / "nope.json") == []
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json")
+    assert src.gather_grant_deadlines(bad) == []
+
+
+def test_money_org_only_active_items_with_real_checks_surface(tmp_path):
+    state = tmp_path / "money-org-state.json"
+    state.write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "id": "a",
+                        "status": "active",
+                        "question": "Want me to A?",
+                        "deliverable": "D",
+                        "outcome": 0.85,
+                        "check_cmd": ["echo", "ok"],
+                    },
+                    {
+                        "id": "b",
+                        "status": "seeded",
+                        "question": "Want me to B?",
+                        "deliverable": "D",
+                    },
+                    {
+                        "id": "c",
+                        "status": "active",
+                        "question": "Want me to C?",
+                        "deliverable": "D",
+                        "outcome": 0.8,
+                        "check_cmd": "echo shell-string",
+                    },
+                ]
+            }
+        )
+    )
+    candidates = src.gather_money_org(state)
+    assert [c.source for c in candidates] == ["money-org:a"]
+    assert candidates[0].action_type == "money_org_check"
+    assert candidates[0].action_payload == {"item_id": "a", "check_cmd": ["echo", "ok"]}
+    import suggestive_thinking as st
+
+    surfaced, _ = st.passes_relevance_filter(candidates[0])
+    assert surfaced
+
+
+def test_money_org_deadline_item_is_timecritical(tmp_path):
+    state = tmp_path / "money-org-state.json"
+    state.write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "id": "air",
+                        "status": "active",
+                        "question": "Want me to prep?",
+                        "deliverable": "D",
+                        "outcome": 0.8,
+                        "deadline": (datetime.now() + timedelta(days=2)).strftime(
+                            "%Y-%m-%d"
+                        ),
+                        "check_cmd": ["echo", "prep"],
+                    },
+                ]
+            }
+        )
+    )
+    c = src.gather_money_org(state)[0]
+    assert c.time_critical is True
+
+
+def test_money_org_capped_to_two(tmp_path):
+    state = tmp_path / "money-org-state.json"
+    state.write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "id": f"m{i}",
+                        "status": "active",
+                        "question": "Q{i}",
+                        "deliverable": "D",
+                        "outcome": 0.8,
+                        "check_cmd": ["echo", str(i)],
+                    }
+                    for i in range(4)
+                ]
+            }
+        )
+    )
+    assert len(src.gather_money_org(state)) == src.MONEY_CAP_PER_RUN
+
+
+def test_money_org_missing_file_returns_empty(tmp_path):
+    assert src.gather_money_org(tmp_path / "nope.json") == []
+
+
+def test_grant_packet_handler_writes_sanitized_packet(tmp_path):
+    import suggestive_thinking_sources as live_src
+
+    original = live_src.GRANT_PACKET_DIR
+    live_src.GRANT_PACKET_DIR = tmp_path / "packets"
+    try:
+        entry = {
+            "payload": {
+                "grant_id": "galaxy-grant",
+                "name": "Galaxy Grant",
+                "amount": "$2,500",
+                "deadline": "2026-10-31",
+                "url": "https://x.example",
+                "note": "use Gmail",
+            }
+        }
+        result = live_src._run_grant_packet(entry)
+        packet = tmp_path / "packets" / "galaxy-grant" / "packet.md"
+        assert packet.exists()
+        assert "Galaxy Grant" in packet.read_text()
+        assert "never auto-submits" in packet.read_text()
+        assert "galaxy-grant" in result
+
+        # path traversal cannot escape the packets dir
+        evil = {
+            "payload": {
+                "grant_id": "../evil",
+                "name": "E",
+                "amount": "",
+                "deadline": "",
+                "url": "",
+                "note": "",
+            }
+        }
+        live_src._run_grant_packet(evil)
+        assert (tmp_path / "packets" / "evil" / "packet.md").exists()
+        assert not (tmp_path / "evil").exists()
+    finally:
+        live_src.GRANT_PACKET_DIR = original
+
+
+def test_grant_packet_handler_includes_answers_when_recorded(tmp_path):
+    import suggestive_thinking_sources as live_src
+
+    original = live_src.GRANT_PACKET_DIR
+    live_src.GRANT_PACKET_DIR = tmp_path / "packets"
+    try:
+        entry = {
+            "payload": {
+                "grant_id": "g",
+                "name": "G",
+                "amount": "",
+                "deadline": "",
+                "url": "",
+                "note": "",
+                "answers": {"email": "ebey317@gmail.com"},
+            }
+        }
+        live_src._run_grant_packet(entry)
+        text = (tmp_path / "packets" / "g" / "packet.md").read_text()
+        assert "ebey317@gmail.com" in text
+        assert "_(none recorded" not in text
+    finally:
+        live_src.GRANT_PACKET_DIR = original
+
+
+def test_money_org_check_handler_runs_list_and_refuses_string(tmp_path):
+    ok_entry = {"payload": {"item_id": "a", "check_cmd": ["echo", "state-ok"]}}
+    result = src._run_money_org_check(ok_entry)
+    assert "exit 0" in result and "state-ok" in result
+
+    bad_entry = {"payload": {"item_id": "b", "check_cmd": "echo shell"}}
+    assert "refused" in src._run_money_org_check(bad_entry)
