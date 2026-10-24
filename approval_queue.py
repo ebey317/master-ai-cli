@@ -343,7 +343,7 @@ def _load_handlers():
     if _sys_path_add not in sys.path:
         sys.path.insert(0, _sys_path_add)
     # Each import is optional — missing consumers don't block the CLI.
-    for mod_name in ("sensei_extractor", "master_ai"):
+    for mod_name in ("sensei_extractor", "master_ai", "suggestive_thinking_sources"):
         try:
             __import__(mod_name)
         except Exception as e:

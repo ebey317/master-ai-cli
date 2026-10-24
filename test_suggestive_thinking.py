@@ -77,15 +77,16 @@ def _scored(**overrides):
         "actionable": 0.8,
         "timely": 0.8,
         "interruption_worthy": 0.8,
+        "outcome": 0.8,
     }
     base.update(overrides)
     return _candidate(**base)
 
 
-def test_filter_surfaces_when_all_four_scores_clear_threshold():
+def test_filter_surfaces_when_all_five_scores_clear_threshold():
     surfaced, reason = st.passes_relevance_filter(_scored())
     assert surfaced is True
-    assert reason == "all four scores clear threshold"
+    assert reason == "all five scores clear threshold"
 
 
 def test_filter_stays_silent_when_any_score_is_below_threshold():
