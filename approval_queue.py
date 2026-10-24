@@ -342,12 +342,53 @@ def _load_handlers():
     _sys_path_add = str(SCRIPTS_DIR)
     if _sys_path_add not in sys.path:
         sys.path.insert(0, _sys_path_add)
+
+    # 2026-10-23b (Hermes): the suggestive-thinking consumer loads by
+    # EXPLICIT PATH instead of __import__-by-name. Found live: module-mode
+    # probes registered grant_packet/money_org_check fine, while the real
+    # script-mode CLI approved nothing and printed nothing — the name
+    # search can silently settle on a different copy depending on how the
+    # process got started. spec_from_file_location on the canonical path
+    # ends the resolution ambiguity, and the stderr line per consumer makes
+    # this seam visible from now on — a silent no-handler approval is the
+    # failure the whole "approval executes" promise dies on.
+    try:
+        import importlib.util as _importlib_util
+
+        _st_path = SCRIPTS_DIR / "suggestive_thinking_sources.py"
+        if _st_path.exists():
+            _existing = sys.modules.get("suggestive_thinking_sources")
+            if _existing is not None and getattr(_existing, "__file__", None) != str(
+                _st_path.resolve()
+            ):
+                del sys.modules[
+                    "suggestive_thinking_sources"
+                ]  # stale resolution wins nothing here
+            _spec = _importlib_util.spec_from_file_location(
+                "suggestive_thinking_sources", str(_st_path.resolve())
+            )
+            if _spec is None or _spec.loader is None:
+                raise ImportError(f"no importable spec for {_st_path}")
+            _mod = _importlib_util.module_from_spec(_spec)
+            sys.modules[_spec.name] = _mod
+            _spec.loader.exec_module(_mod)
+            print(
+                f"  (handlers loaded from {_st_path})",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"  (hint: {_st_path} missing — suggestive-thinking handlers unavailable)",
+                file=sys.stderr,
+            )
+    except Exception as e:
+        print(
+            f"  (warning: couldn't load handlers from suggestive_thinking_sources: {e})",
+            file=sys.stderr,
+        )
+
     # Each import is optional — missing consumers don't block the CLI.
-    # 2026-10-23: suggestive_thinking_sources added — its grant_packet /
-    # money_org_check / repo_test_check handlers register only when this
-    # module is imported, and without it approvals resolve
-    # APPROVED_NO_HANDLER (the pipeline flagged the missing consumer line).
-    for mod_name in ("sensei_extractor", "master_ai", "suggestive_thinking_sources"):
+    for mod_name in ("sensei_extractor", "master_ai"):
         try:
             __import__(mod_name)
         except Exception as e:
