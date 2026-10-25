@@ -119,7 +119,11 @@ GRANT_PACKET_DIR = GRANTS_STATE.parent / "packets"
 # -- the weekly research batch owns those.
 GRANT_SURFACE_WINDOW_DAYS = 14
 GRANT_CAP_PER_RUN = 3
-MONEY_CAP_PER_RUN = 2
+# 2026-10-24 (his catch): cap=2 capped the Gumroad store audit OUT of the
+# wake batch entirely — a real money item that never surfaced is the same
+# class of bug as a suggestion that can't be executed. 3 money items now
+# surface per run (attention budget still honored: they rotate).
+MONEY_CAP_PER_RUN = 3
 GRANT_TIME_CRITICAL_DAYS = 3  # inside 3 days the clock overrides the gate
 
 
