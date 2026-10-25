@@ -80,9 +80,7 @@ def test_gumroad_funnel_missing_products_file_exits():
     assert r.returncode == 1  # honest failure, never a fake table
     assert "store:" not in r.stdout  # no fake summary printed
     assert "Traceback" not in (r.stdout + r.stderr)  # clean failure, no crash
-    assert (
-        "not reporting fake numbers" in (r.stdout + r.stderr)
-    )  # honest reason given
+    assert "not reporting fake numbers" in (r.stdout + r.stderr)  # honest reason given
 
 
 def test_no_key_lines_the_honest_reason_not_a_fake_funnel(
