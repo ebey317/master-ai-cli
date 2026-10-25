@@ -255,6 +255,43 @@ def main():
     )
     app._output_window = real_window
 
+    # ── 2026-10-25: runaway-glide safety valve ──
+    # Live incident: _animate_scroll pegged one core at 100% for 5+ hours
+    # with the viewport visually static -- the exact external trigger that
+    # kept resetting disp/target faster than the glide could converge
+    # wasn't reproducible after the fact. This proves the fix holds
+    # regardless of cause: continuously yank the target out from under the
+    # animator (worse than any real scroll-input burst) and confirm the
+    # hard ceiling still force-stops it, _scroll_anim_active still clears,
+    # and the thread still lands on *some* target value rather than
+    # spinning forever.
+    import threading as _threading
+
+    app._scroll_disp = 0.0
+    app._scroll_target = 0.0
+    app._scroll_anim_active = False
+    _stop_yanking = _threading.Event()
+
+    def _yank_target():
+        n = 1.0
+        while not _stop_yanking.is_set():
+            with app._scroll_anim_lock:
+                app._scroll_target = n
+            n += 1.0
+            _time.sleep(0.001)  # far faster than SCROLL_TAU can ever converge
+
+    app._start_scroll_anim()
+    yanker = _threading.Thread(target=_yank_target, daemon=True)
+    yanker.start()
+    _settle_deadline = _time.time() + 3.0  # ceiling is 2.0s; this must not time out
+    while app._scroll_anim_active and _time.time() < _settle_deadline:
+        _time.sleep(0.01)
+    _stop_yanking.set()
+    yanker.join(timeout=1.0)
+    assert app._scroll_anim_active is False, (
+        "runaway glide must self-stop within the hard ceiling, not spin forever"
+    )
+
     print("PASS: focus-aware chat scroll is wired correctly")
 
 

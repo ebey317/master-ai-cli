@@ -2887,11 +2887,23 @@ def _show_recent_log(lines: int = 80) -> None:
     print(f"{C}  ─────────────────────────────{X}\n")
 
 
+from routing import _CLOUD_CIRCUITS as _ROUTING_CLOUD_CIRCUITS
 from routing import (
     _cloud_allowed,
     _cloud_trip,
     _cloud_trip_network,
 )
+
+# 2026-10-25: found while wiring _LAST_CLOUD_ERROR below -- the bare name
+# `_CLOUD_CIRCUITS` already in this module's globals (imported from
+# sensei_tables at the top of the file) is a SEPARATE, never-synchronized
+# dict from the one _cloud_allowed/_cloud_trip actually read and write
+# (routing.py's own module-level _CLOUD_CIRCUITS). Two independent
+# circuit-breaker stores sharing a name is real split-brain debt, not
+# fixed here (sensei_tables.py's copy is unused dead state as far as the
+# circuit breaker goes, but untangling why it exists at all is a separate
+# task) -- this alias just makes sure new code reads the dict that's
+# actually live, instead of silently reporting "0s remaining" forever.
 
 
 def _network_error(e: Any) -> Any:
@@ -6060,10 +6072,24 @@ def _ask_opencode_go(messages: Any, model: Any, label: Any, timeout: int = 120) 
     identically."""
     provider_key = f"opencode-go/{label}"
     if not _cloud_allowed(provider_key):
+        # 2026-10-25: this used to return None with nothing but a log-file
+        # line ("CLOUD_SKIP"/"CLOUD_CIRCUIT") -- real trail, zero of it
+        # reachable from the chat UI. Elijah: "tell me why my opencode key
+        # silently fails... I don't want to always have to depend on my
+        # backup." _notice_pinned_falling_back reads this to say the real
+        # reason instead of a three-way guess.
+        until = _ROUTING_CLOUD_CIRCUITS.get(provider_key, 0)
+        wait = max(0, round(until - time.time()))
+        globals()["_LAST_CLOUD_ERROR"] = (
+            f"opencode-go/{label}: on cooldown for {wait}s "
+            "(a prior rate-limit or network trip hasn't cleared yet)"
+        )
         return None
     key = _opencode_go_key()
     if not key:
-        log("OPENCODE_GO_ERROR: no OPENCODE_API_KEY")
+        reason = "no OPENCODE_API_KEY found (checked keychain, ~/.hermes/.env, env var)"
+        log(f"OPENCODE_GO_ERROR: {reason}")
+        globals()["_LAST_CLOUD_ERROR"] = f"opencode-go/{label}: {reason}"
         return None
     log(f"CLOUD [opencode-go/{label}]")
     payload = {
@@ -6104,11 +6130,15 @@ def _ask_opencode_go(messages: Any, model: Any, label: Any, timeout: int = 120) 
         log(f"OPENCODE_GO_ERROR [{label}]: HTTP {e.code} — {body}")
         if e.code == 429:
             _cloud_trip(provider_key, "rate limit", 30)
+        globals()["_LAST_CLOUD_ERROR"] = (
+            f"opencode-go/{label}: HTTP {e.code} — {body[:120] or 'no body'}"
+        )
         return None
     except Exception as e:
         log(f"OPENCODE_GO_ERROR [{label}]: {e}")
         if _network_error(e):
             _cloud_trip_network(e, 60)
+        globals()["_LAST_CLOUD_ERROR"] = f"opencode-go/{label}: {e}"
         return None
 
 
@@ -7026,14 +7056,28 @@ def _pinned_fallback_notice(provider: Any) -> bool:
 
 
 def _notice_pinned_falling_back(provider: Any, order: Any) -> None:
-    """Session-visible: the pinned model didn't answer; here's the plan."""
+    """Session-visible: the pinned model didn't answer; here's the plan.
+
+    2026-10-25: the reason line used to be a static three-way guess
+    ("maxed out, rate-limited, or erroring") no matter what actually
+    happened — Elijah: "tell me why my opencode key silently fails."
+    _LAST_CLOUD_ERROR (set at each real failure point in _ask_opencode_go
+    and friends) carries the specific reason when the asker that just ran
+    populated it; cleared after reading so a stale reason from an earlier,
+    unrelated call can never get attributed to this one."""
     try:
+        reason = globals().pop("_LAST_CLOUD_ERROR", None)
+        reason_line = (
+            reason
+            if reason
+            else "Did not answer (maxed out, rate-limited, or erroring.)"
+        )
         chain = ", ".join(order[:4]) if order else "default chain"
         more = f" (+{len(order) - 4} more)" if order and len(order) > 4 else ""
         print(
             f"\n  {Y}⚠  Pinned model unavailable:{X} {W}{provider}{X}\n"
-            f"     {D}Did not answer (maxed out, rate-limited, or erroring.) "
-            f"Falling back to the backup chain — no action needed.{X}\n"
+            f"     {D}{reason_line}{X}\n"
+            f"     {D}Falling back to the backup chain — no action needed.{X}\n"
             f"     {D}order: {chain}{more}{X}\n"
             f"     {D}edit with: fallback list / add / remove / reset{X}"
         )
