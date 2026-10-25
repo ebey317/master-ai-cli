@@ -59,13 +59,6 @@ class Candidate:
         ""  # approval_queue.py entry_type to queue; "" = no executable action
     )
     action_payload: dict | None = None  # passed through to the registered handler
-    # OCR finding 2026-10-23: approval_queue entries carry a `diff` field
-    # specifically so a human can see what's about to happen before
-    # approving -- DELIVER was leaving it blank for every action_type,
-    # which turned "approve" into a blind yes to whatever the payload
-    # happened to contain. A source with something concrete to preview
-    # (e.g. upstream_implement's touched file list) should fill this in.
-    diff: str = ""
 
 
 @dataclass

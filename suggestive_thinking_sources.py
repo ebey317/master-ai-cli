@@ -8,7 +8,6 @@ testable against injected stubs. This module is what a real caller wires in.
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 from collections.abc import Iterable
 from datetime import datetime, timedelta
@@ -29,14 +28,6 @@ from suggestive_thinking import LOG, Candidate
 LIVE_REPO = Path.home() / "master-ai-cli"
 UPSTREAM_LOG = LIVE_REPO / "memory" / "upstream-integration-log.jsonl"
 UPSTREAM_PLANS = LIVE_REPO / "memory" / "upstream-plans"
-
-# 2026-10-23: where an approved upstream-implement proposal gets applied.
-# A DEDICATED worktree per idea, not the shared live tree at LIVE_REPO --
-# this project already got burned once by writing to a working tree another
-# session could branch-switch underneath it (see suggestive_thinking_daily's
-# own pinned-worktree fix, same root cause). Each sha gets its own isolated
-# worktree so concurrent approvals never collide.
-UPSTREAM_IMPL_WORKTREE_ROOT = Path.home() / ".master_ai_upstream_impl"
 
 # Reused, not rebuilt (feedback_clone_dont_rebuild_from_sibling_agents): the
 # Hermes google-workspace skill already owns OAuth token refresh and exposes
@@ -98,6 +89,43 @@ NOTIFY_VOICE = Path.home() / "scripts" / "notify_voice.sh"
 # still-opt-in, louder channel on top of that.
 NOTIFY_DESKTOP = Path.home() / "scripts" / "sensei-notify.sh"
 
+# ---------------------------------------------------------------------------
+# 2026-10-23 fix order, Hermes half (HANDOFF.md "work split with Hermes"):
+# the GRANTS and MONEY/ORG sources. His business clocks, on the loop.
+#
+# Data lives OUTSIDE the repo in workspace state files -- the repo never
+# hardcodes his business data, and both paths stay injectable parameters on
+# each gather function so tests never touch real state.
+#
+# The GRANTS source deliberately re-surfaces DEADLINES on grants already
+# listed to the operator. That is clock-watching on money clocks he cares
+# about -- NOT the seen-grants ledger's "do not re-list as fresh" rule,
+# which governs the weekly research batch, not deadline reminders.
+# ---------------------------------------------------------------------------
+GRANTS_STATE = (
+    Path.home()
+    / "workspace"
+    / "goals"
+    / "weekly-grant-applications"
+    / "grant-deadlines.json"
+)
+MONEY_ORG_STATE = Path.home() / "workspace" / "goals" / "money-org-state.json"
+GRANT_PACKET_DIR = GRANTS_STATE.parent / "packets"
+
+# Attention budget (the spec's own hard rule): real clock pressure, small
+# batches. Deadlines inside the window surface, worst clock first, so the
+# cap rotates through the clock list instead of always showing the same
+# three. Rolling grants have no clock and stay out of this source entirely
+# -- the weekly research batch owns those.
+GRANT_SURFACE_WINDOW_DAYS = 14
+GRANT_CAP_PER_RUN = 3
+# 2026-10-24 (his catch): cap=2 capped the Gumroad store audit OUT of the
+# wake batch entirely — a real money item that never surfaced is the same
+# class of bug as a suggestion that can't be executed. 3 money items now
+# surface per run (attention budget still honored: they rotate).
+MONEY_CAP_PER_RUN = 3
+GRANT_TIME_CRITICAL_DAYS = 3  # inside 3 days the clock overrides the gate
+
 
 # Operator's rule 2026-10-19 (finish-line scope lock) explicitly said widen
 # this only when the lock is lifted. Operator's rule 2026-10-20 lifts it:
@@ -135,184 +163,13 @@ MAX_STALE_SURFACED_PER_RUN = 3
 STALE_AFTER_DAYS = 3
 
 
-def _upstream_sha_ok(sha: str) -> bool:
-    """Defense in depth: a sha is only ever used to name a branch
-    (`upstream/<sha8>`) and a worktree directory -- reject anything that
-    isn't plain hex so a malformed log/queue entry can never smuggle a
-    path-traversal or shell-meaningful string into either."""
-    return bool(re.fullmatch(r"[0-9a-f]{7,40}", sha))
-
-
-@approval_queue.register_handler("upstream_implement")
-def _run_upstream_implement(entry: dict) -> str:
-    """Executor for the upstream-proposal's Yes. Reuses
-    scripts.upstream_integrator's existing plan -- it already fetched the
-    patch, asked the planner model to reimplement the idea as real code
-    blocks, and validated every touched path against CORE_ENGINE_FILES
-    (master_ai.py, sensei_tui.py, hooks.py, router.py, typed_actions.py,
-    sensei_reasoning_loop.py are never eligible, whole file untouched by
-    the proposal). This handler is the only thing that was missing: it
-    re-validates the plan (never trust it unchanged between generation and
-    approval) and applies it -- to a NEW branch in a DEDICATED worktree,
-    committed locally. It never pushes and never merges. That's the actual
-    fix for the 2026-10-18 stranding incident: the old loop did this
-    fully autonomously; this version only runs on explicit human approval,
-    and even then stops one step short of touching origin or master.
-    """
-    payload = entry.get("payload", {})
-    sha = payload.get("sha")
-    plan_path = payload.get("plan_path")
-    if not isinstance(sha, str) or not _upstream_sha_ok(sha):
-        raise ValueError(f"upstream_implement payload has a bad sha: {sha!r}")
-    if not isinstance(plan_path, str) or not plan_path:
-        raise ValueError(f"upstream_implement payload missing plan_path: {payload!r}")
-
-    plan_file = Path(plan_path)
-    try:
-        resolved_plan = plan_file.resolve()
-        resolved_plans_dir = UPSTREAM_PLANS.resolve()
-    except OSError as e:
-        raise ValueError(f"cannot resolve plan_path {plan_path}: {e}") from e
-    if resolved_plans_dir not in resolved_plan.parents:
-        raise ValueError(f"plan_path {plan_file} is outside {UPSTREAM_PLANS}, refusing")
-    if not resolved_plan.is_file():
-        raise FileNotFoundError(f"plan file {plan_file} does not exist")
-
-    # OCR finding 2026-10-23: importing a private helper from an
-    # executable script couples this daemon to that module's path/import
-    # surface. Deferred rather than fixed this pass -- `scripts/` is a
-    # real package (`scripts/__init__.py` exists) and `upstream_integrator`
-    # only imports stdlib at module level behind a `__main__` guard, so
-    # the stated failure mode (import breaks the daemon) is already
-    # narrow; moving `_parse_blocks`/`_path_allowed` to a shared
-    # non-executable module is a real improvement but touches a third
-    # file other automation also runs, not a same-night change.
-    from scripts.upstream_integrator import _parse_blocks, _path_allowed
-
-    blocks = _parse_blocks(resolved_plan.read_text())
-    if not blocks:
-        raise ValueError(f"no applicable code blocks found in {plan_file}")
-    unsafe = [path for path, _ in blocks if not _path_allowed(path)]
-    if unsafe:
-        raise ValueError(
-            f"plan touches disallowed path(s), refusing to apply: {unsafe}"
-        )
-
-    sha8 = sha[:8]
-    branch = f"upstream/{sha8}"
-    worktree = UPSTREAM_IMPL_WORKTREE_ROOT / sha8
-    if worktree.exists():
-        raise FileExistsError(
-            f"worktree {worktree} already exists -- a prior attempt may be unfinished"
-        )
-    worktree.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(LIVE_REPO),
-            "worktree",
-            "add",
-            str(worktree),
-            "-b",
-            branch,
-            "origin/master",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    try:
-        worktree_real = worktree.resolve()
-        for path, body in blocks:
-            target = worktree / path
-            # OCR finding 2026-10-23: _path_allowed only rejects literal
-            # ".."/absolute strings -- if origin/master's checked-out tree
-            # already has a symlink at an ancestor of `path` (e.g. a
-            # symlinked `scripts/`), the resolved write target could land
-            # outside the worktree entirely. Verify the resolved target
-            # (parent need not exist yet, .resolve() still follows
-            # existing ancestor symlinks) stays inside before writing.
-            if not target.resolve().is_relative_to(worktree_real):
-                raise ValueError(
-                    f"block path {path!r} resolves outside the worktree, refusing to write"
-                )
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(body)
-        subprocess.run(
-            ["git", "-C", str(worktree), "add", "-A"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        subprocess.run(
-            [
-                "git",
-                "-C",
-                str(worktree),
-                "commit",
-                "-m",
-                f"Implement upstream idea {sha8} (approved proposal)",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except Exception:
-        # OCR finding 2026-10-23: a failure after `worktree add` used to
-        # leave the worktree+branch behind, so re-approving the same sha
-        # would hit the FileExistsError guard above forever. Best-effort
-        # cleanup (never masks the real error with a cleanup error) so a
-        # transient failure doesn't permanently block retrying.
-        subprocess.run(
-            [
-                "git",
-                "-C",
-                str(LIVE_REPO),
-                "worktree",
-                "remove",
-                "--force",
-                str(worktree),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        subprocess.run(
-            ["git", "-C", str(LIVE_REPO), "branch", "-D", branch],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        raise
-    return (
-        f"applied to branch {branch} at {worktree} ({len(blocks)} file(s)) "
-        "-- NOT pushed, NOT merged, ready for your review"
-    )
-
-
 def gather_upstream_proposals() -> list[Candidate]:
     """GATHER: unsurfaced proposal docs from the proposal-only
     perpetual-watcher cron — one candidate per "status": "proposal" line in
     the integration log that hasn't already produced a candidate before
     (see _already_gathered_shas; a 30-day window, not forever — the
     integrator's own 3-failed-attempt retry logic is what actually retires
-    a dead idea from the queue).
-
-    2026-10-23 fix order, round 2: converted to proposal shape per Lijah's
-    explicit decision ("convert upstream proposals to the new shape") after
-    the outcome gate silently stopped this source from surfacing at all --
-    flagged independently by both my own review and Hermes's no-mistakes
-    gate on a parallel branch. action_type="upstream_implement" only fires
-    when the plan actually produced real code blocks (see the handler
-    above); a plan-only/no-code proposal stays informational with
-    outcome=0.0, since there's nothing for approval to execute yet.
-    outcome=0.75 (not 0.8 like repo_test_check): a committed-but-unmerged
-    branch is real progress but one deliberate step short of done.
-    """
+    a dead idea from the queue)."""
     if not UPSTREAM_LOG.exists():
         return []
     already = _already_gathered_shas()
@@ -328,53 +185,21 @@ def gather_upstream_proposals() -> list[Candidate]:
         if not sha or sha[:8] in already:
             continue
         plan_path = UPSTREAM_PLANS / f"{sha[:8]}.md"
-        blocks: list[tuple[str, str]] = []
-        if plan_path.exists():
-            try:
-                from scripts.upstream_integrator import _parse_blocks
-
-                blocks = _parse_blocks(plan_path.read_text())
-            except Exception as e:
-                # OCR finding 2026-10-23: this used to be a silent
-                # `except Exception: has_code = False`, so a broken import
-                # or a parser regression made upstream proposals vanish
-                # with zero trace. Print (matches this file's existing
-                # best-effort-but-visible convention, e.g. deliver_default
-                # above) so a misconfigured environment is noticed instead
-                # of just quietly looking like "no ideas right now."
-                print(f"[SUGGEST] upstream plan parse failed for {sha[:8]}: {e}")
-                blocks = []
-        detail = f"plan: {plan_path}" if plan_path.exists() else entry.get("detail", "")
-        candidate = Candidate(
-            source=f"upstream-proposal:{sha[:8]}",
-            headline=f"upstream idea proposed, not yet reviewed: {sha[:8]}",
-            detail=detail,
-            novelty=1.0,
-            actionable=1.0,
-            timely=0.8,
-            interruption_worthy=0.7,
+        candidates.append(
+            Candidate(
+                source=f"upstream-proposal:{sha[:8]}",
+                headline=f"upstream idea proposed, not yet reviewed: {sha[:8]}",
+                detail=(
+                    f"plan: {plan_path}"
+                    if plan_path.exists()
+                    else entry.get("detail", "")
+                ),
+                novelty=1.0,
+                actionable=1.0,
+                timely=0.8,
+                interruption_worthy=0.7,
+            )
         )
-        if blocks and _upstream_sha_ok(sha):
-            candidate.question = (
-                f"Want me to implement upstream idea {sha[:8]}? I'll apply "
-                "the already-written plan on a new branch and commit it -- "
-                "not merged automatically, yours to review first."
-            )
-            candidate.deliverable = (
-                f"branch upstream/{sha[:8]} with the plan applied and "
-                "committed, ready for your review"
-            )
-            candidate.action_type = "upstream_implement"
-            candidate.action_payload = {"sha": sha, "plan_path": str(plan_path)}
-            # OCR finding 2026-10-23: approval_queue's `diff` field exists
-            # specifically so a human sees what's about to change before
-            # approving -- this was being left at its "" default, so
-            # approving was a blind yes to whatever the plan file
-            # contained. List the touched paths so the review surface
-            # actually shows something.
-            candidate.diff = "touches: " + ", ".join(path for path, _ in blocks)
-            candidate.outcome = 0.75
-        candidates.append(candidate)
     return candidates
 
 
@@ -563,76 +388,21 @@ def gather_sensei_chats() -> list[Candidate]:
     ]
 
 
-def _repo_path_allowed(repo: Path, roots: list[Path] | None = None) -> bool:
-    """OCR finding 2026-10-23: `repo_path` reaches this handler through a
-    stored approval_queue payload, not a trusted in-process value -- a
-    malformed or future-malicious payload could point `cwd` anywhere and
-    get arbitrary `pytest`/`npm test` config executed from it. Require the
-    resolved path to actually sit under one of _discover_all_repos()'s own
-    roots (home or ~/projects, one level deep) before running anything.
-    `roots` is injectable so tests can point this at a tmp_path tree
-    instead of monkeypatching Path.home() for every caller.
-
-    Second OCR pass, same day: the first version only checked the parent
-    directory, which is strictly broader than what _discover_all_repos()
-    itself would ever surface -- it accepted dotfile directories (e.g.
-    ~/.ssh, even this module's own ~/.master_ai_upstream_impl) and never
-    confirmed the target was actually a repo. Mirror both of
-    _discover_all_repos()'s real criteria now: no dotfile name, and a
-    `.git` directory must exist.
-    """
-    try:
-        resolved = repo.resolve()
-    except OSError:
-        return False
-    if resolved.name.startswith("."):
-        return False
-    if not (resolved / ".git").is_dir():
-        return False
-    for root in roots if roots is not None else (Path.home(), Path.home() / "projects"):
-        try:
-            if resolved.parent == root.resolve():
-                return True
-        except OSError:
-            continue
-    return False
-
-
 @approval_queue.register_handler("repo_test_check")
 def _run_repo_test_check(entry: dict) -> str:
     """Executor for the 'stale repo' proposal's Yes: run whatever test
     runner the repo actually has and report pass/fail. Auto-detects
     pytest (conftest.py / pytest.ini / a tests/ dir) over npm test
-    (package.json) since every active repo on this box is Python-first.
+    (package.json) since every active repo on this box is Python-first;
+    reports plainly if neither is present rather than guessing a command.
 
-    Scope note (2026-10-23): this runs the suite and reports red/green --
+    Scope note (2026-10-23): this runs the suite and reports red/green —
     it does NOT auto-fix failures yet. "Fix what's red" as a fully
     autonomous repair loop is a materially bigger feature (a coding
     subagent loop against the failures) and is called out as a separate
-    next step in HANDOFF.md rather than being half-built here. The
-    candidate's own `question` text says "report red/green", not "fix",
-    to match.
-
-    approval_queue's contract is "handlers should raise on failure" so
-    approve() marks the entry FAILED -- per OCR review 2026-10-23, this
-    used to return every outcome (including real failures) as a string,
-    which marked a broken run RAN. Only the two legitimate *completed*
-    outcomes (no runner found / a real GREEN-or-RED result) return a
-    string now; a missing/invalid payload, a disallowed path, a missing
-    repo directory, or the subprocess failing to start all raise instead.
+    next step in HANDOFF.md rather than being half-built here.
     """
-    repo_path = entry.get("payload", {}).get("repo_path")
-    if not isinstance(repo_path, str) or not repo_path:
-        raise ValueError(
-            f"repo_test_check payload missing repo_path: {entry.get('payload')!r}"
-        )
-    repo = Path(repo_path)
-    if not _repo_path_allowed(repo):
-        raise ValueError(
-            f"repo_path {repo} is outside the allowed repo roots, refusing to run"
-        )
-    if not repo.is_dir():
-        raise FileNotFoundError(f"repo_path {repo} does not exist (moved or deleted?)")
+    repo = Path(entry["payload"]["repo_path"])
     if (
         (repo / "conftest.py").exists()
         or (repo / "pytest.ini").exists()
@@ -645,7 +415,10 @@ def _run_repo_test_check(entry: dict) -> str:
         return (
             f"no recognized test runner in {repo} (no pytest/tests/, no package.json)"
         )
-    out = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, timeout=600)
+    try:
+        out = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, timeout=600)
+    except Exception as e:
+        return f"test run failed to start: {e}"
     tail = (out.stdout + out.stderr).strip().splitlines()[-15:]
     status = "GREEN" if out.returncode == 0 else "RED"
     return f"{status} (exit {out.returncode}) — {' / '.join(cmd)}\n" + "\n".join(tail)
@@ -688,7 +461,7 @@ def gather_stale_projects(
         days_stale = (now - last_commit).days
         if days_stale < stale_after_days:
             continue
-        question = f"Want me to run {repo.name}'s test suite and report what's red?"
+        question = f"Want me to run {repo.name}'s test suite and fix what's red?"
         scored.append(
             (
                 days_stale,
@@ -715,6 +488,272 @@ def gather_stale_projects(
     return [c for _, c in scored[:MAX_STALE_SURFACED_PER_RUN]]
 
 
+def _load_state_items(path: Path) -> list[dict]:
+    """Shared state-file loader for the two workspace-clock sources.
+    Missing file, malformed JSON, or non-dict entries all degrade to an
+    empty list -- a broken state file must never crash the whole GATHER
+    cycle (same contract as _email_bridge_unread_count's None-on-failure)."""
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return []
+    items = data.get("items", []) if isinstance(data, dict) else data
+    return [e for e in items if isinstance(e, dict)]
+
+
+def _deadline_scores(days_left: int) -> tuple[float, bool]:
+    """(timely, time_critical) for a deadline N days out. Inside
+    GRANT_TIME_CRITICAL_DAYS the clock overrides the gate entirely -- the
+    spec's time-critical bypass exists for exactly this: money/deadline-today."""
+    if days_left <= GRANT_TIME_CRITICAL_DAYS:
+        return 1.0, True
+    return 0.75, False
+
+
+def gather_grant_deadlines(index_path: Path | None = None) -> list[Candidate]:
+    """GATHER — the GRANTS source (2026-10-23 fix order, Hermes half).
+
+    Reads the machine-readable grant-deadlines.json under
+    ~/workspace/goals/weekly-grant-applications/ (kept current by the
+    weekly batch cron, seeded from the operator's verified seen-grants
+    ledger) and turns approaching money clocks into proposals:
+
+        "Grant X closes in N days — want me to assemble the packet?"
+
+    Rules encoded here:
+    - Only real deadlines surface: status in {"open", "pipeline"} and a
+      parseable ISO deadline inside GRANT_SURFACE_WINDOW_DAYS. Rolling
+      grants (no deadline) belong to the weekly research batch, not this
+      source. "skip"/"closed" entries stay out — the ledger carries why.
+    - On approval (action_type="grant_packet") the handler assembles the
+      packet doc under GRANT_PACKET_DIR/<grant_id>/ — file writes only;
+      NOTHING ever auto-submits. Submission is the operator's.
+    - outcome=0.9: assembling a packet ahead of a real deadline is grant
+      progress by definition. time_critical inside 3 days = money clock,
+      gate bypass, per the spec's own override list.
+    """
+    index_path = GRANTS_STATE if index_path is None else Path(index_path)
+    now = datetime.now()
+    scored: list[tuple[int, Candidate]] = []
+    for item in _load_state_items(index_path):
+        if item.get("status") not in ("open", "pipeline"):
+            continue
+        try:
+            deadline = datetime.fromisoformat(str(item.get("deadline")))
+        except Exception:
+            continue  # no parseable clock = not this source's job
+        days_left = (deadline - now).days
+        if not (0 <= days_left <= GRANT_SURFACE_WINDOW_DAYS):
+            continue
+        gid = (
+            "".join(
+                ch for ch in str(item.get("id") or "grant") if ch.isalnum() or ch == "-"
+            )
+            or "grant"
+        )
+        name = str(item.get("name") or gid)
+        amount = str(item.get("amount") or "")
+        url = str(item.get("url") or "")
+        note = str(item.get("note") or "")
+        timely, time_critical = _deadline_scores(days_left)
+        detail = url or "no url listed"
+        if note:
+            detail += f" — {note}"
+        scored.append(
+            (
+                days_left,
+                Candidate(
+                    source=f"grant-deadline:{gid}",
+                    headline=(
+                        f"{name} closes in {days_left} day{'s' if days_left != 1 else ''}"
+                        f"{' — ' + amount if amount else ''} — clock it or let it pass?"
+                    ),
+                    detail=detail,
+                    question=f"Want me to assemble the ready-to-submit packet for {name}?",
+                    deliverable=(
+                        f"an application packet for {name}"
+                        f"{' (' + amount + ')' if amount else ''}"
+                        " — cover sheet, checklist, and what you still need, on disk"
+                    ),
+                    action_type="grant_packet",
+                    action_payload={
+                        "grant_id": gid,
+                        "name": name,
+                        "amount": amount,
+                        "deadline": deadline.strftime("%Y-%m-%d"),
+                        "url": url,
+                        "note": note,
+                    },
+                    novelty=1.0,
+                    actionable=1.0,
+                    timely=timely,
+                    interruption_worthy=0.7,
+                    outcome=0.9,
+                    time_critical=time_critical,
+                ),
+            )
+        )
+    scored.sort(key=lambda pair: pair[0])  # worst clock first
+    return [c for _, c in scored[:GRANT_CAP_PER_RUN]]
+
+
+def gather_money_org(state_path: Path | None = None) -> list[Candidate]:
+    """GATHER — the MONEY/ORG source (2026-10-23 fix order, Hermes half).
+
+    Reads money-org-state.json under ~/workspace/goals/ and surfaces the
+    operator's open money/organization items as executable proposals:
+
+        "Want me to finish/publish/submit X?"
+
+    The honesty rule, same as the spec's own bar: a surfaced suggestion
+    that cannot be acted on is a defect, and a FAKE check is worse than
+    none. So only {"status": "active"} items with a real list-form
+    check_cmd (argv, read-only) surface at all. A "seeded" item without a
+    wired check stays silent until the wiring is real.
+
+    On approval (action_type="money_org_check") the generic handler runs
+    exactly that argv list and reports — read-only state check by design.
+    """
+    state_path = MONEY_ORG_STATE if state_path is None else Path(state_path)
+    now = datetime.now()
+    scored: list[tuple[tuple[int, float], Candidate]] = []
+    for item in _load_state_items(state_path):
+        if item.get("status") != "active":
+            continue
+        check_cmd = item.get("check_cmd")
+        if not (
+            isinstance(check_cmd, list)
+            and check_cmd
+            and all(isinstance(part, str) for part in check_cmd)
+        ):
+            continue  # defect guard: no real executable check, no surface
+        try:
+            outcome = min(1.0, max(0.0, float(item.get("outcome", 0.0))))
+        except Exception:
+            outcome = 0.0
+        timely = 0.75
+        time_critical = False
+        sort_key = (999, -outcome)
+        raw_deadline = item.get("deadline")
+        if raw_deadline:
+            try:
+                deadline = datetime.fromisoformat(str(raw_deadline))
+                days_left = (deadline - now).days
+                timely, time_critical = _deadline_scores(days_left)
+                if days_left < 0:
+                    continue  # the event already passed; stop nudging
+                sort_key = (days_left, -outcome)
+            except Exception:
+                pass
+        iid = (
+            "".join(
+                ch for ch in str(item.get("id") or "item") if ch.isalnum() or ch == "-"
+            )
+            or "item"
+        )
+        scored.append(
+            (
+                sort_key,
+                Candidate(
+                    source=f"money-org:{iid}",
+                    headline=str(item.get("question") or f"open money item: {iid}"),
+                    detail=str(item.get("note") or ""),
+                    question=str(item.get("question") or f"Want me to handle {iid}?"),
+                    deliverable=str(
+                        item.get("deliverable") or "a real state check, on the record"
+                    ),
+                    action_type="money_org_check",
+                    action_payload={"item_id": iid, "check_cmd": check_cmd},
+                    novelty=1.0,
+                    actionable=1.0,
+                    timely=timely,
+                    interruption_worthy=0.65,
+                    outcome=outcome,
+                    time_critical=time_critical,
+                ),
+            )
+        )
+    scored.sort(key=lambda pair: pair[0])
+    return [c for _, c in scored[:MONEY_CAP_PER_RUN]]
+
+
+@approval_queue.register_handler("grant_packet")
+def _run_grant_packet(entry: dict) -> str:
+    """Executor for the GRANTS source's Yes: assemble the packet doc for
+    one grant under GRANT_PACKET_DIR/<grant_id>/ — writes only; never
+    submits anywhere. If the index entry ever carries ready-to-paste
+    answers ('answers'), they go in verbatim, attributed to the index;
+    otherwise the packet says so plainly instead of inventing content."""
+    payload = entry.get("payload") or {}
+    grant_id = (
+        "".join(
+            ch
+            for ch in str(payload.get("grant_id") or "grant")
+            if ch.isalnum() or ch == "-"
+        )
+        or "grant"
+    )
+    out_dir = GRANT_PACKET_DIR / grant_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    packet = out_dir / "packet.md"
+    lines = [
+        f"# Grant packet — {payload.get('name', grant_id)}",
+        "",
+        f"**Amount:** {payload.get('amount') or '—'}  ",
+        f"**Deadline:** {payload.get('deadline') or '—'}  ",
+        f"**URL:** {payload.get('url') or '—'}",
+        "",
+        "## Notes from the ledger",
+        payload.get("note") or "—",
+        "",
+        "## Ready-to-paste answers",
+    ]
+    answers = payload.get("answers") or {}
+    if isinstance(answers, dict) and answers:
+        lines += [f"- **{k}:** {v}" for k, v in answers.items()]
+    else:
+        lines.append(
+            "_(none recorded in the index yet — see the packet template in the seen-grants ledger)_"
+        )
+    lines += [
+        "",
+        "## Before submitting (his checklist, not mine)",
+        "- confirm the form matches the ledger notes above"
+        " (email — including any flag like the AOL/Gmail switch — fees, eligibility)",
+        "- this packet never auto-submits: Lijah submits",
+        "",
+    ]
+    text = "\n".join(lines)
+    packet.write_text(text)
+    return f"packet written: {packet} ({len(text)} chars)\n"
+
+
+@approval_queue.register_handler("money_org_check")
+def _run_money_org_check(entry: dict) -> str:
+    """Executor for the MONEY/ORG source's Yes: run the item's own
+    list-form read-only check exactly as stored in the state file and
+    report the output. Refuses shell-string form on principle — the state
+    file's format is argv, and argv is what argv gets."""
+    payload = entry.get("payload") or {}
+    cmd = payload.get("check_cmd")
+    if not (
+        isinstance(cmd, list) and cmd and all(isinstance(part, str) for part in cmd)
+    ):
+        return (
+            "refused: check_cmd must be a non-empty list of argv strings "
+            "(state-file format) — never a shell string"
+        )
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except Exception as e:
+        return f"check failed to run: {e}"
+    text = (out.stdout + out.stderr).strip()
+    if len(text) > 1500:
+        text = text[:1500] + " …[truncated]"
+    command_head = " ".join(cmd[:3])
+    return f"exit {out.returncode} — {command_head}…\n{text or '(no output)'}"
+
+
 def gather_all() -> list[Candidate]:
     return (
         gather_upstream_proposals()
@@ -722,6 +761,8 @@ def gather_all() -> list[Candidate]:
         + gather_gmail_unread()
         + gather_email_bridge_unread()
         + gather_sensei_chats()
+        + gather_grant_deadlines()
+        + gather_money_org()
     )
 
 
@@ -816,37 +857,16 @@ def deliver_default(candidate: Candidate) -> None:
         except Exception:
             pass  # voice is a nice-to-have; never let it break the loop
     if candidate.action_type:
-        try:
-            # OCR findings 2026-10-23, both folded in here:
-            # (a) no dedup -- a candidate whose recall-suppression window
-            #     has lapsed (e.g. a stale repo still stale 3+ days later)
-            #     would queue a second PENDING entry for the same thing
-            #     every time it re-surfaces. Skip queueing if an identical
-            #     PENDING entry (same type + source) already exists.
-            # (b) queue()/render_md() raising used to propagate out of
-            #     deliver_default and abort the whole wake cycle AFTER the
-            #     popup already fired -- wrapped to match the best-effort
-            #     handling the notification calls above already have.
-            already_pending = any(
-                e.get("status") == "PENDING"
-                and e.get("type") == candidate.action_type
-                and e.get("where") == candidate.source
-                for e in approval_queue.list_pending()
-            )
-            if not already_pending:
-                approval_queue.queue(
-                    entry_type=candidate.action_type,
-                    who="suggestive_thinking",
-                    what=candidate.deliverable or candidate.headline,
-                    where=candidate.source,
-                    why=candidate.detail or candidate.headline,
-                    how=candidate.question,
-                    diff=candidate.diff,
-                    payload=candidate.action_payload or {},
-                    trigger="suggestive-thinking wake cycle",
-                )
-        except Exception as e:
-            print(f"[SUGGEST] approval_queue.queue failed for {candidate.source}: {e}")
+        approval_queue.queue(
+            entry_type=candidate.action_type,
+            who="suggestive_thinking",
+            what=candidate.deliverable or candidate.headline,
+            where=candidate.source,
+            why=candidate.detail or candidate.headline,
+            how=candidate.question,
+            payload=candidate.action_payload or {},
+            trigger="suggestive-thinking wake cycle",
+        )
 
 
 def main() -> int:

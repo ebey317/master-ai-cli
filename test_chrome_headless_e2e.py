@@ -301,6 +301,8 @@ def _run_in_chrome():
         [
             chrome,
             "--headless=new",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
             "--disable-gpu",
             "--no-first-run",
             "--no-default-browser-check",
@@ -309,7 +311,7 @@ def _run_in_chrome():
             "about:blank",
         ],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=None,
     )
 
     try:
