@@ -25,11 +25,14 @@ touch the real key or the network.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
-KEYS_FILE = Path.home() / ".master_ai_keys"
+KEYS_FILE = Path(
+    os.environ.get("FUNNEL_KEYS_FILE") or str(Path.home() / ".master_ai_keys")
+)
 GUMROAD_API = "https://api.gumroad.com/v2/products"
 AI_CONTROLLER_REPO = Path.home() / "ai-controller"
 
@@ -89,25 +92,29 @@ def print_gumroad_funnel(products: list[dict]) -> None:
             "distance: unpublished product means a buyer cannot buy it — "
             f"{len(dark)} product(s) are one attach + one publish flip from live"
         )
-    for p in attached and [
+    attached_dark = [
         p
         for p in products
         if not p.get("published") and (p.get("attached_files") or [])
-    ]:
+    ]
+    for p in attached_dark:
         print(f"  attached-but-dark: {p.get('name')} — ONE publish flip from live")
 
 
 def ai_controller_funnel(repo: Path) -> None:
     # 1. tag
     tag = None
-    out = subprocess.run(
-        ["git", "-C", str(repo), "tag", "-l", "v*"],
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
-    tags = out.stdout.split()
-    tag = tags[-1] if tags else None
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo), "tag", "-l", "v*"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        tags = out.stdout.split()
+        tag = tags[-1] if tags else None
+    except Exception as e:
+        print(f"  (tag read failed: {type(e).__name__} — not reporting fake numbers)")
     print(f"  repo: {'tagged ' + tag if tag else 'NO release tag'}")
     # 2. release assets
     assets_ok = False
@@ -170,7 +177,13 @@ def main() -> int:
     if mode == "gumroad":
         if "--json-file" in sys.argv:
             jf = Path(sys.argv[sys.argv.index("--json-file") + 1])
-            data = json.loads(jf.read_text())
+            try:
+                data = json.loads(jf.read_text())
+            except Exception as e:
+                print(
+                    f"  (cannot read {jf}: {type(e).__name__} — not reporting fake numbers)"
+                )
+                return 1
             print_gumroad_funnel(data.get("products", []))
         else:
             products = _gumroad_products()

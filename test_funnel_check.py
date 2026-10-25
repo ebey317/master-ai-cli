@@ -5,6 +5,7 @@ All state comes from tmp files; never the real key, never the network."""
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -76,8 +77,12 @@ def test_gumroad_funnel_missing_products_file_exits():
         text=True,
         timeout=60,
     )
-    assert r.returncode in (0, 1)  # honest failure, never a fake table
-    assert "product(s)" not in (r.stdout) or "no such file" in (r.stdout + r.stderr)
+    assert r.returncode == 1  # honest failure, never a fake table
+    assert "store:" not in r.stdout  # no fake summary printed
+    assert "Traceback" not in (r.stdout + r.stderr)  # clean failure, no crash
+    assert (
+        "not reporting fake numbers" in (r.stdout + r.stderr)
+    )  # honest reason given
 
 
 def test_no_key_lines_the_honest_reason_not_a_fake_funnel(
@@ -96,6 +101,7 @@ def test_ai_controller_funnel_reports_distance_with_receipts(tmp_path):
     repo = tmp_path / "fake-repo"
     repo.mkdir()
     (repo / ".gitref").write_text("x")  # presence marker
+    env = dict(os.environ, FUNNEL_KEYS_FILE=str(tmp_path / "missing-keys"))
     r = subprocess.run(
         [
             sys.executable,
@@ -107,6 +113,7 @@ def test_ai_controller_funnel_reports_distance_with_receipts(tmp_path):
         capture_output=True,
         text=True,
         timeout=60,
+        env=env,
     )
     out = r.stdout + r.stderr
     # untagged repo: honest report of the first flip, no crash
