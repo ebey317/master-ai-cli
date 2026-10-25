@@ -713,7 +713,7 @@ def test_money_org_deadline_item_is_timecritical(tmp_path):
     assert c.time_critical is True
 
 
-def test_money_org_capped_to_two(tmp_path):
+def test_money_org_capped_to_three(tmp_path):
     state = tmp_path / "money-org-state.json"
     state.write_text(
         json.dumps(
