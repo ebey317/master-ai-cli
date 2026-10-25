@@ -1806,30 +1806,52 @@ class SenseiApp:
         ).start()
 
     def _animate_scroll(self) -> None:
+        # Caught live 2026-10-25: this thread pegged one core at 100% for
+        # 5+ hours while the screen sat visually static (only the header
+        # clock moving — proof the glide, not the agent, was spinning).
+        # Under a single static target this converges in well under a
+        # second (SCROLL_TAU=0.05 makes convergence time scale-independent
+        # of distance — even a 10,000-line jump settles in ~28 frames,
+        # confirmed by direct test). So a glide still running seconds later
+        # means something kept moving disp/target out from under it faster
+        # than it could converge — the exact external trigger wasn't
+        # reproducible after the fact. Rather than patch the one path found,
+        # make the loop provably incapable of spinning forever regardless
+        # of cause: a hard wall-clock ceiling force-converges it, and a
+        # try/finally guarantees _scroll_anim_active can never get stuck
+        # True (which would otherwise silently stop future scroll input
+        # from ever spawning a new animator thread at all).
+        MAX_GLIDE_SECONDS = 2.0
         last = time.perf_counter()
+        start = last
         frame = 1.0 / SCROLL_FPS
-        while True:
-            time.sleep(frame)
-            now = time.perf_counter()
-            dt = now - last
-            last = now
+        try:
+            while True:
+                time.sleep(frame)
+                now = time.perf_counter()
+                dt = now - last
+                last = now
+                with self._scroll_anim_lock:
+                    disp = self._scroll_disp
+                    target = self._scroll_target
+                    timed_out = (now - start) > MAX_GLIDE_SECONDS
+                    if disp == target or timed_out:
+                        # Converged (or forced): land exactly on target so
+                        # the final notch always takes effect, same as the
+                        # normal-convergence contract before this fix.
+                        self._scroll_disp = target
+                        self._apply_scroll_to_render(int(round(target)))
+                        return
+                    self._scroll_disp = _eased_scroll_step(disp, target, dt)
+                    disp = self._scroll_disp
+                self._apply_scroll_to_render(int(round(disp)))
+                try:
+                    self._app.invalidate()
+                except Exception:
+                    pass
+        finally:
             with self._scroll_anim_lock:
-                disp = self._scroll_disp
-                target = self._scroll_target
-                if disp == target:
-                    # Converged: self-stop the frame loop — but land the final
-                    # position first so the last notch always takes effect
-                    # even when the glide had zero frames left to run.
-                    self._scroll_anim_active = False
-                    self._apply_scroll_to_render(int(round(disp)))
-                    return
-                self._scroll_disp = _eased_scroll_step(disp, target, dt)
-                disp = self._scroll_disp
-            self._apply_scroll_to_render(int(round(disp)))
-            try:
-                self._app.invalidate()
-            except Exception:
-                pass
+                self._scroll_anim_active = False
 
     def _wait_scroll_settled(self, timeout: float = 2.0) -> bool:
         """Block until the glide converges (tests; callers needing a settled
