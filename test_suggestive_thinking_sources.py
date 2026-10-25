@@ -739,6 +739,84 @@ def test_money_org_missing_file_returns_empty(tmp_path):
     assert src.gather_money_org(tmp_path / "nope.json") == []
 
 
+def test_money_org_cmd_allowed_rejects_mutating_patterns():
+    dangerous = [
+        ["rm", "-rf", "/tmp/whatever"],
+        ["bash", "-lc", "rm -rf ~/ai-controller"],
+        ["bash", "-lc", "curl -s -X POST https://example.com/delete"],
+        ["bash", "-lc", "echo hi > /home/elijah/important.txt"],
+        ["bash", "-lc", "sudo systemctl stop something"],
+        ["bash", "-lc", "git -C ~/repo push origin main"],
+    ]
+    for cmd in dangerous:
+        assert not src._money_org_cmd_allowed(cmd), cmd
+
+
+def test_money_org_cmd_allowed_accepts_real_entries():
+    # The two real shell-wrapped checks shipped in money-org-state.json --
+    # this must never regress to rejecting legitimate, already-approved
+    # read-only checks.
+    ai_controller_release = [
+        "/bin/bash",
+        "-lc",
+        "ls ~/ai-controller/dist 2>/dev/null | head -5; echo ---; "
+        "git -C ~/ai-controller describe --tags --abbrev=0 2>/dev/null || echo NO_TAGS",
+    ]
+    gumroad_storefront = [
+        "/bin/bash",
+        "-lc",
+        "key=$(grep -m1 '^GUMROAD_API_KEY=' ~/.master_ai_keys | cut -d= -f2-); "
+        'curl -s --max-time 30 -H "Authorization: Bearer $key" '
+        "https://api.gumroad.com/v2/products | head -c 3000",
+    ]
+    assert src._money_org_cmd_allowed(ai_controller_release)
+    assert src._money_org_cmd_allowed(gumroad_storefront)
+    assert src._money_org_cmd_allowed(["echo", "ok"])
+
+
+def test_money_org_gather_skips_dangerous_check_cmd(tmp_path, capsys):
+    state = tmp_path / "money-org-state.json"
+    state.write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "id": "evil",
+                        "status": "active",
+                        "question": "Want me to clean up?",
+                        "deliverable": "D",
+                        "outcome": 0.9,
+                        "check_cmd": ["bash", "-lc", "rm -rf ~/projects"],
+                    },
+                    {
+                        "id": "fine",
+                        "status": "active",
+                        "question": "Want me to check?",
+                        "deliverable": "D",
+                        "outcome": 0.8,
+                        "check_cmd": ["echo", "ok"],
+                    },
+                ]
+            }
+        )
+    )
+    candidates = src.gather_money_org(state)
+    assert [c.source for c in candidates] == ["money-org:fine"]
+    assert "evil" in capsys.readouterr().out
+
+
+def test_money_org_check_handler_refuses_dangerous_cmd():
+    entry = {
+        "payload": {
+            "item_id": "evil",
+            "check_cmd": ["bash", "-lc", "rm -rf ~/projects"],
+        }
+    }
+    result = src._run_money_org_check(entry)
+    assert "refused" in result
+    assert "denylist" in result
+
+
 def test_grant_packet_handler_writes_sanitized_packet(tmp_path):
     import suggestive_thinking_sources as live_src
 

@@ -8,6 +8,7 @@ testable against injected stubs. This module is what a real caller wires in.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from collections.abc import Iterable
 from datetime import datetime, timedelta
@@ -593,6 +594,40 @@ def gather_grant_deadlines(index_path: Path | None = None) -> list[Candidate]:
     return [c for _, c in scored[:GRANT_CAP_PER_RUN]]
 
 
+# 2026-10-24 hardening: "must be read-only" was an enforced TYPE check
+# (list-of-strings, never a bare shell string) but not an enforced CONTENT
+# check -- ["/bin/bash", "-lc", "<script>"] satisfies "list of strings"
+# while handing the script to a real shell, and two of today's three real
+# money-org-state.json entries legitimately need that (piping, $(...)
+# substitution). Properly parsing an arbitrary shell script to prove it's
+# read-only needs a real shell parser, which is more machinery than this
+# warrants and risks false rejections of legitimate checks. This is the
+# honest, tractable version instead: a denylist of mutating verbs,
+# non-GET curl methods, and non-null output redirection, checked against
+# the whole joined argv (so it also covers a check_cmd that skips the
+# shell wrapper entirely, e.g. ["rm", "-rf", ...], which the old
+# type-only check would have let straight to subprocess.run). _meta in
+# the state file itself says Hermes/batch crons keep it current -- i.e.
+# unsupervised automation already writes these entries -- so this isn't
+# a theoretical gap.
+_MONEY_ORG_DANGEROUS_PATTERN = re.compile(
+    r"\b(rm|mv|cp|dd|chmod|chown|kill|pkill|sudo|shutdown|reboot|mkfs|"
+    r"truncate|unlink|systemctl|useradd|userdel|passwd|eval|exec)\b"
+    r"|git\s+(?:\S+\s+)*?(push|commit|reset\s+--hard|clean)\b"
+    r"|-X\s*(POST|PUT|DELETE|PATCH)"
+    r"|>>?(?!\s*/dev/null)",
+    re.IGNORECASE,
+)
+
+
+def _money_org_cmd_allowed(cmd: list[str]) -> bool:
+    """Reject a check_cmd whose joined argv matches a known mutating
+    pattern. Denylist, not allowlist -- incomplete by nature, but it
+    doesn't require parsing the embedded shell script to stay correct
+    against the real entries in money-org-state.json today."""
+    return not _MONEY_ORG_DANGEROUS_PATTERN.search(" ".join(cmd))
+
+
 def gather_money_org(state_path: Path | None = None) -> list[Candidate]:
     """GATHER — the MONEY/ORG source (2026-10-23 fix order, Hermes half).
 
@@ -623,6 +658,13 @@ def gather_money_org(state_path: Path | None = None) -> list[Candidate]:
             and all(isinstance(part, str) for part in check_cmd)
         ):
             continue  # defect guard: no real executable check, no surface
+        if not _money_org_cmd_allowed(check_cmd):
+            print(
+                f"[SUGGEST] money-org item {item.get('id')!r} has a "
+                "check_cmd that trips the mutating-command denylist, "
+                "refusing to surface it"
+            )
+            continue
         try:
             outcome = min(1.0, max(0.0, float(item.get("outcome", 0.0))))
         except Exception:
@@ -728,8 +770,13 @@ def _run_grant_packet(entry: dict) -> str:
 def _run_money_org_check(entry: dict) -> str:
     """Executor for the MONEY/ORG source's Yes: run the item's own
     list-form read-only check exactly as stored in the state file and
-    report the output. Refuses shell-string form on principle — the state
-    file's format is argv, and argv is what argv gets."""
+    report the output. Refuses a bare shell-string cmd on principle — the
+    state file's format is argv, and argv is what argv gets — but argv
+    can still legitimately be ["bash", "-lc", "<script>"] (two of today's
+    real entries need the piping/substitution that requires), so that
+    alone doesn't prove read-only. _money_org_cmd_allowed's denylist is
+    the actual enforcement of "read-only" (2026-10-24 hardening, see its
+    own docstring for what it does and doesn't catch)."""
     payload = entry.get("payload") or {}
     cmd = payload.get("check_cmd")
     if not (
@@ -738,6 +785,15 @@ def _run_money_org_check(entry: dict) -> str:
         return (
             "refused: check_cmd must be a non-empty list of argv strings "
             "(state-file format) — never a shell string"
+        )
+    if not _money_org_cmd_allowed(cmd):
+        # Defense in depth: gather_money_org already screens this at
+        # surface time, so reaching here means an entry was queued
+        # directly, bypassing GATHER. Refuse rather than run it blind.
+        return (
+            "refused: check_cmd trips the mutating-command denylist "
+            "(write/kill/sudo/non-GET curl/non-null redirect) — "
+            "money_org_check is read-only by contract"
         )
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
