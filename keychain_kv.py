@@ -59,6 +59,9 @@ _KV_KEY_MAP = {
     # does not have those scopes and will 403 at post time.
     "FB_ACCESS_TOKEN": "fb_access_token",
     "FB_PAGE_ID": "fb_page_id",
+    # 2026-10-26: Meta Model API (Muse Spark/Wonder/Image, api.meta.ai/v1).
+    # OpenAI-compatible, Bearer auth. Same key drives Muse Code + OpenCode.
+    "MODEL_API_KEY": "meta",
 }
 
 # Reverse map (short name -> canonical uppercase env-style name), used by
