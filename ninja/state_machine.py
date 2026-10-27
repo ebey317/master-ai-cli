@@ -15,6 +15,7 @@ from __future__ import annotations
 import enum
 import math
 import os
+import random
 import signal
 import sys
 from collections.abc import Callable
@@ -91,6 +92,95 @@ def drift_step(
         current[0] + (target[0] - current[0]) * alpha,
         current[1] + (target[1] - current[1]) * alpha,
     )
+
+
+class LivingIdle:
+    """Organic, non-periodic idle motion generator.
+
+    Instead of a fixed sine bob, amplitude, effective period and phase are all
+    random-walked and reseeded at irregular intervals.  Random pauses, slow
+    tilt/look shifts, and occasional scale changes keep the motion alive and
+    never visibly periodic.
+    """
+
+    def __init__(self, tick_s: float = 0.05) -> None:
+        self.tick_s = tick_s
+        self.bob_offset = 0.0
+        self.bob_amp = 3.0
+        self.bob_period_s = 4.0
+        self.bob_phase = random.random() * 2.0 * math.pi
+        self.bob_target = 0.0
+        self.tilt = 0.0
+        self.tilt_target = 0.0
+        self.scale = 1.0
+        self.scale_target = 1.0
+        self.reseed_ticks = 0
+        self.pause_ticks = 0
+        self.corner_timer = 0
+        self._reseed()
+
+    def _reseed(self) -> None:
+        """Pick fresh motion parameters; called at irregular intervals."""
+        self.bob_amp = random.uniform(1.5, 7.0)
+        self.bob_period_s = random.uniform(2.5, 7.0)
+        # Random phase jump on reseed so the waveform never realigns.
+        self.bob_phase = random.random() * 2.0 * math.pi
+        self.reseed_ticks = random.randint(40, 120)  # 2-6 s at 50 ms ticks
+        self.bob_target = random.uniform(-self.bob_amp, self.bob_amp)
+        self.tilt_target = random.uniform(-0.12, 0.12)
+        self.scale_target = random.uniform(0.96, 1.06)
+
+    def tick(self) -> tuple[float, float, float]:
+        """Return ``(bob_offset, tilt_angle, scale)`` for this frame."""
+        if self.reseed_ticks <= 0:
+            self._reseed()
+        else:
+            self.reseed_ticks -= 1
+
+        if self.pause_ticks > 0:
+            self.pause_ticks -= 1
+            return (self.bob_offset, self.tilt, self.scale)
+
+        # Occasional random pause: 0.5-2 s, roughly once every ~30 s.
+        if random.random() < 0.003:
+            self.pause_ticks = random.randint(10, 40)
+
+        # Random-walk the bob target while the sine component advances with a
+        # drifting period/phase; smooth the result so it feels like breath.
+        omega = 2.0 * math.pi / self.bob_period_s
+        self.bob_phase += omega * self.tick_s
+        sine_target = math.sin(self.bob_phase) * self.bob_amp
+        # Add a second, slower non-harmonic term so no clean loop forms.
+        sine_target += (
+            0.35 * math.sin(self.bob_phase * 0.31 + random.random()) * self.bob_amp
+        )
+        # Random-walk perturbation on top of the sine.
+        if random.random() < 0.08:
+            self.bob_target = random.uniform(-self.bob_amp, self.bob_amp)
+        target = 0.6 * sine_target + 0.4 * self.bob_target
+        self.bob_offset = drift_step((self.bob_offset, 0.0), (target, 0.0), 0.08)[0]
+
+        # Slow tilt/look moves.
+        if random.random() < 0.02:
+            self.tilt_target = random.uniform(-0.12, 0.12)
+        self.tilt = drift_step((self.tilt, 0.0), (self.tilt_target, 0.0), 0.05)[0]
+
+        # Subtle scale breathing.
+        if random.random() < 0.015:
+            self.scale_target = random.uniform(0.96, 1.05)
+        self.scale = drift_step((self.scale, 0.0), (self.scale_target, 0.0), 0.04)[0]
+
+        return (self.bob_offset, self.tilt, self.scale)
+
+    def maybe_corner(self, current: int, num_corners: int) -> int | None:
+        """Return a new corner index to drift toward, or ``None``."""
+        if self.corner_timer <= 0:
+            self.corner_timer = random.randint(100, 400)  # 5-20 s
+            choices = [i for i in range(num_corners) if i != current]
+            if choices:
+                return random.choice(choices)
+        self.corner_timer -= 1
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -219,9 +309,9 @@ class ThootieOverlay:
     buttons are readable.
 
     Motion is driven by a single GLib timer:
-        - idle hover bob always
+        - living idle motion when IDLE (random-walk bob/tilt/scale, random
+          pauses, occasional corner drifts; never a fixed loop)
         - drift to the next parked corner on every state change
-        - gentle scale pulse while listening (IDLE)
         - window shake on DENIED
         - scale + spin flourish on APPROVED_RUN
     """
@@ -232,10 +322,6 @@ class ThootieOverlay:
     ACTIVE_HEIGHT = 360
 
     # animation constants
-    BOB_AMP = 3
-    BOB_SPEED = 0.0785  # ~4 s bob period at 50 ms ticks
-    PULSE_AMP = 0.04
-    PULSE_SPEED = 0.06  # half the previous speed
     SHAKE_AMP = 8
     SHAKE_DURATION = 30  # 50 ms ticks -> ~1.5 s
     FLOURISH_DURATION = 50  # ~2.5 s
@@ -341,8 +427,8 @@ class ThootieOverlay:
         self._approval_loop: Any | None = None
 
         # animation state
-        self._bob_phase = 0.0
-        self._pulse_phase = 0.0
+        self._living_idle = LivingIdle(tick_s=0.05)
+        self._shake_phase = 0.0
         self._avatar_scale = 1.0
         self._avatar_angle = 0.0
         self._shake_remaining = 0
@@ -602,16 +688,27 @@ class ThootieOverlay:
         nx, ny = drift_step((self._pos[0], self._pos[1]), (tx, ty))
         self._pos = [nx, ny]
 
-        # Always-on hover bob.
-        self._bob_phase += self.BOB_SPEED
-        bob_y = math.sin(self._bob_phase) * self.BOB_AMP
+        # Living idle motion: organic, never periodic. Only active in IDLE.
+        bob_y = 0.0
+        if self.machine.state == ThootieState.IDLE:
+            bob_y, self._avatar_angle, self._avatar_scale = self._living_idle.tick()
+            # Occasional random corner drift while idle.
+            new_corner = self._living_idle.maybe_corner(
+                self._target_index, len(_WAYPOINTS)
+            )
+            if new_corner is not None and new_corner != self._target_index:
+                self._target_index = new_corner
+        else:
+            # Advance a dedicated shake phase even when not bobbing.
+            self._shake_phase += 0.5
+            self._living_idle.tick()  # keep generator warm, but ignore output
 
         # Denied shake: jitter the window around the eased position.
         sx = sy = 0.0
         if self._shake_remaining > 0:
             self._shake_remaining -= 1
-            sx = math.sin(self._bob_phase * 23.0) * self.SHAKE_AMP
-            sy = math.cos(self._bob_phase * 19.0) * self.SHAKE_AMP
+            sx = math.sin(self._shake_phase * 23.0) * self.SHAKE_AMP
+            sy = math.cos(self._shake_phase * 19.0) * self.SHAKE_AMP
             if self._shake_remaining == 0:
                 sx = sy = 0.0
 
@@ -626,15 +723,12 @@ class ThootieOverlay:
             if self._flourish_remaining == 0:
                 self._avatar_scale = 1.0
                 self._avatar_angle = 0.0
-        elif self.machine.state == ThootieState.IDLE:
-            # Listening pulse while idle.
-            self._pulse_phase += self.PULSE_SPEED
-            self._avatar_scale = 1.0 + self.PULSE_AMP * math.sin(self._pulse_phase)
-            self._avatar_angle = 0.0
-        else:
+        elif self.machine.state != ThootieState.IDLE:
             # Return to neutral.
             self._avatar_scale = drift_step((self._avatar_scale, 0.0), (1.0, 0.0))[0]
-            self._avatar_angle = 0.0
+            self._avatar_angle = drift_step(
+                (self._avatar_angle, 0.0), (0.0, 0.0), 0.08
+            )[0]
 
         self._win.move(int(nx + sx), int(ny + bob_y + sy))
         self._avatar.queue_draw()
