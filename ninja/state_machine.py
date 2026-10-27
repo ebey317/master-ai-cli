@@ -82,7 +82,7 @@ class ThootieStateMachine:
 def drift_step(
     current: tuple[float, float],
     target: tuple[float, float],
-    alpha: float = 0.08,
+    alpha: float = 0.04,
 ) -> tuple[float, float]:
     """Ease ``current`` toward ``target``; ``alpha`` in (0, 1]."""
     if not 0 < alpha <= 1:
@@ -155,13 +155,12 @@ def _ensure_display() -> None:
 def _build_css(theme: Theme) -> bytes:
     return f"""
 window {{
-    background-color: {theme.background};
+    background-color: transparent;
 }}
 #panel {{
-    background-color: {theme.surface};
-    border: 2px solid {theme.accent};
-    border-radius: 16px;
-    padding: 12px;
+    background-color: transparent;
+    border: none;
+    padding: 0;
 }}
 #title {{
     color: {theme.accent};
@@ -227,16 +226,16 @@ class ThootieOverlay:
         - scale + spin flourish on APPROVED_RUN
     """
 
-    IDLE_SIZE = 220
-    AVATAR_SIZE = 196
+    IDLE_SIZE = 128
+    AVATAR_SIZE = 112
     ACTIVE_WIDTH = 640
     ACTIVE_HEIGHT = 360
 
     # animation constants
-    BOB_AMP = 5
-    BOB_SPEED = 0.06
-    PULSE_AMP = 0.06
-    PULSE_SPEED = 0.12
+    BOB_AMP = 3
+    BOB_SPEED = 0.0785  # ~4 s bob period at 50 ms ticks
+    PULSE_AMP = 0.04
+    PULSE_SPEED = 0.06  # half the previous speed
     SHAKE_AMP = 8
     SHAKE_DURATION = 30  # 50 ms ticks -> ~1.5 s
     FLOURISH_DURATION = 50  # ~2.5 s
@@ -275,6 +274,11 @@ class ThootieOverlay:
         self._win.set_default_size(self.IDLE_SIZE, self.IDLE_SIZE)
 
         screen = self._win.get_screen()
+        # Use the screen's RGBA visual so un-painted regions are fully transparent.
+        visual = screen.get_rgba_visual()
+        if visual is not None:
+            self._win.set_visual(visual)
+        self._win.set_app_paintable(True)
         provider = Gtk.CssProvider()
         provider.load_from_data(_build_css(self._theme))
         Gtk.StyleContext.add_provider_for_screen(
@@ -352,6 +356,8 @@ class ThootieOverlay:
         self._win.connect("map-event", self._make_clickthrough)
 
         signal.signal(signal.SIGUSR2, self._sigusr2)
+
+        self._set_active(False)
 
     def _make_avatar_area(self) -> Any:
         """Return a DrawingArea whose draw callback applies live transforms."""
@@ -457,11 +463,15 @@ class ThootieOverlay:
     def _set_active(self, active: bool) -> None:
         self._active = active
         if active:
+            self._agent_label.show()
+            self._state_label.show()
             self._right.set_no_show_all(False)
             self._right.show_all()
             self._win.resize(self.ACTIVE_WIDTH, self.ACTIVE_HEIGHT)
             self._clickthrough = False
         else:
+            self._agent_label.hide()
+            self._state_label.hide()
             self._right.set_no_show_all(True)
             self._right.hide()
             self._win.resize(self.IDLE_SIZE, self.IDLE_SIZE)
