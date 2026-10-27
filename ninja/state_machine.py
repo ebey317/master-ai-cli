@@ -204,14 +204,20 @@ except Exception:  # pragma: no cover - GTK may be absent during py_compile
     _cairo = None  # type: ignore
 
 
-# Waypoint path as fractions of the screen: top-left -> bottom-left ->
-# bottom-right. Top-right is the notification corner: exclusion zone,
-# the avatar never parks there.
+# Owner's patrol route, in order: top-left -> bottom-left -> bottom-right ->
+# bottom-left -> top-left. Straight legs, slow, hold the pattern.
+# Top-right is the notification corner: exclusion zone, never parked.
 _WAYPOINTS = [
     (0.02, 0.02),  # top-left
     (0.02, 0.98),  # bottom-left
     (0.98, 0.98),  # bottom-right
+    (0.02, 0.98),  # back to bottom-left
+    (0.02, 0.02),  # back to top-left
 ]
+# Slow patrol: fraction of remaining distance closed per 50ms tick.
+PATROL_ALPHA = 0.008
+# Owner's exact route: no random corner jumps while True.
+PATROL_EXACT_ROUTE = True
 _EXCLUDED_NOTIFICATION_CORNER = (0.98, 0.02)  # top-right
 
 _AVATAR_PATHS: dict[str, Path] = {
@@ -685,19 +691,24 @@ class ThootieOverlay:
 
     def _drift_tick(self) -> bool:
         tx, ty = self._waypoint_px(self._target_index)
-        nx, ny = drift_step((self._pos[0], self._pos[1]), (tx, ty))
+        nx, ny = drift_step((self._pos[0], self._pos[1]), (tx, ty), PATROL_ALPHA)
         self._pos = [nx, ny]
 
         # Living idle motion: organic, never periodic. Only active in IDLE.
         bob_y = 0.0
         if self.machine.state == ThootieState.IDLE:
             bob_y, self._avatar_angle, self._avatar_scale = self._living_idle.tick()
-            # Occasional random corner drift while idle.
-            new_corner = self._living_idle.maybe_corner(
-                self._target_index, len(_WAYPOINTS)
-            )
-            if new_corner is not None and new_corner != self._target_index:
-                self._target_index = new_corner
+            if not PATROL_EXACT_ROUTE:
+                # Occasional random corner drift while idle.
+                new_corner = self._living_idle.maybe_corner(
+                    self._target_index, len(_WAYPOINTS)
+                )
+                if new_corner is not None and new_corner != self._target_index:
+                    self._target_index = new_corner
+        # Patrol: arrived within a few px -> next leg of the route.
+        if abs(nx - tx) < 8 and abs(ny - ty) < 8:
+            self._waypoint_index = self._target_index
+            self._target_index = (self._target_index + 1) % len(_WAYPOINTS)
         else:
             # Advance a dedicated shake phase even when not bobbing.
             self._shake_phase += 0.5
