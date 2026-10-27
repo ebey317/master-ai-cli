@@ -31,8 +31,8 @@ def show_ibis():
     screen = Gdk.Screen.get_default()
     sw, sh = screen.get_width(), screen.get_height()
     # Fixed SIZE: get_size() pre-realize returns 0 and parks us off-screen.
-    # Top-right keeps clear of the bottom panel.
-    win.move(sw - SIZE - MARGIN, MARGIN)
+    # Top-left: owner's corner. Clear of window chrome.
+    win.move(MARGIN, MARGIN)
 
     GLib.timeout_add_seconds(DURATION_S, Gtk.main_quit)
     win.connect("destroy", Gtk.main_quit)
