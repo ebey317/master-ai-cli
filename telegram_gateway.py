@@ -32,6 +32,7 @@ from pathlib import Path
 from telegram import BotCommand, Update
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -371,6 +372,40 @@ def main():
         reply = await asyncio.to_thread(_run_sensei_task, text)
         await update.message.reply_text(reply)
 
+    async def suggestive_callback(
+        update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Approve/Pass taps on suggestive-thinking notifications.
+
+        The decision lives on the notification itself (Lijah's
+        2026-10-25 approval spec): 'sg:a:<id>' approves the queued
+        approval_queue entry — its registered handler runs the work —
+        and 'sg:p:<id>' rejects it, silently. All state and execution
+        live in suggestive_notify / approval_queue; this handler is
+        only the doorbell, and no model is involved anywhere in it.
+        """
+        query = update.callback_query
+        if query is None:
+            return
+        if not _is_allowed(update, allowed_ids):
+            await query.answer("Not your bot.")
+            return
+        import suggestive_notify
+
+        parsed = suggestive_notify.parse_callback(query.data or "")
+        if parsed is None:
+            await query.answer("Unknown suggestion button.")
+            return
+        decision, notify_id = parsed
+        _ok, text = await asyncio.to_thread(
+            suggestive_notify.handle_decision, notify_id, decision
+        )
+        await query.answer()
+        try:
+            await query.edit_message_text(text)
+        except Exception:
+            LOG.exception("could not edit suggestion message after decision")
+
     async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         LOG.error(
             "Unhandled error processing update %r", update, exc_info=context.error
@@ -382,12 +417,28 @@ def main():
         # ever called setMyCommands, the one-time registration that tells
         # the client UI what to suggest. Functionally complete, just not
         # discoverable without already knowing /help existed.
+        # 2026-10-31 (AI Controller setup pass): the menu now lists every
+        # command a handler actually backs -- start (handled beside help)
+        # plus the single-word Sensei REPL commands the generic handler
+        # bridges (doctor/tasks/memory/standards/tips/keys/approved/git).
+        # Keep this list in sync with EXPECTED_BOT_COMMANDS in
+        # ai-controller's scripts/controller_setup.py, whose register-
+        # commands verb applies the same list live without a restart.
         await app.bot.set_my_commands(
             [
+                BotCommand("start", "open the bot / show help"),
                 BotCommand("help", "show available commands"),
                 BotCommand("status", "gateway uptime + current model"),
                 BotCommand("model", "show or switch the answering model"),
                 BotCommand("new", "start a fresh Sensei REPL session"),
+                BotCommand("doctor", "run Sensei doctor checks"),
+                BotCommand("tasks", "show the Sensei task list"),
+                BotCommand("memory", "show Sensei memory"),
+                BotCommand("standards", "show Sensei standards"),
+                BotCommand("tips", "show Sensei tips"),
+                BotCommand("keys", "list configured key names"),
+                BotCommand("approved", "show approved items"),
+                BotCommand("git", "git status via Sensei"),
             ]
         )
 
@@ -401,6 +452,7 @@ def main():
     # this only fires for commands none of those already claimed.
     app.add_handler(MessageHandler(filters.COMMAND, generic_command_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, free_text_handler))
+    app.add_handler(CallbackQueryHandler(suggestive_callback, pattern=r"^sg:"))
     app.add_error_handler(on_error)
 
     try:

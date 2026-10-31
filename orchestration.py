@@ -277,6 +277,50 @@ def orchestrate(history: Any, user_text: Any, image_path: Any | None = None) -> 
     # not part of the automatic cloud fallback policy.
     any_cloud = have_groq or have_fireworks or have_or or have_gemini
 
+    # ── 2026-10-25 (Elijah): "i don't know why there's models hard-coded.
+    # it should be the active model." ─────────────────────────────────────
+    # The route used to hard-code provider NAMES — "fireworks" in five
+    # places. Those rot: the Fireworks KEY is present but the ACCOUNT is
+    # suspended for billing (HTTP 412), so every peacetime chat was routed
+    # to a lane that can never answer — and the fallback that answered
+    # instead did not honour the reply-shape contract (the <PLAN> block
+    # on multi-step tasks). The ACTIVE model is the routing target now;
+    # a provider chain is only the fallback.
+    # "The active model" means the one the operator SELECTED (the pin).
+    # It deliberately does NOT fall back to MODELS["master"] — that is the
+    # LOCAL 3B model, and routing a normal chat to CPU inference turns a
+    # 2-second turn into a 2-minute one. With nothing pinned, _have_active
+    # is False and the provider chain below runs as before (minus the
+    # hard-coded Fireworks lane).
+    _active_model = ""
+    try:
+        _active_model = str(getattr(_ma_mod, "PINNED_MODEL", "") or "").strip()
+    except Exception:
+        _active_model = ""
+    _have_active = bool(_active_model)
+    _active_is_cloud = False
+    if _have_active:
+        try:
+            _cn = set(getattr(_ma_mod, "CLOUD_MODEL_NAMES", set()) or set())
+        except Exception:
+            _cn = set()
+        _al = _active_model.lower()
+        _active_is_cloud = (
+            _al in _cn
+            or "/" in _active_model
+            or _al.startswith(
+                (
+                    "nvidia::",
+                    "cerebras::",
+                    "groq::",
+                    "qwen::",
+                    "ollama-cloud::",
+                    "opencode::",
+                    "opencode-go::",
+                )
+            )
+        )
+
     # 1. Context pressure — save & refresh before we blow context
     total_chars = sum(len(m.get("content", "") or "") for m in history)
     # 2026-09-25: the budget is the ACTIVE model's real window at 95%,
@@ -610,28 +654,30 @@ def orchestrate(history: Any, user_text: Any, image_path: Any | None = None) -> 
                     "model": "deepseek-r1",
                     "reason": "peacetime alter/code/deep → DeepSeek-R1",
                 }
-            if have_fireworks:
+            if _have_active:
                 return {
-                    "route": "cloud",
-                    "model": "fireworks",
-                    "reason": "peacetime alter/code/deep → Fireworks DeepSeek V3.1",
+                    "route": "cloud" if _active_is_cloud else "local",
+                    "model": _active_model,
+                    "reason": (
+                        f"peacetime alter/code/deep → {_active_model} (active model)"
+                    ),
                 }
             return {
                 "route": "cloud_deep",
                 "model": MODELS["qwen3"],
                 "reason": "peacetime alter/code/deep → qwen3.5:cloud",
             }
+        if _have_active:
+            return {
+                "route": "cloud" if _active_is_cloud else "local",
+                "model": _active_model,
+                "reason": f"peacetime chat → {_active_model} (active model)",
+            }
         if have_groq:
             return {
                 "route": "cloud_fast",
                 "model": "groq",
                 "reason": "peacetime chat → Groq (fast lane)",
-            }
-        if have_fireworks:
-            return {
-                "route": "cloud",
-                "model": "fireworks",
-                "reason": "peacetime chat → Fireworks",
             }
         if have_or:
             return {
@@ -775,14 +821,14 @@ def orchestrate(history: Any, user_text: Any, image_path: Any | None = None) -> 
                 "reason": "deep → 7b brain (local)",
             }
         ]
-        if have_fireworks:
+        if _have_active:
             candidates.append(
                 {
-                    "route": "cloud",
-                    "model": "fireworks",
+                    "route": "cloud" if _active_is_cloud else "local",
+                    "model": _active_model,
                     "task_type": "deep",
-                    "base_score": 76,
-                    "reason": "deep → Fireworks fallback",
+                    "base_score": 90,
+                    "reason": "deep → " + _active_model + " (active model)",
                 }
             )
         if have_gemini:
@@ -828,14 +874,14 @@ def orchestrate(history: Any, user_text: Any, image_path: Any | None = None) -> 
                 "reason": f"long ({len(words)} words) → 7b local",
             }
         ]
-        if have_fireworks:
+        if _have_active:
             candidates.append(
                 {
-                    "route": "cloud",
-                    "model": "fireworks",
+                    "route": "cloud" if _active_is_cloud else "local",
+                    "model": _active_model,
                     "task_type": "long",
-                    "base_score": 72,
-                    "reason": f"long ({len(words)} words) → Fireworks fallback",
+                    "base_score": 90,
+                    "reason": "long → " + _active_model + " (active model)",
                 }
             )
         if have_gemini:
@@ -912,14 +958,14 @@ def orchestrate(history: Any, user_text: Any, image_path: Any | None = None) -> 
                 ),
             }
         )
-    if have_fireworks:
+    if _have_active:
         candidates.append(
             {
-                "route": "cloud",
-                "model": "fireworks",
+                "route": "cloud" if _active_is_cloud else "local",
+                "model": _active_model,
                 "task_type": "default",
-                "base_score": 66,
-                "reason": "default → Fireworks fallback",
+                "base_score": 88,
+                "reason": "default → " + _active_model + " (active model)",
             }
         )
     if have_gemini:

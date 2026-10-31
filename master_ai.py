@@ -150,12 +150,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from command_registry import COMMANDS as _REGISTRY_COMMANDS
-
 import approval_queue
 import orchestration as _orchestration_mod  # noqa: E402 — after sensei_tables
 import perpetual_review
 import runtime_host
+from command_registry import COMMANDS as _REGISTRY_COMMANDS
 from sensei_tables import (  # noqa: F401
     _A_APPEAR,
     _A_AUTO,
@@ -6093,6 +6092,43 @@ def _pin_model_clear_deprecated(model: Any) -> None:
         log(f"PIN_CLEAR_ERROR: {e}")
 
 
+def _pin_model_clear_permanent(model: Any, reason: Any = "") -> None:
+    """Clear a PINNED model that the provider says can never work for us.
+
+    2026-10-25: only 410 ModelDeprecated cleared the pin. A pinned model
+    that returns 400 ModelProtocolUnsupported ("Model does not support this
+    protocol") or 404 model-not-found is just as dead — but it stayed pinned
+    forever, so every turn paid a doomed primary call before falling
+    through to the chain. `opencode-go::minimax-m2.7` sat pinned at 12/12
+    failures that way, and it broke the plan-block emission test.
+
+    Deliberately NOT cleared on 401/403: those are credential/region
+    problems that a human can fix, and silently unpinning would hide them.
+    """
+    try:
+        pin = (
+            ACTIVE_MODEL_FILE.read_text().strip() if ACTIVE_MODEL_FILE.exists() else ""
+        )
+        if pin and pin.split("::")[-1] == model:
+            ACTIVE_MODEL_FILE.write_text("")
+            log(
+                f"PIN_CLEARED: {pin} is permanently unusable for us "
+                f"({reason}) — active model reset to AUTO."
+            )
+            notify_desktop(
+                SimpleNamespace(
+                    title="Sensei",
+                    body=(
+                        f"Pinned model {model} can never work here "
+                        f"({reason}) — pin cleared (AUTO)."
+                    ),
+                    urgency="normal",
+                )
+            )
+    except Exception as e:
+        log(f"PIN_CLEAR_ERROR: {e}")
+
+
 def _ask_opencode_zen(messages: Any, model: Any, label: Any, timeout: int = 60) -> Any:
     """Generic OpenCode Zen relay caller — keyless, takes an explicit model id
     so the plan-debate fallback can reach mimo-v2.5-free (a clean
@@ -6496,9 +6532,18 @@ def _ask_opencode_go(messages: Any, model: Any, label: Any, timeout: int = 120) 
                 _tombstone_mark("opencode-go", model, body[:80])
                 _pin_model_clear_deprecated(model)
             elif e.code in (400, 404) and (
-                "unavailable" in low or "not found" in low or "deprecated" in low
+                "unavailable" in low
+                or "not found" in low
+                or "deprecated" in low
+                or "does not support this protocol" in low
+                or "protocolunsupported" in low
             ):
                 _tombstone_mark("opencode-go", model, body[:80])
+                # 2026-10-25: a protocol-unsupported / not-found model is
+                # permanently unusable for us — same as deprecated. Leaving
+                # it pinned means every turn pays a doomed primary call.
+                if "protocol" in low or "not found" in low:
+                    _pin_model_clear_permanent(model, f"HTTP {e.code} {body[:70]}")
             globals()["_LAST_CLOUD_ERROR"] = (
                 f"opencode-go/{label}: HTTP {e.code} — {body[:120] or 'no body'}"
             )
@@ -7281,7 +7326,17 @@ def _lane_note(lane: Any, ok: Any, latency_s: Any) -> None:
 
 def _lane_rank(lanes: Any) -> Any:
     """Order lanes by measured health (fast + alive first). Falls back to
-    the caller's order when there is no health data yet."""
+    the caller's order when there is no health data yet.
+
+    2026-10-25: NOT used for the main chain any more. Health-ordering the
+    chain made the FASTEST lane answer first, and a faster lane is not
+    always a lane that honours the request's contract — the plan-block
+    emission test (multi-step browser task -> reply must start with
+    <PLAN>) started failing consistently because the fastest model ignored
+    the instruction and emitted directives directly. Health now FILTERS dead
+    lanes out of the operator's chain instead of reordering it; the hedged
+    race is what handles a slow lane, so the operator keeps choosing WHICH
+    live model answers."""
     try:
         lanes = list(lanes)
     except Exception:
@@ -7294,11 +7349,43 @@ def _lane_rank(lanes: Any) -> Any:
         return lanes
 
 
+def _lane_drop_dead(lanes: Any) -> Any:
+    """Keep the operator's order, remove lanes proven dead. This is what the
+    chain uses: it changes WHO answers only when the lane cannot answer."""
+    try:
+        lanes = list(lanes)
+    except Exception:
+        return []
+    if lane_health is None:
+        return lanes
+    try:
+        keep = []
+        for l in lanes:
+            if lane_health.is_known_bad(l):
+                continue
+            keep.append(l)
+        return keep or lanes
+    except Exception:
+        return lanes
+
+
 def _lane_known_fast(lane: Any) -> bool:
     if lane_health is None:
         return False
     try:
         return bool(lane_health.known_fast(str(lane), _HEDGE_SLOWER_THAN_S))
+    except Exception:
+        return False
+
+
+def _lane_known_slow(lane: Any) -> bool:
+    """A lane with a HISTORY of being slow or failing. An unknown lane is
+    NOT slow — it is untried, and racing a backup against an untried lane
+    lets a different model answer a request whose reply shape matters."""
+    if lane_health is None:
+        return False
+    try:
+        return bool(lane_health.known_slow(str(lane), _HEDGE_SLOWER_THAN_S))
     except Exception:
         return False
 
@@ -7786,6 +7873,15 @@ def ask_cloud(messages: Any, provider: str = "opencode") -> Any:
     # anthropic` (see _VALID_FALLBACK_NAMES) if that's ever wanted later.
     fn_map = {
         "opencode": ask_cloud_opencode_free,
+        # 2026-10-25: "fireworks" was NEVER in fn_map, so the router's own
+        # choice — "peacetime chat -> Fireworks" — silently fell through to
+        # the else-branch (the Zen free lane), which is now tombstoned
+        # (FreeTierError). Every peacetime chat was paying a doomed call
+        # before falling through, and the model that answered was not the
+        # model the router picked — which broke the <PLAN> emission
+        # contract on multi-step tasks. The function existed; the dispatch
+        # entry did not.
+        "fireworks": ask_cloud_fireworks_dsv3,
         "opencode-go": lambda msgs: _ask_opencode_go(msgs, "kimi-k3", "kimi-k3"),
         "glm-5.3-flash": lambda msgs: _ask_opencode_go(
             msgs, "glm-5.3-flash", "glm-5.3-flash"
@@ -7895,13 +7991,30 @@ def ask_cloud(messages: Any, provider: str = "opencode") -> Any:
     _winner_lane = provider
     if not _cloud_allowed(provider):
         r = None
-    elif _lane_known_fast(provider):
+    elif not _lane_known_slow(provider):
+        # Unknown or proven-fine lane: call it DIRECTLY. The operator picked
+        # this model, and a request whose reply SHAPE matters (a multi-step
+        # task that must emit a <PLAN> block) breaks when a different,
+        # faster model answers instead. The race below exists to protect
+        # against a lane that has PROVEN slow, not an untried one.
         r = _call_with_hard_timeout(
             _asker, messages, cloud_provider=provider, timeout=_CLOUD_HARD_TIMEOUT
         )
     else:
         _backup_lanes = _pick_backup_lanes(fn_map, exclude=(provider,), count=2)
         _backups = [(l, fn_map[l]) for l in _backup_lanes if l in fn_map]
+        # Kill switch: MASTER_AI_DISABLE_HEDGE=1 turns the race off entirely
+        # (serial fallback only). Exists because a race can let a DIFFERENT
+        # model answer a request whose reply SHAPE matters — e.g. a request
+        # that must emit a plan block. One env var falls back to the old
+        # serial behaviour with no redeploy.
+        if os.environ.get("MASTER_AI_DISABLE_HEDGE", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            _backups = []
         if _backups:
             _raced = True
             _won = _race_first_answer(
@@ -8043,7 +8156,12 @@ def ask_cloud(messages: Any, provider: str = "opencode") -> Any:
     # every hop its own 150s. Five hops x 150s was 12.5 minutes — the
     # "10 to 20 minutes" it used to take.
     _seed_order = [name for name in _load_fallback_order() if name in fn_map]
-    _ordered = _lane_rank(_seed_order)
+    # Health orders the chain by measured speed, and dead lanes are dropped
+    # outright. The reply-shape contract (a multi-step task that must emit
+    # a <PLAN> block) is protected by the HEDGE RULE instead: the race only
+    # fires for a primary with a PROVEN-slow history, so an untried or
+    # proven-fine lane always answers with its own reply.
+    _ordered = _lane_drop_dead(_lane_rank(_seed_order))
     fallback_order = [(name, fn_map[name]) for name in _ordered if name in fn_map]
     if [n for n, _f in fallback_order] != _seed_order:
         log(

@@ -838,6 +838,11 @@ def deliver_default(candidate: Candidate) -> None:
     this is also where the proposal becomes real: it queues an
     approval_queue.py entry whose approval runs the registered handler, so
     saying yes actually executes instead of just being acknowledged.
+
+    2026-10-25 (Osiris, at Lijah's order): also fires a phone notification
+    via suggestive_notify — a Telegram message from Master AI's own bot
+    whose inline buttons approve/reject that same queue entry, so the
+    decision is tappable from anywhere instead of only at this desktop.
     """
     message = candidate.question or candidate.headline
     if candidate.deliverable:
@@ -856,17 +861,31 @@ def deliver_default(candidate: Candidate) -> None:
             subprocess.run([str(NOTIFY_VOICE), message], timeout=10)
         except Exception:
             pass  # voice is a nice-to-have; never let it break the loop
+    entry_id = None
     if candidate.action_type:
-        approval_queue.queue(
+        entry_id = approval_queue.queue(
             entry_type=candidate.action_type,
             who="suggestive_thinking",
             what=candidate.deliverable or candidate.headline,
             where=candidate.source,
             why=candidate.detail or candidate.headline,
             how=candidate.question,
+            when="immediately on approval",
             payload=candidate.action_payload or {},
             trigger="suggestive-thinking wake cycle",
         )
+    # Phone notification carrying the decision itself (2026-10-25 design
+    # law: native to Master AI, model-agnostic, never piped through an
+    # outside agent). The Telegram message's buttons approve/reject the
+    # approval_queue entry queued above — see suggestive_notify.py.
+    # Best-effort like the desktop popup: a failed send never breaks
+    # the loop.
+    try:
+        import suggestive_notify
+
+        suggestive_notify.notify_candidate(candidate, entry_id)
+    except Exception:
+        pass
 
 
 def main() -> int:
@@ -908,6 +927,14 @@ def main() -> int:
         f"suggestive-thinking: {len(results)} candidate(s) considered, {surfaced} surfaced"
         f" (voice {'on' if vocalization_enabled() else 'off'})"
     )
+    # Unlooked-at suggestions resurface as ONE batched digest, never as
+    # individual nags (2026-10-25 approval spec). Best-effort.
+    try:
+        import suggestive_notify
+
+        suggestive_notify.maybe_send_digest()
+    except Exception:
+        pass
     return 0
 
 

@@ -15,6 +15,7 @@ Returns one of: "once" | "session" | "always" | "deny".
 
 from __future__ import annotations
 
+import os
 import sys
 import warnings
 from pathlib import Path
@@ -110,9 +111,59 @@ def _selftest() -> int:
     return 0
 
 
+def _read_card(argv: list[str]) -> str:
+    """Read approval card from a file path in argv or from stdin."""
+    if len(argv) > 1:
+        path = Path(argv[1])
+        if path.is_file():
+            return path.read_text()
+    return sys.stdin.read()
+
+
+def _ask_cli(argv: list[str]) -> int:
+    """--ask entrypoint: card file in, verdict word out, agent=tahuti default."""
+    if "DISPLAY" not in os.environ:
+        os.environ["DISPLAY"] = ":0"
+    card = _read_card(argv)
+    print(ask_avatar_approval(card, agent="tahuti"))
+    return 0
+
+
+def _pulse_cli(args: list[str]) -> int:
+    """--pulse [N]: L+R summon (2026-10-31). Show the Tahuti avatar animation
+    for N seconds (default 6), then park and exit. Fire-and-forget from ptt —
+    never blocks voice, never asks for a verdict."""
+    from gi.repository import GLib
+
+    secs = 6
+    for a in args:
+        try:
+            secs = max(2, min(30, int(a)))
+            break
+        except ValueError:
+            continue
+    if "DISPLAY" not in os.environ:
+        os.environ["DISPLAY"] = ":0"
+    try:
+        show_avatar_during_run("tahuti", "Listening — hold L+R, speak, release.")
+    except Exception:
+        return 0
+    loop = GLib.MainLoop()
+    GLib.timeout_add_seconds(secs, loop.quit)
+    try:
+        loop.run()
+    except Exception:
+        pass
+    return 0
+
+
 if __name__ == "__main__":
     if "--selftest" in sys.argv:
         raise SystemExit(_selftest())
+    if "--pulse" in sys.argv:
+        raise SystemExit(_pulse_cli(sys.argv[sys.argv.index("--pulse") + 1 :]))
+    if "--ask" in sys.argv:
+        raise SystemExit(_ask_cli(sys.argv[sys.argv.index("--ask") + 1 :]))
     test_card = (
         "WHO: Tahuti agent\n"
         "WHAT: open calculator\n"

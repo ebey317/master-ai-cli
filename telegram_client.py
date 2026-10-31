@@ -45,7 +45,7 @@ def _get_default_chat_id():
     return None
 
 
-def send_message(chat_id, text, token=None, silent=False):
+def send_message(chat_id, text, token=None, silent=False, reply_markup=None):
     """Send a plain-text message. Returns {"ok": bool, "message_id": int|None, "error": str|None}."""
     chat_id = chat_id or _get_default_chat_id()
     token = token or _get_token()
@@ -71,6 +71,8 @@ def send_message(chat_id, text, token=None, silent=False):
     }
     if silent:
         payload["disable_notification"] = True
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     data = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     try:
@@ -83,6 +85,58 @@ def send_message(chat_id, text, token=None, silent=False):
                 "message_id": body["result"].get("message_id"),
                 "error": None,
             }
+        return {
+            "ok": False,
+            "error": body.get("description", "unknown Telegram error"),
+            "message_id": None,
+        }
+    except urllib.error.HTTPError as e:
+        try:
+            detail = json.loads(e.read().decode("utf-8")).get("description", str(e))
+        except Exception:
+            detail = str(e)
+        return {"ok": False, "error": detail, "message_id": None}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "message_id": None}
+
+
+def edit_message_text(chat_id, message_id, text, token=None, reply_markup=None):
+    """Edit a message this bot previously sent. Pass
+    reply_markup={"inline_keyboard": []} to strip its buttons (e.g.
+    when a card is superseded). Same return shape as send_message."""
+    chat_id = chat_id or _get_default_chat_id()
+    token = token or _get_token()
+    if not token:
+        return {
+            "ok": False,
+            "error": "TELEGRAM_BOT_TOKEN not found in ~/.master_ai_keys",
+            "message_id": None,
+        }
+    if not chat_id or not message_id:
+        return {
+            "ok": False,
+            "error": "chat_id and message_id are required",
+            "message_id": None,
+        }
+    if not text:
+        return {"ok": False, "error": "message text is empty", "message_id": None}
+    url = f"https://api.telegram.org/bot{token}/editMessageText"
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+        "parse_mode": "HTML",
+    }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+    data = json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    try:
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        if body.get("ok"):
+            return {"ok": True, "message_id": message_id, "error": None}
         return {
             "ok": False,
             "error": body.get("description", "unknown Telegram error"),

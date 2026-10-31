@@ -1554,6 +1554,7 @@ _VALID_FALLBACK_NAMES = {
 ASK_CLOUD_BARE_PROVIDERS = frozenset(
     {
         "opencode",
+        "fireworks",
         "opencode-go",
         "glm-5.3-flash",
         "ollama-cloud",

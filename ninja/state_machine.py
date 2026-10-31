@@ -305,6 +305,30 @@ button.success {{
 """.encode()
 
 
+# Opaque approval skin (2026-10-31): the idle skin is transparent by design,
+# but an approval card must be solid — see-through text over the operator's
+# work is unreadable. Swapped in by _set_active(True); later rules win, so
+# these override the transparent window/panel above.
+_OPAQUE_CSS_TAIL = """
+window {{
+    background-color: {bg};
+    border: 2px solid {accent};
+    border-radius: 10px;
+}}
+#panel {{
+    background-color: {bg};
+    border: none;
+    padding: 6px;
+}}
+"""
+
+
+def _build_css_active(theme: Theme) -> bytes:
+    base = _build_css(theme).decode("utf-8")
+    tail = _OPAQUE_CSS_TAIL.format(bg=theme.background, accent=theme.accent)
+    return (base + tail).encode("utf-8")
+
+
 class ThootieOverlay:
     """Floating persistent avatar overlay.
 
@@ -324,8 +348,8 @@ class ThootieOverlay:
 
     IDLE_SIZE = 128
     AVATAR_SIZE = 112
-    ACTIVE_WIDTH = 640
-    ACTIVE_HEIGHT = 360
+    ACTIVE_WIDTH = 380
+    ACTIVE_HEIGHT = 260
 
     # animation constants
     SHAKE_AMP = 8
@@ -371,10 +395,10 @@ class ThootieOverlay:
         if visual is not None:
             self._win.set_visual(visual)
         self._win.set_app_paintable(True)
-        provider = Gtk.CssProvider()
-        provider.load_from_data(_build_css(self._theme))
+        self._css_provider = Gtk.CssProvider()
+        self._css_provider.load_from_data(_build_css(self._theme))
         Gtk.StyleContext.add_provider_for_screen(
-            screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+            screen, self._css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
 
         self._panel = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
@@ -561,6 +585,13 @@ class ThootieOverlay:
             self._right.show_all()
             self._win.resize(self.ACTIVE_WIDTH, self.ACTIVE_HEIGHT)
             self._clickthrough = False
+            # Opaque approval skin (see _build_css_active): the idle skin is
+            # transparent by design, but cards must be solid to be readable.
+            self._css_provider.load_from_data(_build_css_active(self._theme))
+            # The waypoint anchor assumes IDLE_SIZE: a 480px window parked at
+            # the 0.98 waypoint hangs off the screen (observed 2026-10-31).
+            # Clamp after every resize so the card stays fully visible.
+            self._clamp_on_screen(self.ACTIVE_WIDTH, self.ACTIVE_HEIGHT)
         else:
             self._agent_label.hide()
             self._state_label.hide()
@@ -568,6 +599,7 @@ class ThootieOverlay:
             self._right.hide()
             self._win.resize(self.IDLE_SIZE, self.IDLE_SIZE)
             self._clickthrough = True
+            self._css_provider.load_from_data(_build_css(self._theme))
         self._make_clickthrough()
 
     def clear_buttons(self) -> None:
@@ -680,6 +712,11 @@ class ThootieOverlay:
         self._pos = [float(x), float(y)]
         self._win.show_all()
         self._win.move(x, y)
+        # show() runs after _set_active: re-clamp, because the waypoint
+        # anchor assumes IDLE_SIZE and the active card would hang off-screen
+        # (observed 2026-10-31: y=932 on a 1080p screen).
+        if self._active:
+            self._clamp_on_screen(self.ACTIVE_WIDTH, self.ACTIVE_HEIGHT)
         GLib.timeout_add(50, self._drift_tick)
 
     def _waypoint_px(self, index: int) -> tuple[int, int]:
@@ -689,7 +726,19 @@ class ThootieOverlay:
         fx, fy = _WAYPOINTS[index % len(_WAYPOINTS)]
         return (int((sw - self.IDLE_SIZE) * fx), int((sh - self.IDLE_SIZE) * fy))
 
+    def _clamp_on_screen(self, w: int, h: int) -> None:
+        """Move the window so a w×h box at its position stays on-screen."""
+        screen = self._win.get_screen()
+        sw = screen.get_width()
+        sh = screen.get_height()
+        x, y = self._win.get_position()
+        self._win.move(max(0, min(x, sw - w)), max(0, min(y, sh - h)))
+
     def _drift_tick(self) -> bool:
+        # Frozen outside IDLE (2026-10-31): approvals must not float around —
+        # the card stays parked where it appeared until the verdict lands.
+        if self.machine.state != ThootieState.IDLE:
+            return True
         tx, ty = self._waypoint_px(self._target_index)
         nx, ny = drift_step((self._pos[0], self._pos[1]), (tx, ty), PATROL_ALPHA)
         self._pos = [nx, ny]
