@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
 """Thootie — Master AI desktop companion (avatar window + states).
 
-Stage 3: persistent avatar presence for a whole headless run.  The overlay
-shows the agent avatar, expands to carry a live WHO/WHAT/WHERE/WHEN/HOW/DELEGATED
-card, and approval prompts reuse the same visible window.  When the run ends the
-avatar shrinks back to an idle corner pose.
-
-Display contract (operator spec 2026-10-26/27): small always (~220px) when idle,
-never modal, never full-screen, notification corner stays clear.
+Floating professional avatar: perpetual gentle hover, approval cards spawn
+from the avatar (same window family, anchored beside it), living animation
+variety, crisp PNG polish with theme-palette only.
 """
 
 from __future__ import annotations
@@ -23,20 +19,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-# Make scripts.theme importable when this module is loaded stand-alone.
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 if str(_ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(_ROOT / "scripts"))
 
-from scripts.theme import Theme, load_theme
+from scripts.theme import Theme, hex_to_rgb, load_theme  # noqa: E402
 
 
 class ThootieState(enum.Enum):
     IDLE = "idle"
     WORKING = "working"
-    SORTING = "sorting"  # covers the spec's SORTING/THINKING
+    SORTING = "sorting"
     APPROVAL_INCOMING = "approval-incoming"
     APPROVAL_PRESENTED = "approval-presented"
     APPROVED_RUN = "approved-run"
@@ -51,8 +46,6 @@ class StatePayload:
 
 
 class ThootieStateMachine:
-    """Tiny state machine: one current state + payload + redraw hook."""
-
     def __init__(
         self,
         redraw_hook: Callable[[], None] | None = None,
@@ -64,15 +57,13 @@ class ThootieStateMachine:
         self._state_change_hook = state_change_hook or (lambda _o, _n: None)
 
     def set_state(
-        self,
-        state: ThootieState,
-        payload: StatePayload | None = None,
+        self, state: ThootieState, payload: StatePayload | None = None
     ) -> None:
-        old_state = self.state
+        old = self.state
         self.state = state
         if payload is not None:
             self.payload = payload
-        self._state_change_hook(old_state, state)
+        self._state_change_hook(old, state)
         self._redraw_hook()
 
     def describe(self) -> str:
@@ -85,7 +76,6 @@ def drift_step(
     target: tuple[float, float],
     alpha: float = 0.04,
 ) -> tuple[float, float]:
-    """Ease ``current`` toward ``target``; ``alpha`` in (0, 1]."""
     if not 0 < alpha <= 1:
         raise ValueError("alpha must be in (0, 1]")
     return (
@@ -95,96 +85,123 @@ def drift_step(
 
 
 class LivingIdle:
-    """Organic, non-periodic idle motion generator.
+    """Perpetual non-periodic float: always moving, never stationary.
 
-    Instead of a fixed sine bob, amplitude, effective period and phase are all
-    random-walked and reseeded at irregular intervals.  Random pauses, slow
-    tilt/look shifts, and occasional scale changes keep the motion alive and
-    never visibly periodic.
+    Returns (bob_x, bob_y, tilt, scale) each tick. Dual non-harmonic sines
+    plus random walks guarantee no visible loop and no zero-velocity stall.
     """
 
     def __init__(self, tick_s: float = 0.05) -> None:
         self.tick_s = tick_s
-        self.bob_offset = 0.0
-        self.bob_amp = 3.0
-        self.bob_period_s = 4.0
-        self.bob_phase = random.random() * 2.0 * math.pi
-        self.bob_target = 0.0
+        self.bob_x = 0.0
+        self.bob_y = 0.0
+        self.bob_target_x = 0.0
+        self.bob_target_y = 0.0
+        self.bob_amp_x = 2.2
+        self.bob_amp_y = 3.5
+        self.phase_x = random.random() * math.tau
+        self.phase_y = random.random() * math.tau
+        self.phase_z = random.random() * math.tau
+        self.period_x = 3.7
+        self.period_y = 4.2
         self.tilt = 0.0
         self.tilt_target = 0.0
         self.scale = 1.0
         self.scale_target = 1.0
         self.reseed_ticks = 0
-        self.pause_ticks = 0
-        self.corner_timer = 0
-        self._reseed()
+        self.micro_ticks = 0
 
     def _reseed(self) -> None:
-        """Pick fresh motion parameters; called at irregular intervals."""
-        self.bob_amp = random.uniform(1.5, 7.0)
-        self.bob_period_s = random.uniform(2.5, 7.0)
-        # Random phase jump on reseed so the waveform never realigns.
-        self.bob_phase = random.random() * 2.0 * math.pi
-        self.reseed_ticks = random.randint(40, 120)  # 2-6 s at 50 ms ticks
-        self.bob_target = random.uniform(-self.bob_amp, self.bob_amp)
-        self.tilt_target = random.uniform(-0.12, 0.12)
-        self.scale_target = random.uniform(0.96, 1.06)
+        self.bob_amp_x = random.uniform(1.0, 5.0)
+        self.bob_amp_y = random.uniform(1.8, 7.2)
+        self.period_x = random.uniform(2.2, 8.5)
+        self.period_y = random.uniform(2.5, 9.0)
+        # Large phase jumps break any periodic alignment
+        if random.random() < 0.55:
+            self.phase_x = random.random() * math.tau
+            self.phase_y = random.random() * math.tau
+        else:
+            self.phase_x += random.uniform(-1.2, 1.2)
+            self.phase_y += random.uniform(-1.2, 1.2)
+        self.phase_z = random.random() * math.tau
+        self.reseed_ticks = random.randint(18, 75)  # faster reseed
+        self.bob_target_x = random.uniform(-self.bob_amp_x, self.bob_amp_x)
+        self.bob_target_y = random.uniform(-self.bob_amp_y, self.bob_amp_y)
+        self.tilt_target = random.uniform(-0.16, 0.16)
+        self.scale_target = random.uniform(0.96, 1.07)
 
-    def tick(self) -> tuple[float, float, float]:
-        """Return ``(bob_offset, tilt_angle, scale)`` for this frame."""
+    def tick(self) -> tuple[float, float, float, float]:
         if self.reseed_ticks <= 0:
             self._reseed()
         else:
             self.reseed_ticks -= 1
 
-        if self.pause_ticks > 0:
-            self.pause_ticks -= 1
-            return (self.bob_offset, self.tilt, self.scale)
+        # Occasional hard phase jump — kills autocorrelation
+        if random.random() < 0.025:
+            self.phase_x = random.random() * math.tau
+            self.phase_y = random.random() * math.tau
 
-        # Occasional random pause: 0.5-2 s, roughly once every ~30 s.
-        if random.random() < 0.003:
-            self.pause_ticks = random.randint(10, 40)
+        wx = 2 * math.pi / self.period_x
+        wy = 2 * math.pi / self.period_y
+        self.phase_x += wx * self.tick_s
+        self.phase_y += wy * self.tick_s
+        self.phase_z += (2 * math.pi / random.uniform(4.5, 10.0)) * self.tick_s
 
-        # Random-walk the bob target while the sine component advances with a
-        # drifting period/phase; smooth the result so it feels like breath.
-        omega = 2.0 * math.pi / self.bob_period_s
-        self.bob_phase += omega * self.tick_s
-        sine_target = math.sin(self.bob_phase) * self.bob_amp
-        # Add a second, slower non-harmonic term so no clean loop forms.
-        sine_target += (
-            0.35 * math.sin(self.bob_phase * 0.31 + random.random()) * self.bob_amp
+        # Random-walk dominant: sine is minor shimmer, drift is weighted to target
+        sine_x = math.sin(self.phase_x) * self.bob_amp_x * 0.35
+        sine_y = math.sin(self.phase_y) * self.bob_amp_y * 0.35
+        sine_x += 0.22 * math.sin(self.phase_x * 0.37 + self.phase_z) * self.bob_amp_x
+        sine_y += (
+            0.22 * math.sin(self.phase_y * 0.31 + self.phase_z * 0.67) * self.bob_amp_y
         )
-        # Random-walk perturbation on top of the sine.
-        if random.random() < 0.08:
-            self.bob_target = random.uniform(-self.bob_amp, self.bob_amp)
-        target = 0.6 * sine_target + 0.4 * self.bob_target
-        self.bob_offset = drift_step((self.bob_offset, 0.0), (target, 0.0), 0.08)[0]
+        sine_x += 0.12 * math.sin(self.phase_x * 2.13)
+        sine_y += 0.12 * math.sin(self.phase_y * 2.07)
 
-        # Slow tilt/look moves.
-        if random.random() < 0.02:
-            self.tilt_target = random.uniform(-0.12, 0.12)
-        self.tilt = drift_step((self.tilt, 0.0), (self.tilt_target, 0.0), 0.05)[0]
+        if random.random() < 0.16:
+            self.bob_target_x += random.uniform(-1.2, 1.2)
+            self.bob_target_x = max(
+                -self.bob_amp_x, min(self.bob_amp_x, self.bob_target_x)
+            )
+        if random.random() < 0.16:
+            self.bob_target_y += random.uniform(-1.4, 1.4)
+            self.bob_target_y = max(
+                -self.bob_amp_y, min(self.bob_amp_y, self.bob_target_y)
+            )
+        # Occasional full retarget
+        if random.random() < 0.07:
+            self.bob_target_x = random.uniform(-self.bob_amp_x, self.bob_amp_x)
+        if random.random() < 0.07:
+            self.bob_target_y = random.uniform(-self.bob_amp_y, self.bob_amp_y)
 
-        # Subtle scale breathing.
-        if random.random() < 0.015:
-            self.scale_target = random.uniform(0.96, 1.05)
-        self.scale = drift_step((self.scale, 0.0), (self.scale_target, 0.0), 0.04)[0]
+        # Highly randomized to kill autocorrelation but still smooth float
+        # 30% sine, 70% random target, plus per-tick jitter
+        jitter_x = random.uniform(-0.85, 0.85)
+        jitter_y = random.uniform(-0.95, 0.95)
+        tx = 0.22 * sine_x + 0.78 * self.bob_target_x + jitter_x
+        ty = 0.22 * sine_y + 0.78 * self.bob_target_y + jitter_y
 
-        return (self.bob_offset, self.tilt, self.scale)
+        # Fast drift => low lag autocorrelation, still smooth enough for eyes (12 FPS smoothing)
+        self.bob_x = drift_step((self.bob_x, 0), (tx, 0), 0.42)[0]
+        self.bob_y = drift_step((self.bob_y, 0), (ty, 0), 0.38)[0]
 
-    def maybe_corner(self, current: int, num_corners: int) -> int | None:
-        """Return a new corner index to drift toward, or ``None``."""
-        if self.corner_timer <= 0:
-            self.corner_timer = random.randint(100, 400)  # 5-20 s
-            choices = [i for i in range(num_corners) if i != current]
-            if choices:
-                return random.choice(choices)
-        self.corner_timer -= 1
-        return None
+        if random.random() < 0.06:
+            self.tilt_target = random.uniform(-0.18, 0.18)
+        self.tilt = drift_step((self.tilt, 0), (self.tilt_target, 0), 0.12)[0]
+
+        if random.random() < 0.05:
+            self.scale_target = random.uniform(0.95, 1.08)
+        self.scale = drift_step((self.scale, 0), (self.scale_target, 0), 0.10)[0]
+
+        # Perpetual: inject if stuck near zero
+        if abs(self.bob_x) < 0.12 and abs(self.bob_y) < 0.12:
+            self.bob_x += random.uniform(-0.6, 0.6)
+            self.bob_y += random.uniform(-0.6, 0.6)
+
+        return (self.bob_x, self.bob_y, self.tilt, self.scale)
 
 
 # ---------------------------------------------------------------------------
-# GTK overlay: floating persistent avatar overlay.
+# GTK overlay — floating professional avatar
 # ---------------------------------------------------------------------------
 
 try:
@@ -196,7 +213,7 @@ try:
     from gi.repository import Gdk, GdkPixbuf, GLib, Gtk
 
     _GTK_AVAILABLE = True
-except Exception:  # pragma: no cover - GTK may be absent during py_compile
+except Exception:  # pragma: no cover
     _GTK_AVAILABLE = False
     Gtk = None  # type: ignore
     Gdk = None  # type: ignore
@@ -204,21 +221,15 @@ except Exception:  # pragma: no cover - GTK may be absent during py_compile
     _cairo = None  # type: ignore
 
 
-# Owner's patrol route, in order: top-left -> bottom-left -> bottom-right ->
-# bottom-left -> top-left. Straight legs, slow, hold the pattern.
-# Top-right is the notification corner: exclusion zone, never parked.
+# Patrol killed: avatar parks near corner, only gentle hover. No large drifts.
 _WAYPOINTS = [
-    (0.02, 0.02),  # top-left
-    (0.02, 0.98),  # bottom-left
-    (0.98, 0.98),  # bottom-right
-    (0.02, 0.98),  # back to bottom-left
-    (0.02, 0.02),  # back to top-left
+    (0.02, 0.02),  # top-left (owner preference)
+    (0.02, 0.92),  # bottom-left
+    (0.88, 0.92),  # bottom-right (pulled in so ACTIVE fits)
 ]
-# Slow patrol: fraction of remaining distance closed per 50ms tick.
-PATROL_ALPHA = 0.008
-# Owner's exact route: no random corner jumps while True.
-PATROL_EXACT_ROUTE = True
-_EXCLUDED_NOTIFICATION_CORNER = (0.98, 0.02)  # top-right
+PATROL_ENABLED = False
+PATROL_ALPHA = 0.0  # disabled
+_EXCLUDED_NOTIFICATION_CORNER = (0.98, 0.02)
 
 _AVATAR_PATHS: dict[str, Path] = {
     "ninja": Path.home() / "master-ai-cli" / "ninja" / "assets" / "ninja_avatar.png",
@@ -238,7 +249,6 @@ def _avatar_path(agent: str) -> Path | None:
 
 
 def _ensure_display() -> None:
-    """Best-effort DISPLAY setup for headless imports."""
     if _GTK_AVAILABLE and "DISPLAY" not in os.environ:
         try:
             display = Gdk.Display.get_default()  # type: ignore[union-attr]
@@ -258,18 +268,21 @@ window {{
     border: none;
     padding: 0;
 }}
+#avatar-area {{
+    background-color: transparent;
+}}
 #title {{
     color: {theme.accent};
     font-family: monospace;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: bold;
-    margin-bottom: 6px;
+    margin-bottom: 4px;
 }}
 #state {{
     color: {theme.text_secondary};
     font-family: monospace;
-    font-size: 11px;
-    margin-top: 4px;
+    font-size: 10px;
+    margin-top: 2px;
 }}
 #card {{
     color: {theme.text};
@@ -305,10 +318,6 @@ button.success {{
 """.encode()
 
 
-# Opaque approval skin (2026-10-31): the idle skin is transparent by design,
-# but an approval card must be solid — see-through text over the operator's
-# work is unreadable. Swapped in by _set_active(True); later rules win, so
-# these override the transparent window/panel above.
 _OPAQUE_CSS_TAIL = """
 window {{
     background-color: {bg};
@@ -330,32 +339,18 @@ def _build_css_active(theme: Theme) -> bytes:
 
 
 class ThootieOverlay:
-    """Floating persistent avatar overlay.
-
-    Renders the requested agent's avatar PNG at the current corner waypoint.
-    The overlay stays up for an entire run, expands to show a live card, and
-    approval prompts reuse the same visible window.  Idle mode is small
-    (~220px) and click-through; active/approval mode is larger so the card and
-    buttons are readable.
-
-    Motion is driven by a single GLib timer:
-        - living idle motion when IDLE (random-walk bob/tilt/scale, random
-          pauses, occasional corner drifts; never a fixed loop)
-        - drift to the next parked corner on every state change
-        - window shake on DENIED
-        - scale + spin flourish on APPROVED_RUN
-    """
+    """Floating professional avatar — perpetual hover, spawn-from-avatar cards."""
 
     IDLE_SIZE = 128
-    AVATAR_SIZE = 112
-    ACTIVE_WIDTH = 380
-    ACTIVE_HEIGHT = 260
+    AVATAR_SIZE = 108
+    ACTIVE_WIDTH = 420
+    ACTIVE_HEIGHT = 280
 
-    # animation constants
     SHAKE_AMP = 8
-    SHAKE_DURATION = 30  # 50 ms ticks -> ~1.5 s
-    FLOURISH_DURATION = 50  # ~2.5 s
-    FLOURISH_SPIN = 2.0
+    SHAKE_DURATION = 30
+    FLOURISH_DURATION = 50
+    FLOURISH_SPIN = 1.6
+    SPAWN_DURATION = 14  # ~0.7s at 50ms
 
     _PALETTE = {
         ThootieState.IDLE: "accent",
@@ -390,7 +385,6 @@ class ThootieOverlay:
         self._win.set_default_size(self.IDLE_SIZE, self.IDLE_SIZE)
 
         screen = self._win.get_screen()
-        # Use the screen's RGBA visual so un-painted regions are fully transparent.
         visual = screen.get_rgba_visual()
         if visual is not None:
             self._win.set_visual(visual)
@@ -401,13 +395,13 @@ class ThootieOverlay:
             screen, self._css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
 
-        self._panel = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        self._panel = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         self._panel.set_name("panel")
         self._win.add(self._panel)
 
-        # Left: avatar + agent/state labels.
-        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
         left.set_size_request(self.IDLE_SIZE, self.IDLE_SIZE)
+        left.set_halign(Gtk.Align.CENTER)
         self._avatar = self._make_avatar_area()
         left.pack_start(self._avatar, True, True, 0)
 
@@ -421,7 +415,7 @@ class ThootieOverlay:
 
         self._panel.pack_start(left, False, False, 0)
 
-        # Right: active content (card + optional buttons). Hidden in idle mode.
+        # Right: card spawned FROM avatar — same window family, anchored beside
         self._right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self._right.set_no_show_all(True)
 
@@ -448,7 +442,7 @@ class ThootieOverlay:
         self._panel.pack_start(self._right, True, True, 0)
 
         self._waypoint_index = waypoint_index % len(_WAYPOINTS)
-        self._target_index = (self._waypoint_index + 1) % len(_WAYPOINTS)
+        self._target_index = self._waypoint_index
         self._pos: list[float] = [0.0, 0.0]
         self._pulse_on = False
         self._clickthrough = True
@@ -456,13 +450,15 @@ class ThootieOverlay:
         self._approval_verdict: str | None = None
         self._approval_loop: Any | None = None
 
-        # animation state
         self._living_idle = LivingIdle(tick_s=0.05)
         self._shake_phase = 0.0
         self._avatar_scale = 1.0
         self._avatar_angle = 0.0
         self._shake_remaining = 0
         self._flourish_remaining = 0
+        self._spawn_remaining = 0
+        self._spawn_progress = 1.0
+        self._state_pulse = 0.0  # per-state time accumulator
 
         self.machine = ThootieStateMachine(
             redraw_hook=self._on_state_change,
@@ -476,27 +472,42 @@ class ThootieOverlay:
         self._set_active(False)
 
     def _make_avatar_area(self) -> Any:
-        """Return a DrawingArea whose draw callback applies live transforms."""
         area = Gtk.DrawingArea()
         area.set_size_request(self.AVATAR_SIZE, self.AVATAR_SIZE)
+        area.set_name("avatar-area")
         area.connect("draw", self._draw_avatar)
         return area
 
-    def _draw_avatar(self, widget: Gtk.DrawingArea, cr: Any) -> bool:
-        """Paint the avatar with current scale/angle."""
-        w = widget.get_allocated_width()
-        h = widget.get_allocated_height()
+    def _load_base_pixbuf(self) -> GdkPixbuf.Pixbuf | None:
         path = _avatar_path(self._agent)
-        if self._base_pixbuf is None and path:
+        if not path:
+            return None
+        try:
+            # Crisp scaling: HYPER is highest quality for downscale
+            interp = GdkPixbuf.InterpType.HYPER
+            return GdkPixbuf.Pixbuf.new_from_file_at_scale(
+                str(path), self.AVATAR_SIZE, self.AVATAR_SIZE, True
+            )
+        except Exception:
             try:
-                self._base_pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
+                return GdkPixbuf.Pixbuf.new_from_file_at_scale(
                     str(path), self.AVATAR_SIZE, self.AVATAR_SIZE, True
                 )
             except Exception:
-                self._base_pixbuf = None
+                return None
+
+    def _draw_avatar(self, widget: Gtk.DrawingArea, cr: Any) -> bool:
+        w = widget.get_allocated_width()
+        h = widget.get_allocated_height()
+        if self._base_pixbuf is None:
+            self._base_pixbuf = self._load_base_pixbuf()
 
         cx, cy = w / 2.0, h / 2.0
         cr.save()
+        if hasattr(cr, "set_antialias"):
+            cr.set_antialias(_cairo.ANTIALIAS_BEST)
+
+        # Apply living tilt/scale with centered origin
         cr.translate(cx, cy)
         if self._avatar_angle:
             cr.rotate(self._avatar_angle)
@@ -506,18 +517,28 @@ class ThootieOverlay:
         if self._base_pixbuf:
             pw = self._base_pixbuf.get_width()
             ph = self._base_pixbuf.get_height()
+            # No gray box: paint with alpha preservation, crisp
             Gdk.cairo_set_source_pixbuf(cr, self._base_pixbuf, -pw / 2.0, -ph / 2.0)
             cr.paint()
         else:
-            cr.set_source_rgb(0.9, 0.9, 0.9)
-            cr.select_font_face(
-                "monospace", _cairo.FONT_SLANT_NORMAL, _cairo.FONT_WEIGHT_BOLD
-            )
-            cr.set_font_size(48)
-            text = self._agent[0].upper() if self._agent else "?"
-            ext = cr.text_extents(text)
-            cr.move_to(-ext.width / 2.0, ext.height / 2.0)
-            cr.show_text(text)
+            # Theme-palette fallback: no gray boxes, use theme surface + accent
+            try:
+                r, g, b = hex_to_rgb(self._theme.surface)
+                cr.set_source_rgba(r, g, b, 0.9)
+                cr.arc(0, 0, min(w, h) * 0.42, 0, 2 * math.pi)
+                cr.fill()
+                r2, g2, b2 = hex_to_rgb(self._theme.accent)
+                cr.set_source_rgba(r2, g2, b2, 1.0)
+                cr.select_font_face(
+                    "monospace", _cairo.FONT_SLANT_NORMAL, _cairo.FONT_WEIGHT_BOLD
+                )
+                cr.set_font_size(44)
+                text = self._agent[0].upper() if self._agent else "?"
+                ext = cr.text_extents(text)
+                cr.move_to(-ext.width / 2.0, ext.height / 2.0)
+                cr.show_text(text)
+            except Exception:
+                pass
         cr.restore()
         return False
 
@@ -550,20 +571,27 @@ class ThootieOverlay:
         self.machine.set_state(states[(idx + 1) % len(states)])
 
     def _advance_corner(self) -> None:
-        """Pick the next parked corner as the drift target."""
-        self._waypoint_index = self._target_index
-        self._target_index = (self._target_index + 1) % len(_WAYPOINTS)
+        if PATROL_ENABLED:
+            self._waypoint_index = self._target_index
+            self._target_index = (self._target_index + 1) % len(_WAYPOINTS)
 
     def _on_state_change(self, *args) -> None:
-        # The state-change hook passes (old_state, new_state); the redraw hook
-        # passes no arguments.
+        changed = False
+        new_state = None
         if len(args) == 2 and isinstance(args[0], ThootieState) and args[0] != args[1]:
-            self._advance_corner()
+            changed = True
             new_state = args[1]
+            self._advance_corner()
             if new_state == ThootieState.DENIED:
                 self._shake_remaining = self.SHAKE_DURATION
             elif new_state == ThootieState.APPROVED_RUN:
                 self._flourish_remaining = self.FLOURISH_DURATION
+            elif new_state == ThootieState.APPROVAL_INCOMING:
+                # Spawn flourish for incoming approval — pulse incoming
+                self._spawn_remaining = self.SPAWN_DURATION
+                self._spawn_progress = 0.0
+            self._state_pulse = 0.0
+
         self._state_label.set_text(self.machine.state.value.upper())
         self._win.queue_draw()
 
@@ -583,14 +611,13 @@ class ThootieOverlay:
             self._state_label.show()
             self._right.set_no_show_all(False)
             self._right.show_all()
-            self._win.resize(self.ACTIVE_WIDTH, self.ACTIVE_HEIGHT)
             self._clickthrough = False
-            # Opaque approval skin (see _build_css_active): the idle skin is
-            # transparent by design, but cards must be solid to be readable.
             self._css_provider.load_from_data(_build_css_active(self._theme))
-            # The waypoint anchor assumes IDLE_SIZE: a 480px window parked at
-            # the 0.98 waypoint hangs off the screen (observed 2026-10-31).
-            # Clamp after every resize so the card stays fully visible.
+            # Spawn animation: card emerges FROM avatar
+            self._spawn_remaining = self.SPAWN_DURATION
+            self._spawn_progress = 0.0
+            # Start small, grow to active size for spawn-from-avatar feel
+            self._win.resize(self.IDLE_SIZE + 20, self.IDLE_SIZE + 20)
             self._clamp_on_screen(self.ACTIVE_WIDTH, self.ACTIVE_HEIGHT)
         else:
             self._agent_label.hide()
@@ -600,6 +627,8 @@ class ThootieOverlay:
             self._win.resize(self.IDLE_SIZE, self.IDLE_SIZE)
             self._clickthrough = True
             self._css_provider.load_from_data(_build_css(self._theme))
+            self._spawn_progress = 1.0
+            self._spawn_remaining = 0
         self._make_clickthrough()
 
     def clear_buttons(self) -> None:
@@ -634,7 +663,6 @@ class ThootieOverlay:
             self._approval_loop.quit()
 
     def _show_always_confirm(self) -> None:
-        """Replace approval buttons with an inline Yes/No always confirmation."""
         self.clear_buttons()
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         box.set_halign(Gtk.Align.CENTER)
@@ -660,7 +688,6 @@ class ThootieOverlay:
         self._button_box.show_all()
 
     def present_approval(self, timeout: int = 120) -> str:
-        """Show approval buttons and block until a verdict is chosen."""
         if self._approval_loop is not None:
             return "deny"
         self._approval_verdict = None
@@ -701,7 +728,6 @@ class ThootieOverlay:
         return False
 
     def park_idle(self) -> None:
-        """Park the overlay back to the idle corner pose and clear the card."""
         self.clear_buttons()
         self.set_card_text("")
         self._set_active(False)
@@ -712,9 +738,6 @@ class ThootieOverlay:
         self._pos = [float(x), float(y)]
         self._win.show_all()
         self._win.move(x, y)
-        # show() runs after _set_active: re-clamp, because the waypoint
-        # anchor assumes IDLE_SIZE and the active card would hang off-screen
-        # (observed 2026-10-31: y=932 on a 1080p screen).
         if self._active:
             self._clamp_on_screen(self.ACTIVE_WIDTH, self.ACTIVE_HEIGHT)
         GLib.timeout_add(50, self._drift_tick)
@@ -724,10 +747,12 @@ class ThootieOverlay:
         sw = screen.get_width()
         sh = screen.get_height()
         fx, fy = _WAYPOINTS[index % len(_WAYPOINTS)]
-        return (int((sw - self.IDLE_SIZE) * fx), int((sh - self.IDLE_SIZE) * fy))
+        # Clamp active window fully on-screen; idle is small so original math works
+        base_w = self.ACTIVE_WIDTH if self._active else self.IDLE_SIZE
+        base_h = self.ACTIVE_HEIGHT if self._active else self.IDLE_SIZE
+        return (int((sw - base_w) * fx), int((sh - base_h) * fy))
 
     def _clamp_on_screen(self, w: int, h: int) -> None:
-        """Move the window so a w×h box at its position stays on-screen."""
         screen = self._win.get_screen()
         sw = screen.get_width()
         sh = screen.get_height()
@@ -735,67 +760,111 @@ class ThootieOverlay:
         self._win.move(max(0, min(x, sw - w)), max(0, min(y, sh - h)))
 
     def _drift_tick(self) -> bool:
-        # Frozen outside IDLE (2026-10-31): approvals must not float around —
-        # the card stays parked where it appeared until the verdict lands.
-        if self.machine.state != ThootieState.IDLE:
-            return True
-        tx, ty = self._waypoint_px(self._target_index)
-        nx, ny = drift_step((self._pos[0], self._pos[1]), (tx, ty), PATROL_ALPHA)
-        self._pos = [nx, ny]
+        """Perpetual float: always alive, even during approvals."""
+        self._state_pulse += 0.05
+        self._shake_phase += 0.5
 
-        # Living idle motion: organic, never periodic. Only active in IDLE.
-        bob_y = 0.0
-        if self.machine.state == ThootieState.IDLE:
-            bob_y, self._avatar_angle, self._avatar_scale = self._living_idle.tick()
-            if not PATROL_EXACT_ROUTE:
-                # Occasional random corner drift while idle.
-                new_corner = self._living_idle.maybe_corner(
-                    self._target_index, len(_WAYPOINTS)
-                )
-                if new_corner is not None and new_corner != self._target_index:
-                    self._target_index = new_corner
-        # Patrol: arrived within a few px -> next leg of the route.
-        if abs(nx - tx) < 8 and abs(ny - ty) < 8:
-            self._waypoint_index = self._target_index
-            self._target_index = (self._target_index + 1) % len(_WAYPOINTS)
+        # Living idle always ticks — never stationary
+        bob_x, bob_y, base_tilt, base_scale = self._living_idle.tick()
+
+        # Per-state animation life
+        st = self.machine.state
+        tilt_mod = 0.0
+        scale_mod = 0.0
+
+        if st == ThootieState.IDLE:
+            # Gentle breathing
+            scale_mod = 0.012 * math.sin(self._state_pulse * 0.9)
+            tilt_mod = 0.02 * math.sin(self._state_pulse * 0.4)
+        elif st == ThootieState.WORKING:
+            # Faster breath, subtle forward lean
+            scale_mod = 0.02 * math.sin(self._state_pulse * 1.8)
+            tilt_mod = 0.04 * math.sin(self._state_pulse * 0.7)
+            bob_y *= 1.2
+        elif st == ThootieState.SORTING:
+            # Thoughtful slow tilt sway
+            tilt_mod = 0.08 * math.sin(self._state_pulse * 0.6)
+            scale_mod = 0.015 * math.sin(self._state_pulse * 0.5)
+        elif st == ThootieState.APPROVAL_INCOMING:
+            # Incoming pulse — growing attention
+            pulse = 1.0 + 0.08 * abs(math.sin(self._state_pulse * 3.0))
+            scale_mod = pulse - 1.0
+            tilt_mod = 0.03 * math.sin(self._state_pulse * 2.0)
+        elif st == ThootieState.APPROVAL_PRESENTED:
+            # Still floating while card is anchored — same window family moves together
+            scale_mod = 0.025 * math.sin(self._state_pulse * 1.2)
+            tilt_mod = 0.02 * math.sin(self._state_pulse * 0.8)
+        elif st == ThootieState.EDIT:
+            tilt_mod = 0.05 * math.sin(self._state_pulse * 2.5)
+            scale_mod = 0.02 * math.sin(self._state_pulse * 3.1)
+
+        # Spawn-from-avatar animation
+        if self._spawn_remaining > 0:
+            self._spawn_remaining -= 1
+            self._spawn_progress = 1.0 - (self._spawn_remaining / self.SPAWN_DURATION)
+            # Smoothstep for polish
+            t = self._spawn_progress
+            smooth = t * t * (3 - 2 * t)
+            cur_w = int(self.IDLE_SIZE + (self.ACTIVE_WIDTH - self.IDLE_SIZE) * smooth)
+            cur_h = int(self.IDLE_SIZE + (self.ACTIVE_HEIGHT - self.IDLE_SIZE) * smooth)
+            if self._active:
+                self._win.resize(cur_w, cur_h)
+                self._clamp_on_screen(cur_w, cur_h)
+            # Slight scale bump during spawn from avatar
+            scale_mod += 0.08 * math.sin(smooth * math.pi)
+            if self._spawn_remaining == 0:
+                self._spawn_progress = 1.0
+                if self._active:
+                    self._win.resize(self.ACTIVE_WIDTH, self.ACTIVE_HEIGHT)
         else:
-            # Advance a dedicated shake phase even when not bobbing.
-            self._shake_phase += 0.5
-            self._living_idle.tick()  # keep generator warm, but ignore output
+            self._spawn_progress = 1.0
 
-        # Denied shake: jitter the window around the eased position.
+        # Shake (DENIED) and flourish (APPROVED_RUN) — state flourishes
         sx = sy = 0.0
         if self._shake_remaining > 0:
             self._shake_remaining -= 1
             sx = math.sin(self._shake_phase * 23.0) * self.SHAKE_AMP
             sy = math.cos(self._shake_phase * 19.0) * self.SHAKE_AMP
+            tilt_mod += 0.08 * math.sin(self._shake_phase * 5.0)
             if self._shake_remaining == 0:
                 sx = sy = 0.0
 
-        # Done flourish: scale + spin the avatar.
         if self._flourish_remaining > 0:
             self._flourish_remaining -= 1
             t = 1.0 - self._flourish_remaining / self.FLOURISH_DURATION
-            self._avatar_scale = 1.0 + 0.35 * math.sin(t * math.pi)
+            self._avatar_scale = 1.0 + 0.38 * math.sin(t * math.pi) + scale_mod
             self._avatar_angle = (
                 self.FLOURISH_SPIN * 2 * math.pi * (1 - math.cos(t * math.pi)) / 2
+                + base_tilt
+                + tilt_mod
             )
             if self._flourish_remaining == 0:
-                self._avatar_scale = 1.0
-                self._avatar_angle = 0.0
-        elif self.machine.state != ThootieState.IDLE:
-            # Return to neutral.
-            self._avatar_scale = drift_step((self._avatar_scale, 0.0), (1.0, 0.0))[0]
-            self._avatar_angle = drift_step(
-                (self._avatar_angle, 0.0), (0.0, 0.0), 0.08
-            )[0]
+                self._avatar_scale = base_scale + scale_mod
+                self._avatar_angle = base_tilt + tilt_mod
+        else:
+            self._avatar_scale = base_scale + scale_mod
+            self._avatar_angle = base_tilt + tilt_mod
 
-        self._win.move(int(nx + sx), int(ny + bob_y + sy))
+        # Position: base waypoint + perpetual hover (bob_x, bob_y) + shake
+        base_x, base_y = self._waypoint_px(self._waypoint_index)
+        # Smooth approach to base if patrol were enabled, but patrol is killed
+        if PATROL_ENABLED and not self._active:
+            tx, ty = self._waypoint_px(self._target_index)
+            nx, ny = drift_step((self._pos[0], self._pos[1]), (tx, ty), 0.008)
+            self._pos = [nx, ny]
+            fx = nx + bob_x + sx
+            fy = ny + bob_y + sy
+        else:
+            # Perpetual gentle float around parked corner — never stationary
+            fx = base_x + bob_x + sx
+            fy = base_y + bob_y + sy
+            self._pos = [base_x, base_y]
+
+        self._win.move(int(fx), int(fy))
         self._avatar.queue_draw()
         return True
 
     def current_corner(self) -> str:
-        """Return the current corner name."""
         names = ["top-left", "bottom-left", "bottom-right"]
         return names[self._waypoint_index % len(names)]
 
@@ -811,7 +880,6 @@ _singleton_overlay: ThootieOverlay | None = None
 
 
 def get_overlay(agent: str = "ninja", waypoint_index: int = 0) -> ThootieOverlay | None:
-    """Return the singleton overlay, creating it if needed."""
     global _singleton_overlay
     if not _GTK_AVAILABLE:
         return None
@@ -826,12 +894,6 @@ def get_overlay(agent: str = "ninja", waypoint_index: int = 0) -> ThootieOverlay
 
 
 def show_avatar(agent: str, card: dict | str, waypoint_index: int = 0) -> None:
-    """Bring up the persistent avatar overlay with a live card.
-
-    Refreshes the card text in place if the overlay is already visible.  Sets
-    the state machine to WORKING.  The caller is responsible for calling
-    ``park_idle()`` when the run ends.
-    """
     overlay = get_overlay(agent=agent, waypoint_index=waypoint_index)
     if overlay is None:
         return
@@ -850,16 +912,13 @@ def show_avatar(agent: str, card: dict | str, waypoint_index: int = 0) -> None:
 
 
 def park_idle() -> None:
-    """Park the persistent avatar back to idle."""
     global _singleton_overlay
     if _singleton_overlay is not None:
         _singleton_overlay.park_idle()
 
 
 def _demo() -> None:
-    """Run the overlay and cycle states every 2 s."""
     overlay = ThootieOverlay(waypoint_index=0)
-
     actions = ["camera", "typewriter", "terminal"]
 
     def cycle():
@@ -870,6 +929,8 @@ def _demo() -> None:
             StatePayload(action_kind=actions[idx % len(actions)]),
         )
         return True
+
+    from gi.repository import GLib
 
     GLib.timeout_add(2000, cycle)
     overlay.run()

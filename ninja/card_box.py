@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Thootie spawned box — one small card beside the avatar.
+"""Thootie spawned box — card anchored beside avatar, same window family.
 
-Display contract (operator spec 2026-10-27): compact, anchored to the
-avatar's current corner, one at a time, dismissible, never modal, never
-blocking the user's own work.
-
-Stage 2 shows card content passed in as a dict; live approve/deny
-wiring lands after the operator has seen the read-only card work.
+The primary approval surface lives inside ThootieOverlay (same GTK window,
+horizontal box: avatar left, card right). ThootieCard here is retained as a
+legacy anchored helper that spawns FROM the avatar window family — it
+calculates its position via card_position() anchored beside the avatar and
+uses only theme palette, transparent visuals for crisp edges.
 """
 
 from __future__ import annotations
@@ -15,12 +14,13 @@ try:
     import gi
 
     gi.require_version("Gtk", "3.0")
-    from gi.repository import Gtk
+    from gi.repository import Gdk, Gtk
 
     _GTK_AVAILABLE = True
-except Exception:  # pragma: no cover - GTK may be absent during py_compile
+except Exception:  # pragma: no cover
     _GTK_AVAILABLE = False
     Gtk = None  # type: ignore
+    Gdk = None  # type: ignore
 
 from scripts.theme import css, load_theme
 
@@ -34,13 +34,12 @@ def card_position(
     card_h: int,
     screen_w: int,
     screen_h: int,
-    gap: int = 12,
+    gap: int = 14,
 ) -> tuple[int, int]:
     """Anchor the card beside the avatar, clamped on-screen.
 
-    ``corner`` is one of "top-left" / "bottom-left" / "bottom-right".
-    Left-side avatars spawn the card to their right; the bottom-right
-    avatar spawns it to its left so it never covers the screen edge.
+    Left-side avatars spawn to the right; bottom-right spawns to left
+    so it never covers the edge. Gap keeps breathing room for float.
     """
     if corner == "bottom-right":
         x = avatar_x - gap - card_w
@@ -53,7 +52,6 @@ def card_position(
 
 
 def render_card_text(card: dict) -> str:
-    """Render the plain-English card body from queue-mapped fields."""
     lines = [
         f"QUESTION: {card.get('question', '')}",
         "",
@@ -71,9 +69,14 @@ def render_card_text(card: dict) -> str:
 
 
 class ThootieCard:
-    """One small dismissible card window. Opening a new card closes the old."""
+    """Anchored card that spawns FROM avatar overlay.
 
-    WIDTH = 340
+    Same window family: positioned beside the avatar's current corner,
+    clamped on-screen, theme-palette only, no gray boxes, clean transparent
+    window with RGBA visual for crisp edges.
+    """
+
+    WIDTH = 360
     HEIGHT = 300
 
     _open: ThootieCard | None = None
@@ -91,6 +94,13 @@ class ThootieCard:
         self._win.set_skip_pager_hint(True)
         self._win.set_default_size(self.WIDTH, self.HEIGHT)
 
+        # Crisp edges: RGBA visual so un-painted regions are transparent
+        screen = self._win.get_screen()
+        visual = screen.get_rgba_visual()
+        if visual is not None:
+            self._win.set_visual(visual)
+        self._win.set_app_paintable(True)
+
         self._theme = load_theme()
         provider = Gtk.CssProvider()
         provider.load_from_data(css(self._theme).encode("utf-8"))
@@ -100,7 +110,7 @@ class ThootieCard:
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
         )
 
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         box.set_border_width(10)
         self._win.add(box)
 
@@ -117,6 +127,30 @@ class ThootieCard:
 
         self._win.move(x, y)
         ThootieCard._open = self
+
+    @classmethod
+    def spawn_from_avatar(cls, card: dict, avatar_overlay) -> ThootieCard:
+        """Spawn anchored beside avatar_overlay — same window family positioning."""
+        try:
+            ax, ay = avatar_overlay.current_position()
+            corner = avatar_overlay.current_corner()
+            screen = avatar_overlay._win.get_screen()
+            sw = screen.get_width()
+            sh = screen.get_height()
+            x, y = card_position(
+                ax,
+                ay,
+                avatar_overlay.IDLE_SIZE,
+                corner,
+                cls.WIDTH,
+                cls.HEIGHT,
+                sw,
+                sh,
+                gap=14,
+            )
+        except Exception:
+            x, y = 40, 40
+        return cls(card, x, y)
 
     def show(self):
         self._win.show_all()

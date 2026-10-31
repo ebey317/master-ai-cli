@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
-"""Avatar-driven approval surface for Tahuti.
+"""Avatar-driven approval surface — card spawns FROM avatar.
 
-Reuses the persistent Ninja overlay (ThootieOverlay) so the avatar stays
-visible for the whole headless run.  The approval card is shown in the same
-expanded overlay window with approve/deny buttons; no second approval window is
-opened.
-
-Usage from Tahuti:
-    from ninja.avatar_approval import ask_avatar_approval
-    verdict = ask_avatar_approval(card, agent="tahuti")
-
-Returns one of: "once" | "session" | "always" | "deny".
+The approval card is anchored beside the avatar and lives in the same
+window family (ThootieOverlay expands horizontally: avatar left, card right).
+No second approval window is opened — the card visually grows out of the
+avatar via spawn animation (smoothstep width growth) while the avatar
+continues perpetual gentle float. Theme-palette only, crisp PNG, clean edges.
 """
 
 from __future__ import annotations
@@ -22,7 +17,6 @@ from pathlib import Path
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-# Make scripts.theme importable when this module is loaded stand-alone.
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
@@ -52,15 +46,12 @@ def ask_avatar_approval(
     *,
     timeout: int = DEFAULT_TIMEOUT,
 ) -> str:
-    """Show the avatar approval surface and return the verdict.
+    """Show approval card spawned FROM avatar, same window family.
 
-    ``agent`` is one of "ninja" / "tahuti" / "viking".  ``card`` may be the
-    queue-mapped dict used by card_box or the plain-English string Tahuti
-    currently builds.  Fail-closed: any error or missing display returns
-    "deny".
-
-    The persistent avatar overlay is reused; no second approval window is
-    created.  After the verdict the overlay parks back to idle.
+    - Anchored beside avatar (avatar left, card right in same overlay)
+    - Spawn animation: window grows from IDLE_SIZE to ACTIVE_WIDTH
+    - Perpetual float continues underneath — never stationary
+    - Fail-closed: any error returns 'deny'
     """
     if not _GTK_AVAILABLE:
         return "deny"
@@ -76,6 +67,7 @@ def ask_avatar_approval(
         )
         if not overlay._win.get_visible():
             overlay.show()
+        # present_approval triggers _set_active(True) which starts spawn anim
         verdict = overlay.present_approval(timeout=timeout)
         overlay.park_idle()
         return verdict
@@ -84,7 +76,6 @@ def ask_avatar_approval(
 
 
 def show_avatar_during_run(agent: str, card: dict | str) -> None:
-    """Public alias for callers that want the run-time avatar card."""
     from ninja.state_machine import show_avatar as _show_avatar
 
     _show_avatar(agent, card)
@@ -103,7 +94,7 @@ def _selftest() -> int:
     if overlay is None or overlay._win is None:
         print("SKIP: no GTK display available; headless-safe construct ok")
         return 0
-    print("construct ok (display available)")
+    print("construct ok (display available) — spawn-from-avatar, same family")
     overlay.set_card_text(
         "WHO: Tahuti agent\nWHAT: self-test construct\nWHERE: local\nWHEN: now\nHOW: import + build widgets"
     )
@@ -112,7 +103,6 @@ def _selftest() -> int:
 
 
 def _read_card(argv: list[str]) -> str:
-    """Read approval card from a file path in argv or from stdin."""
     if len(argv) > 1:
         path = Path(argv[1])
         if path.is_file():
@@ -121,7 +111,6 @@ def _read_card(argv: list[str]) -> str:
 
 
 def _ask_cli(argv: list[str]) -> int:
-    """--ask entrypoint: card file in, verdict word out, agent=tahuti default."""
     if "DISPLAY" not in os.environ:
         os.environ["DISPLAY"] = ":0"
     card = _read_card(argv)
@@ -130,27 +119,55 @@ def _ask_cli(argv: list[str]) -> int:
 
 
 def _pulse_cli(args: list[str]) -> int:
-    """--pulse [N]: L+R summon (2026-10-31). Show the Tahuti avatar animation
-    for N seconds (default 6), then park and exit. Fire-and-forget from ptt —
-    never blocks voice, never asks for a verdict."""
+    """--pulse [N]: L+R summon — floating avatar with live transcript."""
+    import json as _json
+    import time as _time
+
     from gi.repository import GLib
 
-    secs = 6
+    secs = 12
     for a in args:
         try:
-            secs = max(2, min(30, int(a)))
+            secs = max(4, min(60, int(a)))
             break
         except ValueError:
             continue
     if "DISPLAY" not in os.environ:
         os.environ["DISPLAY"] = ":0"
+    cap_path = Path.home() / ".config" / "ai-controller" / "tahuti_caption.json"
     try:
         show_avatar_during_run("tahuti", "Listening — hold L+R, speak, release.")
+        from ninja.state_machine import get_overlay
+
+        overlay = get_overlay(agent="tahuti")
     except Exception:
         return 0
-    loop = GLib.MainLoop()
-    GLib.timeout_add_seconds(secs, loop.quit)
+    if overlay is None:
+        return 0
+    t0 = _time.time()
+
+    def _refresh() -> bool:
+        try:
+            data = _json.loads(cap_path.read_text())
+            if _time.time() - float(data.get("time", 0)) > 60:
+                return True
+            text, state = (data.get("text") or ""), (data.get("state") or "")
+            if state == "listening" or not text:
+                overlay.set_card_text("Listening — hold L+R, speak, release.")
+            elif state == "working":
+                overlay.set_card_text(f"Working on:\n{text}")
+            elif state == "done":
+                overlay.set_card_text(f"Done:\n{text[:200]}")
+            else:
+                overlay.set_card_text(f"Heard — sending to agent:\n{text}")
+        except Exception:
+            pass
+        return _time.time() - t0 < secs
+
     try:
+        GLib.timeout_add(500, _refresh)
+        loop = GLib.MainLoop()
+        GLib.timeout_add_seconds(secs, loop.quit)
         loop.run()
     except Exception:
         pass
