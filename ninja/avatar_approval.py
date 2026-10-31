@@ -146,28 +146,61 @@ def _pulse_cli(args: list[str]) -> int:
         return 0
     t0 = _time.time()
 
+    _refresh_done_at: list = []
+    _refresh_last: list = []
+    # Sliding-window lifetime, not a fixed one-shot deadline (fixed 2026-10-31):
+    # a hard GLib.timeout_add_seconds(secs, loop.quit) used to kill this whole
+    # process at t0+secs no matter what, so ptt_pynput.py's on_press handler
+    # had to SIGKILL and respawn a brand-new pulse for any second genuinely
+    # separate press within that window -- wiping the first take's "Done"
+    # state off-screen mid-flight and leaving a brief window-less gap during
+    # the kill/respawn. Instead, the window now stays open as long as the
+    # caption file keeps getting fresh writes (i.e. as long as real takes
+    # keep happening), closing `secs` after the LAST real activity rather
+    # than `secs` after the window was first opened. ptt_pynput.py's
+    # on_press no longer needs to kill this process for a second real press
+    # within the window -- it can just keep writing captions and let this
+    # loop's own activity check extend naturally.
+    _last_activity = [t0]
+    loop = GLib.MainLoop()
+
     def _refresh() -> bool:
+        # Change-guarded (2026-10-31): re-setting identical card text every
+        # 500ms caused relayout flicker ("scrolling credits" glitch).
         try:
             data = _json.loads(cap_path.read_text())
-            if _time.time() - float(data.get("time", 0)) > 60:
-                return True
+            cap_time = float(data.get("time", 0))
+            if _time.time() - cap_time > 60:
+                raise ValueError("stale caption")
+            _last_activity[0] = max(_last_activity[0], cap_time)
             text, state = (data.get("text") or ""), (data.get("state") or "")
             if state == "listening" or not text:
-                overlay.set_card_text("Listening — hold L+R, speak, release.")
+                new = "Listening — hold L+R, speak, release."
             elif state == "working":
-                overlay.set_card_text(f"Working on:\n{text}")
+                new = f"Working on:\n{text}"
             elif state == "done":
-                overlay.set_card_text(f"Done:\n{text[:200]}")
+                new = f"Done:\n{text[:200]}"
+                if not _refresh_done_at:
+                    _refresh_done_at.append(_time.time())
             else:
-                overlay.set_card_text(f"Heard — sending to agent:\n{text}")
+                new = f"Heard — sending to agent:\n{text}"
+            if not _refresh_last or _refresh_last[0] != new:
+                _refresh_last.clear()
+                _refresh_last.append(new)
+                overlay.set_card_text(new)
         except Exception:
             pass
-        return _time.time() - t0 < secs
+        # Leave shortly after done instead of lingering the full window.
+        if _refresh_done_at and _time.time() - _refresh_done_at[0] > 5:
+            loop.quit()
+            return False
+        if _time.time() - _last_activity[0] > secs:
+            loop.quit()
+            return False
+        return True
 
     try:
         GLib.timeout_add(500, _refresh)
-        loop = GLib.MainLoop()
-        GLib.timeout_add_seconds(secs, loop.quit)
         loop.run()
     except Exception:
         pass
