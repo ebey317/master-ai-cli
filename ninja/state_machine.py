@@ -85,50 +85,49 @@ def drift_step(
 
 
 class LivingIdle:
-    """Perpetual non-periodic float: always moving, never stationary.
-
-    Returns (bob_x, bob_y, tilt, scale) each tick. Dual non-harmonic sines
-    plus random walks guarantee no visible loop and no zero-velocity stall.
+    """Calm perpetual hover: single authority, capped displacement, slow tick.
+    Returns (bob_x, bob_y, tilt, scale) each tick. ONE motion source for
+    overlay: bob+drift composed here, capped per tick, halved amplitudes.
     """
 
-    def __init__(self, tick_s: float = 0.05) -> None:
+    TICK_S = 0.12
+    MAX_BOB_DISP_PER_TICK = 1.2
+
+    def __init__(self, tick_s: float = 0.12) -> None:
         self.tick_s = tick_s
         self.bob_x = 0.0
         self.bob_y = 0.0
         self.bob_target_x = 0.0
         self.bob_target_y = 0.0
-        self.bob_amp_x = 2.2
-        self.bob_amp_y = 3.5
+        self.bob_amp_x = 1.0
+        self.bob_amp_y = 1.6
         self.phase_x = random.random() * math.tau
         self.phase_y = random.random() * math.tau
         self.phase_z = random.random() * math.tau
-        self.period_x = 3.7
-        self.period_y = 4.2
+        self.period_x = 6.5
+        self.period_y = 7.2
         self.tilt = 0.0
         self.tilt_target = 0.0
         self.scale = 1.0
         self.scale_target = 1.0
         self.reseed_ticks = 0
         self.micro_ticks = 0
+        self._last_bob_x = 0.0
+        self._last_bob_y = 0.0
 
     def _reseed(self) -> None:
-        self.bob_amp_x = random.uniform(1.0, 5.0)
-        self.bob_amp_y = random.uniform(1.8, 7.2)
-        self.period_x = random.uniform(2.2, 8.5)
-        self.period_y = random.uniform(2.5, 9.0)
-        # Large phase jumps break any periodic alignment
-        if random.random() < 0.55:
-            self.phase_x = random.random() * math.tau
-            self.phase_y = random.random() * math.tau
-        else:
-            self.phase_x += random.uniform(-1.2, 1.2)
-            self.phase_y += random.uniform(-1.2, 1.2)
-        self.phase_z = random.random() * math.tau
-        self.reseed_ticks = random.randint(18, 75)  # faster reseed
-        self.bob_target_x = random.uniform(-self.bob_amp_x, self.bob_amp_x)
-        self.bob_target_y = random.uniform(-self.bob_amp_y, self.bob_amp_y)
-        self.tilt_target = random.uniform(-0.16, 0.16)
-        self.scale_target = random.uniform(0.96, 1.07)
+        self.bob_amp_x = random.uniform(0.5, 2.2)
+        self.bob_amp_y = random.uniform(0.8, 3.2)
+        self.period_x = random.uniform(5.0, 12.0)
+        self.period_y = random.uniform(5.5, 13.0)
+        self.phase_x += random.uniform(-0.25, 0.25)
+        self.phase_y += random.uniform(-0.25, 0.25)
+        self.phase_z = self.phase_z * 0.85 + random.random() * math.tau * 0.15
+        self.reseed_ticks = random.randint(60, 180)
+        self.bob_target_x = random.uniform(-self.bob_amp_x, self.bob_amp_x) * 0.6
+        self.bob_target_y = random.uniform(-self.bob_amp_y, self.bob_amp_y) * 0.6
+        self.tilt_target = random.uniform(-0.04, 0.04)
+        self.scale_target = random.uniform(0.985, 1.025)
 
     def tick(self) -> tuple[float, float, float, float]:
         if self.reseed_ticks <= 0:
@@ -136,66 +135,65 @@ class LivingIdle:
         else:
             self.reseed_ticks -= 1
 
-        # Occasional hard phase jump — kills autocorrelation
-        if random.random() < 0.025:
-            self.phase_x = random.random() * math.tau
-            self.phase_y = random.random() * math.tau
-
         wx = 2 * math.pi / self.period_x
         wy = 2 * math.pi / self.period_y
         self.phase_x += wx * self.tick_s
         self.phase_y += wy * self.tick_s
-        self.phase_z += (2 * math.pi / random.uniform(4.5, 10.0)) * self.tick_s
+        self.phase_z += (2 * math.pi / 14.0) * self.tick_s
 
-        # Random-walk dominant: sine is minor shimmer, drift is weighted to target
-        sine_x = math.sin(self.phase_x) * self.bob_amp_x * 0.35
-        sine_y = math.sin(self.phase_y) * self.bob_amp_y * 0.35
-        sine_x += 0.22 * math.sin(self.phase_x * 0.37 + self.phase_z) * self.bob_amp_x
+        sine_x = math.sin(self.phase_x) * self.bob_amp_x * 0.25
+        sine_y = math.sin(self.phase_y) * self.bob_amp_y * 0.25
+        sine_x += 0.10 * math.sin(self.phase_x * 0.37 + self.phase_z) * self.bob_amp_x
         sine_y += (
-            0.22 * math.sin(self.phase_y * 0.31 + self.phase_z * 0.67) * self.bob_amp_y
+            0.10 * math.sin(self.phase_y * 0.31 + self.phase_z * 0.67) * self.bob_amp_y
         )
-        sine_x += 0.12 * math.sin(self.phase_x * 2.13)
-        sine_y += 0.12 * math.sin(self.phase_y * 2.07)
 
-        if random.random() < 0.16:
-            self.bob_target_x += random.uniform(-1.2, 1.2)
+        if random.random() < 0.05:
+            self.bob_target_x += random.uniform(-0.3, 0.3)
             self.bob_target_x = max(
                 -self.bob_amp_x, min(self.bob_amp_x, self.bob_target_x)
             )
-        if random.random() < 0.16:
-            self.bob_target_y += random.uniform(-1.4, 1.4)
+        if random.random() < 0.05:
+            self.bob_target_y += random.uniform(-0.3, 0.3)
             self.bob_target_y = max(
                 -self.bob_amp_y, min(self.bob_amp_y, self.bob_target_y)
             )
-        # Occasional full retarget
-        if random.random() < 0.07:
-            self.bob_target_x = random.uniform(-self.bob_amp_x, self.bob_amp_x)
-        if random.random() < 0.07:
-            self.bob_target_y = random.uniform(-self.bob_amp_y, self.bob_amp_y)
+        if random.random() < 0.02:
+            self.bob_target_x = random.uniform(-self.bob_amp_x, self.bob_amp_x) * 0.5
+        if random.random() < 0.02:
+            self.bob_target_y = random.uniform(-self.bob_amp_y, self.bob_amp_y) * 0.5
 
-        # Highly randomized to kill autocorrelation but still smooth float
-        # 30% sine, 70% random target, plus per-tick jitter
-        jitter_x = random.uniform(-0.85, 0.85)
-        jitter_y = random.uniform(-0.95, 0.95)
-        tx = 0.22 * sine_x + 0.78 * self.bob_target_x + jitter_x
-        ty = 0.22 * sine_y + 0.78 * self.bob_target_y + jitter_y
+        jitter_x = random.uniform(-0.14, 0.14)
+        jitter_y = random.uniform(-0.16, 0.16)
+        tx = 0.30 * sine_x + 0.70 * self.bob_target_x + jitter_x
+        ty = 0.30 * sine_y + 0.70 * self.bob_target_y + jitter_y
 
-        # Fast drift => low lag autocorrelation, still smooth enough for eyes (12 FPS smoothing)
-        self.bob_x = drift_step((self.bob_x, 0), (tx, 0), 0.42)[0]
-        self.bob_y = drift_step((self.bob_y, 0), (ty, 0), 0.38)[0]
+        self.bob_x = drift_step((self.bob_x, 0), (tx, 0), 0.18)[0]
+        self.bob_y = drift_step((self.bob_y, 0), (ty, 0), 0.16)[0]
 
-        if random.random() < 0.06:
-            self.tilt_target = random.uniform(-0.18, 0.18)
-        self.tilt = drift_step((self.tilt, 0), (self.tilt_target, 0), 0.12)[0]
+        dx = self.bob_x - self._last_bob_x
+        dy = self.bob_y - self._last_bob_y
+        if abs(dx) > self.MAX_BOB_DISP_PER_TICK:
+            self.bob_x = self._last_bob_x + math.copysign(
+                self.MAX_BOB_DISP_PER_TICK, dx
+            )
+        if abs(dy) > self.MAX_BOB_DISP_PER_TICK:
+            self.bob_y = self._last_bob_y + math.copysign(
+                self.MAX_BOB_DISP_PER_TICK, dy
+            )
+        self._last_bob_x, self._last_bob_y = self.bob_x, self.bob_y
 
-        if random.random() < 0.05:
-            self.scale_target = random.uniform(0.95, 1.08)
-        self.scale = drift_step((self.scale, 0), (self.scale_target, 0), 0.10)[0]
+        if random.random() < 0.03:
+            self.tilt_target = random.uniform(-0.05, 0.05)
+        self.tilt = drift_step((self.tilt, 0), (self.tilt_target, 0), 0.06)[0]
 
-        # Perpetual: inject if stuck near zero
-        if abs(self.bob_x) < 0.12 and abs(self.bob_y) < 0.12:
-            self.bob_x += random.uniform(-0.6, 0.6)
-            self.bob_y += random.uniform(-0.6, 0.6)
+        if random.random() < 0.02:
+            self.scale_target = random.uniform(0.985, 1.03)
+        self.scale = drift_step((self.scale, 0), (self.scale_target, 0), 0.05)[0]
+
+        if abs(self.bob_x) < 0.06 and abs(self.bob_y) < 0.06:
+            self.bob_x += random.uniform(-0.15, 0.15)
+            self.bob_y += random.uniform(-0.15, 0.15)
 
         return (self.bob_x, self.bob_y, self.tilt, self.scale)
 
@@ -346,11 +344,13 @@ class ThootieOverlay:
     ACTIVE_WIDTH = 420
     ACTIVE_HEIGHT = 280
 
-    SHAKE_AMP = 8
-    SHAKE_DURATION = 30
-    FLOURISH_DURATION = 50
-    FLOURISH_SPIN = 1.6
-    SPAWN_DURATION = 14  # ~0.7s at 50ms
+    SHAKE_AMP = 2
+    SHAKE_DURATION = 15
+    FLOURISH_DURATION = 25
+    FLOURISH_SPIN = 0.0
+    SPAWN_DURATION = 10
+    MAX_DISP_PER_TICK = 3.0  # total window move cap per tick (few px)
+    TICK_MS = 120
 
     _PALETTE = {
         ThootieState.IDLE: "accent",
@@ -389,6 +389,18 @@ class ThootieOverlay:
         if visual is not None:
             self._win.set_visual(visual)
         self._win.set_app_paintable(True)
+        # Draggable card (2026-10-31): operator moves it like the slide
+        # keyboard — POPUP windows have no title bar. Presses on buttons
+        # are consumed by the buttons first, so clicks still work.
+        self._drag = None
+        self._win.add_events(
+            Gdk.EventMask.BUTTON_PRESS_MASK
+            | Gdk.EventMask.BUTTON_RELEASE_MASK
+            | Gdk.EventMask.POINTER_MOTION_MASK
+        )
+        self._win.connect("button-press-event", self._on_drag_begin)
+        self._win.connect("motion-notify-event", self._on_drag_motion)
+        self._win.connect("button-release-event", self._on_drag_end)
         self._css_provider = Gtk.CssProvider()
         self._css_provider.load_from_data(_build_css(self._theme))
         Gtk.StyleContext.add_provider_for_screen(
@@ -450,7 +462,7 @@ class ThootieOverlay:
         self._approval_verdict: str | None = None
         self._approval_loop: Any | None = None
 
-        self._living_idle = LivingIdle(tick_s=0.05)
+        self._living_idle = LivingIdle(tick_s=0.12)
         self._shake_phase = 0.0
         self._avatar_scale = 1.0
         self._avatar_angle = 0.0
@@ -740,7 +752,7 @@ class ThootieOverlay:
         self._win.move(x, y)
         if self._active:
             self._clamp_on_screen(self.ACTIVE_WIDTH, self.ACTIVE_HEIGHT)
-        GLib.timeout_add(50, self._drift_tick)
+        GLib.timeout_add(self.TICK_MS, self._drift_tick)
 
     def _waypoint_px(self, index: int) -> tuple[int, int]:
         screen = self._win.get_screen()
@@ -759,50 +771,67 @@ class ThootieOverlay:
         x, y = self._win.get_position()
         self._win.move(max(0, min(x, sw - w)), max(0, min(y, sh - h)))
 
-    def _drift_tick(self) -> bool:
-        """Perpetual float: always alive, even during approvals."""
-        self._state_pulse += 0.05
-        self._shake_phase += 0.5
+    def _on_drag_begin(self, _w, event) -> bool:
+        """Draggable card (2026-10-31): like the slide keyboard. Button
+        presses on approval buttons are consumed first, so clicks work."""
+        try:
+            x, y = self._win.get_position()
+            self._drag = (event.x_root - x, event.y_root - y)
+        except Exception:
+            self._drag = None
+        return False
 
-        # Living idle always ticks — never stationary
+    def _on_drag_motion(self, _w, event) -> bool:
+        if not self._drag:
+            return False
+        try:
+            dx, dy = self._drag
+            self._pos = [event.x_root - dx, event.y_root - dy]
+            self._win.move(int(self._pos[0]), int(self._pos[1]))
+        except Exception:
+            pass
+        return False
+
+    def _on_drag_end(self, _w, _event) -> bool:
+        self._drag = None
+        w, h = self._win.get_size()
+        self._clamp_on_screen(w, h)
+        return False
+
+    def _drift_tick(self) -> bool:
+        """Single motion authority: one tick composes bob+drift, capped delta."""
+        self._state_pulse += 0.12
+        self._shake_phase += 0.2
+
         bob_x, bob_y, base_tilt, base_scale = self._living_idle.tick()
 
-        # Per-state animation life
         st = self.machine.state
         tilt_mod = 0.0
         scale_mod = 0.0
 
         if st == ThootieState.IDLE:
-            # Gentle breathing
-            scale_mod = 0.012 * math.sin(self._state_pulse * 0.9)
-            tilt_mod = 0.02 * math.sin(self._state_pulse * 0.4)
+            scale_mod = 0.006 * math.sin(self._state_pulse * 0.9)
+            tilt_mod = 0.01 * math.sin(self._state_pulse * 0.4)
         elif st == ThootieState.WORKING:
-            # Faster breath, subtle forward lean
-            scale_mod = 0.02 * math.sin(self._state_pulse * 1.8)
-            tilt_mod = 0.04 * math.sin(self._state_pulse * 0.7)
-            bob_y *= 1.2
+            scale_mod = 0.01 * math.sin(self._state_pulse * 1.2)
+            tilt_mod = 0.02 * math.sin(self._state_pulse * 0.5)
+            bob_y *= 1.05
         elif st == ThootieState.SORTING:
-            # Thoughtful slow tilt sway
-            tilt_mod = 0.08 * math.sin(self._state_pulse * 0.6)
-            scale_mod = 0.015 * math.sin(self._state_pulse * 0.5)
+            tilt_mod = 0.03 * math.sin(self._state_pulse * 0.5)
+            scale_mod = 0.008 * math.sin(self._state_pulse * 0.4)
         elif st == ThootieState.APPROVAL_INCOMING:
-            # Incoming pulse — growing attention
-            pulse = 1.0 + 0.08 * abs(math.sin(self._state_pulse * 3.0))
-            scale_mod = pulse - 1.0
-            tilt_mod = 0.03 * math.sin(self._state_pulse * 2.0)
+            scale_mod = 0.02 * abs(math.sin(self._state_pulse * 1.5))
+            tilt_mod = 0.015 * math.sin(self._state_pulse * 1.0)
         elif st == ThootieState.APPROVAL_PRESENTED:
-            # Still floating while card is anchored — same window family moves together
-            scale_mod = 0.025 * math.sin(self._state_pulse * 1.2)
-            tilt_mod = 0.02 * math.sin(self._state_pulse * 0.8)
+            scale_mod = 0.01 * math.sin(self._state_pulse * 0.8)
+            tilt_mod = 0.01 * math.sin(self._state_pulse * 0.5)
         elif st == ThootieState.EDIT:
-            tilt_mod = 0.05 * math.sin(self._state_pulse * 2.5)
-            scale_mod = 0.02 * math.sin(self._state_pulse * 3.1)
+            tilt_mod = 0.02 * math.sin(self._state_pulse * 1.2)
+            scale_mod = 0.01 * math.sin(self._state_pulse * 1.5)
 
-        # Spawn-from-avatar animation
         if self._spawn_remaining > 0:
             self._spawn_remaining -= 1
             self._spawn_progress = 1.0 - (self._spawn_remaining / self.SPAWN_DURATION)
-            # Smoothstep for polish
             t = self._spawn_progress
             smooth = t * t * (3 - 2 * t)
             cur_w = int(self.IDLE_SIZE + (self.ACTIVE_WIDTH - self.IDLE_SIZE) * smooth)
@@ -810,8 +839,7 @@ class ThootieOverlay:
             if self._active:
                 self._win.resize(cur_w, cur_h)
                 self._clamp_on_screen(cur_w, cur_h)
-            # Slight scale bump during spawn from avatar
-            scale_mod += 0.08 * math.sin(smooth * math.pi)
+            scale_mod += 0.03 * math.sin(smooth * math.pi)
             if self._spawn_remaining == 0:
                 self._spawn_progress = 1.0
                 if self._active:
@@ -819,25 +847,24 @@ class ThootieOverlay:
         else:
             self._spawn_progress = 1.0
 
-        # Shake (DENIED) and flourish (APPROVED_RUN) — state flourishes
+        # Subtle flourishes: no spin, tiny scale/tilt only
         sx = sy = 0.0
         if self._shake_remaining > 0:
             self._shake_remaining -= 1
-            sx = math.sin(self._shake_phase * 23.0) * self.SHAKE_AMP
-            sy = math.cos(self._shake_phase * 19.0) * self.SHAKE_AMP
-            tilt_mod += 0.08 * math.sin(self._shake_phase * 5.0)
+            sx = math.sin(self._shake_phase * 8.0) * self.SHAKE_AMP * 0.5
+            sy = math.cos(self._shake_phase * 6.0) * self.SHAKE_AMP * 0.5
+            tilt_mod += 0.02 * math.sin(self._shake_phase * 1.5)
             if self._shake_remaining == 0:
                 sx = sy = 0.0
 
         if self._flourish_remaining > 0:
             self._flourish_remaining -= 1
             t = 1.0 - self._flourish_remaining / self.FLOURISH_DURATION
-            self._avatar_scale = 1.0 + 0.38 * math.sin(t * math.pi) + scale_mod
-            self._avatar_angle = (
-                self.FLOURISH_SPIN * 2 * math.pi * (1 - math.cos(t * math.pi)) / 2
-                + base_tilt
-                + tilt_mod
+            # subtle: small scale bump, zero spin
+            self._avatar_scale = (
+                1.0 + 0.08 * math.sin(t * math.pi) + scale_mod + (base_scale - 1.0)
             )
+            self._avatar_angle = base_tilt + tilt_mod
             if self._flourish_remaining == 0:
                 self._avatar_scale = base_scale + scale_mod
                 self._avatar_angle = base_tilt + tilt_mod
@@ -845,22 +872,38 @@ class ThootieOverlay:
             self._avatar_scale = base_scale + scale_mod
             self._avatar_angle = base_tilt + tilt_mod
 
-        # Position: base waypoint + perpetual hover (bob_x, bob_y) + shake
+        # --- ONE motion authority: compose final desired position, then cap delta ---
         base_x, base_y = self._waypoint_px(self._waypoint_index)
-        # Smooth approach to base if patrol were enabled, but patrol is killed
-        if PATROL_ENABLED and not self._active:
+        if self.machine.state in (
+            ThootieState.APPROVAL_INCOMING,
+            ThootieState.APPROVAL_PRESENTED,
+            ThootieState.EDIT,
+        ):
+            des_x, des_y = self._pos[0], self._pos[1]
+        elif PATROL_ENABLED and not self._active:
             tx, ty = self._waypoint_px(self._target_index)
-            nx, ny = drift_step((self._pos[0], self._pos[1]), (tx, ty), 0.008)
+            nx, ny = drift_step((self._pos[0], self._pos[1]), (tx, ty), 0.004)
             self._pos = [nx, ny]
-            fx = nx + bob_x + sx
-            fy = ny + bob_y + sy
+            des_x = nx + bob_x + sx
+            des_y = ny + bob_y + sy
         else:
-            # Perpetual gentle float around parked corner — never stationary
-            fx = base_x + bob_x + sx
-            fy = base_y + bob_y + sy
+            des_x = base_x + bob_x + sx
+            des_y = base_y + bob_y + sy
             self._pos = [base_x, base_y]
 
-        self._win.move(int(fx), int(fy))
+        # Cap total displacement per tick to few px
+        if not hasattr(self, "_last_win_x"):
+            self._last_win_x, self._last_win_y = des_x, des_y
+        dx = des_x - self._last_win_x
+        dy = des_y - self._last_win_y
+        cap = self.MAX_DISP_PER_TICK
+        if abs(dx) > cap:
+            des_x = self._last_win_x + math.copysign(cap, dx)
+        if abs(dy) > cap:
+            des_y = self._last_win_y + math.copysign(cap, dy)
+        self._last_win_x, self._last_win_y = des_x, des_y
+
+        self._win.move(int(des_x), int(des_y))
         self._avatar.queue_draw()
         return True
 
