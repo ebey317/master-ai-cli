@@ -7,6 +7,8 @@
 [![Tests](https://img.shields.io/badge/tests-64%20files-green)](tests/)
 [![Platform](https://img.shields.io/badge/Platform-Linux-blue)]()
 
+![Master AI — one controller runs the whole operation](assets/master-ai-hero.webp)
+
 **Two surfaces, one brain:**
 
 - **Sensei** — the terminal/TUI agent. Reads, writes, runs commands, manages memory, delegates to subagents.
