@@ -5579,7 +5579,83 @@ def _system_prefix() -> Any:
     caps = _inject_system_capabilities()
     if caps:
         parts.append("THIS MACHINE (probed, not assumed):\n" + caps)
+    skills = _inject_skill_inventory()
+    if skills:
+        parts.append(skills)
     return "\n\n".join(parts)
+
+
+_SKILL_INV_CACHE: dict = {"block": "", "at": 0.0}
+_SKILL_INV_TTL = 600.0
+
+
+def _skill_inv_entry(skill_dir: Any) -> Any:
+    """(name, description) from SKILL.md frontmatter or first header."""
+    try:
+        text = (skill_dir / "SKILL.md").read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+    name = skill_dir.name
+    desc = ""
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        head = text[3:end] if end != -1 else ""
+        for line in head.splitlines():
+            if ":" not in line:
+                continue
+            k, v = line.split(":", 1)
+            k, v = k.strip().lower(), v.strip().strip("\"'")
+            if k == "name" and v:
+                name = v
+            elif k == "description" and v:
+                desc = v.lstrip(">").strip()
+    if not desc:
+        for line in text.splitlines():
+            s = line.strip()
+            if s.startswith("# "):
+                desc = s[2:].strip()
+                break
+    return (name, desc or "no description")
+
+
+def _inject_skill_inventory(force: bool = False) -> Any:
+    """Prompt block listing installed skills (2026-10-31): the model can't
+    use what it can't see. Scans the same dirs as _find_markdown_skill on a
+    10-minute TTL — a missing dir costs one prompt block, never raises."""
+    now = time.time()
+    if (
+        not force
+        and _SKILL_INV_CACHE["block"]
+        and now - _SKILL_INV_CACHE["at"] < _SKILL_INV_TTL
+    ):
+        return _SKILL_INV_CACHE["block"]
+    try:
+        seen: dict = {}
+        for base in _MARKDOWN_SKILL_DIRS:
+            try:
+                entries = sorted(p for p in base.iterdir() if p.is_dir())
+            except Exception:
+                continue
+            for entry in entries:
+                if entry.name in seen or not (entry / "SKILL.md").is_file():
+                    continue
+                parsed = _skill_inv_entry(entry)
+                if parsed:
+                    seen[entry.name] = parsed
+        if not seen:
+            return ""
+        lines = [
+            f"- {name}: {desc}"
+            for name, desc in sorted(seen.values(), key=lambda t: t[0])
+        ]
+        block = "INSTALLED SKILLS (invoke with `use skill <name>`):\n" + "\n".join(
+            lines
+        )
+        _SKILL_INV_CACHE["block"] = block
+        _SKILL_INV_CACHE["at"] = now
+        return block
+    except Exception:
+        return _SKILL_INV_CACHE["block"]
 
 
 def _inject_identity(messages: Any) -> Any:
@@ -19940,6 +20016,19 @@ def main() -> None:
 
         # ── Read URL/local text — Firecrawl only for real URLs ──────
         # ── Use a plain-markdown skill (npx skills add packages) ─────
+        # ── List installed skills ─────────────────────────────────────
+        # 2026-10-31: the model can't use what it can't see — `skills`
+        # prints the same inventory injected into the system prompt, and
+        # the not-found message points at it instead of bare dir paths.
+        if lo in ("skills", "list skills", "skills list"):
+            block = _inject_skill_inventory(force=True)
+            print(
+                f"\n{C}📚 Installed skills:{X}\n{block}\n"
+                if block
+                else f"\n  {Y}no skills found in ~/.agents/skills, ~/.claude/skills, ~/.master_ai_skills{X}\n"
+            )
+            print(f"  {D}usage: use skill <name>  OR  skill: <name>{X}\n")
+            continue
         # 2026-09-27: see _find_markdown_skill's own comment for why this
         # exists -- a SKILL.md-only skill (no recipe.py) is meant to be
         # read and followed directly, not compiled into a state machine.
@@ -21107,9 +21196,14 @@ def _handle_use_skill(cmd: str, lo: str) -> str:
         return
     skill_path = _find_markdown_skill(name)
     if not skill_path:
+        block = _inject_skill_inventory()
         print(
             f"  {R}skill not found: {name}{X}\n"
-            f"  {D}checked ~/.agents/skills, ~/.claude/skills, ~/.master_ai_skills{X}"
+            + (
+                f"{block}\n"
+                if block
+                else f"  {D}checked ~/.agents/skills, ~/.claude/skills, ~/.master_ai_skills{X}"
+            )
         )
         return
     body = _strip_skill_frontmatter(skill_path.read_text())

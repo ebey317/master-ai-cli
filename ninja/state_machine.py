@@ -9,6 +9,7 @@ variety, crisp PNG polish with theme-palette only.
 from __future__ import annotations
 
 import enum
+import json
 import math
 import os
 import random
@@ -31,6 +32,7 @@ from scripts.theme import Theme, hex_to_rgb, load_theme  # noqa: E402
 class ThootieState(enum.Enum):
     IDLE = "idle"
     WORKING = "working"
+    TALKING = "talking"
     SORTING = "sorting"
     APPROVAL_INCOMING = "approval-incoming"
     APPROVAL_PRESENTED = "approval-presented"
@@ -228,6 +230,37 @@ _WAYPOINTS = [
 PATROL_ENABLED = False
 PATROL_ALPHA = 0.0  # disabled
 _EXCLUDED_NOTIFICATION_CORNER = (0.98, 0.02)
+
+# Operator drag anchor (2026-10-31): where the operator dropped the
+# avatar is where it stays, across presentations and processes. The
+# drift tick and show() resolve their base position through here.
+_ANCHOR_FILE = Path.home() / ".config" / "ai-controller" / "overlay_pos.json"
+
+
+def _load_user_anchor(path: Path = _ANCHOR_FILE) -> tuple[int, int] | None:
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        return (int(data["x"]), int(data["y"]))
+    except Exception:
+        return None
+
+
+def _save_user_anchor(x: int, y: int, path: Path = _ANCHOR_FILE) -> None:
+    try:
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"x": int(x), "y": int(y)}), encoding="utf-8")
+        os.replace(tmp, target)
+    except Exception:
+        pass
+
+
+def _resolve_base(
+    user_pos: tuple[int, int] | None, waypoint: tuple[int, int]
+) -> tuple[int, int]:
+    return user_pos if user_pos is not None else waypoint
+
 
 _AVATAR_PATHS: dict[str, Path] = {
     "ninja": Path.home() / "master-ai-cli" / "ninja" / "assets" / "ninja_avatar.png",
@@ -456,6 +489,7 @@ class ThootieOverlay:
         self._waypoint_index = waypoint_index % len(_WAYPOINTS)
         self._target_index = self._waypoint_index
         self._pos: list[float] = [0.0, 0.0]
+        self._user_pos: tuple[int, int] | None = _load_user_anchor()
         self._pulse_on = False
         self._clickthrough = True
         self._active = False
@@ -466,6 +500,10 @@ class ThootieOverlay:
         self._shake_phase = 0.0
         self._avatar_scale = 1.0
         self._avatar_angle = 0.0
+        self._jaw = 0.0  # lip-sync: vertical jaw oscillation while speaking
+        self._pre_talk = ThootieState.IDLE  # state to restore after TALKING
+        self._speak_check_at = 0.0
+        self._speaking = False
         self._shake_remaining = 0
         self._flourish_remaining = 0
         self._spawn_remaining = 0
@@ -523,8 +561,8 @@ class ThootieOverlay:
         cr.translate(cx, cy)
         if self._avatar_angle:
             cr.rotate(self._avatar_angle)
-        if self._avatar_scale != 1.0:
-            cr.scale(self._avatar_scale, self._avatar_scale)
+        if self._avatar_scale != 1.0 or self._jaw != 0.0:
+            cr.scale(self._avatar_scale, self._avatar_scale * (1.0 + self._jaw))
 
         if self._base_pixbuf:
             pw = self._base_pixbuf.get_width()
@@ -566,16 +604,16 @@ class ThootieOverlay:
             parent.show_all()
 
     def _make_clickthrough(self, *args):
-        if self._clickthrough:
-            self._win.set_accept_focus(False)
-            gdkwin = self._win.get_window()
-            if gdkwin:
-                gdkwin.set_pass_through(True)
-        else:
-            self._win.set_accept_focus(True)
-            gdkwin = self._win.get_window()
-            if gdkwin:
-                gdkwin.set_pass_through(False)
+        # Grabbable (2026-10-31): the operator drags the avatar out of
+        # the way, so the window takes pointer events in every state.
+        # It used to go pass-through whenever it was not approving,
+        # which made the drag handlers unreachable exactly while the
+        # card sits on the desktop. Focus is still never stolen while
+        # idle; only the pass-through is gone.
+        self._win.set_accept_focus(not self._clickthrough)
+        gdkwin = self._win.get_window()
+        if gdkwin:
+            gdkwin.set_pass_through(False)
 
     def _sigusr2(self, _signum, _frame):
         states = list(ThootieState)
@@ -746,7 +784,7 @@ class ThootieOverlay:
         self.machine.set_state(ThootieState.IDLE)
 
     def show(self) -> None:
-        x, y = self._waypoint_px(self._waypoint_index)
+        x, y = _resolve_base(self._user_pos, self._waypoint_px(self._waypoint_index))
         self._pos = [float(x), float(y)]
         self._win.show_all()
         self._win.move(x, y)
@@ -796,16 +834,59 @@ class ThootieOverlay:
         self._drag = None
         w, h = self._win.get_size()
         self._clamp_on_screen(w, h)
+        try:
+            x, y = self._win.get_position()
+            self._user_pos = (int(x), int(y))
+            self._pos = [float(x), float(y)]
+            _save_user_anchor(int(x), int(y))
+        except Exception:
+            pass
         return False
+
+    def _speaking_now(self) -> bool:
+        """True while a TTS player is audible. Zero IPC: every TTS player
+        carries --force-media-title=AI_TTS_BARGE (bridge contract), so a
+        process scan is the speech signal. Cached 1s — ticks run at 50ms."""
+        import subprocess as _sp
+        import time as _t
+
+        now = _t.time()
+        if now - self._speak_check_at < 1.0:
+            return self._speaking
+        self._speak_check_at = now
+        try:
+            r = _sp.run(["pgrep", "-f", "AI_TTS_BARGE"], capture_output=True, timeout=2)
+            self._speaking = r.returncode == 0
+        except Exception:
+            pass
+        return self._speaking
 
     def _drift_tick(self) -> bool:
         """Single motion authority: one tick composes bob+drift, capped delta."""
         self._state_pulse += 0.12
         self._shake_phase += 0.2
 
+        # Lip-sync gate (2026-11-01): TALKING follows actual speech output,
+        # never runs ambient. Only IDLE/WORKING yield; approvals keep focus.
+        try:
+            speaking = self._speaking_now()
+        except Exception:
+            speaking = False
+        st = self.machine.state
+        if speaking and st in (ThootieState.IDLE, ThootieState.WORKING):
+            self._pre_talk = st
+            self.machine.set_state(ThootieState.TALKING)
+            st = ThootieState.TALKING
+        elif not speaking and st == ThootieState.TALKING:
+            self.machine.set_state(self._pre_talk)
+            st = self._pre_talk
+            self._jaw = 0.0
+
         bob_x, bob_y, base_tilt, base_scale = self._living_idle.tick()
 
         st = self.machine.state
+        if st != ThootieState.TALKING:
+            self._jaw = 0.0
         tilt_mod = 0.0
         scale_mod = 0.0
 
@@ -816,6 +897,12 @@ class ThootieOverlay:
             scale_mod = 0.01 * math.sin(self._state_pulse * 1.2)
             tilt_mod = 0.02 * math.sin(self._state_pulse * 0.5)
             bob_y *= 1.05
+        elif st == ThootieState.TALKING:
+            # Lip-sync: syllable-rate jaw (~4Hz) + slight lean-in. Only runs
+            # while the TTS player lives (see gate above) — never ambient.
+            self._jaw = 0.07 * abs(math.sin(self._state_pulse * 2.1))
+            scale_mod = 0.008 * math.sin(self._state_pulse * 1.1)
+            tilt_mod = 0.03
         elif st == ThootieState.SORTING:
             tilt_mod = 0.03 * math.sin(self._state_pulse * 0.5)
             scale_mod = 0.008 * math.sin(self._state_pulse * 0.4)
@@ -873,7 +960,9 @@ class ThootieOverlay:
             self._avatar_angle = base_tilt + tilt_mod
 
         # --- ONE motion authority: compose final desired position, then cap delta ---
-        base_x, base_y = self._waypoint_px(self._waypoint_index)
+        base_x, base_y = _resolve_base(
+            self._user_pos, self._waypoint_px(self._waypoint_index)
+        )
         if self.machine.state in (
             ThootieState.APPROVAL_INCOMING,
             ThootieState.APPROVAL_PRESENTED,
