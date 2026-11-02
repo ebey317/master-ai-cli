@@ -475,7 +475,11 @@ class ThootieOverlay:
         self._card_label.set_yalign(0.0)
         self._card_label.set_line_wrap(True)
         self._card_label.set_line_wrap_mode(2)
-        self._right.pack_start(self._card_label, True, True, 0)
+        self._card_scroll = Gtk.ScrolledWindow()
+        self._card_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        self._card_scroll.set_shadow_type(Gtk.ShadowType.NONE)
+        self._card_scroll.add(self._card_label)
+        self._right.pack_start(self._card_scroll, True, True, 0)
 
         self._button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         self._button_box.set_halign(Gtk.Align.CENTER)
@@ -514,6 +518,7 @@ class ThootieOverlay:
             redraw_hook=self._on_state_change,
             state_change_hook=self._on_state_change,
         )
+        self._win.connect("delete-event", self._on_window_delete)
         self._win.connect("realize", self._make_clickthrough)
         self._win.connect("map-event", self._make_clickthrough)
 
@@ -737,7 +742,7 @@ class ThootieOverlay:
         self._button_box.set_no_show_all(False)
         self._button_box.show_all()
 
-    def present_approval(self, timeout: int = 120) -> str:
+    def present_approval(self, timeout: int | None = 120) -> str:
         if self._approval_loop is not None:
             return "deny"
         self._approval_verdict = None
@@ -757,7 +762,7 @@ class ThootieOverlay:
         )
 
         self._timer_id: Any = None
-        if timeout > 0:
+        if timeout is not None and timeout > 0:
             self._timer_id = GLib.timeout_add_seconds(timeout, self._on_timeout)
 
         self._approval_loop.run()
@@ -776,6 +781,12 @@ class ThootieOverlay:
             self._approval_verdict = "deny"
             self._approval_loop.quit()
         return False
+
+    def _on_window_delete(self, _window: Any, _event: Any) -> bool:
+        """Window-manager close is an explicit fail-closed denial."""
+        if self._approval_loop is not None:
+            self._finish_confirm("deny")
+        return True
 
     def park_idle(self) -> None:
         self.clear_buttons()

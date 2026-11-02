@@ -44,7 +44,7 @@ def ask_avatar_approval(
     card: dict | str,
     agent: str = "ninja",
     *,
-    timeout: int = DEFAULT_TIMEOUT,
+    timeout: int | None = DEFAULT_TIMEOUT,
 ) -> str:
     """Show approval card spawned FROM avatar, same window family.
 
@@ -68,7 +68,10 @@ def ask_avatar_approval(
         if not overlay._win.get_visible():
             overlay.show()
         # present_approval triggers _set_active(True) which starts spawn anim
-        verdict = overlay.present_approval(timeout=timeout)
+        # Tahuti's --ask is an interactive human gate; wait for a decision.
+        verdict = overlay.present_approval(
+            timeout=None if agent == "tahuti" else timeout
+        )
         overlay.park_idle()
         return verdict
     except Exception:
