@@ -290,6 +290,10 @@ def _pulse_cli(args: list[str]) -> int:
         # was "held" for over a minute with no event.
         if name == "working" and now - _state["t"] > _MAX_WORK_S:
             stay = False
+        # "sending"/"heard" last only as long as speech-to-text takes; if the producer
+        # died or bailed (too-short take) nothing else would ever close the window.
+        if name in ("sending", "heard") and now - _state["t"] > 45:
+            stay = False
         if name == "listening" and now - _state["t"] > max(secs, 60):
             stay = False
         if not stay:
