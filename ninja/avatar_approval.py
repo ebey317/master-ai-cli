@@ -14,6 +14,7 @@ import os
 import sys
 import warnings
 from pathlib import Path
+from typing import Any
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
@@ -164,40 +165,134 @@ def _pulse_cli(args: list[str]) -> int:
     # on_press no longer needs to kill this process for a second real press
     # within the window -- it can just keep writing captions and let this
     # loop's own activity check extend naturally.
-    _last_activity = [t0]
+    # EVENT-DRIVEN LIFETIME (2026-11-03, operator spec): the window is alive
+    # exactly as long as something real is happening — trigger held, work
+    # running, or the model's voice still playing — and goes away when that
+    # stops. No fixed clock decides when a reply is "long enough".
+    #   listening / sending / heard / working -> stay
+    #   done                                  -> stay while TTS plays (policy below)
+    #   idle                                  -> leave now (ptt: nothing to do)
+    _MAX_WORK_S = 900.0  # safety net only: a runner that died mid-work
+    _done: dict[str, Any] = {
+        "at": 0.0,
+        "cap_time": 0.0,
+        "spoke": False,
+        "last_speech": 0.0,
+    }
+
+    def _tts_playing() -> bool:
+        """True while the bridge's TTS player (hermes_tts_play.sh / the mpv
+        fallback tagged AI_TTS_BARGE) is alive."""
+        import subprocess as _sp
+
+        # Match by exact process NAME, not `pgrep -f` (which also matches any
+        # shell whose command line merely mentions the pattern): the wrapper
+        # script, or an mpv carrying the AI_TTS_BARGE title.
+        out = []
+        try:
+            out += _sp.run(
+                ["pgrep", "-x", "hermes_tts_play"],
+                stdout=_sp.PIPE,
+                stderr=_sp.DEVNULL,
+                text=True,
+            ).stdout.split()
+            for pid in _sp.run(
+                ["pgrep", "-x", "mpv"], stdout=_sp.PIPE, stderr=_sp.DEVNULL, text=True
+            ).stdout.split():
+                try:
+                    with open(f"/proc/{pid}/cmdline", "rb") as f:
+                        if b"AI_TTS_BARGE" in f.read():
+                            out.append(pid)
+                except Exception:
+                    continue
+        except Exception:
+            return False
+        # pgrep -f also matches ZOMBIES: the voice bridge never reaps its
+        # Popen'd players, so finished ones linger as <defunct> forever and
+        # made "speaking" permanently true (found 2026-11-03: window stayed
+        # up 40s after the voice stopped). Only a live (non-Z) process counts.
+        for pid in out:
+            try:
+                with open(f"/proc/{pid}/stat") as f:
+                    if f.read().rsplit(")", 1)[1].split()[0] != "Z":
+                        return True
+            except Exception:
+                continue
+        return False
+
+    def _should_stay_open(
+        state: str, speaking: bool, since_done: float, ever_spoke: bool
+    ) -> bool:
+        """Decide whether the window stays up on this 500ms tick."""
+        if state in ("listening", "sending", "heard", "working"):
+            return True
+        if state == "idle":
+            return False
+        # state == "done": the model finished; the voice may still be talking.
+        # Policy (operator spec 2026-11-03): the model's voice decides, not a
+        # clock. Mid-sentence is never cut. TTS generation takes a few seconds
+        # after "done", so if it hasn't started yet wait up to 10s before
+        # concluding it never will (muted / barge-in suppressed / bridge down).
+        # Once it has played and stopped, leave after a 1s gap (covers
+        # back-to-back players) — no lingering timer.
+        if speaking:
+            return True
+        if not ever_spoke:
+            return since_done < 10.0
+        return _done_quiet_for() < 1.0
+
+    def _done_quiet_for() -> float:
+        """Seconds since TTS was last seen playing for the current reply."""
+        return _time.time() - _done["last_speech"]
+
     loop = GLib.MainLoop()
+    _state: dict[str, Any] = {"name": "listening", "t": t0}
 
     def _refresh() -> bool:
         # Change-guarded (2026-10-31): re-setting identical card text every
         # 500ms caused relayout flicker ("scrolling credits" glitch).
+        now = _time.time()
         try:
             data = _json.loads(cap_path.read_text())
             cap_time = float(data.get("time", 0))
-            if _time.time() - cap_time > 60:
-                raise ValueError("stale caption")
-            _last_activity[0] = max(_last_activity[0], cap_time)
+            # A caption written before this window opened belongs to an
+            # earlier take — ignore it (replaces the old 60s staleness clock).
+            if cap_time < t0 - 5:
+                raise ValueError("caption from an earlier take")
             text, state = (data.get("text") or ""), (data.get("state") or "")
-            if state == "listening" or not text:
+            _state["name"], _state["t"] = state or "listening", cap_time
+            if state == "idle":
+                new = ""
+            elif state in ("sending",) or (state == "listening") or not text:
                 new = "Listening — hold L+R, speak, release."
             elif state == "working":
                 new = f"Working on:\n{text}"
             elif state == "done":
-                new = f"Done:\n{text[:200]}"
-                if not _refresh_done_at:
-                    _refresh_done_at.append(_time.time())
+                new = f"Done:\n{text[:1200]}"
+                if _done["cap_time"] != cap_time:  # a NEW done: reset its clock
+                    _done.update(at=now, cap_time=cap_time, spoke=False)
             else:
                 new = f"Heard — sending to agent:\n{text}"
-            if not _refresh_last or _refresh_last[0] != new:
+            if new and (not _refresh_last or _refresh_last[0] != new):
                 _refresh_last.clear()
                 _refresh_last.append(new)
                 overlay.set_card_text(new)
         except Exception:
             pass
-        # Leave shortly after done instead of lingering the full window.
-        if _refresh_done_at and _time.time() - _refresh_done_at[0] > 5:
-            loop.quit()
-            return False
-        if _time.time() - _last_activity[0] > secs:
+        name = _state["name"]
+        speaking = _tts_playing() if name == "done" else False
+        if speaking:
+            _done["spoke"] = True
+            _done["last_speech"] = now
+        since_done = now - _done["at"] if _done["at"] else 0.0
+        stay = _should_stay_open(name, speaking, since_done, _done["spoke"])
+        # Safety nets for a dead producer: working forever, or a trigger that
+        # was "held" for over a minute with no event.
+        if name == "working" and now - _state["t"] > _MAX_WORK_S:
+            stay = False
+        if name == "listening" and now - _state["t"] > max(secs, 60):
+            stay = False
+        if not stay:
             loop.quit()
             return False
         return True

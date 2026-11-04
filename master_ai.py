@@ -6946,6 +6946,87 @@ def _ask_openrouter(messages: Any, model: Any, label: Any, timeout: int = 60) ->
         return None
 
 
+_META_CHAT_MODELS = (
+    "muse-spark-1.3",
+    "muse-spark-1.2",
+    "muse-spark-1.1",
+    "muse-wonder-1.0",
+)
+
+
+def _meta_key() -> str:
+    """Meta Model API key (Muse). Stored as MODEL_API_KEY in the keys file."""
+    import re as _re
+
+    for cand in (
+        os.environ.get("MODEL_API_KEY", ""),
+        KEYS.get("meta", ""),
+        KEYS.get("MODEL_API_KEY", ""),
+    ):
+        if cand and len(cand) > 20 and not cand.startswith("***"):
+            return cand.strip()
+    try:
+        m = _re.search(r"^MODEL_API_KEY=(.+)$", KEYS_FILE.read_text(), _re.M)
+        if m:
+            return m.group(1).strip().strip("\"'")
+    except Exception:
+        pass
+    return ""
+
+
+def _ask_meta(messages: Any, model: Any, label: Any, timeout: int = 90) -> Any:
+    """Meta Muse direct (OpenAI-compatible chat/completions at api.meta.ai).
+    Verified live 2026-11-04: POST /v1/chat/completions 200 with the same
+    MODEL_API_KEY Tahuti uses. Muse reasons before answering, so give it a
+    real token budget (a 20-token cap returned content:null)."""
+    provider_key = f"meta/{label}"
+    if not _cloud_allowed(provider_key):
+        return None
+    key = _meta_key()
+    if not key:
+        return None
+    messages = _inject_identity(messages)
+    log(f"CLOUD [{provider_key}]")
+    payload = {"model": model, "messages": messages, "max_tokens": 8192}
+    req = urllib.request.Request(
+        "https://api.meta.ai/v1/chat/completions",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            result = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode()[:300]
+        except Exception:
+            pass
+        if e.code in (401, 403):
+            log(f"CLOUD_AUTH_FAIL [meta]: {e.code} {body}")
+        elif e.code == 429:
+            _cloud_trip(provider_key, "rate limit", 30)
+        elif _network_error(e):
+            _cloud_trip_network(e, 60)
+        else:
+            log(f"META_ERROR [{label}]: {e.code} {body}")
+        return None
+    except Exception as e:
+        if _network_error(e):
+            _cloud_trip_network(e, 60)
+            return None
+        log(f"META_ERROR [{label}]: {e}")
+        return None
+    try:
+        choice = result["choices"][0]
+        message = choice["message"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    globals()["_LAST_FINISH_REASON"] = choice.get("finish_reason", "")
+    _record_real_ctx_tokens(model, (result.get("usage") or {}).get("total_tokens"))
+    return message.get("content") or None
+
+
 def _ask_poolside(messages: Any, model: Any, label: Any, timeout: int = 90) -> Any:
     """Poolside direct (OpenAI-compatible), Laguna agentic-coding models.
     Verified against docs.poolside.ai (2026-09-25) before wiring in: base
@@ -8035,6 +8116,9 @@ def ask_cloud(messages: Any, provider: str = "opencode") -> Any:
     elif (provider or "").startswith("ollama-cloud::"):
         _m = provider[len("ollama-cloud::") :]
         _asker = lambda msgs, _m=_m: _ask_ollama_cloud(msgs, _m, _m)
+    elif (provider or "").startswith("meta::"):
+        _m = provider[len("meta::") :]
+        _asker = lambda msgs, _m=_m: _ask_meta(msgs, _m, _m)
     elif (provider or "").startswith("poolside::"):
         _m = provider[len("poolside::") :]
         _asker = lambda msgs, _m=_m: _ask_poolside(msgs, _m, _m)
@@ -8323,6 +8407,7 @@ def ask_model_router(
                 "nvidia::",
                 "cerebras::",
                 "groq::",
+                "meta::",
                 "qwen::",
                 "ollama-cloud::",
                 "opencode::",
@@ -10741,6 +10826,9 @@ def live_provider_completions(query: str = "", mode: Any | None = None) -> Any:
     # so it was selectable by typed command but invisible in the UI.
     if KEYS.get("poolside"):
         rows.append(("poolside", "Poolside", "paid — code + reasoning"))
+    # 2026-11-04: Meta Muse direct — same key Tahuti's voice already uses.
+    if _meta_key():
+        rows.append(("meta", "Meta Muse", "Muse Spark / Wonder"))
     return rows
 
 
@@ -10827,6 +10915,8 @@ def live_model_completions(provider: Any) -> Any:
         return [(f"cerebras::{m}", m, "💰") for m in _cerebras_model_catalog()]
     if provider == "groq":
         return [(f"groq::{m}", m, "💰") for m in _groq_model_catalog()]
+    if provider == "meta":
+        return [(f"meta::{m}", m, "🧠") for m in _META_CHAT_MODELS]
     if provider == "poolside":
         return [
             (f"poolside::{m}", m, "💰 reasoning") for m in _poolside_model_catalog()
@@ -10880,6 +10970,7 @@ def _resolve_model_choice(choice: Any) -> Any:
         low.startswith("nvidia::")
         or low.startswith("cerebras::")
         or low.startswith("groq::")
+        or low.startswith("meta::")
         or low.startswith("qwen::")
         or low.startswith("opencode-go::")
         or low.startswith("ollama-cloud::")
@@ -10960,6 +11051,7 @@ def _pin_model_choice(choice: Any) -> tuple:
         resolved.startswith("nvidia::")
         or resolved.startswith("cerebras::")
         or resolved.startswith("groq::")
+        or resolved.startswith("meta::")
         or resolved.startswith("qwen::")
     )
     if "/" in resolved and resolved not in CLOUD_MODEL_NAMES and not _direct_api_pick:
