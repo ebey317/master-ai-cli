@@ -10058,7 +10058,7 @@ def run_tutorial() -> None:
         ),
         (
             "Voice Input",
-            "Type 'v' and press Enter to record your voice.\nI'll transcribe and send it.\nType 'r 10' to record for 10 seconds.",
+            "Hold the Tahuti trigger (F13, or L+R on the controller) and speak.\nTahuti answers out loud and shows a card.\nSay \"slash\" + a command to run it by voice:\n  slash compact · slash mode · slash plan · slash models\n  slash commands → a guide to every command\nIn this window, 'v' still records 5 seconds ('r 10' = 10).",
         ),
         (
             "Projects",
@@ -10070,7 +10070,7 @@ def run_tutorial() -> None:
         ),
         (
             "Hints and Help",
-            "help        → quick reference card\nhints off   → disable these tips\nhints on    → re-enable tips\ntutorial    → replay this walkthrough",
+            "help        → paged reference: every command A–Z, keys, scrolling\nhints off   → disable these tips\nhints on    → re-enable tips\ntutorial    → replay this walkthrough",
         ),
     ]
     total = len(STEPS)
@@ -11709,20 +11709,10 @@ def show_help() -> Any:
                 ("<text> + Enter", "send message directly — no prefix needed"),
                 ("Tab / Shift+Tab", "complete forward/backward through choices"),
                 ("PageUp / PageDown", "scroll output by one visible page"),
-                (", ; . /", "punctuation buckets to explore"),
                 ("↑ / ↓", "scroll command history"),
                 ("← →", "move cursor within line"),
                 ("i <path>", "analyze an image file"),
                 ("dl <url>", "download a file"),
-            ],
-        ),
-        (
-            "COMMAND BUCKETS",
-            [
-                (",", "general actions"),
-                (";", "settings: modes, models, keys, usage"),
-                (".", "navigation + status"),
-                ("/", "payload commands"),
             ],
         ),
         (
@@ -11846,7 +11836,6 @@ def show_help() -> Any:
                 ("help hide <name>", "hide a slide (e.g. 'help hide SCROLL')"),
                 ("help show <name>", "re-enable a hidden slide"),
                 ("help reset", "show every slide again"),
-                ("help buckets", "show the punctuation teaser"),
                 ("x", "exit Master AI"),
             ],
         ),
@@ -12040,7 +12029,7 @@ def show_tips() -> None:
 
     section("POWER TIPS")
     blank()
-    row("Tab", "auto-complete any command; punctuation buckets narrow faster")
+    row("Tab", "auto-complete any command (or type / for the A-Z command palette)")
     row("Shift+Tab", "reverse completion; empty input opens settings bucket")
     row("PageUp/PageDown", "scroll the Sensei output by one visible page")
     row("↑ / ↓", "scroll through command history")
@@ -12076,7 +12065,6 @@ def show_commands() -> None:
         ("fast: <message>", "Quick cloud answer when Groq is configured"),
         ("image: <prompt>", "Submit a local PNG job"),
         ("image status <id>", "Fetch/show the completed PNG artifact"),
-        (", ; . /", "Explore the punctuation buckets"),
         ("project ~/path", "Use a folder as context"),
         ("remember: <fact>", "Save something to memory"),
         (
@@ -12117,7 +12105,6 @@ def show_commands() -> None:
         ("doctor", "Check services, models, URLs, and warnings"),
         ("update", "Update Master AI safely"),
         ("copy chat", "Export this conversation"),
-        ("help buckets", "Show the punctuation teaser"),
         ("new", "full session reset + engine restart"),
         ("clear", "full session reset + engine restart (synonym for new)"),
         ("kick", "force restart if stuck"),
