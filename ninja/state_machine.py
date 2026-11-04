@@ -13,6 +13,7 @@ import json
 import math
 import os
 import random
+import re
 import signal
 import sys
 from collections.abc import Callable
@@ -27,6 +28,30 @@ if str(_ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(_ROOT / "scripts"))
 
 from scripts.theme import Theme, hex_to_rgb, load_theme  # noqa: E402
+
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"“(])")
+
+
+def space_sentences(text: str, min_len: int = 45) -> str:
+    """Card text is a small monospace box; a paragraph of back-to-back sentences
+    reads as a wall. Put a blank line between sentences of flowing prose.
+    List/table lines (indented, bulleted, numbered, "x - y") and short lines are
+    left exactly as they are, and already-spaced text is unchanged."""
+    out: list[str] = []
+    for line in text.split("\n"):
+        stripped = line.lstrip()
+        prose = (
+            len(line) >= min_len
+            and line == stripped
+            and not re.match(r"[▶▲▼•\-*|\d]", stripped)
+            and " - " not in line
+        )
+        parts = _SENTENCE_SPLIT.split(line) if prose else [line]
+        for i, part in enumerate(parts):
+            out.append(part)
+            if i < len(parts) - 1:
+                out.append("")
+    return "\n".join(out)
 
 
 class ThootieState(enum.Enum):
@@ -657,7 +682,7 @@ class ThootieOverlay:
         self._refresh_avatar()
 
     def set_card_text(self, text: str) -> None:
-        self._card_label.set_text(text)
+        self._card_label.set_text(space_sentences(text))
 
     def _set_active(self, active: bool) -> None:
         self._active = active
