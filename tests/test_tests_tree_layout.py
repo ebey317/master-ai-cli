@@ -29,6 +29,7 @@ KNOWN_UNMAPPED = {
     # ninja/ package tests: the mapper only looks at the repo root and scripts/
     "test_avatar_approval_wait.py",  # ninja/avatar_approval.py
     "test_avatar_lifetime.py",  # ninja/avatar_approval.py (lifetime rules, caption parsing)
+    "test_no_auto_agent_loop.py",  # source guard on master_ai.py: no auto agent-loop routing
     "test_overlay_anchor.py",  # ninja/state_machine.py
 }
 

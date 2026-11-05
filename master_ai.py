@@ -241,7 +241,6 @@ from sensei_tables import (  # noqa: F401
     _MAX_AUTO_CONTINUATIONS,
     _MAX_LINE_REPEATS,
     _MISTRAL_TOOL_CALLS_RE,
-    _MULTI_STEP_PHRASES,
     _NON_CODE_SYNTHESIS_HINTS,
     _NON_CODE_VERIFY_EXTENSIONS,
     _NONLOCAL_ROUTE_TIERS,
@@ -3122,36 +3121,6 @@ def _assistant_just_proposed_a_plan(history: Any) -> Any:
             return True
         numbered_lines = len(re.findall(r"(?m)^\s*[1-9]\d?[.)]?\s+\S", content))
         return numbered_lines >= 2
-    return False
-
-
-def _looks_multi_step(text: Any, history: Any | None = None) -> bool:
-    """Cheap heuristic: does this request span multiple steps?
-
-    Returns True when the request language contains multi-step sequencing
-    signals or numbered-step structure, OR when it's a short approval of a
-    plan the assistant already committed to in its previous turn. False
-    positives (false alarms) route through the agent loop, which is safe —
-    the planner just treats it as a single step. The cost of a false
-    positive is one extra plan/critique call; the cost of a false negative
-    is the model dropping off mid-task, which is exactly the failure we
-    are closing.
-
-    A question always wins first, even if it also matches a phrase below --
-    "walk me through how X works?" is a request for an explanation, not a
-    sequenced task to execute.
-    """
-    if _looks_like_question(text):
-        return False
-    low = (text or "").lower()
-    if any(phrase in low for phrase in _MULTI_STEP_PHRASES):
-        return True
-    if (
-        history
-        and _looks_like_plan_approval(text)
-        and _assistant_just_proposed_a_plan(history)
-    ):
-        return True
     return False
 
 
@@ -20571,45 +20540,10 @@ def main() -> None:
             _handle_plan(history, user_text)
             continue
 
-        # ── Auto-route multi-step requests through the agent loop ──────
-        # 2026-09-27: Elijah's own words — "it should never just drop off in
-        # the middle of something. it should always continue working... this
-        # is what makes me feel like it's a toy." The agent loop
-        # (handle_loop_task) already has plan/execute/critique + persistence
-        # via the task list, but only fires behind the explicit `agent:` prefix.
-        # Ordinary multi-step requests get none of that and can drop off
-        # mid-task with the user left to manually say "proceed". Auto-detect
-        # multi-step language and route it through the same loop, so the
-        # persistence guarantee is not opt-in. Non-multi-step stays the plain
-        # handle() path. False positives cost one extra plan/critique call;
-        # false negatives are the exact failure we're closing.
-        if (
-            MODE in ("auto", "review")
-            and not _ut_lower.startswith("agent:")
-            and not _ut_lower.startswith("task:")
-            and _looks_multi_step(user_text, history)
-        ):
-            try:
-                reply = handle_loop_task(
-                    user_text, history, context_policy=context_policy
-                )
-                reply = sanitize(reply) if reply else reply
-                cache_store(user_text, reply)
-                if TTS_ENABLED:
-                    threading.Thread(target=speak, args=(reply,), daemon=True).start()
-                globals()["CHARS_SINCE_SAVE"] = (
-                    CHARS_SINCE_SAVE + len(user_text) + len(reply or "")
-                )
-                _request_auto_save(history)
-                _watchdog_maybe_auto_continue(reply)
-            except KeyboardInterrupt:
-                print(f"\n  {Y}agent loop interrupted by user{X}")
-                _request_auto_save(history)
-            except Exception as e:
-                log(f"AGENT_LOOP_AUTO_ERROR: {e}")
-                print(f"  {R}agent loop error: {e}{X}")
-                _request_auto_save(history)
-            continue
+        # NOTE (2026-11-05): messages are NEVER auto-routed into the plan/execute/
+        # critique agent loop. Lijah: it dropped into planning mode on an ordinary
+        # message and no other model does that. The loop runs ONLY on explicit
+        # `agent: <task>` (handled above).
 
         # ── Check cache ───────────────────────────────────────
         _cache_words = set(w.lower().strip(".,!?") for w in user_text.split())
