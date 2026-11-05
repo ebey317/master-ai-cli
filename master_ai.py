@@ -6952,6 +6952,45 @@ _META_CHAT_MODELS = (
     "muse-spark-1.1",
     "muse-wonder-1.0",
 )
+_META_MODELS_CACHE = Path.home() / ".master_ai_meta_models_cache.json"
+# api.meta.ai lists non-chat models too (speech, image, segmentation) and "-contributor"
+# variants; only chat models belong in the picker.
+
+
+# An allowlist, not a denylist (review round 3, finding 6): substring matching
+# on "voice"/"image" could drop a real chat model or admit a future non-chat one,
+# and falling back to the static tuple did so silently.
+_META_CHAT_PATTERN = re.compile(r"^muse-(?:spark|wonder)-\d+(?:\.\d+)*$")
+
+# Last Meta key seen, so a newly pasted key can clear the old auth circuit.
+_META_LAST_KEY = ""
+
+
+def _meta_version(model_id: str) -> tuple:
+    """muse-spark-1.10 -> (1, 10). String sorting put 1.9 above 1.10 (finding 5)."""
+    tail = model_id.rsplit("-", 1)[-1]
+    return tuple(int(n) for n in re.findall(r"\d+", tail)) or (0,)
+
+
+def _meta_catalog_key(model_id: str) -> tuple:
+    """muse-spark before the rest, then newest version first."""
+    family = 0 if "muse-spark" in model_id else 1
+    return (family, tuple(-n for n in _meta_version(model_id)))
+
+
+def _meta_model_catalog() -> list:
+    """Meta's live model list (cached), chat models only; the fixed tuple above if the
+    list cannot be fetched, so the picker is never empty."""
+    raw = _provider_model_catalog(
+        _META_MODELS_CACHE, "https://api.meta.ai/v1/models", _meta_key()
+    )
+    live = [m for m in raw if _META_CHAT_PATTERN.match(m)]
+    if not live:
+        log(
+            "META_CATALOG: no live model matched muse-(spark|wonder)-<ver>; using the static list"
+        )
+        return list(_META_CHAT_MODELS)
+    return sorted(live, key=_meta_catalog_key)
 
 
 def _meta_key() -> str:
@@ -6974,16 +7013,45 @@ def _meta_key() -> str:
     return ""
 
 
+def _meta_key_source() -> str:
+    """Where _meta_key() will actually find the key, in its own precedence order.
+
+    The keys screen used to print a mask built from a DIFFERENT lookup than the
+    one the provider uses, and called every fallback "env" (round 5, item 6).
+    """
+    if (os.environ.get("MODEL_API_KEY", "") or "").strip():
+        return "env MODEL_API_KEY (read-only here)"
+    if (KEYS.get("meta", "") or "").strip():
+        return "keys screen"
+    if (KEYS.get("MODEL_API_KEY", "") or "").strip():
+        return "keys screen, as MODEL_API_KEY"
+    try:
+        if re.search(r"^MODEL_API_KEY=(.+)$", KEYS_FILE.read_text(), re.M):
+            return str(KEYS_FILE)
+    except Exception:
+        pass
+    return ""
+
+
 def _ask_meta(messages: Any, model: Any, label: Any, timeout: int = 90) -> Any:
     """Meta Muse direct (OpenAI-compatible chat/completions at api.meta.ai).
     Verified live 2026-11-04: POST /v1/chat/completions 200 with the same
     MODEL_API_KEY Tahuti uses. Muse reasons before answering, so give it a
     real token budget (a 20-token cap returned content:null)."""
     provider_key = f"meta/{label}"
-    if not _cloud_allowed(provider_key):
-        return None
     key = _meta_key()
     if not key:
+        return None
+    # Finding 3: the circuit is per PROVIDER, not per label -- one revoked key must
+    # stop every Meta label, not just the one that happened to return the 401.
+    global _META_LAST_KEY
+    if key != _META_LAST_KEY:
+        # A newly pasted key clears the old auth trip: that trip was about the old key.
+        _META_LAST_KEY = key
+        _ROUTING_CLOUD_CIRCUITS.pop("meta", None)
+    # Both gates matter: "meta" is the whole-provider trip (dead key, 5xx), and
+    # provider_key is the per-label trip (403 -- this model not allowed).
+    if not _cloud_allowed("meta") or not _cloud_allowed(provider_key):
         return None
     messages = _inject_identity(messages)
     log(f"CLOUD [{provider_key}]")
@@ -7002,20 +7070,35 @@ def _ask_meta(messages: Any, model: Any, label: Any, timeout: int = 90) -> Any:
             body = e.read().decode()[:300]
         except Exception:
             pass
-        if e.code in (401, 403):
-            log(f"CLOUD_AUTH_FAIL [meta]: {e.code} {body}")
+        if e.code == 401:
+            # The key itself is dead: stop paying a round trip on EVERY Meta label.
+            log(f"CLOUD_AUTH_FAIL [meta]: 401 {body}")
+            _cloud_trip("meta", "auth failed", 300)
+        elif e.code == 403:
+            # The key is fine, this model is not allowed for it: back off this
+            # label only, so the other Meta models keep working (round 4, item 1).
+            log(f"CLOUD_AUTH_FAIL [{provider_key}]: 403 {body}")
+            _cloud_trip(provider_key, "model not allowed", 60)
         elif e.code == 429:
-            _cloud_trip(provider_key, "rate limit", 30)
+            _cloud_trip("meta", "rate limit", 30)
         elif _network_error(e):
             _cloud_trip_network(e, 60)
         else:
             log(f"META_ERROR [{label}]: {e.code} {body}")
+            if e.code >= 500:
+                _cloud_trip(provider_key, f"server error {e.code}", 60)
         return None
     except Exception as e:
         if _network_error(e):
+            # A real timeout is provider-local: trip this provider, and let
+            # _cloud_trip_network decide whether it is a wider outage.
+            _cloud_trip(provider_key, "timeout", 60)
             _cloud_trip_network(e, 60)
             return None
-        log(f"META_ERROR [{label}]: {e}")
+        # Finding 4: a JSON/KeyError/parse bug is OUR bug, not "the provider is
+        # unavailable" -- say what actually happened and do not trip the circuit
+        # (the old code tripped for 60s on any non-network exception).
+        log(f"META_PARSE_ERROR [{label}]: {type(e).__name__}: {e}")
         return None
     try:
         choice = result["choices"][0]
@@ -10747,6 +10830,7 @@ def _invalidate_provider_caches() -> None:
         _NVIDIA_MODELS_CACHE,
         _CEREBRAS_MODELS_CACHE,
         _POOLSIDE_MODELS_CACHE,
+        _META_MODELS_CACHE,
         _QWEN_MODELS_CACHE,
         _GROQ_MODELS_CACHE,
         _OLLAMA_CLOUD_MODELS_CACHE,
@@ -10916,7 +11000,7 @@ def live_model_completions(provider: Any) -> Any:
     if provider == "groq":
         return [(f"groq::{m}", m, "💰") for m in _groq_model_catalog()]
     if provider == "meta":
-        return [(f"meta::{m}", m, "🧠") for m in _META_CHAT_MODELS]
+        return [(f"meta::{m}", m, "🧠") for m in _meta_model_catalog()]
     if provider == "poolside":
         return [
             (f"poolside::{m}", m, "💰 reasoning") for m in _poolside_model_catalog()
@@ -19691,13 +19775,22 @@ def main() -> None:
                 ("anthropic", "Anthropic"),
                 ("deepseek", "DeepSeek"),
                 ("gumroad", "Gumroad"),
+                ("meta", "Meta Muse"),
             ]
             print(f"\n{C}  API Keys:{X}")
             for field, label in known:
-                val = KEYS.get(field, "")
+                if field == "meta":
+                    # Show the key the provider will really use, and where it came
+                    # from -- env, the keys screen, or the keys file (round 5, item 6).
+                    val = _meta_key()
+                    src = _meta_key_source()
+                    source = f" from {src}" if src else ""
+                else:
+                    val = KEYS.get(field, "")
+                    source = ""
                 if val:
                     masked = val[:6] + "..." + val[-4:] if len(val) > 10 else "(set)"
-                    print(f"  {G}✅ {label:<14}{C}{masked}{X}")
+                    print(f"  {G}✅ {label:<14}{C}{masked}{X}{D}{source}{X}")
                 else:
                     print(f"  {R}○  {label:<14}{Y}not saved{X}")
             print()

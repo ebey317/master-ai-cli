@@ -23,7 +23,6 @@ COMMANDS = [
     ("chats", "browse saved chats", False, "general"),
     ("clean", "open Sensei Clean dashboard", False, "general"),
     ("clear", "full session reset + engine restart (same as new)", False, "general"),
-    ("new", "full session reset + engine restart", False, "general"),
     ("clear approved", "clear approved commands", False, "general"),
     ("clear cache", "clear answer cache", False, "general"),
     ("clear chats", "clear saved chats", False, "general"),
@@ -91,6 +90,7 @@ COMMANDS = [
     ("mouse remote", "phone scrolling mode", False, "settings"),
     ("mouse status", "show mouse mode", False, "settings"),
     ("only", "make Sensei the only tmux pane", False, "plan"),
+    ("new", "full session reset + engine restart", False, "general"),
     ("perms", "permissions status", False, "general"),
     ("preview", "open latest preview", False, "general"),
     (

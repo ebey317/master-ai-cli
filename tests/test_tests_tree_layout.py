@@ -26,6 +26,10 @@ KNOWN_UNMAPPED = {
     "test_tests_tree_layout.py",  # this file
     "test_verifiers_extra.py",  # supplementary cases for verifiers.py
     "test_master_ai_core.py",  # smoke/e2e driver for master_ai.py
+    # ninja/ package tests: the mapper only looks at the repo root and scripts/
+    "test_avatar_approval_wait.py",  # ninja/avatar_approval.py
+    "test_avatar_lifetime.py",  # ninja/avatar_approval.py (lifetime rules, caption parsing)
+    "test_overlay_anchor.py",  # ninja/state_machine.py
 }
 
 # Subdirectories under tests/ that are allowed (not name-mapped to a module).

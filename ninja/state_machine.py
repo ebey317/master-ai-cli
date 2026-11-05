@@ -681,8 +681,11 @@ class ThootieOverlay:
         self._title_label.set_text(f"{agent.upper()} RUN CARD")
         self._refresh_avatar()
 
-    def set_card_text(self, text: str) -> None:
-        self._card_label.set_text(space_sentences(text))
+    def set_card_text(self, text: str, prose: bool = False) -> None:
+        """`prose=True` (an ANSWER being read) puts a blank line between sentences.
+        Approval and command cards must show their text exactly as given — a command
+        or path being approved must never be re-flowed."""
+        self._card_label.set_text(space_sentences(text) if prose else text)
 
     def _set_active(self, active: bool) -> None:
         self._active = active
@@ -1072,6 +1075,9 @@ def show_avatar(agent: str, card: dict | str, waypoint_index: int = 0) -> None:
         text = render_card_text(card)
     else:
         text = str(card)
+    # Show the text EXACTLY as given (review round 4, item 2): this path carries
+    # run and approval cards too, and a command or path being approved must never
+    # be re-flowed. Only the avatar's "Done" answer card asks for prose spacing.
     overlay.set_card_text(text)
     overlay._set_active(True)
     overlay.machine.set_state(ThootieState.WORKING, StatePayload(action_kind="run"))
