@@ -1,53 +1,35 @@
 #!/usr/bin/env python3
-import gzip
-import importlib.util
-import json
-import os
-import re
-import subprocess
-import sys
-import tempfile
-import threading
-import time
-import urllib.error
-import urllib.parse
-import urllib.request
-import uuid
+import sys, os, json, tempfile, re, gzip, urllib.request, urllib.error, urllib.parse, threading, time, uuid, importlib.util, subprocess
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from datetime import datetime
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 _CLIENT_DISCONNECTS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
 
-SCRIPTS = os.path.expanduser("~/scripts")
-_DEFAULT_CHATS_DIR = os.path.expanduser("~/.master_ai_chats")
+SCRIPTS    = os.path.expanduser("~/scripts")
+_DEFAULT_CHATS_DIR  = os.path.expanduser("~/.master_ai_chats")
 os.makedirs(_DEFAULT_CHATS_DIR, exist_ok=True)
-
 
 def _active_profile():
     """Return active profile name, or '' for default/legacy."""
     try:
-        p = os.path.expanduser("~/.master_ai_active_profile")
+        p = os.path.expanduser('~/.master_ai_active_profile')
         if os.path.exists(p):
             name = open(p).read().strip()
-            if name and os.path.isdir(
-                os.path.expanduser(f"~/.master_ai_profiles/{name}")
-            ):
+            if name and os.path.isdir(os.path.expanduser(f'~/.master_ai_profiles/{name}')):
                 return name
     except Exception:
         pass
-    return ""
-
+    return ''
 
 def _chats_dir():
     """Profile-aware chats dir. Falls back to legacy global dir."""
     prof = _active_profile()
     if prof:
-        d = os.path.expanduser(f"~/.master_ai_profiles/{prof}/chats")
+        d = os.path.expanduser(f'~/.master_ai_profiles/{prof}/chats')
         os.makedirs(d, exist_ok=True)
         return d
     return _DEFAULT_CHATS_DIR
-
 
 # Module-level alias for backwards-compat; per-request handlers should call _chats_dir()
 CHATS_DIR = _DEFAULT_CHATS_DIR
@@ -60,19 +42,19 @@ CHATS_DIR = _DEFAULT_CHATS_DIR
 # values are still available to loopback callers via ?reveal=1, so local
 # debugging keeps working; a non-loopback client asking for reveal is refused
 # and gets the same mask as everyone else.
-_SECRET_MASK_CHAR = "•"
+_SECRET_MASK_CHAR = '•'
 
 
 def _mask_secret(value):
     """Redact a secret for transport, keeping just enough to identify it."""
     if not isinstance(value, str):
-        return ""
+        return ''
     v = value.strip()
     if not v:
-        return ""
+        return ''
     if len(v) <= 6:
         return _SECRET_MASK_CHAR * len(v)
-    return f"{_SECRET_MASK_CHAR * 8}{v[-2:]}"
+    return f'{_SECRET_MASK_CHAR * 8}{v[-2:]}'
 
 
 def _client_is_loopback(handler):
@@ -81,8 +63,7 @@ def _client_is_loopback(handler):
         addr = handler.client_address[0]
     except (AttributeError, IndexError, TypeError):
         return False
-    return addr in ("127.0.0.1", "::1", "localhost") or addr.startswith("127.")
-
+    return addr in ('127.0.0.1', '::1', 'localhost') or addr.startswith('127.')
 
 # Wedge protection (2026-05-14). api_handle wraps the dispatch path in this
 # lane lock because _m.handle() monkey-patches module-level globals
@@ -92,14 +73,7 @@ def _client_is_loopback(handler):
 # per execution lane and serialize only within that lane's module instance.
 # Ceiling so a wedged lane is never held indefinitely; callers surface HTTP 503.
 _API_HANDLE_LOCK_TIMEOUT_S = 120.0
-_API_HANDLE_LANES = (
-    "local",
-    "cloud_fast",
-    "cloud_deep",
-    "cloud",
-    "cloud_vision",
-    "router",
-)
+_API_HANDLE_LANES = ("local", "cloud_fast", "cloud_deep", "cloud", "cloud_vision", "router")
 _API_HANDLE_LOCKS = {lane: threading.Lock() for lane in _API_HANDLE_LANES}
 _API_MASTER_AI_MODULES: dict[str, Any] = {}
 _API_MASTER_AI_MODULES_LOCK = threading.Lock()
@@ -235,8 +209,6 @@ def _verify_pending_clear(session_key, needle, from_read=False) -> None:
             _API_VERIFY_PENDING.pop(str(session_key), None)
     except Exception:
         pass
-
-
 _API_TURNS_LOCK = threading.Lock()
 _API_DEFAULT_ROUND_BUDGET = 3
 _API_MAX_ROUND_BUDGET = 8  # Hard ceiling; extension can't ask for more.
@@ -250,7 +222,7 @@ _API_MAX_ROUND_BUDGET = 8  # Hard ceiling; extension can't ask for more.
 # 8 by default; Pupil chat stays at 3. The max ceiling lifts to 16 so
 # legitimate long flows don't false-terminate.
 _API_BROWSER_DEFAULT_ROUND_BUDGET = 3
-_API_BROWSER_MAX_ROUND_BUDGET = 6  # hard cap; tighter to stop runaway loops
+_API_BROWSER_MAX_ROUND_BUDGET = 6   # hard cap; tighter to stop runaway loops
 _HEALTH_CACHE_LOCK = threading.Lock()
 _HEALTH_CACHE_TTL_S = 3.0
 _HEALTH_CACHE = {"ts": 0.0, "payload": None}
@@ -268,7 +240,7 @@ _ACTION_LINE_RE = re.compile(
 #   3 = high-friction (adult/gambling/crypto-exchange) — force confirm every action
 # Domain entries match as suffix labels: 'foo.com' hits 'foo.com',
 # 'www.foo.com', 'login.foo.com', etc., but NOT 'badfoo.com'.
-_DOMAIN_CLASSES_PATH = os.path.expanduser("~/.master_ai_domain_classes.json")
+_DOMAIN_CLASSES_PATH = os.path.expanduser('~/.master_ai_domain_classes.json')
 _DOMAIN_CLASSES_LOCK = threading.Lock()
 _DOMAIN_CLASSES_TTL_S = 60.0
 _DOMAIN_CLASSES_CACHE = {"ts": 0.0, "data": None, "mtime": 0.0}
@@ -276,7 +248,7 @@ _DOMAIN_RESULT_TTL_S = 300
 
 # MCP bridge queue — sensei_mcp_server.py pushes actions here; side_panel.js
 # polls /extension/pending, executes in-browser, and posts results back.
-_MCP_QUEUE: dict[str, Any] = {}  # session_id -> [{"action_id": str, "action": dict}]
+_MCP_QUEUE: dict[str, Any] = {}   # session_id -> [{"action_id": str, "action": dict}]
 _MCP_RESULTS: dict[str, Any] = {}  # action_id -> result dict
 _MCP_QUEUE_LOCK = threading.Lock()
 
@@ -296,15 +268,11 @@ def _load_domain_classes():
         cached = _DOMAIN_CLASSES_CACHE.get("data")
         cached_mtime = float(_DOMAIN_CLASSES_CACHE.get("mtime") or 0.0)
         cached_ts = float(_DOMAIN_CLASSES_CACHE.get("ts") or 0.0)
-        if (
-            cached is not None
-            and mtime == cached_mtime
-            and (now - cached_ts) < _DOMAIN_CLASSES_TTL_S
-        ):
+        if cached is not None and mtime == cached_mtime and (now - cached_ts) < _DOMAIN_CLASSES_TTL_S:
             return cached
     parsed = {"category_1": {}, "category_2": {}, "category_3": {}, "_meta": {}}
     try:
-        with open(_DOMAIN_CLASSES_PATH, encoding="utf-8") as f:
+        with open(_DOMAIN_CLASSES_PATH, 'r', encoding='utf-8') as f:
             raw = json.load(f)
         if isinstance(raw, dict):
             for key in ("category_1", "category_2", "category_3", "_meta"):
@@ -323,34 +291,34 @@ def _load_domain_classes():
 def _extract_host(domain_or_url):
     """Pull the host label out of either a bare domain string or a URL. Lowercase,
     strip port, strip userinfo. Returns '' for input we can't parse."""
-    raw = str(domain_or_url or "").strip()
+    raw = str(domain_or_url or '').strip()
     if not raw:
-        return ""
-    if "://" in raw:
+        return ''
+    if '://' in raw:
         try:
             parsed = urllib.parse.urlparse(raw)
-            host = parsed.hostname or ""
+            host = parsed.hostname or ''
         except Exception:
-            host = ""
+            host = ''
     else:
-        host = raw.split("/", 1)[0]
-        if "@" in host:
-            host = host.rsplit("@", 1)[-1]
-        if ":" in host:
-            host = host.split(":", 1)[0]
-    return host.lower().strip(".")
+        host = raw.split('/', 1)[0]
+        if '@' in host:
+            host = host.rsplit('@', 1)[-1]
+        if ':' in host:
+            host = host.split(':', 1)[0]
+    return host.lower().strip('.')
 
 
 def _domain_matches(host, entry):
     """Suffix label match. 'foo.com' matches 'foo.com' and 'sub.foo.com' but
     NOT 'badfoo.com'. Empty entry never matches."""
-    host = (host or "").lower().strip(".")
-    entry = (entry or "").lower().strip(".")
+    host = (host or '').lower().strip('.')
+    entry = (entry or '').lower().strip('.')
     if not host or not entry:
         return False
     if host == entry:
         return True
-    return host.endswith("." + entry)
+    return host.endswith('.' + entry)
 
 
 def _classify_domain(domain_or_url, classes=None):
@@ -401,27 +369,27 @@ def _health_payload():
             out["cached"] = True
             return out
 
-    ollama_state = "down"
-    model_name = "master-ai"
+    ollama_state = 'down'
+    model_name = 'master-ai'
     probe_ms = 0
     t0 = time.time()
     try:
-        req = urllib.request.Request("http://127.0.0.1:11434/api/tags")
+        req = urllib.request.Request('http://127.0.0.1:11434/api/tags')
         with urllib.request.urlopen(req, timeout=2) as resp:
             json.loads(resp.read().decode())
-        ollama_state = "active"
+        ollama_state = 'active'
     except Exception:
-        ollama_state = "down"
+        ollama_state = 'down'
     finally:
         probe_ms = int((time.time() - t0) * 1000)
 
     payload = {
-        "ok": True,
-        "ollama": ollama_state,
-        "model": model_name,
-        "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "probe_ms": probe_ms,
-        "cached": False,
+        'ok': True,
+        'ollama': ollama_state,
+        'model': model_name,
+        'ts': datetime.now().astimezone().isoformat(timespec='seconds'),
+        'probe_ms': probe_ms,
+        'cached': False,
     }
     with _HEALTH_CACHE_LOCK:
         _HEALTH_CACHE["ts"] = time.time()
@@ -456,9 +424,7 @@ def _vision_locate_coords(b64_png, description, *, max_dim=1024):
         import base64 as _b64
         import io as _io
         import tempfile as _tf
-
         from PIL import Image as _Image
-
         raw = _b64.b64decode(b64_png)
         img = _Image.open(_io.BytesIO(raw))
         true_w, true_h = img.size
@@ -497,14 +463,11 @@ def _vision_locate_coords(b64_png, description, *, max_dim=1024):
     reply = ""
     try:
         vision_model = _m.MODELS.get("vision") if hasattr(_m, "MODELS") else "llava"
-        reply = (
-            _m.ask_local(
-                [{"role": "user", "content": prompt}],
-                model=vision_model,
-                image_path=tmp_path,
-            )
-            or ""
-        )
+        reply = _m.ask_local(
+            [{"role": "user", "content": prompt}],
+            model=vision_model,
+            image_path=tmp_path,
+        ) or ""
     except Exception:
         reply = ""
     finally:
@@ -557,13 +520,9 @@ def _persist_api_session(session_key, history):
     # session convention. Profile-aware via _chats_dir().
     if not session_key or not isinstance(history, list):
         return
-    msgs = [
-        m
-        for m in history
-        if isinstance(m, dict)
-        and m.get("role") in ("user", "assistant")
-        and str(m.get("content") or "").strip()
-    ]
+    msgs = [m for m in history
+            if isinstance(m, dict) and m.get("role") in ("user", "assistant")
+            and str(m.get("content") or "").strip()]
     if not msgs:
         return
     with _PERSIST_LOCK:
@@ -594,7 +553,6 @@ def _mcp_servers_catalog():
     """Sensei's MCP catalog via sensei_mcp_client (never hardcoded)."""
     _scripts_on_path()
     import sensei_mcp_client as _mc
-
     return _mc, _mc.list_servers() or {}
 
 
@@ -610,11 +568,7 @@ def _dispatch_remote_mcp(target_json):
             req = json.loads(raw)
         else:
             parts = raw.split()
-            req = {
-                "server": parts[0] if parts else "",
-                "method": parts[1] if len(parts) > 1 else "tools/list",
-                "params": {},
-            }
+            req = {"server": parts[0] if parts else "", "method": parts[1] if len(parts) > 1 else "tools/list", "params": {}}
         server_ref = str(req.get("server") or "").strip()
         method = str(req.get("method") or "tools/list").strip()
         params = req.get("params") if isinstance(req.get("params"), dict) else {}
@@ -631,34 +585,22 @@ def _dispatch_remote_mcp(target_json):
         client = _mc.make_client(entry)
         try:
             client.start()
-            init = client._rpc(
-                "initialize",
-                {
-                    "protocolVersion": _mc.PROTOCOL_VERSION,
-                    "capabilities": {},
-                    "clientInfo": {"name": "sensei-api", "version": "1.0"},
-                },
-                timeout=30,
-            )
+            init = client._rpc("initialize", {
+                "protocolVersion": _mc.PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "sensei-api", "version": "1.0"},
+            }, timeout=30)
             if not _mc._rpc_error_free(init):
-                return False, "remote MCP initialize failed: " + json.dumps(
-                    init.get("error", init)
-                )[:200]
+                return False, "remote MCP initialize failed: " + json.dumps(init.get("error", init))[:200]
             client._rpc("notifications/initialized", {}, notify=True)
             resp = client._rpc(method, params, timeout=90)
             if not _mc._rpc_error_free(resp):
                 return False, "remote MCP " + json.dumps(resp.get("error", resp))[:300]
             result = resp.get("result")
             if method == "tools/list" and isinstance(result, dict):
-                names = [
-                    t.get("name")
-                    for t in (result.get("tools") or [])
-                    if isinstance(t, dict)
-                ]
+                names = [t.get("name") for t in (result.get("tools") or []) if isinstance(t, dict)]
                 return True, "MCP tools on " + server_ref + ": " + ", ".join(names)
-            return True, json.dumps(result)[
-                :4000
-            ] if result is not None else "(empty result)"
+            return True, json.dumps(result)[:4000] if result is not None else "(empty result)"
         finally:
             try:
                 client.close()
@@ -687,26 +629,18 @@ def _safe_context_text(value, limit=1800):
 # scrubbed bytes.
 
 _BIDI_ZWSP_CHARS = (
-    "​‌‍‎‏"  # ZWSP, ZWNJ, ZWJ, LRM, RLM
-    "‪‫‬‭‮"  # LRE, RLE, PDF, LRO, RLO
-    "⁦⁧⁨⁩"  # LRI, RLI, FSI, PDI
-    "﻿"  # BOM
+    "​‌‍‎‏"   # ZWSP, ZWNJ, ZWJ, LRM, RLM
+    "‪‫‬‭‮"   # LRE, RLE, PDF, LRO, RLO
+    "⁦⁧⁨⁩"         # LRI, RLI, FSI, PDI
+    "﻿"                            # BOM
 )
 _BIDI_ZWSP_RE = re.compile(f"[{_BIDI_ZWSP_CHARS}]")
 
 # Full sentinel set surfaced by Pre-Check #1 (handoff doc 2026-05-13).
 _DIRECTIVE_VERBS = (
     # Order: longest first so RUNTERM matches before RUN.
-    "RUNTERM",
-    "REMEMBER",
-    "BROWSER",  # BROWSER handled separately below
-    "CREATE",
-    "READ",
-    "EDIT",
-    "THINK",
-    "DONE",
-    "RUN",
-    "ASK",
+    "RUNTERM", "REMEMBER", "BROWSER",  # BROWSER handled separately below
+    "CREATE", "READ", "EDIT", "THINK", "DONE", "RUN", "ASK",
 )
 # Strip the BROWSER placeholder — it gets its own pattern that allows the
 # `_<SUFFIX>` shape (`BROWSER_CLICK:`, `BROWSER_NAV:`, etc.).
@@ -722,7 +656,7 @@ def _build_verb_pattern(verb):
     English phrase ending in a verb gets matched as a single candidate and
     returned unchanged (swallowing the inner directive verbatim).
     """
-    return re.compile(rf"\b{re.escape(verb)}\s*:", flags=re.IGNORECASE)
+    return re.compile(rf'\b{re.escape(verb)}\s*:', flags=re.IGNORECASE)
 
 
 def _build_spaced_verb_pattern(verb):
@@ -734,33 +668,31 @@ def _build_spaced_verb_pattern(verb):
     `RUN:`. 8-char-window constraint is implicit: a 3-letter verb with single
     spaces = 5 chars; a 7-letter verb = 13 chars (still tight).
     """
-    spaced = r"[ \t]".join(re.escape(c) for c in verb)
-    return re.compile(rf"\b{spaced}\s*:", flags=re.IGNORECASE)
+    spaced = r'[ \t]'.join(re.escape(c) for c in verb)
+    return re.compile(rf'\b{spaced}\s*:', flags=re.IGNORECASE)
 
 
-_VERB_PATTERNS = [(verb + ":", _build_verb_pattern(verb)) for verb in _VERB_LIST]
+_VERB_PATTERNS = [
+    (verb + ":", _build_verb_pattern(verb)) for verb in _VERB_LIST
+]
 # Spaced-obfuscation patterns only apply to verbs of length >= 2 (single-letter
 # verbs would have no internal whitespace gap to detect).
 _SPACED_VERB_PATTERNS = [
     (verb + ":", _build_spaced_verb_pattern(verb))
-    for verb in _VERB_LIST
-    if len(verb) >= 2
+    for verb in _VERB_LIST if len(verb) >= 2
 ]
 
 # BROWSER_<UPPER+UNDERSCORE>: — `BROWSER_CLICK:`, `BROWSER_NAV:`, etc.
 # Internal whitespace not handled here (rare obfuscation form).
 _BROWSER_PATTERN = re.compile(
-    r"\bBROWSER_[A-Z_]+\s*:",
+    r'\bBROWSER_[A-Z_]+\s*:',
     flags=re.IGNORECASE,
 )
 
 _BLOCK_MARKERS = (
-    "<<<CONTENT",
-    ">>>CONTENT",
-    "<<<FIND",
-    ">>>FIND",
-    "<<<REPLACE",
-    ">>>REPLACE",
+    "<<<CONTENT", ">>>CONTENT",
+    "<<<FIND", ">>>FIND",
+    "<<<REPLACE", ">>>REPLACE",
 )
 _BLOCK_MARKER_RE = re.compile(
     "|".join(re.escape(m) for m in _BLOCK_MARKERS),
@@ -798,36 +730,30 @@ def _sanitize_pass(text):
     # where a long English phrase ending in `<verb>:` matched as one
     # candidate and returned unchanged, swallowing the inner directive.
     for verb_name, pattern in _VERB_PATTERNS:
-
         def _scrub_verb(m, vn=verb_name):
             fired.append(vn)
             return _SCRUB_REPLACEMENT
-
         cleaned = pattern.sub(_scrub_verb, cleaned)
 
     # Step 2b — spaced-obfuscation forms (`R U N :`). Separate pass so the
     # standard pattern's behavior is unchanged.
     for verb_name, pattern in _SPACED_VERB_PATTERNS:
-
         def _scrub_spaced(m, vn=verb_name):
             fired.append(vn)
             return _SCRUB_REPLACEMENT
-
         cleaned = pattern.sub(_scrub_spaced, cleaned)
 
     # Step 3 — BROWSER_<SUFFIX>: directives.
     def _scrub_browser(m):
-        token = re.sub(r"\s+", "", m.group(0).upper()).rstrip(":")
+        token = re.sub(r'\s+', '', m.group(0).upper()).rstrip(':')
         fired.append(f"{token}:")
         return _SCRUB_REPLACEMENT
-
     cleaned = _BROWSER_PATTERN.sub(_scrub_browser, cleaned)
 
     # Step 4 — block markers (`<<<CONTENT`, `>>>CONTENT`, etc.).
     def _scrub_block(m):
         fired.append(m.group(0).upper())
         return _SCRUB_REPLACEMENT
-
     cleaned = _BLOCK_MARKER_RE.sub(_scrub_block, cleaned)
 
     # Step 5 — plan markers (`<PLAN READY>` matched FIRST so `<PLAN>` doesn't
@@ -835,7 +761,6 @@ def _sanitize_pass(text):
     def _scrub_plan(m):
         fired.append(m.group(0).upper())
         return _SCRUB_REPLACEMENT
-
     cleaned = _PLAN_MARKER_RE.sub(_scrub_plan, cleaned)
 
     return cleaned, fired
@@ -884,10 +809,9 @@ def _write_sanitize_audit(*, request_id, source, scrub_meta):
         "fields": list(scrub_meta.get("fields", [])),
     }
     try:
-        from pathlib import Path
-
-        with Path.home().joinpath(".master_ai_audit_typed.jsonl").open("a") as f:
-            f.write(json.dumps(rec) + "\n")
+        from pathlib import Path as _P
+        with _P.home().joinpath('.master_ai_audit_typed.jsonl').open('a') as f:
+            f.write(json.dumps(rec) + '\n')
     except Exception:
         pass
 
@@ -934,12 +858,12 @@ def _format_tree_node(node):
     role = node.get("role") or "?"
     name = node.get("name") or ""
     ref = node.get("ref") or ""
-    parts = [f'  {role} "{name}"']
+    parts = [f"  {role} \"{name}\""]
     if ref:
         parts.append(f"ref={ref}")
     state = node.get("state")
     if isinstance(state, dict) and state:
-        keys = ",".join(sorted(str(k) for k in state))
+        keys = ",".join(sorted(str(k) for k in state.keys()))
         parts.append(f"state={keys}")
     val = node.get("value")
     if val:
@@ -998,7 +922,7 @@ def _render_page_tree(tree):
             src = _safe_context_text(f.get("src") or "", limit=240)
             ref = f.get("ref") or ""
             reason = _safe_context_text(f.get("unobserved_reason") or "", limit=200)
-            parts = [f'  {kind} frame "{title}"']
+            parts = [f"  {kind} frame \"{title}\""]
             if ref:
                 parts.append(f"ref={ref}")
             if src:
@@ -1057,18 +981,11 @@ def _format_page_context(page_context):
         except Exception:
             raw_bytes = 0
         if raw_bytes > PAGE_TREE_BYTE_CAP:
-            for k in (
-                "file_folder_rows",
-                "lists",
-                "buttons",
-                "links",
-                "inputs",
-                "landmarks",
-                "headings",
-            ):
+            for k in ("file_folder_rows", "lists", "buttons", "links", "inputs",
+                      "landmarks", "headings"):
                 v = tree.get(k)
                 if isinstance(v, list) and len(v) > 4:
-                    tree[k] = v[: max(4, len(v) // 2)]
+                    tree[k] = v[:max(4, len(v) // 2)]
                 if len(json.dumps(tree).encode("utf-8")) <= PAGE_TREE_BYTE_CAP:
                     break
             tree.setdefault("truncation", {})["reason"] = "server_byte_cap"
@@ -1080,11 +997,7 @@ def _format_page_context(page_context):
         # without a top-level `tree`. Surface its text dump as a page-tree block
         # so the model still gets the AX content when the SW path fails.
         st = page_context.get("semantic_tree")
-        if (
-            isinstance(st, dict)
-            and isinstance(st.get("text"), str)
-            and st["text"].strip()
-        ):
+        if isinstance(st, dict) and isinstance(st.get("text"), str) and st["text"].strip():
             sanitized = _sanitize_page_context_field(
                 st["text"], "semantic_tree.text", fired_acc, fields_acc
             )
@@ -1143,22 +1056,15 @@ def _format_tabs_context(tabs_context):
     for entry in tabs_context[:20]:
         if not isinstance(entry, dict):
             continue
-        url = _sanitize_page_context_field(
-            entry.get("url"), "tabs_context.url", fired_acc, fields_acc
-        )
-        title = _sanitize_page_context_field(
-            entry.get("title"), "tabs_context.title", fired_acc, fields_acc
-        )
+        url = _sanitize_page_context_field(entry.get("url"), "tabs_context.url", fired_acc, fields_acc)
+        title = _sanitize_page_context_field(entry.get("title"), "tabs_context.title", fired_acc, fields_acc)
         if not url and not title:
             continue
         flags = []
-        if entry.get("active"):
-            flags.append("active")
-        if entry.get("in_session_group"):
-            flags.append("in_group")
+        if entry.get("active"): flags.append("active")
+        if entry.get("in_session_group"): flags.append("in_group")
         status = str(entry.get("status") or "").strip().lower()
-        if status and status not in ("complete", ""):
-            flags.append(status)
+        if status and status not in ("complete", ""): flags.append(status)
         flag_text = f" ({', '.join(flags)})" if flags else ""
         tab_id = entry.get("tab_id")
         tab_label = f"tab {tab_id}" if isinstance(tab_id, (int, float)) else "tab ?"
@@ -1198,21 +1104,10 @@ def _quick_mode_teaching():
     )
 
 
-def _api_prompt(
-    prompt,
-    *,
-    source="",
-    page_context=None,
-    schedule_id="",
-    action_results=None,
-    round_num=1,
-    round_budget=None,
-    request_id="",
-    resume_path="",
-    local_file_hints=None,
-    tabs_context=None,
-    mode="",
-):
+def _api_prompt(prompt, *, source="", page_context=None, schedule_id="",
+                action_results=None, round_num=1, round_budget=None,
+                request_id="", resume_path="", local_file_hints=None,
+                tabs_context=None, mode=""):
     context, scrub_meta = _format_page_context(page_context)
     # Audit even if no formatted context survived (e.g., every field was empty
     # after sanitize) — the scrub still happened and Elijah needs the row.
@@ -1261,20 +1156,18 @@ def _api_prompt(
     if round_num and round_num > 1:
         budget_str = f"/{round_budget}" if round_budget else ""
         lines.append(f"continuation_round: {round_num}{budget_str}")
-    lines.extend(
-        [
-            "Branch B: you have BOTH lanes — browser (via the extension) AND local terminal + filesystem (server-dispatched). Pick whichever lane is most natural for each step; don't claim anything has been executed until the dispatch path returns results.",
-            "Local terminal + filesystem lane — for file ops, downloads, PDF text extraction, opening desktop apps, or anything cleaner in a shell, emit RUN, RUNTERM, READ, CREATE, or EDIT directives. The backend runs them server-side and the stdout/output appears appended to the reply context for your next round. Sudo, dangerous patterns, and the self-mod denylist are still gated. Terminal directive formats (one per line, no prose, no markdown fences): READ: <path> / RUN: <cmd> / RUNTERM: <cmd> / CREATE: <path> <<<CONTENT <body> CONTENT / EDIT: <path> <<<OLD <old> OLD <<<NEW <new> NEW.",
-            "Browser lane — for in-tab work (click, fill, navigate, observe, scroll, screenshot, submit, press a key), emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ_PAGE, BROWSER_READ, BROWSER_NAV, BROWSER_SCREENSHOT, BROWSER_WAIT, BROWSER_SCROLL, BROWSER_DOUBLE_CLICK, BROWSER_EXTRACT_LIST, BROWSER_CDP_KEY, or BROWSER_CDP_MOUSE directives. The extension confirms and dispatches them in-tab. BROWSER_CDP_KEY sends real keyboard input through CDP — shapes: `press Enter` (also Tab/Escape/Backspace/ArrowDown/ArrowUp/etc.) or `type <text>`. Use it when a form submit needs a real Enter keystroke (search bars, SPA inputs that ignore form.submit()), when BROWSER_SUBMIT doesn't fire the page's keyup handler, or for keyboard-shortcut interactions. BROWSER_CDP_MOUSE clicks at pixel coordinates 'x,y' — use only when DOM selectors keep failing and a [VISION HINT] line in the repair block has given you coords. The server's sensitivity classifier still gates CDP_MOUSE on sensitive page URLs (apply/checkout/submit/share/delete, auth/payment hosts, Drive share dialogs) — those will require explicit confirmation regardless of mode.",
-            "Lane choice — code-first: PREFER the terminal lane when both lanes work. A 5-line bash or python script that finishes the step is faster, deterministic, and auditable. Only drive the browser when there is no terminal path — login-walled UI, form with no exposed API, JS-rendered submit, in-tab visual confirmation. Only use the terminal when there is no browser path — system services, package install, file permissions, anything below the URL bar. Never duplicate work across both — pick one per step. Interleave freely (terminal step → browser step → terminal step) within a multi-step plan when each step genuinely needs the lane chosen.",
-            "If the user explicitly asks to use a configured remote MCP server, emit REMOTE_MCP with JSON {server, method:'tools/list'|'tools/call', params}. Remote MCP is permission-gated by the extension.",
-            "After any browser navigation/open/search/scroll, use the fresh page_context from continuation before choosing the next click; observe, then act.",
-            "If the browser task depends on user-named documents, use local READ/RUN extraction first; browser screenshots are verification/fallback, not the document source.",
-            "The HTTP API will return directives as actions[] for the extension to confirm.",
-            "Do not say a browser action has been completed until [PREVIOUS ROUND RESULTS] shows the extension completed it.",
-            "Do not emit DONE in the same reply as BROWSER_* directives; wait for the extension's results first.",
-        ]
-    )
+    lines.extend([
+        "Branch B: you have BOTH lanes — browser (via the extension) AND local terminal + filesystem (server-dispatched). Pick whichever lane is most natural for each step; don't claim anything has been executed until the dispatch path returns results.",
+        "Local terminal + filesystem lane — for file ops, downloads, PDF text extraction, opening desktop apps, or anything cleaner in a shell, emit RUN, RUNTERM, READ, CREATE, or EDIT directives. The backend runs them server-side and the stdout/output appears appended to the reply context for your next round. Sudo, dangerous patterns, and the self-mod denylist are still gated. Terminal directive formats (one per line, no prose, no markdown fences): READ: <path> / RUN: <cmd> / RUNTERM: <cmd> / CREATE: <path> <<<CONTENT <body> CONTENT / EDIT: <path> <<<OLD <old> OLD <<<NEW <new> NEW.",
+        "Browser lane — for in-tab work (click, fill, navigate, observe, scroll, screenshot, submit, press a key), emit BROWSER_CLICK, BROWSER_FILL, BROWSER_READ_PAGE, BROWSER_READ, BROWSER_NAV, BROWSER_SCREENSHOT, BROWSER_WAIT, BROWSER_SCROLL, BROWSER_DOUBLE_CLICK, BROWSER_EXTRACT_LIST, BROWSER_CDP_KEY, or BROWSER_CDP_MOUSE directives. The extension confirms and dispatches them in-tab. BROWSER_CDP_KEY sends real keyboard input through CDP — shapes: `press Enter` (also Tab/Escape/Backspace/ArrowDown/ArrowUp/etc.) or `type <text>`. Use it when a form submit needs a real Enter keystroke (search bars, SPA inputs that ignore form.submit()), when BROWSER_SUBMIT doesn't fire the page's keyup handler, or for keyboard-shortcut interactions. BROWSER_CDP_MOUSE clicks at pixel coordinates 'x,y' — use only when DOM selectors keep failing and a [VISION HINT] line in the repair block has given you coords. The server's sensitivity classifier still gates CDP_MOUSE on sensitive page URLs (apply/checkout/submit/share/delete, auth/payment hosts, Drive share dialogs) — those will require explicit confirmation regardless of mode.",
+        "Lane choice — code-first: PREFER the terminal lane when both lanes work. A 5-line bash or python script that finishes the step is faster, deterministic, and auditable. Only drive the browser when there is no terminal path — login-walled UI, form with no exposed API, JS-rendered submit, in-tab visual confirmation. Only use the terminal when there is no browser path — system services, package install, file permissions, anything below the URL bar. Never duplicate work across both — pick one per step. Interleave freely (terminal step → browser step → terminal step) within a multi-step plan when each step genuinely needs the lane chosen.",
+        "If the user explicitly asks to use a configured remote MCP server, emit REMOTE_MCP with JSON {server, method:'tools/list'|'tools/call', params}. Remote MCP is permission-gated by the extension.",
+        "After any browser navigation/open/search/scroll, use the fresh page_context from continuation before choosing the next click; observe, then act.",
+        "If the browser task depends on user-named documents, use local READ/RUN extraction first; browser screenshots are verification/fallback, not the document source.",
+        "The HTTP API will return directives as actions[] for the extension to confirm.",
+        "Do not say a browser action has been completed until [PREVIOUS ROUND RESULTS] shows the extension completed it.",
+        "Do not emit DONE in the same reply as BROWSER_* directives; wait for the extension's results first.",
+    ])
     if round_num and round_num > 1:
         lines.append(
             "M9 LOOP: the extension already dispatched your previous round's actions. "
@@ -1290,9 +1183,7 @@ def _api_prompt(
     if context:
         if scrub_meta.get("count", 0) > 0:
             lines.append("")
-            lines.append(
-                f"[SAFETY: {scrub_meta['count']} page-context tokens scrubbed]"
-            )
+            lines.append(f"[SAFETY: {scrub_meta['count']} page-context tokens scrubbed]")
         lines.extend(["", context])
     # Phase 4.3 — tabs_context (list of currently-open tabs in the session
     # group) lands between page_context and results so the model sees what's
@@ -1312,28 +1203,16 @@ def _write_turn_audit(rec):
     across all rounds, and what was the net outcome' from a single source.
     Sibling to /extension/action_result rows but at turn granularity."""
     try:
-        from pathlib import Path
-
-        with Path.home().joinpath(".master_ai_audit_typed.jsonl").open("a") as f:
-            f.write(json.dumps(rec) + "\n")
+        from pathlib import Path as _P
+        with _P.home().joinpath('.master_ai_audit_typed.jsonl').open('a') as f:
+            f.write(json.dumps(rec) + '\n')
     except Exception:
         pass  # Audit is observability, not a blocker.
 
 
-def _build_terminal_turn(
-    *,
-    turn_id,
-    turn_root,
-    round_num,
-    round_budget,
-    parent_turn_id,
-    session_key,
-    reply,
-    route,
-    model,
-    t0,
-    terminal_reason,
-):
+def _build_terminal_turn(*, turn_id, turn_root, round_num, round_budget,
+                         parent_turn_id, session_key, reply, route, model,
+                         t0, terminal_reason):
     """Synthesize a final-round response without calling the model. Used by
     the M9 short-circuit (duplicate failure detection) and any other forced
     termination path. Always returns done=true."""
@@ -1350,26 +1229,22 @@ def _build_terminal_turn(
             "done": True,
         }
         if len(_API_TURNS) > 256:
-            oldest = sorted(
-                _API_TURNS.items(), key=lambda kv: kv[1].get("created_at", "")
-            )[:64]
+            oldest = sorted(_API_TURNS.items(), key=lambda kv: kv[1].get("created_at", ""))[:64]
             for k, _ in oldest:
                 _API_TURNS.pop(k, None)
-    _write_turn_audit(
-        {
-            "ts": now,
-            "source": "api_handle",
-            "kind": "turn_terminal",
-            "turn_id": turn_id,
-            "turn_root": turn_root,
-            "round_num": round_num,
-            "round_budget": round_budget,
-            "terminal_reason": terminal_reason,
-            "route": route,
-            "model": model,
-            "actions_count": 0,
-        }
-    )
+    _write_turn_audit({
+        "ts": now,
+        "source": "api_handle",
+        "kind": "turn_terminal",
+        "turn_id": turn_id,
+        "turn_root": turn_root,
+        "round_num": round_num,
+        "round_budget": round_budget,
+        "terminal_reason": terminal_reason,
+        "route": route,
+        "model": model,
+        "actions_count": 0,
+    })
     return {
         "reply": reply,
         "route": route,
@@ -1427,7 +1302,6 @@ def _format_action_results(action_results):
     try:
         _scripts_on_path()
         import typed_actions as _ta
-
         envelopes = []
         for ar in action_results[:20]:
             if not isinstance(ar, dict):
@@ -1445,11 +1319,8 @@ def _format_action_results(action_results):
     except Exception:
         # typed_actions unavailable (shouldn't happen in normal deployment);
         # fall back to legacy formatting for all rows.
-        rows = [
-            _format_action_result_legacy(ar)
-            for ar in action_results[:20]
-            if isinstance(ar, dict)
-        ]
+        rows = [_format_action_result_legacy(ar) for ar in action_results[:20]
+                if isinstance(ar, dict)]
         rows = [r for r in rows if r]
         if not rows:
             return ""
@@ -1468,7 +1339,6 @@ def _format_server_action_results(action_results):
     try:
         _scripts_on_path()
         import typed_actions as _ta
-
         envelopes = []
         for idx, row in enumerate(action_results[:20], 1):
             if not isinstance(row, dict):
@@ -1486,9 +1356,7 @@ def _format_server_action_results(action_results):
                     mode_at_emission="auto",
                     error_code=(str(row.get("error_code") or "")[:120] or None),
                     error_message=(str(row.get("error_message") or "")[:300] or None),
-                    observed_text=observed_text
-                    if isinstance(observed_text, str) and observed_text
-                    else None,
+                    observed_text=observed_text if isinstance(observed_text, str) and observed_text else None,
                     gated_by=(str(row.get("gated_by") or "")[:160] or None),
                 )
                 envelopes.append(_ta.format_envelope_row(env))
@@ -1497,20 +1365,13 @@ def _format_server_action_results(action_results):
                 target = str(row.get("target") or "")[:300]
                 status = str(row.get("status") or "success")
                 executed = "true" if row.get("executed", True) else "false"
-                lines = [
-                    f"  · {kind} {target}",
-                    f"    status: {status}  executed: {executed}",
-                ]
+                lines = [f"  · {kind} {target}", f"    status: {status}  executed: {executed}"]
                 if row.get("error_code"):
                     lines.append(f"    error_code: {row['error_code']}")
                 if row.get("error_message"):
-                    lines.append(
-                        f"    error_message: {str(row['error_message'])[:300]}"
-                    )
+                    lines.append(f"    error_message: {str(row['error_message'])[:300]}")
                 if row.get("observed_text"):
-                    lines.append(
-                        f"    observed_text: {str(row['observed_text'])[:240]}"
-                    )
+                    lines.append(f"    observed_text: {str(row['observed_text'])[:240]}")
                 envelopes.append("\n".join(lines))
         if not envelopes:
             return ""
@@ -1524,10 +1385,7 @@ def _format_server_action_results(action_results):
             target = str(row.get("target") or "")[:300]
             status = str(row.get("status") or "success")
             executed = "true" if row.get("executed", True) else "false"
-            lines = [
-                f"  · {kind} {target}",
-                f"    status: {status}  executed: {executed}",
-            ]
+            lines = [f"  · {kind} {target}", f"    status: {status}  executed: {executed}"]
             if row.get("error_code"):
                 lines.append(f"    error_code: {row['error_code']}")
             if row.get("error_message"):
@@ -1543,26 +1401,15 @@ def _format_server_action_results(action_results):
 def _cloud_followup_provider(model_name):
     model_name = (model_name or "").strip()
     if model_name in {
-        "groq",
-        "fireworks",
-        "cerebras",
-        "deepseek-r1",
-        "gemini",
-        "hermes-405b",
-        "gpt-oss-120b",
-        "nemotron",
-        "qwen3-coder",
-        "openrouter",
-        "openai",
-        "anthropic",
+        "groq", "fireworks", "cerebras", "deepseek-r1", "gemini",
+        "hermes-405b", "gpt-oss-120b", "nemotron", "qwen3-coder",
+        "openrouter", "openai", "anthropic",
     }:
         return model_name
     return "groq"
 
 
-def _synthesize_server_followup(
-    module, history, *, reply_with_results, server_results_block, provider
-):
+def _synthesize_server_followup(module, history, *, reply_with_results, server_results_block, provider):
     """Ask the same cloud lane to turn server RUN/READ results into operator text.
 
     Uses a copied message list so the synthetic follow-up prompt does not pollute
@@ -1585,12 +1432,10 @@ def _synthesize_server_followup(
     for msg in history:
         if not isinstance(msg, dict):
             continue
-        messages.append(
-            {
-                "role": msg.get("role"),
-                "content": msg.get("content"),
-            }
-        )
+        messages.append({
+            "role": msg.get("role"),
+            "content": msg.get("content"),
+        })
     if messages and messages[-1].get("role") == "assistant":
         messages[-1]["content"] = reply_with_results
     messages.append({"role": "user", "content": synth_prompt})
@@ -1608,20 +1453,19 @@ def _audit_approve_action(action_id, action, verdict, envelope):
     dispatched approvals from browser-dispatched outcomes.
     """
     try:
+        from pathlib import Path as _P
         import time as _t
-        from pathlib import Path
-
         rec = {
-            "ts": _t.strftime("%Y-%m-%dT%H:%M:%S"),
-            "source": "extension",
-            "kind": "extension_approve_action",
-            "action_id": action_id,
-            "verdict": verdict,
-            "envelope": envelope,
-            "action": action,
+            'ts': _t.strftime('%Y-%m-%dT%H:%M:%S'),
+            'source': 'extension',
+            'kind': 'extension_approve_action',
+            'action_id': action_id,
+            'verdict': verdict,
+            'envelope': envelope,
+            'action': action,
         }
-        with Path.home().joinpath(".master_ai_audit_typed.jsonl").open("a") as f:
-            f.write(json.dumps(rec) + "\n")
+        with _P.home().joinpath('.master_ai_audit_typed.jsonl').open('a') as f:
+            f.write(json.dumps(rec) + '\n')
     except Exception:
         pass
 
@@ -1657,22 +1501,11 @@ def _fallback_action(kind, target, *, model="", source_text="", cwd=None):
         target = "current"
     if not kind or not target:
         return None
-    risk = (
-        "safe"
-        if kind
-        in (
-            "READ",
-            "BROWSER_READ",
-            "BROWSER_READ_PAGE",
-            "BROWSER_OBSERVE",
-            "BROWSER_SCREENSHOT",
-            "BROWSER_WAIT",
-            "BROWSER_SCROLL",
-            "BROWSER_EXTRACT_LIST",
-            "BROWSER_DRIVE_INSPECT_FOLDER",
-        )
-        else "normal"
-    )
+    risk = "safe" if kind in (
+        "READ", "BROWSER_READ", "BROWSER_READ_PAGE", "BROWSER_OBSERVE",
+        "BROWSER_SCREENSHOT", "BROWSER_WAIT", "BROWSER_SCROLL", "BROWSER_EXTRACT_LIST",
+        "BROWSER_DRIVE_INSPECT_FOLDER",
+    ) else "normal"
     return {
         "id": str(uuid.uuid4()),
         "kind": kind,
@@ -1711,9 +1544,7 @@ _SENSITIVE_DESTRUCTIVE_RE = re.compile(
     r"(?i)(?:^|[^a-z])(delete|remove|destroy|erase|wipe|discard|"
     r"cancel[ ._-]+(?:account|subscription)|deactivate)"
 )
-_SENSITIVE_PASSWORD_INPUT_RE = re.compile(
-    r'(?i)(input\[type="?password"?\]|name=["\']password["\'])'
-)
+_SENSITIVE_PASSWORD_INPUT_RE = re.compile(r'(?i)(input\[type="?password"?\]|name=["\']password["\'])')
 
 
 def _classify_action_sensitivity(action, *, mode, page_url=None):
@@ -1736,54 +1567,26 @@ def _classify_action_sensitivity(action, *, mode, page_url=None):
         # NOTE: no trailing \b on the rm pattern — `/` isn't a word char, so
         # `\brm\s+-[rRfF]+\s+/\b` would never match `rm -rf /`. Reuse the
         # shape from typed_actions._HIGH_RISK_RUN_PATTERNS instead.
-        if re.search(
-            r"\brm\s+-[rRfF]+[a-zA-Z]*\s+/|\bmkfs\b|\bdd\s+if=.*\bof=/dev/(sd|nvme)",
-            target,
-        ):
-            return {
-                "tier": "blocked",
-                "gated_by": "destructive_run",
-                "error_code": "dispatcher_blocked",
-            }
-        if re.search(
-            r"\bcurl\s+[^|]*\|\s*(?:bash|sh)\b|\bwget\s+[^|]*\|\s*(?:bash|sh)\b", target
-        ):
-            return {
-                "tier": "blocked",
-                "gated_by": "pipe_to_shell",
-                "error_code": "dispatcher_blocked",
-            }
+        if re.search(r"\brm\s+-[rRfF]+[a-zA-Z]*\s+/|\bmkfs\b|\bdd\s+if=.*\bof=/dev/(sd|nvme)", target):
+            return {"tier": "blocked", "gated_by": "destructive_run", "error_code": "dispatcher_blocked"}
+        if re.search(r"\bcurl\s+[^|]*\|\s*(?:bash|sh)\b|\bwget\s+[^|]*\|\s*(?:bash|sh)\b", target):
+            return {"tier": "blocked", "gated_by": "pipe_to_shell", "error_code": "dispatcher_blocked"}
 
     # SENSITIVE tier: downgrade to waiting_for_approval even in Auto.
     if kind == "BROWSER_CLICK":
         if _SENSITIVE_AUTH_RE.search(target):
             return {"tier": "sensitive", "gated_by": "auth_click", "error_code": None}
         if _SENSITIVE_PAYMENT_RE.search(target):
-            return {
-                "tier": "sensitive",
-                "gated_by": "payment_click",
-                "error_code": None,
-            }
+            return {"tier": "sensitive", "gated_by": "payment_click", "error_code": None}
         if _SENSITIVE_DESTRUCTIVE_RE.search(target):
-            return {
-                "tier": "sensitive",
-                "gated_by": "destructive_click",
-                "error_code": None,
-            }
+            return {"tier": "sensitive", "gated_by": "destructive_click", "error_code": None}
 
     if kind == "BROWSER_FILL":
         if _SENSITIVE_PASSWORD_INPUT_RE.search(target):
-            return {
-                "tier": "sensitive",
-                "gated_by": "password_fill",
-                "error_code": None,
-            }
+            return {"tier": "sensitive", "gated_by": "password_fill", "error_code": None}
         # File upload via the file:// extension we'll add in commit 2.1.
         # Treat any file:// fill as sensitive — uploads cross a trust boundary.
-        if (
-            "file://" in target.lower()
-            or "file://" in str(action.get("extras", {})).lower()
-        ):
+        if "file://" in target.lower() or "file://" in str(action.get("extras", {})).lower():
             return {"tier": "sensitive", "gated_by": "file_upload", "error_code": None}
 
     if kind == "BROWSER_UPLOAD_FILE":
@@ -1806,28 +1609,11 @@ def _classify_action_sensitivity(action, *, mode, page_url=None):
         # NON-NEGOTIABLE: no auto-mode override, no prompt-side switch.
         url_lc = (page_url or "").lower()
         if re.search(r"(/apply|/checkout|/submit|/share|/delete)\b", url_lc):
-            return {
-                "tier": "sensitive",
-                "gated_by": "cdp_mouse_on_sensitive_url",
-                "error_code": None,
-            }
-        if re.search(
-            r"(?i)(accounts\.google|login\.|signin\.|auth\.|checkout\.|billing\.|payments?\.)",
-            url_lc,
-        ):
-            return {
-                "tier": "sensitive",
-                "gated_by": "cdp_mouse_on_auth_or_payment_host",
-                "error_code": None,
-            }
-        if "drive.google.com" in url_lc and (
-            "/share" in url_lc or "sharingdialog" in url_lc
-        ):
-            return {
-                "tier": "sensitive",
-                "gated_by": "drive_share_surface",
-                "error_code": None,
-            }
+            return {"tier": "sensitive", "gated_by": "cdp_mouse_on_sensitive_url", "error_code": None}
+        if re.search(r"(?i)(accounts\.google|login\.|signin\.|auth\.|checkout\.|billing\.|payments?\.)", url_lc):
+            return {"tier": "sensitive", "gated_by": "cdp_mouse_on_auth_or_payment_host", "error_code": None}
+        if "drive.google.com" in url_lc and ("/share" in url_lc or "sharingdialog" in url_lc):
+            return {"tier": "sensitive", "gated_by": "drive_share_surface", "error_code": None}
 
     if kind == "REMOTE_MCP":
         return {"tier": "sensitive", "gated_by": "remote_mcp", "error_code": None}
@@ -1840,27 +1626,11 @@ def _classify_action_sensitivity(action, *, mode, page_url=None):
             expanded = os.path.expanduser(target)
             home = os.path.expanduser("~")
             # CREATE/EDIT on system paths, /etc, /usr, etc.: sensitive at least.
-            if (
-                expanded.startswith("/etc/")
-                or expanded.startswith("/usr/")
-                or expanded.startswith("/var/")
-            ):
-                return {
-                    "tier": "sensitive",
-                    "gated_by": "system_path_write",
-                    "error_code": None,
-                }
+            if expanded.startswith("/etc/") or expanded.startswith("/usr/") or expanded.startswith("/var/"):
+                return {"tier": "sensitive", "gated_by": "system_path_write", "error_code": None}
             # Writing in user's repo / scripts dir is normal; flag only if outside both home and /tmp.
-            if not (
-                expanded.startswith(home)
-                or expanded.startswith("/tmp/")
-                or expanded.startswith("/var/tmp/")
-            ):
-                return {
-                    "tier": "sensitive",
-                    "gated_by": "out_of_home_write",
-                    "error_code": None,
-                }
+            if not (expanded.startswith(home) or expanded.startswith("/tmp/") or expanded.startswith("/var/tmp/")):
+                return {"tier": "sensitive", "gated_by": "out_of_home_write", "error_code": None}
         except Exception:
             pass
 
@@ -1871,44 +1641,21 @@ def _classify_action_sensitivity(action, *, mode, page_url=None):
         try:
             _scripts_on_path()
             import typed_actions as _ta
-
             safe = any(target.strip().startswith(p) for p in _ta._SAFE_RUN_PREFIXES)
             if not safe:
-                return {
-                    "tier": "sensitive",
-                    "gated_by": "arbitrary_run",
-                    "error_code": None,
-                }
+                return {"tier": "sensitive", "gated_by": "arbitrary_run", "error_code": None}
         except Exception:
-            return {
-                "tier": "sensitive",
-                "gated_by": "arbitrary_run",
-                "error_code": None,
-            }
+            return {"tier": "sensitive", "gated_by": "arbitrary_run", "error_code": None}
 
     return {"tier": "safe", "gated_by": None, "error_code": None}
 
 
 _5WH_DIRECTIVE_PREFIXES = (
-    "RUN:",
-    "RUNTERM:",
-    "READ:",
-    "CREATE:",
-    "EDIT:",
-    "REMEMBER:",
-    "BROWSER_CLICK:",
-    "BROWSER_FILL:",
-    "BROWSER_NAV:",
-    "BROWSER_WAIT:",
-    "BROWSER_SCROLL:",
-    "BROWSER_READ_PAGE:",
-    "BROWSER_SUBMIT:",
-    "BROWSER_SCREENSHOT:",
-    "BROWSER_OBSERVE:",
-    "BROWSER_READ:",
-    "BROWSER_DOUBLE_CLICK:",
-    "BROWSER_FIND:",
-    "BROWSER_EXTRACT_LIST:",
+    "RUN:", "RUNTERM:", "READ:", "CREATE:", "EDIT:", "REMEMBER:",
+    "BROWSER_CLICK:", "BROWSER_FILL:", "BROWSER_NAV:", "BROWSER_WAIT:",
+    "BROWSER_SCROLL:", "BROWSER_READ_PAGE:", "BROWSER_SUBMIT:",
+    "BROWSER_SCREENSHOT:", "BROWSER_OBSERVE:", "BROWSER_READ:",
+    "BROWSER_DOUBLE_CLICK:", "BROWSER_FIND:", "BROWSER_EXTRACT_LIST:",
 )
 
 
@@ -1990,23 +1737,11 @@ def _synthesize_5wh(action_kind, target, reply_text, page_url):
         where = where_base
         how = "via content script"
 
-    why = (
-        _extract_why_for_action(reply_text or "", action_kind or "")
-        or "as proposed by Pupil agent"
-    )
+    why = _extract_why_for_action(reply_text or "", action_kind or "") or "as proposed by Pupil agent"
     return {"who": who, "what": what, "where": where, "why": why, "how": how}
 
 
-def _api_parse_actions(
-    reply,
-    *,
-    mode="plan",
-    model="",
-    source="",
-    session_id="",
-    schedule_id="",
-    page_context=None,
-):
+def _api_parse_actions(reply, *, mode="plan", model="", source="", session_id="", schedule_id="", page_context=None):
     actions = []
     seen = set()
     mode_norm = (mode or "plan").lower()
@@ -2107,16 +1842,12 @@ def _api_parse_actions(
 
         action.setdefault("id", str(uuid.uuid4()))
         action.setdefault("created_by_model", model or "")
-        action.setdefault(
-            "parsed_at", datetime.now().astimezone().isoformat(timespec="seconds")
-        )
+        action.setdefault("parsed_at", datetime.now().astimezone().isoformat(timespec="seconds"))
         extras = action.get("extras") if isinstance(action.get("extras"), dict) else {}
-        extras.update(
-            {
-                "api_branch": "B",
-                "source": source or "pupil",
-            }
-        )
+        extras.update({
+            "api_branch": "B",
+            "source": source or "pupil",
+        })
         if session_id:
             extras["session_id"] = session_id
         if schedule_id:
@@ -2125,9 +1856,7 @@ def _api_parse_actions(
             extras["page_url"] = _safe_context_text(page_context.get("url"), 500)
         action["extras"] = extras
         if chrome_extension:
-            action["_5wh"] = _synthesize_5wh(
-                action["kind"], action["target"], reply or "", page_url
-            )
+            action["_5wh"] = _synthesize_5wh(action["kind"], action["target"], reply or "", page_url)
         actions.append(action)
 
     # 2026-10-15: normalize the reply before parsing. Eval v2 found three
@@ -2148,9 +1877,7 @@ def _api_parse_actions(
 
         reply = _m_xml._xml_tool_calls_to_directives(reply or "")
     except Exception as e:
-        print(
-            f"[api_parse_actions] xml normalization unavailable: {type(e).__name__}: {e}"
-        )
+        print(f"[api_parse_actions] xml normalization unavailable: {type(e).__name__}: {e}")
 
     # (2) merged directives: insert a newline before a directive verb that
     # follows non-space text on the same line. Heuristic (ignores quotes),
@@ -2210,13 +1937,9 @@ def _api_parse_actions(
                 # the same action arriving via the fallback path was then
                 # dropped as a duplicate -- so the directive disappeared
                 # entirely with nothing in any log.
-                print(
-                    f"[api_parse_actions] typed action dropped: {type(e).__name__}: {e}"
-                )
+                print(f"[api_parse_actions] typed action dropped: {type(e).__name__}: {e}")
     except Exception as e:
-        print(
-            f"[api_parse_actions] typed_actions path unavailable: {type(e).__name__}: {e}"
-        )
+        print(f"[api_parse_actions] typed_actions path unavailable: {type(e).__name__}: {e}")
 
     for raw in (reply or "").splitlines():
         m = _ACTION_LINE_RE.match(raw)
@@ -2251,7 +1974,6 @@ def _tool_find(payload):
         ax_tree = {}
     _scripts_on_path()
     import subagent_registry as _sr
-
     result = _sr.run("find", query, context={"ax_tree": ax_tree})
     matches = result.get("matches") if isinstance(result, dict) else []
     if not isinstance(matches, list):
@@ -2260,15 +1982,13 @@ def _tool_find(payload):
     for item in matches[:20]:
         if not isinstance(item, dict):
             continue
-        clean.append(
-            {
-                "ref": _safe_context_text(item.get("ref"), 80),
-                "name": _safe_context_text(item.get("name"), 240),
-                "role": _safe_context_text(item.get("role"), 80),
-                "selector": _safe_context_text(item.get("selector"), 300),
-                "confidence": float(item.get("confidence") or 0.0),
-            }
-        )
+        clean.append({
+            "ref": _safe_context_text(item.get("ref"), 80),
+            "name": _safe_context_text(item.get("name"), 240),
+            "role": _safe_context_text(item.get("role"), 80),
+            "selector": _safe_context_text(item.get("selector"), 300),
+            "confidence": float(item.get("confidence") or 0.0),
+        })
     return {
         "ok": True,
         "query": _safe_context_text(query, 240),
@@ -2286,23 +2006,16 @@ def _tool_describe_step(payload):
     transcript = _safe_context_text(payload.get("transcript") or "", 600)
     _scripts_on_path()
     import subagent_registry as _sr
-
-    result = _sr.run(
-        "workflow_describer",
-        "",
-        context={
-            "step": step,
-            "transcript": transcript,
-        },
-    )
+    result = _sr.run("workflow_describer", "", context={
+        "step": step,
+        "transcript": transcript,
+    })
     desc = ""
     if isinstance(result, dict):
         desc = result.get("description") or ""
     if not desc:
         kind = _safe_context_text(step.get("kind") or step.get("type") or "step", 80)
-        target = _safe_context_text(
-            step.get("target") or step.get("selector") or "", 120
-        )
+        target = _safe_context_text(step.get("target") or step.get("selector") or "", 120)
         desc = f"{kind} {target}".strip()
     return {
         "ok": True,
@@ -2331,9 +2044,7 @@ def _reply_has_done_directive(reply):
     return False
 
 
-def _api_terminal_state(
-    reply, captured_actions, round_remaining, server_progressed=False
-):
+def _api_terminal_state(reply, captured_actions, round_remaining, server_progressed=False):
     """Return (done, terminal_reason) for an API turn."""
     if captured_actions and round_remaining > 0:
         return False, ""
@@ -2355,7 +2066,7 @@ def _api_terminal_state(
 
 def _api_blocked_actions(module, extra_blocked=None):
     out = []
-    for blocked in extra_blocked or []:
+    for blocked in (extra_blocked or []):
         if isinstance(blocked, dict):
             out.append(blocked)
     blocked = getattr(module, "_LAST_BLOCKED_ACTION", {}) or {}
@@ -2405,9 +2116,7 @@ def api_handle(payload):
     # UnboundLocalError. Hit live 2026-05-14 e2e smoke via /chat/continue
     # when the extension omitted `mode` in the continuation payload.
     _m_module_for_mode = sys.modules.get("master_ai")
-    _module_mode_default = (
-        getattr(_m_module_for_mode, "MODE", "plan") if _m_module_for_mode else "plan"
-    )
+    _module_mode_default = getattr(_m_module_for_mode, "MODE", "plan") if _m_module_for_mode else "plan"
     effective_mode = (mode_req or _module_mode_default or "plan").lower()
     if effective_mode not in ("plan", "review", "auto", "quick"):
         effective_mode = "plan"
@@ -2417,43 +2126,28 @@ def api_handle(payload):
     prompt_source = _safe_context_text(source_raw or "", 80)
     session_id = _safe_context_text(payload.get("session_id") or "", 160)
     schedule_id = _safe_context_text(payload.get("schedule_id") or "", 120)
-    page_context = (
-        payload.get("page_context")
-        if isinstance(payload.get("page_context"), dict)
-        else None
-    )
+    page_context = payload.get("page_context") if isinstance(payload.get("page_context"), dict) else None
     # Phase 4.3 — tabs_context: list of currently-open tabs the extension
     # wants the model to know about (typically the session group's tabs).
-    tabs_context = (
-        payload.get("tabs_context")
-        if isinstance(payload.get("tabs_context"), list)
-        else None
-    )
+    tabs_context = payload.get("tabs_context") if isinstance(payload.get("tabs_context"), list) else None
     requested_model = (payload.get("model") or "").strip()
     t0 = time.time()
 
     # M9 continuation context
     parent_turn_id = _safe_context_text(payload.get("parent_turn_id") or "", 80)
-    action_results = (
-        payload.get("action_results")
-        if isinstance(payload.get("action_results"), list)
-        else None
-    )
+    action_results = payload.get("action_results") if isinstance(payload.get("action_results"), list) else None
     # Browser-automation turns get a higher default + ceiling so real
     # multi-step page flows (Drive search → open → read; checkout walk;
     # job-app fill+submit) don't false-terminate. See
     # _API_BROWSER_DEFAULT_ROUND_BUDGET comment.
     _is_browser_turn = bool(
-        source_raw and "chrome_extension" in str(source_raw).lower() and page_context
+        source_raw and "chrome_extension" in str(source_raw).lower()
+        and page_context
     )
-    _budget_default = (
-        _API_BROWSER_DEFAULT_ROUND_BUDGET
-        if _is_browser_turn
-        else _API_DEFAULT_ROUND_BUDGET
-    )
-    _budget_max = (
-        _API_BROWSER_MAX_ROUND_BUDGET if _is_browser_turn else _API_MAX_ROUND_BUDGET
-    )
+    _budget_default = (_API_BROWSER_DEFAULT_ROUND_BUDGET if _is_browser_turn
+                       else _API_DEFAULT_ROUND_BUDGET)
+    _budget_max = (_API_BROWSER_MAX_ROUND_BUDGET if _is_browser_turn
+                   else _API_MAX_ROUND_BUDGET)
     try:
         req_budget = int(payload.get("round_budget") or _budget_default)
     except (TypeError, ValueError):
@@ -2517,16 +2211,12 @@ def api_handle(payload):
         round_budget=round_budget,
         request_id=turn_id,
         resume_path=str(payload.get("resume_path") or "").strip(),
-        local_file_hints=payload.get("local_file_hints")
-        if isinstance(payload.get("local_file_hints"), dict)
-        else None,
+        local_file_hints=payload.get("local_file_hints") if isinstance(payload.get("local_file_hints"), dict) else None,
         tabs_context=tabs_context,
         mode=effective_mode,
     )
 
-    lane = _predict_api_handle_lane(
-        history, api_user_text, requested_model=requested_model
-    )
+    lane = _predict_api_handle_lane(history, api_user_text, requested_model=requested_model)
     lane_lock = _API_HANDLE_LOCKS.get(lane, _API_HANDLE_LOCKS["local"])
 
     # Timed acquire instead of blocking `with` — see _API_HANDLE_LOCK_TIMEOUT_S
@@ -2545,6 +2235,7 @@ def api_handle(payload):
         _m = _get_api_master_ai_module(lane)
         import capabilities as _caps
         import verifiers as _verifiers  # noqa: F401  -- resolved lazily by Capability.resolve_verifier(), imported here so import errors surface at request time, not mid-dispatch
+        import prompt_versions as _pv
 
         captured_actions = []
         captured_blocked = []
@@ -2569,14 +2260,9 @@ def api_handle(payload):
         # lock-acquire timeout fires, otherwise the same wedge greets every
         # follow-up request and burns another 120s. Slack of 10s ensures the
         # urlopen raises first and the lock releases cleanly.
-        patch(
-            "LOCAL_REQUEST_TIMEOUT_OVERRIDE",
-            max(10, int(_API_HANDLE_LOCK_TIMEOUT_S) - 10),
-        )
+        patch("LOCAL_REQUEST_TIMEOUT_OVERRIDE", max(10, int(_API_HANDLE_LOCK_TIMEOUT_S) - 10))
 
-        def collect_only(
-            reply, history_ref, streamed=False, continue_after_tools=False
-        ):
+        def collect_only(reply, history_ref, streamed=False, continue_after_tools=False):
             nonlocal captured_actions
             model = getattr(_m, "LAST_MODEL", "") or requested_model or "master-ai"
             captured_actions = _api_parse_actions(
@@ -2594,13 +2280,11 @@ def api_handle(payload):
             detail = cmd
             if not detail and args:
                 detail = args[0]
-            captured_blocked.append(
-                {
-                    "kind": "ACTION",
-                    "target": str(detail or "")[:1000],
-                    "reason": "api_handle is non-interactive; action returned for extension confirmation",
-                }
-            )
+            captured_blocked.append({
+                "kind": "ACTION",
+                "target": str(detail or "")[:1000],
+                "reason": "api_handle is non-interactive; action returned for extension confirmation",
+            })
             try:
                 return _m.RunResult(
                     "Blocked: API requests do not execute TUI-confirmed actions.",
@@ -2613,25 +2297,19 @@ def api_handle(payload):
                 return False
 
         def noninteractive_create(filepath, content="", *args, **kwargs):
-            captured_blocked.append(
-                {
-                    "kind": "CREATE",
-                    "target": str(filepath or "")[:1000],
-                    "reason": "api_handle is non-interactive; create action returned for confirmation",
-                }
-            )
+            captured_blocked.append({
+                "kind": "CREATE",
+                "target": str(filepath or "")[:1000],
+                "reason": "api_handle is non-interactive; create action returned for confirmation",
+            })
             return False
 
-        def noninteractive_edit(
-            filepath, find_text="", replace_text="", *args, **kwargs
-        ):
-            captured_blocked.append(
-                {
-                    "kind": "EDIT",
-                    "target": str(filepath or "")[:1000],
-                    "reason": "api_handle is non-interactive; edit action returned for confirmation",
-                }
-            )
+        def noninteractive_edit(filepath, find_text="", replace_text="", *args, **kwargs):
+            captured_blocked.append({
+                "kind": "EDIT",
+                "target": str(filepath or "")[:1000],
+                "reason": "api_handle is non-interactive; edit action returned for confirmation",
+            })
             return False
 
         try:
@@ -2685,12 +2363,7 @@ def api_handle(payload):
                 _server_results = []
             elif source == "chrome_extension" and effective_mode == "auto":
                 _real = {n: o for n, o in patches}
-                for _name in (
-                    "confirm_run",
-                    "confirm_runterm",
-                    "confirm_create",
-                    "confirm_edit",
-                ):
+                for _name in ("confirm_run", "confirm_runterm", "confirm_create", "confirm_edit"):
                     if _name in _real:
                         setattr(_m, _name, _real[_name])
                 _m.MODE = "auto"
@@ -2721,22 +2394,18 @@ def api_handle(payload):
                         # audit time this carries the final state.
                         _registry_handled.append(_action)
                         if not _decision.allow:
-                            _server_out.append(
-                                f"[{_cap.name}] refused: {_decision.reason}"
-                            )
+                            _server_out.append(f"[{_cap.name}] refused: {_decision.reason}")
                             _action["verification_result"] = None
                             _action["blocked_reason"] = _decision.reason
-                            _server_results.append(
-                                {
-                                    "kind": _kind,
-                                    "target": _target,
-                                    "status": "blocked",
-                                    "executed": False,
-                                    "error_code": "dispatcher_blocked",
-                                    "error_message": _decision.reason,
-                                    "gated_by": _decision.reason,
-                                }
-                            )
+                            _server_results.append({
+                                "kind": _kind,
+                                "target": _target,
+                                "status": "blocked",
+                                "executed": False,
+                                "error_code": "dispatcher_blocked",
+                                "error_message": _decision.reason,
+                                "gated_by": _decision.reason,
+                            })
                             continue
                         if _decision.requires_confirmation:
                             # Don't execute server-side; surface as action
@@ -2752,11 +2421,7 @@ def api_handle(payload):
                             # a specific argument (e.g., bare app name for
                             # desktop.launch_app); otherwise pass the raw
                             # directive target.
-                            _exec_arg = (
-                                _decision.verify_target
-                                if _decision.verify_target
-                                else _target
-                            )
+                            _exec_arg = _decision.verify_target if _decision.verify_target else _target
                             _exec_result = _executor(_exec_arg)
                             _exec_stdout = getattr(_exec_result, "stdout", "") or ""
                             _verifier = _cap.resolve_verifier()
@@ -2788,36 +2453,29 @@ def api_handle(payload):
                                 _status = "failure"
                                 _err_msg = _verify_result.reason
                             _server_out.append("\n".join(_lines))
-                            _server_results.append(
-                                {
-                                    "kind": _kind,
-                                    "target": _target,
-                                    "status": _status,
-                                    "executed": True,
-                                    "error_code": None
-                                    if _verify_result.ok
-                                    else "dispatcher_error",
-                                    "error_message": _err_msg,
-                                    "observed_text": _exec_stdout
-                                    or str(_verify_result.observed or ""),
-                                }
-                            )
+                            _server_results.append({
+                                "kind": _kind,
+                                "target": _target,
+                                "status": _status,
+                                "executed": True,
+                                "error_code": None if _verify_result.ok else "dispatcher_error",
+                                "error_message": _err_msg,
+                                "observed_text": _exec_stdout or str(_verify_result.observed or ""),
+                            })
                         except Exception as _e:
                             _action["verification_result"] = None
                             _action["executor_error"] = str(_e)
                             _server_out.append(
                                 f"[{_cap.name}] dispatch error: {type(_e).__name__}: {_e}"
                             )
-                            _server_results.append(
-                                {
-                                    "kind": _kind,
-                                    "target": _target,
-                                    "status": "failure",
-                                    "executed": True,
-                                    "error_code": "dispatcher_error",
-                                    "error_message": f"{type(_e).__name__}: {_e}",
-                                }
-                            )
+                            _server_results.append({
+                                "kind": _kind,
+                                "target": _target,
+                                "status": "failure",
+                                "executed": True,
+                                "error_code": "dispatcher_error",
+                                "error_message": f"{type(_e).__name__}: {_e}",
+                            })
                         continue
 
                     try:
@@ -2825,52 +2483,40 @@ def api_handle(payload):
                             _r = _m.confirm_run(_target)
                             if _r is None:
                                 _server_out.append(f"$ {_target}\n[blocked or refused]")
-                                _server_results.append(
-                                    {
-                                        "kind": _kind,
-                                        "target": _target,
-                                        "status": "blocked",
-                                        "executed": False,
-                                        "error_code": "dispatcher_blocked",
-                                        "error_message": "blocked or refused",
-                                    }
-                                )
+                                _server_results.append({
+                                    "kind": _kind,
+                                    "target": _target,
+                                    "status": "blocked",
+                                    "executed": False,
+                                    "error_code": "dispatcher_blocked",
+                                    "error_message": "blocked or refused",
+                                })
                             else:
                                 _stdout = getattr(_r, "stdout", "") or ""
                                 _ok = getattr(_r, "ok", True)
                                 _verify_pending_clear(session_key, _target)
                                 _suffix = "" if _ok else " (exit nonzero)"
-                                _server_out.append(
-                                    f"$ {_target}{_suffix}\n{_stdout}".rstrip()
-                                )
-                                _server_results.append(
-                                    {
-                                        "kind": _kind,
-                                        "target": _target,
-                                        "status": "success" if _ok else "failure",
-                                        "executed": True,
-                                        "error_code": None
-                                        if _ok
-                                        else "dispatcher_error",
-                                        "error_message": None
-                                        if _ok
-                                        else "command exited nonzero",
-                                        "observed_text": _stdout,
-                                    }
-                                )
+                                _server_out.append(f"$ {_target}{_suffix}\n{_stdout}".rstrip())
+                                _server_results.append({
+                                    "kind": _kind,
+                                    "target": _target,
+                                    "status": "success" if _ok else "failure",
+                                    "executed": True,
+                                    "error_code": None if _ok else "dispatcher_error",
+                                    "error_message": None if _ok else "command exited nonzero",
+                                    "observed_text": _stdout,
+                                })
                         elif _kind == "RUNTERM":
                             _m.confirm_runterm(_target)
                             _verify_pending_clear(session_key, _target)
                             _server_out.append(f"[RUNTERM] dispatched: {_target}")
-                            _server_results.append(
-                                {
-                                    "kind": _kind,
-                                    "target": _target,
-                                    "status": "success",
-                                    "executed": True,
-                                    "observed_text": "dispatched in a new terminal",
-                                }
-                            )
+                            _server_results.append({
+                                "kind": _kind,
+                                "target": _target,
+                                "status": "success",
+                                "executed": True,
+                                "observed_text": "dispatched in a new terminal",
+                            })
                         elif _kind == "READ":
                             _expanded = os.path.expanduser(_target)
                             # URL guard (sensei_read_dispatcher_guard.sh, 2026-05-16):
@@ -2887,52 +2533,39 @@ def api_handle(payload):
                                     f"then BROWSER_READ_PAGE or BROWSER_OBSERVE to read it. "
                                     f"READ is only for local filesystem paths."
                                 )
-                                _server_results.append(
-                                    {
-                                        "kind": _kind,
-                                        "target": _target,
-                                        "status": "blocked",
-                                        "executed": False,
-                                        "error_code": "dispatcher_blocked",
-                                        "error_message": "READ target is a URL, not a local path",
-                                    }
-                                )
+                                _server_results.append({
+                                    "kind": _kind,
+                                    "target": _target,
+                                    "status": "blocked",
+                                    "executed": False,
+                                    "error_code": "dispatcher_blocked",
+                                    "error_message": "READ target is a URL, not a local path",
+                                })
                                 continue
                             if any(_g in _expanded for _g in ("*", "?", "[")):
                                 import glob as _glob_mod
-
                                 _matches = sorted(_glob_mod.glob(_expanded))
                                 if not _matches:
-                                    _dir = (
-                                        _expanded.rsplit("/", 1)[0]
-                                        if "/" in _expanded
-                                        else "."
-                                    )
+                                    _dir = _expanded.rsplit('/', 1)[0] if '/' in _expanded else '.'
                                     _server_out.append(
                                         f"[READ {_target}] blocked: glob matched zero files. "
                                         f"Use a specific path or first run:\n"
                                         f"  RUN: ls {_dir}\n"
                                         f"to see what exists, then READ the exact file path."
                                     )
-                                    _server_results.append(
-                                        {
-                                            "kind": _kind,
-                                            "target": _target,
-                                            "status": "blocked",
-                                            "executed": False,
-                                            "error_code": "dispatcher_blocked",
-                                            "error_message": "glob matched zero files",
-                                        }
-                                    )
+                                    _server_results.append({
+                                        "kind": _kind,
+                                        "target": _target,
+                                        "status": "blocked",
+                                        "executed": False,
+                                        "error_code": "dispatcher_blocked",
+                                        "error_message": "glob matched zero files",
+                                    })
                                     continue
                                 _expanded = _matches[0]
                                 if len(_matches) > 1:
                                     _others = "\n  ".join(_matches[1:5])
-                                    _suffix = (
-                                        f" (+ {len(_matches) - 5} more)"
-                                        if len(_matches) > 5
-                                        else ""
-                                    )
+                                    _suffix = f" (+ {len(_matches) - 5} more)" if len(_matches) > 5 else ""
                                     _server_out.append(
                                         f"[READ {_target}] glob matched {len(_matches)} files; "
                                         f"reading first: {_expanded}\n"
@@ -2944,53 +2577,40 @@ def api_handle(payload):
                                 except Exception:
                                     _read_ok, _reason = True, ""
                                 if not _read_ok:
-                                    _server_out.append(
-                                        f"[READ {_target}] blocked: {_reason}"
-                                    )
-                                    _server_results.append(
-                                        {
-                                            "kind": _kind,
-                                            "target": _target,
-                                            "status": "blocked",
-                                            "executed": False,
-                                            "error_code": "dispatcher_blocked",
-                                            "error_message": _reason,
-                                        }
-                                    )
+                                    _server_out.append(f"[READ {_target}] blocked: {_reason}")
+                                    _server_results.append({
+                                        "kind": _kind,
+                                        "target": _target,
+                                        "status": "blocked",
+                                        "executed": False,
+                                        "error_code": "dispatcher_blocked",
+                                        "error_message": _reason,
+                                    })
                                     continue
                             try:
-                                with open(_expanded, errors="replace") as _f:
+                                with open(_expanded, "r", errors="replace") as _f:
                                     _content = _f.read()
                                 if len(_content) > 4000:
-                                    _content = (
-                                        _content[:4000]
-                                        + f"\n... [truncated, {len(_content)} chars total]"
-                                    )
+                                    _content = _content[:4000] + f"\n... [truncated, {len(_content)} chars total]"
                                 _server_out.append(f"READ {_target}:\n{_content}")
-                                _server_results.append(
-                                    {
-                                        "kind": _kind,
-                                        "target": _target,
-                                        "status": "success",
-                                        "executed": True,
-                                        "observed_text": _content,
-                                    }
-                                )
-                                _verify_pending_clear(
-                                    session_key, _target, from_read=True
-                                )
+                                _server_results.append({
+                                    "kind": _kind,
+                                    "target": _target,
+                                    "status": "success",
+                                    "executed": True,
+                                    "observed_text": _content,
+                                })
+                                _verify_pending_clear(session_key, _target, from_read=True)
                             except Exception as _e:
                                 _server_out.append(f"[READ {_target}] error: {_e}")
-                                _server_results.append(
-                                    {
-                                        "kind": _kind,
-                                        "target": _target,
-                                        "status": "failure",
-                                        "executed": True,
-                                        "error_code": "dispatcher_error",
-                                        "error_message": str(_e),
-                                    }
-                                )
+                                _server_results.append({
+                                    "kind": _kind,
+                                    "target": _target,
+                                    "status": "failure",
+                                    "executed": True,
+                                    "error_code": "dispatcher_error",
+                                    "error_message": str(_e),
+                                })
                         elif _kind == "CREATE":
                             # 2026-10-15: parsed actions carry the body in
                             # create_content (typed_actions.to_dict) -- the
@@ -3007,21 +2627,15 @@ def api_handle(payload):
                             _ok = _m.confirm_create(_target, _content_body)
                             if _ok:
                                 _verify_pending_mark(session_key, _target, "create")
-                            _server_out.append(
-                                f"[CREATE {_target}] {'written' if _ok else 'blocked or refused'}"
-                            )
-                            _server_results.append(
-                                {
-                                    "kind": _kind,
-                                    "target": _target,
-                                    "status": "success" if _ok else "blocked",
-                                    "executed": bool(_ok),
-                                    "error_code": None if _ok else "dispatcher_blocked",
-                                    "error_message": None
-                                    if _ok
-                                    else "blocked or refused",
-                                }
-                            )
+                            _server_out.append(f"[CREATE {_target}] {'written' if _ok else 'blocked or refused'}")
+                            _server_results.append({
+                                "kind": _kind,
+                                "target": _target,
+                                "status": "success" if _ok else "blocked",
+                                "executed": bool(_ok),
+                                "error_code": None if _ok else "dispatcher_blocked",
+                                "error_message": None if _ok else "blocked or refused",
+                            })
                         elif _kind == "EDIT":
                             # 2026-10-15: same class of bug as CREATE above --
                             # parsed actions carry edit_old/edit_new; the
@@ -3043,65 +2657,43 @@ def api_handle(payload):
                             _ok = _m.confirm_edit(_target, _find, _replace)
                             if _ok:
                                 _verify_pending_mark(session_key, _target)
-                            _server_out.append(
-                                f"[EDIT {_target}] {'applied' if _ok else 'blocked or refused'}"
-                            )
-                            _server_results.append(
-                                {
-                                    "kind": _kind,
-                                    "target": _target,
-                                    "status": "success" if _ok else "blocked",
-                                    "executed": bool(_ok),
-                                    "error_code": None if _ok else "dispatcher_blocked",
-                                    "error_message": None
-                                    if _ok
-                                    else "blocked or refused",
-                                }
-                            )
+                            _server_out.append(f"[EDIT {_target}] {'applied' if _ok else 'blocked or refused'}")
+                            _server_results.append({
+                                "kind": _kind,
+                                "target": _target,
+                                "status": "success" if _ok else "blocked",
+                                "executed": bool(_ok),
+                                "error_code": None if _ok else "dispatcher_blocked",
+                                "error_message": None if _ok else "blocked or refused",
+                            })
                         elif _kind == "REMOTE_MCP":
                             # Headless MCP (Pupil / API source, no extension):
                             # execute Sensei-catalog tools server-side.
-                            _mcp_ok, _mcp_text = _dispatch_remote_mcp(
-                                _action.get("target") or _action.get("command") or ""
-                            )
-                            _server_out.append(
-                                f"[REMOTE_MCP] {_mcp_text}"
-                                if not _mcp_ok
-                                else _mcp_text
-                            )
-                            _server_results.append(
-                                {
-                                    "kind": _kind,
-                                    "target": _target,
-                                    "status": "success" if _mcp_ok else "failure",
-                                    "executed": True,
-                                    "error_code": None
-                                    if _mcp_ok
-                                    else "dispatcher_error",
-                                    "error_message": None if _mcp_ok else _mcp_text,
-                                    "observed_text": _mcp_text,
-                                }
-                            )
+                            _mcp_ok, _mcp_text = _dispatch_remote_mcp(_action.get("target") or _action.get("command") or "")
+                            _server_out.append(f"[REMOTE_MCP] {_mcp_text}" if not _mcp_ok else _mcp_text)
+                            _server_results.append({
+                                "kind": _kind,
+                                "target": _target,
+                                "status": "success" if _mcp_ok else "failure",
+                                "executed": True,
+                                "error_code": None if _mcp_ok else "dispatcher_error",
+                                "error_message": None if _mcp_ok else _mcp_text,
+                                "observed_text": _mcp_text,
+                            })
                         else:
                             _browser_only.append(_action)
                     except Exception as _e:
                         _server_out.append(f"[{_kind} {_target}] dispatch error: {_e}")
-                        _server_results.append(
-                            {
-                                "kind": _kind,
-                                "target": _target,
-                                "status": "failure",
-                                "executed": True,
-                                "error_code": "dispatcher_error",
-                                "error_message": str(_e),
-                            }
-                        )
+                        _server_results.append({
+                            "kind": _kind,
+                            "target": _target,
+                            "status": "failure",
+                            "executed": True,
+                            "error_code": "dispatcher_error",
+                            "error_message": str(_e),
+                        })
                 if _server_out:
-                    reply_with_results = (
-                        (reply or "")
-                        + "\n\n— server-dispatched output —\n"
-                        + "\n\n".join(_server_out)
-                    )
+                    reply_with_results = (reply or "") + "\n\n— server-dispatched output —\n" + "\n\n".join(_server_out)
                     reply = reply_with_results
                     if history and history[-1].get("role") == "assistant":
                         history[-1]["content"] = reply_with_results
@@ -3110,14 +2702,8 @@ def api_handle(payload):
                         str(_row.get("kind") or "").upper() in ("RUN", "READ")
                         for _row in _server_results
                     )
-                    if (
-                        route in ("cloud", "cloud_fast", "cloud_deep")
-                        and not _browser_only
-                        and _has_run_read
-                    ):
-                        _server_results_block = _format_server_action_results(
-                            _server_results
-                        )
+                    if route in ("cloud", "cloud_fast", "cloud_deep") and not _browser_only and _has_run_read:
+                        _server_results_block = _format_server_action_results(_server_results)
                         _synth_reply = _synthesize_server_followup(
                             _m,
                             history,
@@ -3163,28 +2749,16 @@ def api_handle(payload):
                                     if _sk == "RUN":
                                         _sr = _m.confirm_run(_st)
                                         if _sr is None:
-                                            _synth_out.append(
-                                                f"$ {_st}\n[blocked or refused]"
-                                            )
-                                            _sa["status"], _sa["executed"] = (
-                                                "blocked",
-                                                False,
-                                            )
+                                            _synth_out.append(f"$ {_st}\n[blocked or refused]")
+                                            _sa["status"], _sa["executed"] = "blocked", False
                                         else:
                                             _sout = getattr(_sr, "stdout", "") or ""
-                                            _synth_out.append(
-                                                f"$ {_st}\n{_sout}".rstrip()
-                                            )
+                                            _synth_out.append(f"$ {_st}\n{_sout}".rstrip())
                                             _verify_pending_clear(session_key, _st)
-                                            _sa["status"], _sa["executed"] = (
-                                                "success",
-                                                True,
-                                            )
+                                            _sa["status"], _sa["executed"] = "success", True
                                     elif _sk == "RUNTERM":
                                         _m.confirm_runterm(_st)
-                                        _synth_out.append(
-                                            f"[RUNTERM] dispatched: {_st}"
-                                        )
+                                        _synth_out.append(f"[RUNTERM] dispatched: {_st}")
                                         _verify_pending_clear(session_key, _st)
                                         _sa["status"], _sa["executed"] = "success", True
                                     elif _sk == "READ":
@@ -3192,58 +2766,33 @@ def api_handle(payload):
                                         if os.path.isfile(_sp):
                                             with open(_sp, errors="replace") as _sfh:
                                                 _stext = _sfh.read(4000)
-                                            _synth_out.append(
-                                                f"[READ {_st}]\n{_stext}".rstrip()
-                                            )
-                                            _verify_pending_clear(
-                                                session_key, _st, from_read=True
-                                            )
-                                            _sa["status"], _sa["executed"] = (
-                                                "success",
-                                                True,
-                                            )
+                                            _synth_out.append(f"[READ {_st}]\n{_stext}".rstrip())
+                                            _verify_pending_clear(session_key, _st, from_read=True)
+                                            _sa["status"], _sa["executed"] = "success", True
                                         else:
-                                            _synth_out.append(
-                                                f"[READ {_st}] blocked: not a file"
-                                            )
-                                            _sa["status"], _sa["executed"] = (
-                                                "blocked",
-                                                False,
-                                            )
+                                            _synth_out.append(f"[READ {_st}] blocked: not a file")
+                                            _sa["status"], _sa["executed"] = "blocked", False
                                     elif _sk == "CREATE":
-                                        _sc = (
-                                            _sa.get("create_content")
-                                            or _sa.get("content")
-                                            or _sa.get("body")
-                                            or ""
-                                        )
+                                        _sc = (_sa.get("create_content")
+                                               or _sa.get("content")
+                                               or _sa.get("body") or "")
                                         _sok = _m.confirm_create(_st, _sc)
                                         if _sok:
-                                            _verify_pending_mark(
-                                                session_key, _st, "create"
-                                            )
+                                            _verify_pending_mark(session_key, _st, "create")
                                         _synth_out.append(
                                             f"[CREATE {_st}] "
                                             f"{'written' if _sok else 'blocked or refused'}"
                                         )
                                         _sa["status"], _sa["executed"] = (
-                                            ("success", True)
-                                            if _sok
-                                            else ("blocked", False)
+                                            ("success", True) if _sok else ("blocked", False)
                                         )
                                     elif _sk == "EDIT":
-                                        _sf = (
-                                            _sa.get("edit_old")
-                                            or _sa.get("find")
-                                            or _sa.get("find_text")
-                                            or ""
-                                        )
-                                        _srepl = (
-                                            _sa.get("edit_new")
-                                            or _sa.get("replace")
-                                            or _sa.get("replace_text")
-                                            or ""
-                                        )
+                                        _sf = (_sa.get("edit_old")
+                                               or _sa.get("find")
+                                               or _sa.get("find_text") or "")
+                                        _srepl = (_sa.get("edit_new")
+                                                  or _sa.get("replace")
+                                                  or _sa.get("replace_text") or "")
                                         _sok = _m.confirm_edit(_st, _sf, _srepl)
                                         if _sok:
                                             _verify_pending_mark(session_key, _st)
@@ -3252,9 +2801,7 @@ def api_handle(payload):
                                             f"{'applied' if _sok else 'blocked or refused'}"
                                         )
                                         _sa["status"], _sa["executed"] = (
-                                            ("success", True)
-                                            if _sok
-                                            else ("blocked", False)
+                                            ("success", True) if _sok else ("blocked", False)
                                         )
                                     else:
                                         _synth_browser.append(_sa)
@@ -3263,15 +2810,13 @@ def api_handle(payload):
                                         f"[{_sk} {_st}] dispatch error: "
                                         f"{type(_sx).__name__}: {_sx}"
                                     )
-                                _synth_rows.append(
-                                    {
-                                        "kind": _sk,
-                                        "target": _st[:300],
-                                        "status": _sa.get("status") or "success",
-                                        "executed": bool(_sa.get("executed", True)),
-                                        "observed_text": None,
-                                    }
-                                )
+                                _synth_rows.append({
+                                    "kind": _sk,
+                                    "target": _st[:300],
+                                    "status": _sa.get("status") or "success",
+                                    "executed": bool(_sa.get("executed", True)),
+                                    "observed_text": None,
+                                })
                             if _synth_out:
                                 reply = (
                                     reply
@@ -3323,9 +2868,7 @@ def api_handle(payload):
     # extension reports real results; DONE is terminal only with no actions.
     round_remaining = max(0, round_budget - round_num)
     done, terminal_reason = _api_terminal_state(
-        reply,
-        captured_actions,
-        round_remaining,
+        reply, captured_actions, round_remaining,
         server_progressed=locals().get("_server_progressed", False),
     )
 
@@ -3362,9 +2905,7 @@ def api_handle(payload):
         }
         # Bounded registry — drop oldest entries if it grows past 256.
         if len(_API_TURNS) > 256:
-            oldest = sorted(
-                _API_TURNS.items(), key=lambda kv: kv[1].get("created_at", "")
-            )[:64]
+            oldest = sorted(_API_TURNS.items(), key=lambda kv: kv[1].get("created_at", ""))[:64]
             for k, _ in oldest:
                 _API_TURNS.pop(k, None)
 
@@ -3388,45 +2929,34 @@ def api_handle(payload):
         #   correlated to the exact config that produced it.
         try:
             import prompt_versions as _pv_audit
-
             _pv_dict = _pv_audit.current()
         except Exception:
             _pv_dict = {}
-        _write_turn_audit(
-            {
-                "ts": now_iso,
-                "source": "api_handle",
-                "kind": "turn_terminal",
-                "turn_id": turn_id,
-                "task_id": turn_id,
-                "turn_root": turn_root or turn_id,
-                "correlation_id": turn_root or turn_id,
-                "parent_turn_id": parent_turn_id or None,
-                "causation_id": parent_turn_id or None,
-                "round_num": round_num,
-                "round_budget": round_budget,
-                "terminal_reason": terminal_reason,
-                "route": route,
-                "model": model,
-                "actions_count": len(captured_actions),
-                "blocked_count": len(blocked_actions),
-                "capabilities_fired": [
-                    a.get("capability")
-                    for a in _registry_handled
-                    if a.get("capability")
-                ],
-                "verification_results": [
-                    a.get("verification_result")
-                    for a in _registry_handled
-                    if a.get("verification_result")
-                ],
-                "prompt_version": _pv_dict.get("prompt_version"),
-                "prompt_sha256_short": _pv_dict.get("prompt_sha256_short"),
-                "git_commit_short": _pv_dict.get("git_commit_short"),
-                "registry_version": _pv_dict.get("registry_version"),
-                "safety_policy_version": _pv_dict.get("safety_policy_version"),
-            }
-        )
+        _write_turn_audit({
+            "ts": now_iso,
+            "source": "api_handle",
+            "kind": "turn_terminal",
+            "turn_id": turn_id,
+            "task_id": turn_id,
+            "turn_root": turn_root or turn_id,
+            "correlation_id": turn_root or turn_id,
+            "parent_turn_id": parent_turn_id or None,
+            "causation_id": parent_turn_id or None,
+            "round_num": round_num,
+            "round_budget": round_budget,
+            "terminal_reason": terminal_reason,
+            "route": route,
+            "model": model,
+            "actions_count": len(captured_actions),
+            "blocked_count": len(blocked_actions),
+            "capabilities_fired": [a.get("capability") for a in _registry_handled if a.get("capability")],
+            "verification_results": [a.get("verification_result") for a in _registry_handled if a.get("verification_result")],
+            "prompt_version": _pv_dict.get("prompt_version"),
+            "prompt_sha256_short": _pv_dict.get("prompt_sha256_short"),
+            "git_commit_short": _pv_dict.get("git_commit_short"),
+            "registry_version": _pv_dict.get("registry_version"),
+            "safety_policy_version": _pv_dict.get("safety_policy_version"),
+        })
 
     # Phase 5.5 — extract the structured plan block when the model emits one.
     # The model is taught to put EITHER labeled prose OR a JSON object inside
@@ -3452,12 +2982,8 @@ def api_handle(payload):
     # bus errors, the response still ships.
     try:
         import hooks as _hooks_module  # noqa: WPS433
-
-        _hooks_module.fire(
-            "turn_answer_start",
-            reply or "",
-            action={"turn_id": turn_id, "round_num": round_num, "mode": effective_mode},
-        )
+        _hooks_module.fire("turn_answer_start", reply or "",
+                           action={"turn_id": turn_id, "round_num": round_num, "mode": effective_mode})
     except Exception:
         pass
 
@@ -3480,11 +3006,9 @@ def api_handle(payload):
         "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
 
-
 def safe_filename(name):
-    name = re.sub(r"[^\w\s-]", "", name).strip()
-    return re.sub(r"\s+", "_", name)[:60]
-
+    name = re.sub(r'[^\w\s-]', '', name).strip()
+    return re.sub(r'\s+', '_', name)[:60]
 
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
@@ -3497,16 +3021,16 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         # Bare / would show a directory listing of cwd (privacy leak); send to Pupil.
-        if self.path in ("/", ""):
+        if self.path in ('/', ''):
             self.send_response(302)
-            self.send_header("Location", "/pupil.html")
+            self.send_header('Location', '/pupil.html')
             self.end_headers()
-            return None
+            return
 
         # /sdcpp/* → reverse-proxy to local sd-server on 127.0.0.1:7860.
         # Keeps the image engine loopback-bound while letting Pupil reach it
         # from any host that can reach :8080 (LAN, Tailscale). Same-origin.
-        if self.path.startswith("/sdcpp/"):
+        if self.path.startswith('/sdcpp/'):
             return self._proxy_sdcpp()
 
         # /project_summary?name=X[&refresh=1] — precomputed project briefing.
@@ -3516,62 +3040,55 @@ class Handler(SimpleHTTPRequestHandler):
         # Returned immediately from cache when fresh (<6h); regenerated when
         # stale or when ?refresh=1. This is the "AI pre-reads your stuff so
         # you don't wait at the door" mechanism.
-        if self.path == "/pupil.webmanifest":
+        if self.path == '/pupil.webmanifest':
             try:
-                body = json.dumps(
-                    {
-                        "name": "Pupil - Master AI",
-                        "short_name": "Pupil",
-                        "description": "Master AI browser UI for iOS, Android, and desktop.",
-                        "start_url": "/pupil.html",
-                        "scope": "/",
-                        "display": "standalone",
-                        "orientation": "portrait",
-                        "background_color": "#F0F6FF",
-                        "theme_color": "#2266CC",
-                        "icons": [
-                            {
-                                "src": "/pupil-icon.svg",
-                                "sizes": "any",
-                                "type": "image/svg+xml",
-                                "purpose": "any maskable",
-                            }
-                        ],
-                    }
-                ).encode()
+                body = json.dumps({
+                    'name': 'Pupil - Master AI',
+                    'short_name': 'Pupil',
+                    'description': 'Master AI browser UI for iOS, Android, and desktop.',
+                    'start_url': '/pupil.html',
+                    'scope': '/',
+                    'display': 'standalone',
+                    'orientation': 'portrait',
+                    'background_color': '#F0F6FF',
+                    'theme_color': '#2266CC',
+                    'icons': [
+                        {'src': '/pupil-icon.svg', 'sizes': 'any', 'type': 'image/svg+xml', 'purpose': 'any maskable'}
+                    ],
+                }).encode()
                 self.send_response(200)
                 self._cors()
-                self.send_header("Content-Type", "application/manifest+json")
-                self.send_header("Cache-Control", "no-cache")
-                self.send_header("Content-Length", len(body))
+                self.send_header('Content-Type', 'application/manifest+json')
+                self.send_header('Cache-Control', 'no-cache')
+                self.send_header('Content-Length', len(body))
                 self.end_headers()
                 self.wfile.write(body)
             except _CLIENT_DISCONNECTS:
-                return None
-            return None
+                return
+            return
 
-        if self.path == "/pupil-icon.svg":
+        if self.path == '/pupil-icon.svg':
             try:
-                svg = b"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+                svg = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
 <rect width="512" height="512" rx="112" fill="#2266CC"/>
 <circle cx="256" cy="206" r="98" fill="#F0F6FF"/>
 <path d="M138 374c20-70 69-108 118-108s98 38 118 108" fill="none" stroke="#F0F6FF" stroke-width="54" stroke-linecap="round"/>
 <path d="M174 190h164" stroke="#042C53" stroke-width="34" stroke-linecap="round"/>
 <circle cx="222" cy="218" r="15" fill="#042C53"/>
 <circle cx="290" cy="218" r="15" fill="#042C53"/>
-</svg>"""
+</svg>'''.encode()
                 self.send_response(200)
                 self._cors()
-                self.send_header("Content-Type", "image/svg+xml")
-                self.send_header("Cache-Control", "public, max-age=86400")
-                self.send_header("Content-Length", len(svg))
+                self.send_header('Content-Type', 'image/svg+xml')
+                self.send_header('Cache-Control', 'public, max-age=86400')
+                self.send_header('Content-Length', len(svg))
                 self.end_headers()
                 self.wfile.write(svg)
             except _CLIENT_DISCONNECTS:
-                return None
-            return None
+                return
+            return
 
-        if self.path == "/pupil-sw.js":
+        if self.path == '/pupil-sw.js':
             try:
                 body = b"""const CACHE = 'pupil-shell-v2';
 // 2026-10-19: /pupil.html is deliberately NOT precached anymore. v1 pinned
@@ -3602,90 +3119,74 @@ self.addEventListener('fetch', event => {
 """
                 self.send_response(200)
                 self._cors()
-                self.send_header("Content-Type", "application/javascript")
-                self.send_header("Cache-Control", "no-cache")
-                self.send_header("Content-Length", len(body))
+                self.send_header('Content-Type', 'application/javascript')
+                self.send_header('Cache-Control', 'no-cache')
+                self.send_header('Content-Length', len(body))
                 self.end_headers()
                 self.wfile.write(body)
             except _CLIENT_DISCONNECTS:
-                return None
-            return None
+                return
+            return
 
-        if self.path.startswith("/project_summary"):
+        if self.path.startswith('/project_summary'):
             try:
-                from urllib.parse import parse_qs, urlparse
-
+                from urllib.parse import urlparse, parse_qs
                 qs = parse_qs(urlparse(self.path).query)
-                name = (qs.get("name", [""])[0] or "").strip()
-                force = qs.get("refresh", ["0"])[0] == "1"
+                name = (qs.get('name', [''])[0] or '').strip()
+                force = qs.get('refresh', ['0'])[0] == '1'
                 if not name:
-                    self._json({"error": "missing name param"}, 400)
-                    return None
+                    self._json({'error': 'missing name param'}, 400); return
 
                 # Profile-aware cache dir
-                active_profile = ""
-                try:
-                    active_profile = (
-                        open(os.path.expanduser("~/.master_ai_active_profile"))
-                        .read()
-                        .strip()
-                    )
-                except Exception:
-                    pass
-                if active_profile and os.path.isdir(
-                    os.path.expanduser(f"~/.master_ai_profiles/{active_profile}")
-                ):
-                    cache_dir = os.path.expanduser(
-                        f"~/.master_ai_profiles/{active_profile}/briefings"
-                    )
+                active_profile = ''
+                try: active_profile = open(os.path.expanduser('~/.master_ai_active_profile')).read().strip()
+                except Exception: pass
+                if active_profile and os.path.isdir(os.path.expanduser(f'~/.master_ai_profiles/{active_profile}')):
+                    cache_dir = os.path.expanduser(f'~/.master_ai_profiles/{active_profile}/briefings')
                 else:
-                    cache_dir = os.path.expanduser("~/.master_ai_briefings")
+                    cache_dir = os.path.expanduser('~/.master_ai_briefings')
                 os.makedirs(cache_dir, exist_ok=True)
 
-                slug = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_").lower()
-                cache_path = os.path.join(cache_dir, slug + ".json")
+                slug = re.sub(r'[^A-Za-z0-9]+', '_', name).strip('_').lower()
+                cache_path = os.path.join(cache_dir, slug + '.json')
 
                 # Return cached if fresh and not forced
                 import time as _time
-
                 if (not force) and os.path.exists(cache_path):
                     try:
                         cached = json.load(open(cache_path))
-                        if _time.time() - cached.get("cached_at", 0) < 6 * 3600:
-                            cached["source"] = "cache"
-                            self._json(cached)
-                            return None
+                        if _time.time() - cached.get('cached_at', 0) < 6 * 3600:
+                            cached['source'] = 'cache'
+                            self._json(cached); return
                     except Exception:
                         pass
 
                 # Build context: PROJECTS.md block + last 3 session tails
-                pfile = os.path.expanduser("~/scripts/PROJECTS.md")
-                block = ""
+                pfile = os.path.expanduser('~/scripts/PROJECTS.md')
+                block = ''
                 try:
                     in_p = False
                     for ln in open(pfile).read().splitlines():
-                        if ln.strip() == f"### {name}":
-                            in_p = True
-                            continue
-                        if in_p and (ln.startswith("### ") or ln.startswith("## ")):
+                        if ln.strip() == f'### {name}':
+                            in_p = True; continue
+                        if in_p and (ln.startswith('### ') or ln.startswith('## ')):
                             break
-                        if in_p:
-                            block += ln + "\n"
+                        if in_p: block += ln + '\n'
                 except Exception:
-                    block = "(no PROJECTS.md entry)"
+                    block = '(no PROJECTS.md entry)'
 
-                sessions_tail = ""
-                sessions_dir = os.path.expanduser("~/scripts/sessions")
+                sessions_tail = ''
+                sessions_dir = os.path.expanduser('~/scripts/sessions')
                 if os.path.isdir(sessions_dir):
                     logs = sorted(
-                        [f for f in os.listdir(sessions_dir) if f.endswith(".log")],
+                        [f for f in os.listdir(sessions_dir) if f.endswith('.log')],
                         key=lambda f: os.path.getmtime(os.path.join(sessions_dir, f)),
-                        reverse=True,
+                        reverse=True
                     )[:3]
                     for f in logs:
                         try:
                             tail = open(os.path.join(sessions_dir, f)).read()[-2500:]
-                            sessions_tail += f"\n=== {f} ===\n{tail}\n"
+                            sessions_tail += f'\n=== {f} ===\n{tail}\n'
                         except Exception:
                             pass
 
@@ -3694,7 +3195,7 @@ self.addEventListener('fetch', event => {
                 # The 7B coder model loads quicker than the 14B master model
                 # and is fine for a 5-bullet summarization.
                 block_trim = block[:1500]
-                tail_trim = sessions_tail[-2500:] if sessions_tail else ""
+                tail_trim = sessions_tail[-2500:] if sessions_tail else ''
                 prompt = f"""Project briefing for someone returning after a break.
 Project: {name}
 Board:
@@ -3709,179 +3210,157 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
 - last thing done in one line
 - next move in one line
 - anything easy to forget in one line"""
-                summary_text = ""
+                summary_text = ''
                 try:
                     req = urllib.request.Request(
-                        "http://localhost:11434/api/generate",
-                        data=json.dumps(
-                            {
-                                "model": "qwen2.5:3b",
-                                "prompt": prompt,
-                                "stream": False,
-                                "keep_alive": 0,
-                                "options": {"num_predict": 140, "temperature": 0.3},
-                            }
-                        ).encode(),
-                        headers={"Content-Type": "application/json"},
+                        'http://localhost:11434/api/generate',
+                        data=json.dumps({
+                            'model': 'qwen2.5:3b',
+                            'prompt': prompt,
+                            'stream': False,
+                            'keep_alive': 0,
+                            'options': {'num_predict': 140, 'temperature': 0.3},
+                        }).encode(),
+                        headers={'Content-Type': 'application/json'},
                     )
                     with urllib.request.urlopen(req, timeout=45) as resp:
                         data = json.loads(resp.read().decode())
-                        summary_text = data.get("response", "").strip()
+                        summary_text = data.get('response', '').strip()
                 except Exception as _e:
-                    summary_text = f"(briefing generation failed: {_e}) — fallback to project board below."
+                    summary_text = f'(briefing generation failed: {_e}) — fallback to project board below.'
 
                 payload = {
-                    "name": name,
-                    "summary": summary_text,
-                    "project_block": block,
-                    "cached_at": int(_time.time()),
-                    "source": "fresh",
+                    'name': name,
+                    'summary': summary_text,
+                    'project_block': block,
+                    'cached_at': int(_time.time()),
+                    'source': 'fresh',
                 }
                 # Only cache SUCCESSFUL briefings so a cold-Ollama timeout on
                 # first try doesn't stick. Next request retries.
-                if not summary_text.startswith("(briefing generation failed"):
-                    with open(cache_path, "w") as f:
+                if not summary_text.startswith('(briefing generation failed'):
+                    with open(cache_path, 'w') as f:
                         json.dump(payload, f, indent=2)
-                self._json(payload)
-                return None
+                self._json(payload); return
             except Exception as e:
-                self._error(str(e))
-                return None
+                self._error(str(e)); return
 
         # /sys — quick RAM + swap + loaded-model snapshot for the Pupil
         # sidebar. Cheap to compute; cheap to poll every 5s. Lets the user
         # see pressure before they open a third tab.
-        if self.path == "/sys":
+        if self.path == '/sys':
             try:
-                mem = {
-                    "total_mb": 0,
-                    "used_mb": 0,
-                    "available_mb": 0,
-                    "swap_used_mb": 0,
-                }
+                mem = {'total_mb': 0, 'used_mb': 0, 'available_mb': 0, 'swap_used_mb': 0}
                 try:
-                    with open("/proc/meminfo") as f:
+                    with open('/proc/meminfo') as f:
                         m = {}
                         for line in f:
-                            k, _, v = line.partition(":")
+                            k, _, v = line.partition(':')
                             v = v.strip().split()[0]
-                            m[k] = int(v) // 1024  # KB → MB
-                    mem["total_mb"] = m.get("MemTotal", 0)
-                    mem["available_mb"] = m.get("MemAvailable", 0)
-                    mem["used_mb"] = mem["total_mb"] - mem["available_mb"]
-                    mem["swap_used_mb"] = m.get("SwapTotal", 0) - m.get("SwapFree", 0)
+                            m[k] = int(v) // 1024   # KB → MB
+                    mem['total_mb']     = m.get('MemTotal', 0)
+                    mem['available_mb'] = m.get('MemAvailable', 0)
+                    mem['used_mb']      = mem['total_mb'] - mem['available_mb']
+                    mem['swap_used_mb'] = m.get('SwapTotal', 0) - m.get('SwapFree', 0)
                 except Exception:
                     pass
                 # Ask Ollama what's currently loaded (returns fast even cold)
                 loaded = []
                 try:
-                    req = urllib.request.Request("http://localhost:11434/api/ps")
+                    req = urllib.request.Request('http://localhost:11434/api/ps')
                     with urllib.request.urlopen(req, timeout=2) as resp:
                         d = json.loads(resp.read().decode())
-                        for m in d.get("models", []):
-                            loaded.append(
-                                {
-                                    "name": m.get("name"),
-                                    "size_mb": int(m.get("size_vram", m.get("size", 0)))
-                                    // (1024 * 1024),
-                                }
-                            )
+                        for m in d.get('models', []):
+                            loaded.append({
+                                'name': m.get('name'),
+                                'size_mb': int(m.get('size_vram', m.get('size', 0))) // (1024*1024),
+                            })
                 except Exception:
                     pass
-                self._json({"mem": mem, "loaded_models": loaded})
+                self._json({'mem': mem, 'loaded_models': loaded})
             except Exception as e:
                 self._error(str(e))
-            return None
+            return
 
         # Pupil API v1 — see ~/scripts/pupil_api.md.
         # /health — cheap liveness + Ollama reachability.
-        if self.path == "/health":
+        if self.path == '/health':
             self._json(_health_payload())
-            return None
+            return
 
         # /status — richer state for the Pupil status card.
-        if self.path == "/status":
+        if self.path == '/status':
             try:
-                mode = "plan"
+                mode = 'plan'
                 try:
-                    mp = os.path.expanduser("~/.master_ai_mode")
+                    mp = os.path.expanduser('~/.master_ai_mode')
                     if os.path.exists(mp):
                         v = open(mp).read().strip().lower()
-                        if v in ("plan", "review", "auto"):
+                        if v in ('plan', 'review', 'auto'):
                             mode = v
                 except Exception:
                     pass
                 memory_facts = 0
                 try:
-                    mem_path = os.path.expanduser("~/.master_ai_memory")
+                    mem_path = os.path.expanduser('~/.master_ai_memory')
                     if os.path.exists(mem_path):
                         with open(mem_path) as f:
                             memory_facts = sum(1 for _ in f)
                 except Exception:
                     pass
-                last_route = ""
+                last_route = ''
                 try:
-                    rm = os.path.expanduser("~/.master_ai_router_metrics.jsonl")
+                    rm = os.path.expanduser('~/.master_ai_router_metrics.jsonl')
                     if os.path.exists(rm):
                         with open(rm) as f:
-                            last_line = ""
+                            last_line = ''
                             for line in f:
                                 if line.strip():
                                     last_line = line
                             if last_line:
-                                last_route = json.loads(last_line).get("route") or ""
+                                last_route = (json.loads(last_line).get('route') or '')
                 except Exception:
                     pass
                 # Reuse /sys logic for mem + loaded models
-                mem = {
-                    "total_mb": 0,
-                    "used_mb": 0,
-                    "available_mb": 0,
-                    "swap_used_mb": 0,
-                }
+                mem = {'total_mb': 0, 'used_mb': 0, 'available_mb': 0, 'swap_used_mb': 0}
                 try:
-                    with open("/proc/meminfo") as f:
+                    with open('/proc/meminfo') as f:
                         m = {}
                         for line in f:
-                            k, _, v = line.partition(":")
+                            k, _, v = line.partition(':')
                             v = v.strip().split()[0]
                             m[k] = int(v) // 1024
-                    mem["total_mb"] = m.get("MemTotal", 0)
-                    mem["available_mb"] = m.get("MemAvailable", 0)
-                    mem["used_mb"] = mem["total_mb"] - mem["available_mb"]
-                    mem["swap_used_mb"] = m.get("SwapTotal", 0) - m.get("SwapFree", 0)
+                    mem['total_mb']     = m.get('MemTotal', 0)
+                    mem['available_mb'] = m.get('MemAvailable', 0)
+                    mem['used_mb']      = mem['total_mb'] - mem['available_mb']
+                    mem['swap_used_mb'] = m.get('SwapTotal', 0) - m.get('SwapFree', 0)
                 except Exception:
                     pass
                 loaded = []
                 try:
-                    req = urllib.request.Request("http://127.0.0.1:11434/api/ps")
+                    req = urllib.request.Request('http://127.0.0.1:11434/api/ps')
                     with urllib.request.urlopen(req, timeout=2) as resp:
                         d = json.loads(resp.read().decode())
-                        for m in d.get("models", []):
-                            loaded.append(
-                                {
-                                    "name": m.get("name"),
-                                    "size_mb": int(m.get("size_vram", m.get("size", 0)))
-                                    // (1024 * 1024),
-                                }
-                            )
+                        for m in d.get('models', []):
+                            loaded.append({
+                                'name': m.get('name'),
+                                'size_mb': int(m.get('size_vram', m.get('size', 0))) // (1024*1024),
+                            })
                 except Exception:
                     pass
-                self._json(
-                    {
-                        "mode": mode,
-                        "model": "master-ai",
-                        "memory_facts": memory_facts,
-                        "last_route": last_route,
-                        "queue_depth": 0,
-                        "loaded_models": loaded,
-                        "mem": mem,
-                        "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
-                    }
-                )
+                self._json({
+                    'mode': mode,
+                    'model': 'master-ai',
+                    'memory_facts': memory_facts,
+                    'last_route': last_route,
+                    'queue_depth': 0,
+                    'loaded_models': loaded,
+                    'mem': mem,
+                    'ts': datetime.now().astimezone().isoformat(timespec='seconds'),
+                })
             except Exception as e:
                 self._error(str(e))
-            return None
+            return
 
         # GET /models — Pupil IDE model picker, backed by Sensei's own
         # live picker functions (master_ai.live_provider_completions /
@@ -3892,86 +3371,72 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
         # live model rows [(pin_value, display, hint)].
         #   active — ~/.master_ai_active_model (empty = auto-router)
         # POST /models performs the pin. Same-origin.
-        if self.path == "/models" or self.path.startswith("/models?"):
-            active = ""
+        if self.path == '/models' or self.path.startswith('/models?'):
+            active = ''
             try:
-                am = os.path.expanduser("~/.master_ai_active_model")
+                am = os.path.expanduser('~/.master_ai_active_model')
                 if os.path.exists(am):
                     active = open(am).read().strip()
             except Exception:
                 pass
-            provider_req = ""
+            provider_req = ''
             try:
-                from urllib.parse import parse_qs as _pqs
-                from urllib.parse import urlparse
-
-                provider_req = (
-                    (_pqs(urlparse(self.path).query).get("provider", [""])[0] or "")
-                    .strip()
-                    .lower()
-                )
+                from urllib.parse import urlparse, parse_qs as _pqs
+                provider_req = (_pqs(urlparse(self.path).query).get('provider', [''])[0] or '').strip().lower()
             except Exception:
                 pass
-            payload = {
-                "active": active,
-                "auto": not bool(active),
-                "providers": [],
-                "models": [],
-                "provider": provider_req,
-            }
+            payload = {'active': active, 'auto': not bool(active), 'providers': [], 'models': [], 'provider': provider_req}
             try:
-                _m = _get_api_master_ai_module("router")
+                _m = _get_api_master_ai_module('router')
                 if provider_req:
                     rows = _m.live_model_completions(provider_req) or []
-                    payload["models"] = [
-                        {"pin": pin, "name": name, "hint": hint}
+                    payload['models'] = [
+                        {'pin': pin, 'name': name, 'hint': hint}
                         for (pin, name, hint) in rows
                     ]
                 else:
                     rows = _m.live_provider_completions() or []
-                    payload["providers"] = [
-                        {"key": key, "display": display, "hint": hint}
+                    payload['providers'] = [
+                        {'key': key, 'display': display, 'hint': hint}
                         for (key, display, hint) in rows
                     ]
             except Exception as e:
-                payload["error"] = f"model picker unavailable: {e}"
+                payload['error'] = f'model picker unavailable: {e}'
             self._json(payload)
-            return None
+            return
 
         # GET /skills — Pupil IDE skills panel. Walks ~/.master_ai_skills/
         # SKILL.md frontmatter (name, description, version). Read-only;
         # execution stays with Sensei's `skill run` chat dispatch.
-        if self.path == "/skills":
+        if self.path == '/skills':
             skills = []
-            sk_root = os.path.expanduser("~/.master_ai_skills")
+            sk_root = os.path.expanduser('~/.master_ai_skills')
             try:
                 for entry in sorted(os.listdir(sk_root)):
                     sk_dir = os.path.join(sk_root, entry)
-                    sk_md = os.path.join(sk_dir, "SKILL.md")
+                    sk_md = os.path.join(sk_dir, 'SKILL.md')
                     if not os.path.isfile(sk_md):
                         continue
-                    meta = {"name": entry, "description": "", "version": ""}
+                    meta = {'name': entry, 'description': '', 'version': ''}
                     try:
                         with open(sk_md) as f:
                             head = f.read(4096)
-                        m = re.search(r"^name:\s*(.+)$", head, re.MULTILINE)
+                        m = re.search(r'^name:\s*(.+)$', head, re.MULTILINE)
                         if m:
-                            meta["name"] = m.group(1).strip()
-                        m = re.search(
-                            r'^description:\s*["\']?(.+?)["\']?\s*$', head, re.MULTILINE
-                        )
+                            meta['name'] = m.group(1).strip()
+                        m = re.search(r'^description:\s*["\']?(.+?)["\']?\s*$', head, re.MULTILINE)
                         if m:
-                            meta["description"] = m.group(1).strip()
-                        m = re.search(r"^version:\s*(.+)$", head, re.MULTILINE)
+                            meta['description'] = m.group(1).strip()
+                        m = re.search(r'^version:\s*(.+)$', head, re.MULTILINE)
                         if m:
-                            meta["version"] = m.group(1).strip()
+                            meta['version'] = m.group(1).strip()
                     except Exception:
                         pass
                     skills.append(meta)
             except Exception:
                 pass
-            self._json({"skills": skills, "count": len(skills)})
-            return None
+            self._json({'skills': skills, 'count': len(skills)})
+            return
 
         # GET /sessions?file=<name> — Pupil IDE chat sidebar. No file param:
         # lists BOTH session formats — Sensei's flat-file .chat transcripts
@@ -3979,336 +3444,262 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
         # and the web .json(.gz) saves — newest first, with previews.
         # ?file=<name> returns one session's messages (.chat parsed on the
         # "[date] You:/AI:" line convention, .json returned as-is).
-        if self.path == "/sessions" or self.path.startswith("/sessions?"):
+        if self.path == '/sessions' or self.path.startswith('/sessions?'):
             try:
-                from urllib.parse import parse_qs as _pqs
-                from urllib.parse import urlparse
-
+                from urllib.parse import urlparse, parse_qs as _pqs
                 qs = _pqs(urlparse(self.path).query)
-                want_file = (qs.get("file", [""])[0] or "").strip()
+                want_file = (qs.get('file', [''])[0] or '').strip()
                 chats = _chats_dir()
                 if want_file:
                     safe_name = os.path.basename(want_file)
                     path = os.path.join(chats, safe_name)
                     if not os.path.exists(path):
-                        self._json({"error": "not found"}, 404)
-                        return None
-                    if safe_name.endswith(".chat"):
+                        self._json({'error': 'not found'}, 404); return
+                    if safe_name.endswith('.chat'):
                         msgs = []
-                        with open(path, encoding="utf-8", errors="replace") as fh:
+                        with open(path, encoding='utf-8', errors='replace') as fh:
                             for line in fh:
-                                line = line.rstrip("\n")
-                                if "] You: " in line:
-                                    msgs.append(
-                                        {
-                                            "role": "user",
-                                            "content": line.split("] You: ", 1)[1],
-                                        }
-                                    )
-                                elif "] AI: " in line:
-                                    msgs.append(
-                                        {
-                                            "role": "assistant",
-                                            "content": line.split("] AI: ", 1)[1],
-                                        }
-                                    )
-                        self._json(
-                            {"file": safe_name, "format": "chat", "messages": msgs}
-                        )
-                        return None
-                    if safe_name.endswith(".json.gz"):
-                        with gzip.open(path, "rt", encoding="utf-8") as fh:
+                                line = line.rstrip('\n')
+                                if '] You: ' in line:
+                                    msgs.append({'role': 'user', 'content': line.split('] You: ', 1)[1]})
+                                elif '] AI: ' in line:
+                                    msgs.append({'role': 'assistant', 'content': line.split('] AI: ', 1)[1]})
+                        self._json({'file': safe_name, 'format': 'chat', 'messages': msgs}); return
+                    if safe_name.endswith('.json.gz'):
+                        with gzip.open(path, 'rt', encoding='utf-8') as fh:
                             data = json.load(fh)
-                    elif safe_name.endswith(".json"):
-                        with open(path, encoding="utf-8") as fh:
+                    elif safe_name.endswith('.json'):
+                        with open(path, encoding='utf-8') as fh:
                             data = json.load(fh)
                     else:
-                        self._json({"error": "unsupported format"}, 400)
-                        return None
-                    self._json(
-                        {
-                            "file": safe_name,
-                            "format": "json",
-                            "name": data.get("name", safe_name),
-                            "messages": data.get("messages", []),
-                        }
-                    )
-                    return None
+                        self._json({'error': 'unsupported format'}, 400); return
+                    self._json({'file': safe_name, 'format': 'json',
+                                'name': data.get('name', safe_name),
+                                'messages': data.get('messages', [])}); return
                 # List mode: merge .chat + .json + .json.gz, newest first.
                 sessions = []
                 try:
-                    _m = _get_api_master_ai_module("router")
-                    for entry in _m._sessions_list_entries(limit=30) or []:
-                        chat_path = entry.get("chat_path", "")
+                    _m = _get_api_master_ai_module('router')
+                    for entry in (_m._sessions_list_entries(limit=30) or []):
+                        chat_path = entry.get('chat_path', '')
                         try:
-                            ts_ms = int(entry.get("ts", 0) or 0) * 1000
+                            ts_ms = int(entry.get('ts', 0) or 0) * 1000
                         except (TypeError, ValueError):
                             try:
                                 ts_ms = int(os.path.getmtime(chat_path) * 1000)
                             except Exception:
                                 ts_ms = 0
-                        sessions.append(
-                            {
-                                "file": os.path.basename(chat_path),
-                                "format": "chat",
-                                "name": entry.get("preview")
-                                or os.path.basename(chat_path),
-                                "date": entry.get("date", ""),
-                                "preview": entry.get("preview", ""),
-                                "ts": ts_ms,
-                                "source": "Sensei",
-                                "message_count": None,
-                            }
-                        )
+                        sessions.append({
+                            'file': os.path.basename(chat_path),
+                            'format': 'chat',
+                            'name': entry.get('preview') or os.path.basename(chat_path),
+                            'date': entry.get('date', ''),
+                            'preview': entry.get('preview', ''),
+                            'ts': ts_ms,
+                            'source': 'Sensei',
+                            'message_count': None,
+                        })
                 except Exception:
                     pass
-                known = {s["file"] for s in sessions if s.get("file")}
+                known = {s['file'] for s in sessions if s.get('file')}
                 all_files = os.listdir(chats)
-                web_files = [
-                    f
-                    for f in all_files
-                    if (
-                        f.endswith(".json.gz")
-                        or (f.endswith(".json") and not f.endswith(".gz"))
-                    )
-                    and not f.endswith(".summary")
-                ]
-                web_files = sorted(
-                    web_files,
-                    key=lambda f: os.path.getmtime(os.path.join(chats, f)),
-                    reverse=True,
-                )
+                web_files = [f for f in all_files
+                             if (f.endswith('.json.gz') or (f.endswith('.json') and not f.endswith('.gz')))
+                             and not f.endswith('.summary')]
+                web_files = sorted(web_files, key=lambda f: os.path.getmtime(os.path.join(chats, f)), reverse=True)
                 for f in web_files:
                     if f in known:
                         continue
                     try:
                         path = os.path.join(chats, f)
-                        if f.endswith(".json.gz"):
-                            with gzip.open(path, "rt", encoding="utf-8") as fh:
+                        if f.endswith('.json.gz'):
+                            with gzip.open(path, 'rt', encoding='utf-8') as fh:
                                 data = json.load(fh)
                         else:
-                            with open(path, encoding="utf-8") as fh:
+                            with open(path, encoding='utf-8') as fh:
                                 data = json.load(fh)
-                        msgs = data.get("messages", [])
-                        sessions.append(
-                            {
-                                "file": f,
-                                "format": "json",
-                                "name": data.get("name", f),
-                                "date": data.get("date", ""),
-                                "preview": (
-                                    msgs[0].get("content", "")[:90] if msgs else ""
-                                ),
-                                "ts": data.get("ts", 0),
-                                "source": data.get("source", "Web UI"),
-                                "message_count": len(msgs),
-                            }
-                        )
+                        msgs = data.get('messages', [])
+                        sessions.append({
+                            'file': f,
+                            'format': 'json',
+                            'name': data.get('name', f),
+                            'date': data.get('date', ''),
+                            'preview': (msgs[0].get('content', '')[:90] if msgs else ''),
+                            'ts': data.get('ts', 0),
+                            'source': data.get('source', 'Web UI'),
+                            'message_count': len(msgs),
+                        })
                     except Exception:
                         pass
-                sessions.sort(key=lambda s: s.get("ts") or 0, reverse=True)
-                self._json({"sessions": sessions})
-                return None
+                sessions.sort(key=lambda s: s.get('ts') or 0, reverse=True)
+                self._json({'sessions': sessions}); return
             except Exception as e:
-                self._error(str(e))
-                return None
+                self._error(str(e)); return
 
         # GET /mcp — Pupil IDE MCP panel: catalog servers + their tool
         # inventories. No hardcoded servers: reads the SAME catalog Sensei's
         # `mcp list` uses (~/.master_ai_mcp/servers.json via
         # sensei_mcp_client.list_servers()). ?probe=1 live-probes each
         # enabled server (slower — spawns/connects per server).
-        if self.path == "/mcp" or self.path.startswith("/mcp?"):
+        if self.path == '/mcp' or self.path.startswith('/mcp?'):
             try:
                 _scripts_on_path()
-                from urllib.parse import parse_qs as _pqs
-                from urllib.parse import urlparse
-
                 import sensei_mcp_client as _mc
-
-                do_probe = _pqs(urlparse(self.path).query).get("probe", ["0"])[0] == "1"
+                from urllib.parse import urlparse, parse_qs as _pqs
+                do_probe = (_pqs(urlparse(self.path).query).get('probe', ['0'])[0] == '1')
                 catalog = _mc.list_servers() or {}
                 servers = []
                 for name, entry in sorted(catalog.items()):
                     if not isinstance(entry, dict):
                         continue
                     row = {
-                        "name": name,
-                        "transport": entry.get("transport") or "stdio",
-                        "target": entry.get("url")
-                        or (
-                            str(entry.get("command") or "")
-                            + " "
-                            + " ".join(entry.get("args") or [])
-                        ).strip(),
-                        "enabled": entry.get("enabled", True),
-                        "valid": entry.get("valid"),
-                        "tool_names": entry.get("tool_names") or [],
-                        "problems": entry.get("problems") or [],
-                        "tools": [],
+                        'name': name,
+                        'transport': entry.get('transport') or 'stdio',
+                        'target': entry.get('url') or (str(entry.get('command') or '') + ' ' + ' '.join(entry.get('args') or [])).strip(),
+                        'enabled': entry.get('enabled', True),
+                        'valid': entry.get('valid'),
+                        'tool_names': entry.get('tool_names') or [],
+                        'problems': entry.get('problems') or [],
+                        'tools': [],
                     }
-                    if do_probe and row["enabled"]:
+                    if do_probe and row['enabled']:
                         rec = _mc.probe_and_validate(entry)
-                        row["valid"] = rec.get("valid")
-                        row["problems"] = rec.get("problems") or []
-                        row["tool_names"] = rec.get("tool_names") or []
+                        row['valid'] = rec.get('valid')
+                        row['problems'] = rec.get('problems') or []
+                        row['tool_names'] = rec.get('tool_names') or []
                     servers.append(row)
-                self._json({"servers": servers, "count": len(servers)})
-                return None
+                self._json({'servers': servers, 'count': len(servers)}); return
             except Exception as e:
-                self._error(str(e))
-                return None
+                self._error(str(e)); return
 
         # P1.7 /metrics — observability rollup over router metrics +
         # typed audit. Same summary the Sensei `stats` command renders;
         # Pupil can poll this to populate its stats panel.
-        if self.path == "/metrics":
+        if self.path == '/metrics':
             try:
                 import sys as _sys
-
-                _scripts_dir = os.path.expanduser("~/scripts")
+                _scripts_dir = os.path.expanduser('~/scripts')
                 if _scripts_dir not in _sys.path:
                     _sys.path.insert(0, _scripts_dir)
                 import observability as _obs
-
                 summary = _obs.summarize(limit=500)
                 self._json(summary)
             except Exception as e:
                 self._error(str(e))
-            return None
+            return
 
         # /events — SSE stream. P0.1 ships hello + heartbeat only.
         # Typed-action events (P0.4) and mode_changed (P1.4 wiring) come later.
-        if self.path == "/events":
+        if self.path == '/events':
             try:
                 self.send_response(200)
                 self._cors()
-                self.send_header("Content-Type", "text/event-stream")
-                self.send_header("Cache-Control", "no-cache")
-                self.send_header("Connection", "keep-alive")
+                self.send_header('Content-Type', 'text/event-stream')
+                self.send_header('Cache-Control', 'no-cache')
+                self.send_header('Connection', 'keep-alive')
                 self.end_headers()
                 import time as _time
-
                 def _write_event(name, payload):
                     msg = f"event: {name}\ndata: {json.dumps(payload)}\n\n".encode()
                     self.wfile.write(msg)
                     self.wfile.flush()
-
-                _write_event(
-                    "hello",
-                    {"ts": datetime.now().astimezone().isoformat(timespec="seconds")},
-                )
+                _write_event('hello', {'ts': datetime.now().astimezone().isoformat(timespec='seconds')})
                 # Bounded loop — exits on client disconnect (BrokenPipeError).
                 # 15s heartbeat; max 1 hour per connection so a stuck client doesn't pin a thread.
                 end = _time.time() + 3600
                 while _time.time() < end:
                     _time.sleep(15)
-                    _write_event(
-                        "heartbeat",
-                        {
-                            "ts": datetime.now()
-                            .astimezone()
-                            .isoformat(timespec="seconds")
-                        },
-                    )
+                    _write_event('heartbeat', {'ts': datetime.now().astimezone().isoformat(timespec='seconds')})
             except _CLIENT_DISCONNECTS:
                 pass
             except Exception:
                 pass
-            return None
+            return
 
         # /thoughts — canonical Master AI voice (trademark quotes + tips +
         # thinking phrases). Shared by Sensei and Pupil so both UIs speak in
         # one accord. Source of truth: ~/scripts/master_ai_voice.json.
-        if self.path == "/thoughts":
+        if self.path == '/thoughts':
             try:
-                vpath = os.path.expanduser("~/scripts/master_ai_voice.json")
+                vpath = os.path.expanduser('~/scripts/master_ai_voice.json')
                 if os.path.exists(vpath):
                     data = json.load(open(vpath))
                 else:
                     data = {}
-                self._json(data)
-                return None
+                self._json(data); return
             except Exception as e:
-                self._error(str(e))
-                return None
+                self._error(str(e)); return
 
         # /node_info — public info this node announces to mesh peers.
         # Returned from any /node_info GET (localhost or Tailscale).
         # Scaffolding only: no auth yet, no routing yet. Enough for a
         # peer to confirm "yes there's a Master AI at this IP".
-        if self.path == "/node_info":
+        if self.path == '/node_info':
             try:
-                import platform as _pl
-                import socket as _sk
-
-                mesh_path = os.path.expanduser("~/.master_ai_mesh.json")
+                import socket as _sk, platform as _pl
+                mesh_path = os.path.expanduser('~/.master_ai_mesh.json')
                 mesh_cfg = {}
                 try:
                     if os.path.exists(mesh_path):
                         mesh_cfg = json.load(open(mesh_path))
                 except Exception:
                     mesh_cfg = {}
-                active_model = ""
+                active_model = ''
                 try:
-                    am = os.path.expanduser("~/.master_ai_active_model")
+                    am = os.path.expanduser('~/.master_ai_active_model')
                     if os.path.exists(am):
                         active_model = open(am).read().strip()
                 except Exception:
                     pass
                 info = {
-                    "node_name": mesh_cfg.get("node_name") or _sk.gethostname(),
-                    "version": "master-ai v1.8-testing",
-                    "platform": _pl.system().lower(),
-                    "active_model": active_model or "auto",
-                    "profile": _active_profile(),
-                    "ports": {"stt": 8080, "ollama": 11434, "tts": 5050},
+                    'node_name': mesh_cfg.get('node_name') or _sk.gethostname(),
+                    'version': 'master-ai v1.8-testing',
+                    'platform': _pl.system().lower(),
+                    'active_model': active_model or 'auto',
+                    'profile': _active_profile(),
+                    'ports': {'stt': 8080, 'ollama': 11434, 'tts': 5050},
                 }
-                self._json(info)
-                return None
+                self._json(info); return
             except Exception as e:
-                self._error(str(e))
-                return None
+                self._error(str(e)); return
 
         # /peers — list of peer nodes this node knows about, read from
         # ~/.master_ai_mesh.json. No live ping here — that's a separate
         # client-side job. This just exposes the address book.
-        if self.path == "/peers":
+        if self.path == '/peers':
             try:
-                mesh_path = os.path.expanduser("~/.master_ai_mesh.json")
+                mesh_path = os.path.expanduser('~/.master_ai_mesh.json')
                 peers = []
                 if os.path.exists(mesh_path):
                     cfg = json.load(open(mesh_path))
-                    peers = cfg.get("peers", []) or []
-                self._json({"peers": peers})
-                return None
+                    peers = cfg.get('peers', []) or []
+                self._json({'peers': peers}); return
             except Exception as e:
-                self._error(str(e))
-                return None
+                self._error(str(e)); return
 
         # /profile — return the active Master AI profile name (empty string if
         # none). Pupil uses this to namespace its localStorage so each user
         # gets their own settings/sessions in the browser.
-        if self.path == "/profile":
+        if self.path == '/profile':
             try:
-                p = os.path.expanduser("~/.master_ai_active_profile")
-                name = open(p).read().strip() if os.path.exists(p) else ""
+                p = os.path.expanduser('~/.master_ai_active_profile')
+                name = open(p).read().strip() if os.path.exists(p) else ''
                 self.send_response(200)
                 self._cors()
-                self.send_header("Content-Type", "application/json")
+                self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"profile": name}).encode())
+                self.wfile.write(json.dumps({'profile': name}).encode())
             except Exception as e:
                 self._error(str(e))
-            return None
+            return
 
         # /keys — bridge between menu 11's ~/.master_ai_keys and Pupil's
         # localStorage-based wizard. Only exposed on localhost; the underlying
         # file is already chmod 600 owned by the user. Returns the JSON as-is.
         # Pupil uses this so you don't have to paste the same key twice.
-        if self.path == "/keys" or self.path.startswith("/keys?"):
+        if self.path == '/keys' or self.path.startswith('/keys?'):
             try:
-                keys_file = os.path.expanduser("~/.master_ai_keys")
+                keys_file = os.path.expanduser('~/.master_ai_keys')
                 data = {}
                 if os.path.exists(keys_file):
                     with open(keys_file) as f:
@@ -4320,14 +3711,15 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                             data = {}
                             for line in raw.splitlines():
                                 line = line.strip()
-                                if not line or line.startswith("#") or "=" not in line:
+                                if (not line or line.startswith('#')
+                                        or '=' not in line):
                                     continue
-                                k, _, v = line.partition("=")
+                                k, _, v = line.partition('=')
                                 data[k.strip()] = v.strip()
                 # Secrets go over the wire masked unless this is a loopback
                 # caller that explicitly asked to reveal them.
                 query = urllib.parse.urlparse(self.path).query
-                wants_reveal = "reveal=1" in query
+                wants_reveal = 'reveal=1' in query
                 revealed = wants_reveal and _client_is_loopback(self)
                 payload = {}
                 for k, v in data.items():
@@ -4337,70 +3729,65 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                     else:
                         payload[k] = _mask_secret(s)
                 if wants_reveal and not revealed:
-                    payload["_meta"] = {
-                        "masked": True,
-                        "reveal_refused": "reveal=1 is loopback-only; request came from "
-                        "a non-loopback address.",
+                    payload['_meta'] = {
+                        'masked': True,
+                        'reveal_refused':
+                            'reveal=1 is loopback-only; request came from '
+                            'a non-loopback address.',
                     }
                 else:
-                    payload["_meta"] = {
-                        "masked": not revealed,
-                        "count": len(data),
-                        "set": sum(1 for v in data.values() if str(v or "").strip()),
-                        "reveal": "append ?reveal=1 from localhost for values",
+                    payload['_meta'] = {
+                        'masked': not revealed,
+                        'count': len(data),
+                        'set': sum(1 for v in data.values()
+                                   if str(v or '').strip()),
+                        'reveal': 'append ?reveal=1 from localhost for values',
                     }
                 self.send_response(200)
                 self._cors()
-                self.send_header("Content-Type", "application/json")
+                self.send_header('Content-Type', 'application/json')
                 self.end_headers()
                 self.wfile.write(json.dumps(payload).encode())
             except Exception as e:
                 self._error(str(e))
-            return None
+            return
 
-        if self.path == "/sessions":
+        if self.path == '/sessions':
             try:
                 chats = _chats_dir()
                 all_files = os.listdir(chats)
-                gz_files = [f for f in all_files if f.endswith(".json.gz")]
-                json_files = [
-                    f
-                    for f in all_files
-                    if f.endswith(".json") and not f.endswith(".gz")
-                ]
+                gz_files  = [f for f in all_files if f.endswith('.json.gz')]
+                json_files = [f for f in all_files if f.endswith('.json') and not f.endswith('.gz')]
                 files = sorted(
                     gz_files + json_files,
                     key=lambda f: os.path.getmtime(os.path.join(chats, f)),
-                    reverse=True,
+                    reverse=True
                 )
                 sessions = []
                 for f in files:
                     try:
                         path = os.path.join(chats, f)
-                        if f.endswith(".json.gz"):
-                            with gzip.open(path, "rt", encoding="utf-8") as fh:
+                        if f.endswith('.json.gz'):
+                            with gzip.open(path, 'rt', encoding='utf-8') as fh:
                                 data = json.load(fh)
                         else:
                             with open(path) as fh:
                                 data = json.load(fh)
-                        sessions.append(
-                            {
-                                "file": f,
-                                "name": data.get("name", f),
-                                "date": data.get("date", ""),
-                                "ts": data.get("ts", 0),
-                                "source": data.get("source", "Web UI"),
-                                "messages": data.get("messages", []),
-                            }
-                        )
+                        sessions.append({
+                            'file': f,
+                            'name': data.get('name', f),
+                            'date': data.get('date', ''),
+                            'ts':   data.get('ts', 0),
+                            'source': data.get('source', 'Web UI'),
+                            'messages': data.get('messages', [])
+                        })
                     except Exception:
                         pass
                 # Also load PC Control .log sessions from ~/scripts/sessions/
-                pc_sessions_dir = os.path.join(SCRIPTS, "sessions")
+                pc_sessions_dir = os.path.join(SCRIPTS, 'sessions')
                 if os.path.isdir(pc_sessions_dir):
                     for f in sorted(os.listdir(pc_sessions_dir), reverse=True):
-                        if not f.endswith(".log"):
-                            continue
+                        if not f.endswith('.log'): continue
                         try:
                             path = os.path.join(pc_sessions_dir, f)
                             with open(path) as fh:
@@ -4408,79 +3795,66 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                             msgs = []
                             for line in lines:
                                 line = line.strip()
-                                if line.startswith("[") and "] You: " in line:
-                                    msgs.append(
-                                        {
-                                            "role": "user",
-                                            "content": line.split("] You: ", 1)[1],
-                                        }
-                                    )
-                                elif line.startswith("[") and "] AI: " in line:
-                                    msgs.append(
-                                        {
-                                            "role": "assistant",
-                                            "content": line.split("] AI: ", 1)[1],
-                                        }
-                                    )
+                                if line.startswith('[') and '] You: ' in line:
+                                    msgs.append({'role':'user','content': line.split('] You: ',1)[1]})
+                                elif line.startswith('[') and '] AI: ' in line:
+                                    msgs.append({'role':'assistant','content': line.split('] AI: ',1)[1]})
                             if msgs:
                                 ts = int(os.path.getmtime(path) * 1000)
-                                sessions.append(
-                                    {
-                                        "file": f,
-                                        "name": f.replace(".log", "").replace("_", " "),
-                                        "date": datetime.fromtimestamp(
-                                            ts / 1000
-                                        ).strftime("%-m/%-d/%Y"),
-                                        "ts": ts,
-                                        "source": "PC Control",
-                                        "messages": msgs,
-                                    }
-                                )
+                                sessions.append({
+                                    'file': f,
+                                    'name': f.replace('.log','').replace('_',' '),
+                                    'date': datetime.fromtimestamp(ts/1000).strftime('%-m/%-d/%Y'),
+                                    'ts': ts,
+                                    'source': 'PC Control',
+                                    'messages': msgs
+                                })
                         except Exception:
                             pass
                 self.send_response(200)
                 self._cors()
-                self.send_header("Content-Type", "application/json")
+                self.send_header('Content-Type', 'application/json')
                 self.end_headers()
                 self.wfile.write(json.dumps(sessions).encode())
             except Exception as e:
                 self._error(str(e))
         # MCP bridge — alive check
-        if self.path == "/extension/queue_state":
+        if self.path == '/extension/queue_state':
             with _MCP_QUEUE_LOCK:
                 pending = sum(len(v) for v in _MCP_QUEUE.values())
             self._json({"ok": True, "pending": pending})
-            return None
+            return
 
         # MCP bridge — extension polls for work
         parsed_qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         mcp_path = urllib.parse.urlparse(self.path).path
-        if mcp_path == "/extension/pending":
-            session = (parsed_qs.get("session_id") or ["mcp-default"])[0]
+        if mcp_path == '/extension/pending':
+            session = (parsed_qs.get('session_id') or ['mcp-default'])[0]
             with _MCP_QUEUE_LOCK:
                 actions = list(_MCP_QUEUE.get(session, []))
             self._json({"ok": True, "actions": actions})
-            return None
+            return
 
         # MCP bridge — poll result
-        if mcp_path == "/extension/result":
-            action_id = (parsed_qs.get("action_id") or [""])[0]
+        if mcp_path == '/extension/result':
+            action_id = (parsed_qs.get('action_id') or [''])[0]
             with _MCP_QUEUE_LOCK:
                 res = _MCP_RESULTS.get(action_id)
             if res is None:
                 self._json({"ok": False, "pending": True})
             else:
                 self._json({"ok": True, "result": res})
-            return None
+            return
 
-        try:
-            super().do_GET()
-        except _CLIENT_DISCONNECTS:
-            return None
+        else:
+            try:
+                super().do_GET()
+            except _CLIENT_DISCONNECTS:
+                return
 
     def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0))
-        data = self.rfile.read(length)
+        length = int(self.headers.get('Content-Length', 0))
+        data   = self.rfile.read(length)
 
         # POST /mcp — Pupil IDE MCP panel: run a JSON-RPC tool operation on
         # a catalog server WITHOUT the Chrome extension. Body:
@@ -4488,77 +3862,52 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
         #    "params": {...}}
         # Uses sensei_mcp_client (same catalog + transports Sensei's own
         # `mcp` slash family uses: stdio spawn or sse). Same-origin only.
-        if self.path == "/mcp":
+        if self.path == '/mcp':
             if self._origin_is_extension():
-                self._json(
-                    {"error": "forbidden: /mcp is same-origin (Pupil) only"}, 403
-                )
-                return None
+                self._json({'error': 'forbidden: /mcp is same-origin (Pupil) only'}, 403)
+                return
             try:
-                payload = json.loads(data or b"{}")
+                payload = json.loads(data or b'{}')
             except Exception:
-                self._json({"error": "bad json"}, 400)
-                return None
-            server_ref = (payload.get("server") or "").strip()
-            method = (payload.get("method") or "tools/list").strip()
-            params = (
-                payload.get("params") if isinstance(payload.get("params"), dict) else {}
-            )
-            if method not in ("tools/list", "tools/call"):
-                self._json({"error": "method must be tools/list or tools/call"}, 400)
-                return None
+                self._json({'error': 'bad json'}, 400); return
+            server_ref = (payload.get('server') or '').strip()
+            method = (payload.get('method') or 'tools/list').strip()
+            params = payload.get('params') if isinstance(payload.get('params'), dict) else {}
+            if method not in ('tools/list', 'tools/call'):
+                self._json({'error': 'method must be tools/list or tools/call'}, 400); return
             if not server_ref:
-                self._json({"error": "missing server"}, 400)
-                return None
+                self._json({'error': 'missing server'}, 400); return
             try:
                 _scripts_on_path()
                 import sensei_mcp_client as _mc
-
                 entry = _mc.get_server(server_ref)
                 if not entry:
-                    self._json({"error": f"unknown server: {server_ref}"}, 404)
-                    return None
-                if entry.get("enabled") is False:
-                    self._json({"error": f"server {server_ref} is disabled"}, 409)
-                    return None
+                    self._json({'error': f'unknown server: {server_ref}'}, 404); return
+                if entry.get('enabled') is False:
+                    self._json({'error': f'server {server_ref} is disabled'}, 409); return
                 client = _mc.make_client(entry)
                 try:
                     client.start()
-                    init = client._rpc(
-                        "initialize",
-                        {
-                            "protocolVersion": _mc.PROTOCOL_VERSION,
-                            "capabilities": {},
-                            "clientInfo": {"name": "pupil", "version": "2.0"},
-                        },
-                        timeout=30,
-                    )
+                    init = client._rpc('initialize', {
+                        'protocolVersion': _mc.PROTOCOL_VERSION,
+                        'capabilities': {},
+                        'clientInfo': {'name': 'pupil', 'version': '2.0'},
+                    }, timeout=30)
                     if not _mc._rpc_error_free(init):
-                        raise RuntimeError(
-                            "initialize failed: "
-                            + json.dumps(init.get("error", init))[:300]
-                        )
-                    client._rpc("notifications/initialized", {}, notify=True)
+                        raise RuntimeError('initialize failed: ' + json.dumps(init.get('error', init))[:300])
+                    client._rpc('notifications/initialized', {}, notify=True)
                     resp = client._rpc(method, params or {}, timeout=90)
                     if not _mc._rpc_error_free(resp):
-                        raise RuntimeError(json.dumps(resp.get("error", resp))[:400])
-                    self._json(
-                        {
-                            "ok": True,
-                            "server": server_ref,
-                            "method": method,
-                            "result": resp.get("result"),
-                        }
-                    )
-                    return None
+                        raise RuntimeError(json.dumps(resp.get('error', resp))[:400])
+                    self._json({'ok': True, 'server': server_ref, 'method': method,
+                                'result': resp.get('result')}); return
                 finally:
                     try:
                         client.close()
                     except Exception:
                         pass
             except Exception as e:
-                self._json({"error": str(e)}, 500)
-                return None
+                self._json({'error': str(e)}, 500); return
 
         # POST /sessions/delete — remove a saved web-format session file.
         # Sensei's own .chat files are NOT deletable here (TUI manages them).
@@ -4568,60 +3917,54 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
         # Body: {cmd}. Runs the command via bash -c in the user's home
         # with a 60s cap and 256KB output cap. Sequential single-slot
         # lock prevents concurrent shell abuse from parallel panels.
-        if self.path == "/exec":
+        if self.path == '/exec':
             if self._origin_is_extension():
-                self._json(
-                    {"error": "forbidden: /exec is same-origin (Pupil) only"}, 403
-                )
-                return None
+                self._json({'error': 'forbidden: /exec is same-origin (Pupil) only'}, 403)
+                return
             try:
-                payload = json.loads(data or b"{}")
-                cmd = (payload.get("cmd") or "").strip()
+                payload = json.loads(data or b'{}')
+                cmd = (payload.get('cmd') or '').strip()
             except Exception:
-                self._json({"error": "bad json"}, 400)
-                return None
+                self._json({'error': 'bad json'}, 400)
+                return
             if not cmd:
-                self._json({"error": "missing cmd"}, 400)
-                return None
-            if not hasattr(self, "_pupil_exec_lock"):
+                self._json({'error': 'missing cmd'}, 400)
+                return
+            if not hasattr(self, '_pupil_exec_lock'):
                 Handler._pupil_exec_lock = threading.Lock()
             if not self._pupil_exec_lock.acquire(timeout=120):
-                self._json({"error": "exec busy"}, 503)
-                return None
+                self._json({'error': 'exec busy'}, 503)
+                return
             try:
                 try:
                     proc = subprocess.run(
-                        ["bash", "-c", cmd],
-                        capture_output=True,
-                        text=True,
-                        timeout=60,
-                        cwd=os.path.expanduser("~"),
-                        env={**os.environ, "TERM": "dumb"},
+                        ['bash', '-c', cmd],
+                        capture_output=True, text=True, timeout=60,
+                        cwd=os.path.expanduser('~'),
+                        env={**os.environ, 'TERM': 'dumb'},
                     )
-                    out = proc.stdout or ""
-                    err = proc.stderr or ""
+                    out = (proc.stdout or '')
+                    err = (proc.stderr or '')
                     code = proc.returncode
                 except subprocess.TimeoutExpired:
-                    out, err, code = "", "timed out after 60s", 124
+                    out, err, code = '', 'timed out after 60s', 124
                 cap = 256 * 1024
                 if len(out) > cap:
-                    out = out[:cap] + f"\n… truncated ({len(out)} bytes total)"
+                    out = out[:cap] + f'\n… truncated ({len(out)} bytes total)'
                 if len(err) > cap:
-                    err = err[:cap] + f"\n… truncated ({len(err)} bytes total)"
-                self._json(
-                    {
-                        "ok": True,
-                        "exit_code": code,
-                        "stdout": out,
-                        "stderr": err,
-                        "cwd": os.path.expanduser("~"),
-                    }
-                )
+                    err = err[:cap] + f'\n… truncated ({len(err)} bytes total)'
+                self._json({
+                    'ok': True,
+                    'exit_code': code,
+                    'stdout': out,
+                    'stderr': err,
+                    'cwd': os.path.expanduser('~'),
+                })
             except Exception as e:
-                self._json({"error": str(e)}, 500)
+                self._json({'error': str(e)}, 500)
             finally:
                 self._pupil_exec_lock.release()
-            return None
+            return
 
         # POST /models — pin the chat model. Body: {model: "<name>"} or
         # {model: ""} to return to the auto-router. Writes the SAME file
@@ -4629,29 +3972,27 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
         # so Pupil's selection and Sensei's TUI selection stay one state.
         # Note: this changes the DEFAULT for Sensei-side turns; /chat
         # per-request `model` overrides remain independent per request.
-        if self.path == "/models":
+        if self.path == '/models':
             if self._origin_is_extension():
-                self._json(
-                    {"error": "forbidden: /models is same-origin (Pupil) only"}, 403
-                )
-                return None
+                self._json({'error': 'forbidden: /models is same-origin (Pupil) only'}, 403)
+                return
             try:
-                payload = json.loads(data or b"{}")
-                model = (payload.get("model") or "").strip()
+                payload = json.loads(data or b'{}')
+                model = (payload.get('model') or '').strip()
             except Exception:
-                self._json({"error": "bad json"}, 400)
-                return None
+                self._json({'error': 'bad json'}, 400)
+                return
             try:
-                am = os.path.expanduser("~/.master_ai_active_model")
-                with open(am, "w") as f:
+                am = os.path.expanduser('~/.master_ai_active_model')
+                with open(am, 'w') as f:
                     f.write(model)
-                self._json({"ok": True, "active": model, "auto": not model})
+                self._json({'ok': True, 'active': model, 'auto': not model})
             except Exception as e:
-                self._json({"error": str(e)}, 500)
-            return None
+                self._json({'error': str(e)}, 500)
+            return
 
         # /sdcpp/* → reverse-proxy to local sd-server (see do_GET note).
-        if self.path.startswith("/sdcpp/"):
+        if self.path.startswith('/sdcpp/'):
             return self._proxy_sdcpp(body=data)
 
         # /extension/action_result — extension reports outcome of a typed
@@ -4660,43 +4001,39 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
         # Body: {action_id, verdict: accept|reject|timeout, result: success|
         # failure|blocked, final_state?}. Requires X-Master-AI-Token when
         # called from a chrome-extension origin.
-        if self.path == "/extension/action_result":
+        if self.path == '/extension/action_result':
             if not self._require_extension_auth():
-                return None
+                return
             try:
-                payload = json.loads(data or b"{}")
+                payload = json.loads(data or b'{}')
             except Exception:
-                return self._json({"error": "bad json"}, 400)
+                return self._json({'error': 'bad json'}, 400)
             try:
+                from pathlib import Path as _P
                 import time as _t
-                from pathlib import Path
-
                 rec = {
-                    "ts": _t.strftime("%Y-%m-%dT%H:%M:%S"),
-                    "source": "extension",
-                    "kind": "extension_action_result",
-                    "action_id": payload.get("action_id"),
-                    "verdict": payload.get("verdict"),
-                    "result": payload.get("result"),
-                    "final_state": payload.get("final_state"),
+                    'ts': _t.strftime('%Y-%m-%dT%H:%M:%S'),
+                    'source': 'extension',
+                    'kind': 'extension_action_result',
+                    'action_id': payload.get('action_id'),
+                    'verdict':   payload.get('verdict'),
+                    'result':    payload.get('result'),
+                    'final_state': payload.get('final_state'),
                     # M9.2: irreversible-action heuristic label from side_panel.js
                     # classifyBrowserAction. None when the action wasn't gated.
                     # Stored alongside the verdict so analytics can answer
                     # "how often does the user approve gated purchases vs deletes?"
-                    "gated_by": (
-                        payload.get("gated_by")
-                        if isinstance(payload.get("gated_by"), str)
-                        else (payload.get("action") or {}).get("gated_by")
+                    'gated_by': (
+                        payload.get('gated_by') if isinstance(payload.get('gated_by'), str)
+                        else (payload.get('action') or {}).get('gated_by')
                     ),
-                    "raw": payload,
+                    'raw': payload,
                 }
-                with (
-                    Path.home().joinpath(".master_ai_audit_typed.jsonl").open("a") as f
-                ):
-                    f.write(json.dumps(rec) + "\n")
+                with _P.home().joinpath('.master_ai_audit_typed.jsonl').open('a') as f:
+                    f.write(json.dumps(rec) + '\n')
             except Exception:
                 pass  # Audit is observability, not a blocker.
-            return self._json({"ok": True})
+            return self._json({'ok': True})
 
         # /extension/refusal_audit — extension reports a dispatch attempt
         # that was refused client-side BEFORE reaching the backend (e.g.,
@@ -4710,39 +4047,35 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
         # source, session_id, capabilities_fired: []}.
         # Requires X-Master-AI-Token. Phase 1 audit-discipline gap fix per
         # ~/.claude/plans/reactive-waddling-papert.md.
-        if self.path == "/extension/refusal_audit":
+        if self.path == '/extension/refusal_audit':
             if not self._require_extension_auth():
-                return None
+                return
             try:
-                payload = json.loads(data or b"{}")
+                payload = json.loads(data or b'{}')
             except Exception:
-                return self._json({"error": "bad json"}, 400)
+                return self._json({'error': 'bad json'}, 400)
             try:
+                from pathlib import Path as _P
                 import time as _t
-                from pathlib import Path
-
                 rec = {
-                    "ts": _t.strftime("%Y-%m-%dT%H:%M:%S"),
-                    "source": "extension",
-                    "kind": "extension_refusal",
-                    "correlation_id": payload.get("correlation_id"),
-                    "client_ts": payload.get("ts"),
-                    "blocked_reason": payload.get("blocked_reason")
-                    or "bridge_unreachable",
-                    "prompt": (payload.get("prompt") or "")[:2000],
-                    "source_label": payload.get("source"),
-                    "session_id": payload.get("session_id"),
-                    "capabilities_fired": payload.get("capabilities_fired") or [],
-                    "verification_results": [],
-                    "raw": payload,
+                    'ts': _t.strftime('%Y-%m-%dT%H:%M:%S'),
+                    'source': 'extension',
+                    'kind': 'extension_refusal',
+                    'correlation_id': payload.get('correlation_id'),
+                    'client_ts': payload.get('ts'),
+                    'blocked_reason': payload.get('blocked_reason') or 'bridge_unreachable',
+                    'prompt': (payload.get('prompt') or '')[:2000],
+                    'source_label': payload.get('source'),
+                    'session_id': payload.get('session_id'),
+                    'capabilities_fired': payload.get('capabilities_fired') or [],
+                    'verification_results': [],
+                    'raw': payload,
                 }
-                with (
-                    Path.home().joinpath(".master_ai_audit_typed.jsonl").open("a") as f
-                ):
-                    f.write(json.dumps(rec) + "\n")
+                with _P.home().joinpath('.master_ai_audit_typed.jsonl').open('a') as f:
+                    f.write(json.dumps(rec) + '\n')
             except Exception:
                 pass  # Audit is observability, not a blocker.
-            return self._json({"ok": True})
+            return self._json({'ok': True})
 
         # /extension/classify_domain — Phase 1.1 safety classifier. Tells the
         # extension whether an origin is safe to act on before any BROWSER_*
@@ -4751,47 +4084,47 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
         #
         # Body: {domain} or {url}
         # Returns: {ok, category, reason, matched, host, ttl_s, source}
-        if self.path == "/extension/classify_domain":
+        if self.path == '/extension/classify_domain':
             if not self._require_extension_auth():
-                return None
+                return
             try:
-                payload = json.loads(data or b"{}")
+                payload = json.loads(data or b'{}')
             except Exception:
-                return self._json({"error": "bad json"}, 400)
-            target = payload.get("url") or payload.get("domain") or ""
+                return self._json({'error': 'bad json'}, 400)
+            target = payload.get('url') or payload.get('domain') or ''
             if not isinstance(target, str):
-                return self._json({"error": "domain/url must be a string"}, 400)
+                return self._json({'error': 'domain/url must be a string'}, 400)
             result = _classify_domain(target)
-            return self._json({"ok": True, **result})
+            return self._json({'ok': True, **result})
 
         # /tool/find — Phase 7 semantic browser find. Body:
         #   {query, ax_tree}
         # Returns up to 20 {ref, name, role, selector, confidence} matches.
         # The implementation lives in subagents/find.py and is routed through
         # subagent_registry so the nested-search tool has one registry surface.
-        if self.path == "/tool/find":
+        if self.path == '/tool/find':
             if not self._require_extension_auth():
-                return None
+                return
             try:
-                payload = json.loads(data or b"{}")
+                payload = json.loads(data or b'{}')
                 return self._json(_tool_find(payload))
             except ValueError as e:
-                return self._json({"ok": False, "error": str(e)}, 400)
+                return self._json({'ok': False, 'error': str(e)}, 400)
             except Exception as e:
-                return self._json({"ok": False, "error": str(e)}, 500)
+                return self._json({'ok': False, 'error': str(e)}, 500)
 
         # /tool/describe_step — Phase 9.3 workflow-step description.
         # Body: {step, transcript?}. Returns {description}.
-        if self.path == "/tool/describe_step":
+        if self.path == '/tool/describe_step':
             if not self._require_extension_auth():
-                return None
+                return
             try:
-                payload = json.loads(data or b"{}")
+                payload = json.loads(data or b'{}')
                 return self._json(_tool_describe_step(payload))
             except ValueError as e:
-                return self._json({"ok": False, "error": str(e)}, 400)
+                return self._json({'ok': False, 'error': str(e)}, 400)
             except Exception as e:
-                return self._json({"ok": False, "error": str(e)}, 500)
+                return self._json({'ok': False, 'error': str(e)}, 500)
 
         # /extension/resolve_local_file — deterministic local-document resolver
         # for user phrases like "my résumé" or "the AI query doc". It does not
@@ -4800,79 +4133,59 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
         #
         # Body: {query, preferred_paths?}
         # Returns: {ok, query, ambiguous, candidates:[{path, score, reason, mtime, size}]}
-        if self.path == "/extension/resolve_local_file":
+        if self.path == '/extension/resolve_local_file':
             if not self._require_extension_auth():
-                return None
+                return
             try:
-                payload = json.loads(data or b"{}")
+                payload = json.loads(data or b'{}')
             except Exception:
-                return self._json({"error": "bad json"}, 400)
-            query = str(payload.get("query") or "").strip()
-            preferred_paths = (
-                payload.get("preferred_paths")
-                if isinstance(payload.get("preferred_paths"), list)
-                else []
-            )
+                return self._json({'error': 'bad json'}, 400)
+            query = str(payload.get('query') or '').strip()
+            preferred_paths = payload.get('preferred_paths') if isinstance(payload.get('preferred_paths'), list) else []
             try:
                 _scripts_on_path()
-                import unicodedata as _ud
-                from pathlib import Path
-
                 import master_ai as _m
+                from pathlib import Path as _P
+                import unicodedata as _ud
 
                 def _norm(s):
-                    return "".join(
-                        ch
-                        for ch in _ud.normalize("NFD", str(s or "").lower())
-                        if _ud.category(ch) != "Mn"
-                    )
+                    return ''.join(ch for ch in _ud.normalize('NFD', str(s or '').lower())
+                                   if _ud.category(ch) != 'Mn')
 
                 qn = _norm(query)
                 intent_terms = []
-                if any(t in qn for t in ("resume", "résumé", "cv")):
-                    intent_terms += ["resume", "résumé", "cv"]
-                if "cover" in qn and "letter" in qn:
-                    intent_terms += ["cover", "letter"]
-                if "ai" in qn and "query" in qn:
-                    intent_terms += ["ai", "query"]
-                if "transcript" in qn:
-                    intent_terms += ["transcript"]
-                if "certificate" in qn or "certification" in qn:
-                    intent_terms += ["certificate", "certification"]
+                if any(t in qn for t in ('resume', 'résumé', 'cv')):
+                    intent_terms += ['resume', 'résumé', 'cv']
+                if 'cover' in qn and 'letter' in qn:
+                    intent_terms += ['cover', 'letter']
+                if 'ai' in qn and 'query' in qn:
+                    intent_terms += ['ai', 'query']
+                if 'transcript' in qn:
+                    intent_terms += ['transcript']
+                if 'certificate' in qn or 'certification' in qn:
+                    intent_terms += ['certificate', 'certification']
                 if not intent_terms:
-                    intent_terms = [
-                        w for w in re.split(r"[^a-z0-9]+", qn) if len(w) >= 3
-                    ][:6]
+                    intent_terms = [w for w in re.split(r'[^a-z0-9]+', qn) if len(w) >= 3][:6]
 
-                exts = {".pdf", ".doc", ".docx", ".odt", ".rtf", ".txt", ".md", ".csv"}
-                home = Path.home()
+                exts = {'.pdf', '.doc', '.docx', '.odt', '.rtf', '.txt', '.md', '.csv'}
+                home = _P.home()
                 roots = [
-                    home / "Desktop",
-                    home / "Documents",
-                    home / "Downloads",
-                    home / "Google Drive",
-                    home / "My Drive",
+                    home / 'Desktop',
+                    home / 'Documents',
+                    home / 'Downloads',
+                    home / 'Google Drive',
+                    home / 'My Drive',
                     home,
                 ]
                 skip_dirs = {
-                    ".cache",
-                    ".config",
-                    ".local",
-                    ".mozilla",
-                    ".npm",
-                    ".ollama",
-                    ".var",
-                    ".vscode",
-                    ".codex",
-                    "node_modules",
-                    "__pycache__",
-                    "snap",
-                    ".git",
+                    '.cache', '.config', '.local', '.mozilla', '.npm', '.ollama',
+                    '.var', '.vscode', '.codex', 'node_modules', '__pycache__',
+                    'snap', '.git',
                 }
                 scored = {}
 
                 def _read_ok(path):
-                    if hasattr(_m, "_read_path_ok"):
+                    if hasattr(_m, '_read_path_ok'):
                         try:
                             ok, _reason = _m._read_path_ok(str(path))
                             return bool(ok)
@@ -4891,31 +4204,22 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                             continue
                         if tn in name:
                             score += 120
-                            reasons.append(f"name:{term}")
+                            reasons.append(f'name:{term}')
                         elif tn in full:
                             score += 40
-                            reasons.append(f"path:{term}")
-                    if path.suffix.lower() == ".pdf":
+                            reasons.append(f'path:{term}')
+                    if path.suffix.lower() == '.pdf':
                         score += 25
                     try:
-                        age_days = max(
-                            0.0, (time.time() - path.stat().st_mtime) / 86400.0
-                        )
+                        age_days = max(0.0, (time.time() - path.stat().st_mtime) / 86400.0)
                         score += max(0, int(30 - min(age_days, 30)))
                     except Exception:
                         pass
-                    return score, ",".join(reasons[:5]) or (
-                        "preferred_path" if preferred else "term_match"
-                    )
+                    return score, ','.join(reasons[:5]) or ('preferred_path' if preferred else 'term_match')
 
                 for raw in preferred_paths:
-                    p = _P(os.path.expanduser(str(raw or ""))).resolve(strict=False)
-                    if (
-                        p.exists()
-                        and p.is_file()
-                        and p.suffix.lower() in exts
-                        and _read_ok(p)
-                    ):
+                    p = _P(os.path.expanduser(str(raw or ''))).resolve(strict=False)
+                    if p.exists() and p.is_file() and p.suffix.lower() in exts and _read_ok(p):
                         score, reason = _score(p, preferred=True)
                         scored[str(p)] = (score, reason, p)
 
@@ -4933,16 +4237,8 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                         continue
                     seen_dirs.add(root_real)
                     for dirpath, dirnames, filenames in os.walk(root):
-                        dirnames[:] = [
-                            d
-                            for d in dirnames
-                            if d not in skip_dirs and not d.startswith(".")
-                        ]
-                        depth = (
-                            len(_P(dirpath).relative_to(root).parts)
-                            if _P(dirpath) != root
-                            else 0
-                        )
+                        dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.startswith('.')]
+                        depth = len(_P(dirpath).relative_to(root).parts) if _P(dirpath) != root else 0
                         if depth >= 5:
                             dirnames[:] = []
                         for filename in filenames:
@@ -4971,40 +4267,21 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                 for _key, (score, reason, p) in scored.items():
                     try:
                         st = p.stat()
-                        rows.append(
-                            {
-                                "path": str(p),
-                                "score": score,
-                                "reason": reason,
-                                "mtime": int(st.st_mtime),
-                                "size": int(st.st_size),
-                            }
-                        )
+                        rows.append({
+                            'path': str(p),
+                            'score': score,
+                            'reason': reason,
+                            'mtime': int(st.st_mtime),
+                            'size': int(st.st_size),
+                        })
                     except Exception:
-                        rows.append({"path": str(p), "score": score, "reason": reason})
-                rows.sort(
-                    key=lambda r: (
-                        -int(r.get("score") or 0),
-                        -int(r.get("mtime") or 0),
-                        r.get("path") or "",
-                    )
-                )
+                        rows.append({'path': str(p), 'score': score, 'reason': reason})
+                rows.sort(key=lambda r: (-int(r.get('score') or 0), -int(r.get('mtime') or 0), r.get('path') or ''))
                 top = rows[:8]
-                ambiguous = (
-                    len(top) > 1
-                    and int(top[0].get("score") or 0) - int(top[1].get("score") or 0)
-                    < 40
-                )
-                return self._json(
-                    {
-                        "ok": True,
-                        "query": query,
-                        "ambiguous": ambiguous,
-                        "candidates": top,
-                    }
-                )
+                ambiguous = len(top) > 1 and int(top[0].get('score') or 0) - int(top[1].get('score') or 0) < 40
+                return self._json({'ok': True, 'query': query, 'ambiguous': ambiguous, 'candidates': top})
             except Exception as _e:
-                return self._json({"ok": False, "error": f"resolver failed: {_e}"}, 500)
+                return self._json({'ok': False, 'error': f'resolver failed: {_e}'}, 500)
 
         # /extension/read_local_file — reads a local file off disk for the
         # extension to ship into a content-script file-input via DataTransfer
@@ -5015,84 +4292,59 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
         #
         # Body: {path}
         # Returns: {ok, mime, size, base64}
-        if self.path == "/extension/read_local_file":
+        if self.path == '/extension/read_local_file':
             if not self._require_extension_auth():
-                return None
+                return
             try:
-                payload = json.loads(data or b"{}")
+                payload = json.loads(data or b'{}')
             except Exception:
-                return self._json({"error": "bad json"}, 400)
-            path_in = str(payload.get("path") or "").strip()
+                return self._json({'error': 'bad json'}, 400)
+            path_in = str(payload.get('path') or '').strip()
             if not path_in:
-                return self._json({"ok": False, "error": "missing path"}, 400)
+                return self._json({'ok': False, 'error': 'missing path'}, 400)
             try:
                 _scripts_on_path()
                 import master_ai as _m
             except Exception as _e:
-                return self._json(
-                    {"ok": False, "error": f"master_ai import failed: {_e}"}, 500
-                )
+                return self._json({'ok': False, 'error': f'master_ai import failed: {_e}'}, 500)
             expanded = os.path.expanduser(path_in)
-            if hasattr(_m, "_read_path_ok"):
+            if hasattr(_m, '_read_path_ok'):
                 try:
                     ok, reason = _m._read_path_ok(expanded)
                 except Exception as _e:
-                    ok, reason = False, f"read fence error: {_e}"
+                    ok, reason = False, f'read fence error: {_e}'
                 if not ok:
-                    return self._json(
-                        {"ok": False, "error": reason or "read refused"}, 403
-                    )
+                    return self._json({'ok': False, 'error': reason or 'read refused'}, 403)
             try:
-                import base64
-                import mimetypes
-
+                import mimetypes, base64
                 if not os.path.exists(expanded):
-                    return self._json({"ok": False, "error": "file not found"}, 404)
+                    return self._json({'ok': False, 'error': 'file not found'}, 404)
                 size = os.path.getsize(expanded)
                 if size > 10 * 1024 * 1024:
-                    return self._json(
-                        {
-                            "ok": False,
-                            "error": f"file too large ({size} bytes; cap 10485760)",
-                        },
-                        413,
-                    )
+                    return self._json({'ok': False, 'error': f'file too large ({size} bytes; cap 10485760)'}, 413)
                 mime, _ = mimetypes.guess_type(expanded)
-                with open(expanded, "rb") as f:
+                with open(expanded, 'rb') as f:
                     raw = f.read()
-                b64 = base64.b64encode(raw).decode("ascii")
+                b64 = base64.b64encode(raw).decode('ascii')
                 # Audit (no base64 in the audit, just metadata).
                 try:
+                    from pathlib import Path as _P
                     import time as _t
-                    from pathlib import Path
-
                     rec = {
-                        "ts": _t.strftime("%Y-%m-%dT%H:%M:%S"),
-                        "source": "extension",
-                        "kind": "extension_local_file_read",
-                        "path": expanded[:500],
-                        "size": size,
-                        "mime": mime,
+                        'ts': _t.strftime('%Y-%m-%dT%H:%M:%S'),
+                        'source': 'extension',
+                        'kind': 'extension_local_file_read',
+                        'path': expanded[:500],
+                        'size': size,
+                        'mime': mime,
                     }
-                    with (
-                        Path.home()
-                        .joinpath(".master_ai_audit_typed.jsonl")
-                        .open("a") as f
-                    ):
-                        f.write(json.dumps(rec) + "\n")
+                    with _P.home().joinpath('.master_ai_audit_typed.jsonl').open('a') as f:
+                        f.write(json.dumps(rec) + '\n')
                 except Exception:
                     pass
-                return self._json(
-                    {
-                        "ok": True,
-                        "path": os.path.abspath(expanded),
-                        "size": size,
-                        "mime": mime or "application/octet-stream",
-                        "base64": b64,
-                    }
-                )
+                return self._json({'ok': True, 'path': os.path.abspath(expanded), 'size': size, 'mime': mime or 'application/octet-stream', 'base64': b64})
             except Exception as _e:
-                return self._json({"ok": False, "error": f"read failed: {_e}"}, 500)
+                return self._json({'ok': False, 'error': f'read failed: {_e}'}, 500)
 
         # /extension/approve_action — Review-mode per-action approval for
         # backend-dispatched directives (RUN/RUNTERM/READ/CREATE/EDIT).
@@ -5106,93 +4358,85 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
         #        verdict: 'accept'|'reject', mode_at_decision}.
         # Requires X-Master-AI-Token.
         # MCP bridge — push action onto queue
-        if self.path == "/extension/queue":
+        if self.path == '/extension/queue':
             try:
-                payload = json.loads(data or b"{}")
+                payload = json.loads(data or b'{}')
             except Exception:
-                return self._json({"error": "bad json"}, 400)
-            session = str(payload.get("session_id") or "mcp-default")
-            actions = payload.get("actions") or []
+                return self._json({'error': 'bad json'}, 400)
+            session = str(payload.get('session_id') or 'mcp-default')
+            actions = payload.get('actions') or []
             added = []
             with _MCP_QUEUE_LOCK:
                 queue = _MCP_QUEUE.setdefault(session, [])
                 for act in actions:
                     if not isinstance(act, dict):
                         continue
-                    if not act.get("id"):
-                        act["id"] = str(uuid.uuid4())
-                    queue.append({"action_id": act["id"], "action": act})
-                    added.append(act["id"])
-            self._json({"ok": True, "action_ids": added})
-            return None
+                    if not act.get('id'):
+                        act['id'] = str(uuid.uuid4())
+                    queue.append({'action_id': act['id'], 'action': act})
+                    added.append(act['id'])
+            self._json({'ok': True, 'action_ids': added})
+            return
 
         # MCP bridge — extension submits result
-        if self.path == "/extension/mcp_result":
+        if self.path == '/extension/mcp_result':
             try:
-                payload = json.loads(data or b"{}")
+                payload = json.loads(data or b'{}')
             except Exception:
-                return self._json({"error": "bad json"}, 400)
-            action_id = str(payload.get("action_id") or "")
-            result = payload.get("result") or {}
-            session = str(payload.get("session_id") or "mcp-default")
+                return self._json({'error': 'bad json'}, 400)
+            action_id = str(payload.get('action_id') or '')
+            result = payload.get('result') or {}
+            session = str(payload.get('session_id') or 'mcp-default')
             if not action_id:
-                return self._json({"error": "action_id required"}, 400)
+                return self._json({'error': 'action_id required'}, 400)
             with _MCP_QUEUE_LOCK:
                 _MCP_RESULTS[action_id] = result
                 # Remove from queue so pending count stays accurate
                 queue = _MCP_QUEUE.get(session, [])
-                _MCP_QUEUE[session] = [e for e in queue if e["action_id"] != action_id]
-            self._json({"ok": True})
-            return None
+                _MCP_QUEUE[session] = [e for e in queue if e['action_id'] != action_id]
+            self._json({'ok': True})
+            return
 
-        if self.path == "/extension/approve_action":
+        if self.path == '/extension/approve_action':
             if not self._require_extension_auth():
-                return None
+                return
             try:
-                payload = json.loads(data or b"{}")
+                payload = json.loads(data or b'{}')
             except Exception:
-                return self._json({"error": "bad json"}, 400)
+                return self._json({'error': 'bad json'}, 400)
 
-            action = (
-                payload.get("action") if isinstance(payload.get("action"), dict) else {}
-            )
-            verdict = str(payload.get("verdict") or "accept").lower()
-            mode_at = str(payload.get("mode_at_decision") or "review").lower()
-            kind = str(action.get("kind") or "").upper()
-            target = str(action.get("target") or "")
-            action_id = str(payload.get("action_id") or action.get("id") or "")
+            action = payload.get('action') if isinstance(payload.get('action'), dict) else {}
+            verdict = str(payload.get('verdict') or 'accept').lower()
+            mode_at = str(payload.get('mode_at_decision') or 'review').lower()
+            kind = str(action.get('kind') or '').upper()
+            target = str(action.get('target') or '')
+            action_id = str(payload.get('action_id') or action.get('id') or '')
 
             # Reject path: short-circuit; no dispatch.
-            if verdict in ("reject", "decline"):
+            if verdict in ('reject', 'decline'):
                 envelope = {
-                    "action_id": action_id,
-                    "kind": kind,
-                    "target": target,
-                    "status": "blocked",
-                    "executed": False,
-                    "error_code": "user_declined",
-                    "error_message": "User declined the action in Review mode.",
-                    "mode_at_emission": mode_at,
+                    'action_id': action_id, 'kind': kind, 'target': target,
+                    'status': 'blocked', 'executed': False,
+                    'error_code': 'user_declined',
+                    'error_message': 'User declined the action in Review mode.',
+                    'mode_at_emission': mode_at,
                 }
                 _audit_approve_action(action_id, action, verdict, envelope)
-                return self._json({"ok": True, "envelope": envelope})
+                return self._json({'ok': True, 'envelope': envelope})
 
             # BROWSER_* should be dispatched by side_panel.js directly, not
             # through this endpoint. If one arrives here it's a wire bug;
             # return a clear error envelope.
-            if kind.startswith("BROWSER_"):
+            if kind.startswith('BROWSER_'):
                 envelope = {
-                    "action_id": action_id,
-                    "kind": kind,
-                    "target": target,
-                    "status": "failure",
-                    "executed": False,
-                    "error_code": "wrong_dispatcher",
-                    "error_message": "BROWSER_* actions dispatch via the content script, not /extension/approve_action.",
-                    "mode_at_emission": mode_at,
+                    'action_id': action_id, 'kind': kind, 'target': target,
+                    'status': 'failure', 'executed': False,
+                    'error_code': 'wrong_dispatcher',
+                    'error_message': 'BROWSER_* actions dispatch via the content script, not /extension/approve_action.',
+                    'mode_at_emission': mode_at,
                 }
                 _audit_approve_action(action_id, action, verdict, envelope)
-                return self._json({"ok": False, "envelope": envelope}, 400)
+                return self._json({'ok': False, 'envelope': envelope}, 400)
 
             # Dispatch one local action. Mirrors the chrome_extension auto-mode
             # block in api_handle; refactor into shared _dispatch_local_action
@@ -5202,97 +4446,85 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                 import master_ai as _m
             except Exception as _e:
                 envelope = {
-                    "action_id": action_id,
-                    "kind": kind,
-                    "target": target,
-                    "status": "failure",
-                    "executed": False,
-                    "error_code": "backend_unavailable",
-                    "error_message": f"master_ai import failed: {_e}",
-                    "mode_at_emission": mode_at,
+                    'action_id': action_id, 'kind': kind, 'target': target,
+                    'status': 'failure', 'executed': False,
+                    'error_code': 'backend_unavailable',
+                    'error_message': f'master_ai import failed: {_e}',
+                    'mode_at_emission': mode_at,
                 }
                 _audit_approve_action(action_id, action, verdict, envelope)
-                return self._json({"ok": False, "envelope": envelope}, 500)
+                return self._json({'ok': False, 'envelope': envelope}, 500)
 
             # Force auto-mode semantics for this single dispatch — user has
             # already approved, so master_ai's interactive prompts should
             # bypass. Restore MODE afterward.
-            prev_mode = getattr(_m, "MODE", "plan")
-            _m.MODE = "auto"
-            status, executed = "failure", False
+            prev_mode = getattr(_m, 'MODE', 'plan')
+            _m.MODE = 'auto'
+            status, executed = 'failure', False
             error_code = None
             error_message = None
             output_text = None
             try:
-                if kind == "RUN":
+                if kind == 'RUN':
                     _r = _m.confirm_run(target)
                     if _r is None:
-                        error_code, error_message = (
-                            "dispatcher_blocked",
-                            "RUN refused by safeguard",
-                        )
+                        error_code, error_message = 'dispatcher_blocked', 'RUN refused by safeguard'
                     else:
                         executed = True
-                        output_text = (getattr(_r, "stdout", "") or "")[:2000]
-                        if getattr(_r, "ok", True):
-                            status = "success"
+                        output_text = (getattr(_r, 'stdout', '') or '')[:2000]
+                        if getattr(_r, 'ok', True):
+                            status = 'success'
                         else:
-                            status = "failure"
-                            error_code = "nonzero_exit"
-                            error_message = (
-                                f"exit_code={getattr(_r, 'exit_code', None)}"
-                            )
-                elif kind == "RUNTERM":
+                            status = 'failure'
+                            error_code = 'nonzero_exit'
+                            error_message = f'exit_code={getattr(_r, "exit_code", None)}'
+                elif kind == 'RUNTERM':
                     _m.confirm_runterm(target)
                     executed = True
-                    status = "success"
-                    output_text = f"[RUNTERM] dispatched: {target}"
-                elif kind == "READ":
+                    status = 'success'
+                    output_text = f'[RUNTERM] dispatched: {target}'
+                elif kind == 'READ':
                     expanded = os.path.expanduser(target)
-                    if hasattr(_m, "_read_path_ok"):
+                    if hasattr(_m, '_read_path_ok'):
                         ok, reason = _m._read_path_ok(expanded)
                         if not ok:
-                            status, error_code, error_message = (
-                                "blocked",
-                                "permission_required",
-                                reason,
-                            )
+                            status, error_code, error_message = 'blocked', 'permission_required', reason
                         else:
                             try:
-                                with open(expanded, errors="replace") as f:
+                                with open(expanded, 'r', errors='replace') as f:
                                     content = f.read()
                                 executed = True
-                                status = "success"
+                                status = 'success'
                                 output_text = content[:4000]
                             except Exception as e:
-                                status = "failure"
-                                error_code = "read_error"
+                                status = 'failure'
+                                error_code = 'read_error'
                                 error_message = str(e)[:240]
-                elif kind == "CREATE":
-                    content_body = action.get("content") or action.get("body") or ""
+                elif kind == 'CREATE':
+                    content_body = action.get('content') or action.get('body') or ''
                     ok = _m.confirm_create(target, content_body)
                     executed = bool(ok)
-                    status = "success" if ok else "failure"
+                    status = 'success' if ok else 'failure'
                     if not ok:
-                        error_code = "dispatcher_blocked"
-                        error_message = "CREATE refused (path fence or safeguard)"
-                elif kind == "EDIT":
-                    find = action.get("find") or action.get("find_text") or ""
-                    replace = action.get("replace") or action.get("replace_text") or ""
+                        error_code = 'dispatcher_blocked'
+                        error_message = 'CREATE refused (path fence or safeguard)'
+                elif kind == 'EDIT':
+                    find = action.get('find') or action.get('find_text') or ''
+                    replace = action.get('replace') or action.get('replace_text') or ''
                     ok = _m.confirm_edit(target, find, replace)
                     executed = bool(ok)
-                    status = "success" if ok else "failure"
+                    status = 'success' if ok else 'failure'
                     if not ok:
-                        error_code = "dispatcher_blocked"
-                        error_message = "EDIT refused (path fence or safeguard)"
+                        error_code = 'dispatcher_blocked'
+                        error_message = 'EDIT refused (path fence or safeguard)'
                 else:
-                    status = "failure"
-                    error_code = "unsupported_kind"
-                    error_message = f"kind {kind!r} not dispatched here"
+                    status = 'failure'
+                    error_code = 'unsupported_kind'
+                    error_message = f'kind {kind!r} not dispatched here'
             except Exception as e:
-                status = "failure"
-                error_code = "dispatch_exception"
-                error_message = f"{type(e).__name__}: {e}"[:240]
+                status = 'failure'
+                error_code = 'dispatch_exception'
+                error_message = f'{type(e).__name__}: {e}'[:240]
             finally:
                 try:
                     _m.MODE = prev_mode
@@ -5300,124 +4532,88 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                     pass
 
             envelope = {
-                "action_id": action_id,
-                "kind": kind,
-                "target": target[:300],
-                "status": status,
-                "executed": executed,
-                "error_code": error_code,
-                "error_message": error_message,
-                "observed_text": output_text,
-                "mode_at_emission": mode_at,
+                'action_id': action_id, 'kind': kind, 'target': target[:300],
+                'status': status, 'executed': executed,
+                'error_code': error_code, 'error_message': error_message,
+                'observed_text': output_text,
+                'mode_at_emission': mode_at,
             }
             _audit_approve_action(action_id, action, verdict, envelope)
-            return self._json({"ok": status == "success", "envelope": envelope})
+            return self._json({'ok': status == 'success', 'envelope': envelope})
 
         # /ask — federated routing endpoint. Accepts {prompt, model?} and runs
         # it through the LOCAL Ollama on this node, returning the response.
         # Auth: X-Mesh-Token header must match the token in ~/.master_ai_mesh.json.
         # No token configured → endpoint refuses all requests (fail-closed).
         # This is the mesh's "question on node A → answer from node B" pipe.
-        if self.path == "/ask":
+        if self.path == '/ask':
             try:
-                mesh_path = os.path.expanduser("~/.master_ai_mesh.json")
-                expected_token = ""
+                mesh_path = os.path.expanduser('~/.master_ai_mesh.json')
+                expected_token = ''
                 if os.path.exists(mesh_path):
                     try:
-                        expected_token = (
-                            json.load(open(mesh_path)).get("mesh_token") or ""
-                        ).strip()
+                        expected_token = (json.load(open(mesh_path)).get('mesh_token') or '').strip()
                     except Exception:
-                        expected_token = ""
+                        expected_token = ''
                 if not expected_token:
-                    self._json(
-                        {
-                            "error": "mesh not configured (no mesh_token set in ~/.master_ai_mesh.json)"
-                        },
-                        503,
-                    )
-                    return None
-                supplied = (self.headers.get("X-Mesh-Token") or "").strip()
+                    self._json({'error': 'mesh not configured (no mesh_token set in ~/.master_ai_mesh.json)'}, 503); return
+                supplied = (self.headers.get('X-Mesh-Token') or '').strip()
                 if supplied != expected_token:
-                    self._json(
-                        {"error": "unauthorized (bad or missing X-Mesh-Token)"}, 401
-                    )
-                    return None
+                    self._json({'error': 'unauthorized (bad or missing X-Mesh-Token)'}, 401); return
 
-                payload = json.loads(data or b"{}")
-                prompt = (payload.get("prompt") or "").strip()
-                model = (payload.get("model") or "qwen2.5:3b").strip()
+                payload = json.loads(data or b'{}')
+                prompt  = (payload.get('prompt') or '').strip()
+                model   = (payload.get('model')  or 'qwen2.5:3b').strip()
                 if not prompt:
-                    self._json({"error": "missing prompt"}, 400)
-                    return None
+                    self._json({'error': 'missing prompt'}, 400); return
 
-                import time as _time
-                import urllib.request
-
+                import urllib.request, time as _time
                 t0 = _time.time()
-                body = json.dumps(
-                    {
-                        "model": model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {"num_predict": 512, "temperature": 0.7},
-                    }
-                ).encode()
-                req = urllib.request.Request(
-                    "http://localhost:11434/api/generate",
-                    data=body,
-                    headers={"Content-Type": "application/json"},
-                )
+                body = json.dumps({
+                    'model': model,
+                    'prompt': prompt,
+                    'stream': False,
+                    'options': {'num_predict': 512, 'temperature': 0.7}
+                }).encode()
+                req = urllib.request.Request('http://localhost:11434/api/generate',
+                    data=body, headers={'Content-Type': 'application/json'})
                 with urllib.request.urlopen(req, timeout=120) as r:
                     d = json.loads(r.read())
-                self._json(
-                    {
-                        "response": d.get("response", ""),
-                        "model": model,
-                        "elapsed_s": round(_time.time() - t0, 2),
-                        "node": os.uname().nodename
-                        if hasattr(os, "uname")
-                        else "unknown",
-                    }
-                )
-                return None
+                self._json({
+                    'response': d.get('response', ''),
+                    'model': model,
+                    'elapsed_s': round(_time.time() - t0, 2),
+                    'node': os.uname().nodename if hasattr(os, 'uname') else 'unknown',
+                }); return
             except Exception as e:
-                self._json({"error": str(e)}, 500)
-                return None
+                self._json({'error': str(e)}, 500); return
 
         # Pupil API v1 — see ~/scripts/pupil_api.md.
         # POST /chat — Pupil's same-machine chat endpoint. No mesh-token gate.
         # M0a: non-interactive master_ai.handle() wrapper. It preserves the
         # v1 response shape while returning proposed actions for extension-side
         # confirmation; the backend never enters the TUI confirm_run path here.
-        if self.path == "/chat":
+        if self.path == '/chat':
             if not self._require_extension_auth():
-                return None
+                return
             try:
-                payload = json.loads(data or b"{}")
-                self._json(api_handle(payload))
-                return None
+                payload = json.loads(data or b'{}')
+                self._json(api_handle(payload)); return
             except ApiHandleBusy as e:
                 # Wedge protection: lock acquire timed out. Surface fast so
                 # the caller (Pupil / Chrome extension) can retry instead of
                 # hanging behind a runaway local inference.
-                self._json(
-                    {
-                        "error": "system_busy",
-                        "detail": str(e),
-                        "retry_after_s": 15,
-                    },
-                    503,
-                )
-                return None
+                self._json({
+                    'error': 'system_busy',
+                    'detail': str(e),
+                    'retry_after_s': 15,
+                }, 503); return
             except ValueError as e:
                 msg = str(e)
-                status = 400 if msg in ("missing prompt", "invalid mode") else 500
-                self._json({"error": msg}, status)
-                return None
+                status = 400 if msg in ('missing prompt', 'invalid mode') else 500
+                self._json({'error': msg}, status); return
             except Exception as e:
-                self._json({"error": str(e)}, 500)
-                return None
+                self._json({'error': str(e)}, 500); return
 
         # POST /agui/run — Phase 1 AG-UI wiring for Pupil (2026-10-21).
         # Same turn as /chat (api_handle, untouched), reported as a short
@@ -5427,99 +4623,60 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
         # TEXT_MESSAGE_CONTENT delta, not token-by-token -- true incremental
         # streaming needs the model-call layer itself instrumented, which is
         # a separate, later change. /chat and /chat/continue are unchanged.
-        if self.path == "/agui/run":
+        if self.path == '/agui/run':
             if not self._require_extension_auth():
-                return None
+                return
             self.send_response(200)
             self._cors()
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-cache")
+            self.send_header('Content-Type', 'text/event-stream')
+            self.send_header('Cache-Control', 'no-cache')
             # Unlike /events (a deliberately long-lived heartbeat stream),
             # this is a one-shot run: it must close after RUN_FINISHED/
             # RUN_ERROR or a client's reader sits waiting for more data
             # forever. Confirmed live: curl hung past RUN_FINISHED until
             # killed, before this header + close_connection were added.
-            self.send_header("Connection", "close")
+            self.send_header('Connection', 'close')
             self.end_headers()
             self.close_connection = True
             run_id = str(uuid.uuid4())
 
             def emit(name, payload):
-                self.wfile.write(
-                    f"event: {name}\ndata: {json.dumps(payload)}\n\n".encode()
-                )
+                self.wfile.write(f"event: {name}\ndata: {json.dumps(payload)}\n\n".encode())
                 self.wfile.flush()
 
             try:
-                emit(
-                    "RUN_STARTED",
-                    {
-                        "runId": run_id,
-                        "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
-                    },
-                )
-                payload = json.loads(data or b"{}")
+                emit('RUN_STARTED', {'runId': run_id, 'ts': datetime.now().astimezone().isoformat(timespec='seconds')})
+                payload = json.loads(data or b'{}')
                 result = api_handle(payload)
-                for a in result.get("actions", []) or []:
+                for a in result.get('actions', []) or []:
                     tool_call_id = str(uuid.uuid4())
-                    emit(
-                        "TOOL_CALL_START",
-                        {
-                            "toolCallId": tool_call_id,
-                            "toolCallName": a.get("kind", "action"),
-                        },
-                    )
-                    emit("TOOL_CALL_ARGS", {"toolCallId": tool_call_id, "args": a})
-                    emit(
-                        "TOOL_CALL_RESULT",
-                        {"toolCallId": tool_call_id, "result": a.get("result")},
-                    )
-                for b in result.get("blocked_actions", []) or []:
+                    emit('TOOL_CALL_START', {'toolCallId': tool_call_id, 'toolCallName': a.get('kind', 'action')})
+                    emit('TOOL_CALL_ARGS', {'toolCallId': tool_call_id, 'args': a})
+                    emit('TOOL_CALL_RESULT', {'toolCallId': tool_call_id, 'result': a.get('result')})
+                for b in result.get('blocked_actions', []) or []:
                     tool_call_id = str(uuid.uuid4())
-                    emit(
-                        "TOOL_CALL_START",
-                        {
-                            "toolCallId": tool_call_id,
-                            "toolCallName": b.get("kind", "action"),
-                        },
-                    )
-                    emit("TOOL_CALL_ARGS", {"toolCallId": tool_call_id, "args": b})
-                    emit(
-                        "CUSTOM",
-                        {
-                            "toolCallId": tool_call_id,
-                            "blocked": True,
-                            "reason": b.get("reason"),
-                        },
-                    )
+                    emit('TOOL_CALL_START', {'toolCallId': tool_call_id, 'toolCallName': b.get('kind', 'action')})
+                    emit('TOOL_CALL_ARGS', {'toolCallId': tool_call_id, 'args': b})
+                    emit('CUSTOM', {'toolCallId': tool_call_id, 'blocked': True, 'reason': b.get('reason')})
                 msg_id = str(uuid.uuid4())
-                emit("TEXT_MESSAGE_START", {"messageId": msg_id, "role": "assistant"})
-                emit(
-                    "TEXT_MESSAGE_CONTENT",
-                    {"messageId": msg_id, "delta": result.get("reply", "")},
-                )
-                emit("TEXT_MESSAGE_END", {"messageId": msg_id})
-                emit(
-                    "RUN_FINISHED",
-                    {
-                        "runId": run_id,
-                        "route": result.get("route"),
-                        "model": result.get("model"),
-                        "latency_ms": result.get("latency_ms"),
-                    },
-                )
+                emit('TEXT_MESSAGE_START', {'messageId': msg_id, 'role': 'assistant'})
+                emit('TEXT_MESSAGE_CONTENT', {'messageId': msg_id, 'delta': result.get('reply', '')})
+                emit('TEXT_MESSAGE_END', {'messageId': msg_id})
+                emit('RUN_FINISHED', {
+                    'runId': run_id,
+                    'route': result.get('route'),
+                    'model': result.get('model'),
+                    'latency_ms': result.get('latency_ms'),
+                })
             except ApiHandleBusy as e:
-                emit(
-                    "RUN_ERROR",
-                    {"runId": run_id, "message": str(e), "code": "system_busy"},
-                )
+                emit('RUN_ERROR', {'runId': run_id, 'message': str(e), 'code': 'system_busy'})
             except ValueError as e:
-                emit("RUN_ERROR", {"runId": run_id, "message": str(e)})
+                emit('RUN_ERROR', {'runId': run_id, 'message': str(e)})
             except _CLIENT_DISCONNECTS:
                 pass
             except Exception as e:
-                emit("RUN_ERROR", {"runId": run_id, "message": str(e)})
-            return None
+                emit('RUN_ERROR', {'runId': run_id, 'message': str(e)})
+            return
 
         # POST /chat/continue — M9 Agentic Continuation Loop (2026-05-12).
         # The extension calls this AFTER dispatching the prior round's actions
@@ -5530,111 +4687,81 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
         # reads only the [PREVIOUS ROUND RESULTS] block and the user goal in
         # history. Round budget caps runaway loops; the response includes
         # `done` so the extension knows when to stop auto-continuing.
-        if self.path == "/chat/continue":
+        if self.path == '/chat/continue':
             if not self._require_extension_auth():
-                return None
+                return
             try:
-                payload = json.loads(data or b"{}")
+                payload = json.loads(data or b'{}')
                 if not (payload.get("prompt") or "").strip():
                     payload["prompt"] = "continue"
                 if not payload.get("parent_turn_id"):
-                    self._json({"error": "missing parent_turn_id"}, 400)
-                    return None
-                self._json(api_handle(payload))
-                return None
+                    self._json({'error': 'missing parent_turn_id'}, 400); return
+                self._json(api_handle(payload)); return
             except ApiHandleBusy as e:
-                self._json(
-                    {
-                        "error": "system_busy",
-                        "detail": str(e),
-                        "retry_after_s": 15,
-                    },
-                    503,
-                )
-                return None
+                self._json({
+                    'error': 'system_busy',
+                    'detail': str(e),
+                    'retry_after_s': 15,
+                }, 503); return
             except ValueError as e:
                 msg = str(e)
-                status = (
-                    400
-                    if msg
-                    in ("missing prompt", "invalid mode", "missing parent_turn_id")
-                    else 500
-                )
-                self._json({"error": msg}, status)
-                return None
+                status = 400 if msg in ('missing prompt', 'invalid mode', 'missing parent_turn_id') else 500
+                self._json({'error': msg}, status); return
             except Exception as e:
-                self._json({"error": str(e)}, 500)
-                return None
+                self._json({'error': str(e)}, 500); return
 
         # POST /mode — change current Sensei mode. Persists to ~/.master_ai_mode.
-        if self.path == "/mode":
+        if self.path == '/mode':
             try:
-                payload = json.loads(data or b"{}")
-                mode = (payload.get("mode") or "").strip().lower()
-                if mode not in ("plan", "review", "auto"):
-                    self._json({"error": "invalid mode"}, 400)
-                    return None
-                mp = os.path.expanduser("~/.master_ai_mode")
-                with open(mp, "w") as f:
+                payload = json.loads(data or b'{}')
+                mode = (payload.get('mode') or '').strip().lower()
+                if mode not in ('plan', 'review', 'auto'):
+                    self._json({'error': 'invalid mode'}, 400); return
+                mp = os.path.expanduser('~/.master_ai_mode')
+                with open(mp, 'w') as f:
                     f.write(mode)
-                self._json({"ok": True, "mode": mode})
-                return None
+                self._json({'ok': True, 'mode': mode}); return
             except Exception as e:
-                self._json({"error": str(e)}, 500)
-                return None
+                self._json({'error': str(e)}, 500); return
 
         # POST /voice — toggle Pupil TTS preference. Stored at ~/.master_ai_voice_enabled.
-        if self.path == "/voice":
+        if self.path == '/voice':
             try:
-                payload = json.loads(data or b"{}")
-                if "enabled" not in payload or not isinstance(
-                    payload.get("enabled"), bool
-                ):
-                    self._json(
-                        {"error": "missing or invalid 'enabled' (must be boolean)"}, 400
-                    )
-                    return None
-                enabled = payload["enabled"]
-                engine = (payload.get("engine") or "piper").strip() or "piper"
-                vp = os.path.expanduser("~/.master_ai_voice_enabled")
-                with open(vp, "w") as f:
-                    json.dump({"enabled": enabled, "engine": engine}, f)
-                self._json(
-                    {
-                        "ok": True,
-                        "voice_state": {"enabled": enabled, "engine": engine},
-                    }
-                )
-                return None
+                payload = json.loads(data or b'{}')
+                if 'enabled' not in payload or not isinstance(payload.get('enabled'), bool):
+                    self._json({'error': "missing or invalid 'enabled' (must be boolean)"}, 400); return
+                enabled = payload['enabled']
+                engine = (payload.get('engine') or 'piper').strip() or 'piper'
+                vp = os.path.expanduser('~/.master_ai_voice_enabled')
+                with open(vp, 'w') as f:
+                    json.dump({'enabled': enabled, 'engine': engine}, f)
+                self._json({
+                    'ok': True,
+                    'voice_state': {'enabled': enabled, 'engine': engine},
+                }); return
             except Exception as e:
-                self._json({"error": str(e)}, 500)
-                return None
+                self._json({'error': str(e)}, 500); return
 
         # /fetch_url — Pupil's read-a-URL endpoint. Accepts {url} and
         # returns {url, markdown} by calling master_ai.firecrawl_fetch().
         # Needs a Firecrawl API key configured (see /keys). Different from
         # /web_search: that one returns snippets from many pages; this one
         # returns ONE page's full clean markdown content.
-        if self.path == "/fetch_url":
+        if self.path == '/fetch_url':
             try:
-                payload = json.loads(data or b"{}")
-                url = (payload.get("url") or "").strip()
+                payload = json.loads(data or b'{}')
+                url = (payload.get('url') or '').strip()
                 if not url:
-                    self._json({"error": "missing url"}, 400)
-                    return None
+                    self._json({'error': 'missing url'}, 400); return
                 import sys as _sys
-
                 _here = os.path.dirname(os.path.abspath(__file__))
                 if _here not in _sys.path:
                     _sys.path.insert(0, _here)
                 import master_ai as _m
-
                 markdown = _m.firecrawl_fetch(url)
-                self._json({"url": url, "markdown": markdown})
-                return None
+                self._json({'url': url, 'markdown': markdown}); return
             except Exception as e:
-                self._json({"error": str(e)}, 500)
-                return None
+                self._json({'error': str(e)}, 500); return
 
         # /web_search — live web search for Pupil (the browser UI). Pupil
         # detects time-sensitive questions client-side and POSTs here so
@@ -5642,46 +4769,37 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
         # in the browser. Returns {query, results, have_gemini} so Pupil
         # can display results and show the user which engine answered.
         # No auth — localhost / Tailscale only. No secrets returned.
-        if self.path == "/web_search":
+        if self.path == '/web_search':
             try:
-                payload = json.loads(data or b"{}")
-                query = (payload.get("query") or "").strip()
+                payload = json.loads(data or b'{}')
+                query = (payload.get('query') or '').strip()
                 # engine: optional. "all" or omitted → full blender.
                 # Anything else → single engine, header-wrapped so the
                 # downstream detection dict still reports which answered.
-                engine = (payload.get("engine") or "").strip().lower()
+                engine = (payload.get('engine') or '').strip().lower()
                 # stream: when true AND running the blend, emit NDJSON
                 # lines live — one per engine as it completes — so the
                 # client can show results progressively instead of
                 # waiting for the slowest engine (Gemini, ~20s).
-                stream = bool(payload.get("stream"))
+                stream = bool(payload.get('stream'))
                 if not query:
-                    self._json({"error": "missing query"}, 400)
-                    return None
+                    self._json({'error': 'missing query'}, 400); return
                 # Import master_ai lazily — avoids a heavy import at server
                 # startup and keeps stt_server functional even if master_ai
                 # has a runtime issue.
                 import sys as _sys
-
                 _here = os.path.dirname(os.path.abspath(__file__))
                 if _here not in _sys.path:
                     _sys.path.insert(0, _here)
                 import master_ai as _m
-
                 _engine_map = {
-                    "gemini_grounded": (
-                        _m.gemini_grounded_search,
-                        "[Google (via Gemini grounding)]",
-                    ),
-                    "brave": (_m.brave_search, "[Brave Search]"),
-                    "serper": (_m.serper_search, "[Google (via Serper)]"),
-                    "wikipedia": (_m.wikipedia_search, "[Wikipedia]"),
-                    "duckduckgo": (_m.duckduckgo_search, "[DuckDuckGo]"),
-                    "duckduckgo_instant": (
-                        _m.ddg_instant_answer,
-                        "[DuckDuckGo Instant Answer]",
-                    ),
-                    "wikihow": (_m.wikihow_via_gemini, "[WikiHow (via Google site:)]"),
+                    'gemini_grounded':    (_m.gemini_grounded_search, '[Google (via Gemini grounding)]'),
+                    'brave':              (_m.brave_search,            '[Brave Search]'),
+                    'serper':             (_m.serper_search,           '[Google (via Serper)]'),
+                    'wikipedia':          (_m.wikipedia_search,        '[Wikipedia]'),
+                    'duckduckgo':         (_m.duckduckgo_search,       '[DuckDuckGo]'),
+                    'duckduckgo_instant': (_m.ddg_instant_answer,      '[DuckDuckGo Instant Answer]'),
+                    'wikihow':            (_m.wikihow_via_gemini,      '[WikiHow (via Google site:)]'),
                 }
 
                 # ── Live-stream path ──
@@ -5689,272 +4807,207 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                 # emits start / done / empty / error. Client parses
                 # line-by-line and renders as it reads. Fast engines
                 # (Wikipedia ~1s) show up long before slow ones (Gemini).
-                if stream and (not engine or engine == "all"):
+                if stream and (not engine or engine == 'all'):
                     self.send_response(200)
                     self._cors()
-                    self.send_header("Content-Type", "application/x-ndjson")
-                    self.send_header("Cache-Control", "no-cache")
-                    self.send_header("X-Accel-Buffering", "no")
-                    self.send_header("Connection", "close")
+                    self.send_header('Content-Type', 'application/x-ndjson')
+                    self.send_header('Cache-Control', 'no-cache')
+                    self.send_header('X-Accel-Buffering', 'no')
+                    self.send_header('Connection', 'close')
                     self.end_headers()
-
                     def _emit(obj):
                         try:
-                            self.wfile.write((json.dumps(obj) + "\n").encode())
+                            self.wfile.write((json.dumps(obj) + '\n').encode())
                             self.wfile.flush()
                         except Exception:
                             pass
-
-                    _emit(
-                        {
-                            "type": "start",
-                            "query": query,
-                            "engines": list(_engine_map.keys()),
-                        }
-                    )
+                    _emit({'type': 'start', 'query': query,
+                           'engines': list(_engine_map.keys())})
                     for key, (fn, header) in _engine_map.items():
-                        _emit({"type": "engine_start", "engine": key})
+                        _emit({'type': 'engine_start', 'engine': key})
                         try:
                             out = fn(query)
                         except Exception as e:
-                            _emit(
-                                {"type": "engine_error", "engine": key, "error": str(e)}
-                            )
+                            _emit({'type': 'engine_error', 'engine': key,
+                                   'error': str(e)})
                             continue
                         if out:
-                            _emit(
-                                {
-                                    "type": "engine_done",
-                                    "engine": key,
-                                    "header": header,
-                                    "result": out,
-                                }
-                            )
+                            _emit({'type': 'engine_done', 'engine': key,
+                                   'header': header, 'result': out})
                         else:
-                            _emit({"type": "engine_empty", "engine": key})
-                    _emit({"type": "done"})
-                    return None
+                            _emit({'type': 'engine_empty', 'engine': key})
+                    _emit({'type': 'done'})
+                    return
 
-                if engine and engine != "all" and engine in _engine_map:
+                if engine and engine != 'all' and engine in _engine_map:
                     fn, header = _engine_map[engine]
                     out = fn(query)
-                    results = (
-                        f"{header}\n{out}"
-                        if out
-                        else f"Search unavailable: {engine} returned nothing."
-                    )
+                    results = f"{header}\n{out}" if out else f"Search unavailable: {engine} returned nothing."
                 else:
                     results = _m.web_search(query)
                 # Report which engines contributed so Pupil can show a
                 # badge listing exactly what answered. Detection is by
                 # the section headers master_ai.web_search() emits.
-                r = results or ""
+                r = results or ''
                 engines = {
-                    "gemini_grounded": "[Google (via Gemini grounding)]" in r,
-                    "brave": "[Brave Search]" in r,
-                    "serper": "[Google (via Serper)]" in r,
-                    "wikipedia": "[Wikipedia]" in r,
-                    "duckduckgo": "[DuckDuckGo]" in r,
-                    "duckduckgo_instant": "[DuckDuckGo Instant Answer]" in r,
-                    "wikihow": "[WikiHow (via Google site:)]" in r,
+                    'gemini_grounded':     '[Google (via Gemini grounding)]' in r,
+                    'brave':               '[Brave Search]' in r,
+                    'serper':              '[Google (via Serper)]' in r,
+                    'wikipedia':           '[Wikipedia]' in r,
+                    'duckduckgo':          '[DuckDuckGo]' in r,
+                    'duckduckgo_instant':  '[DuckDuckGo Instant Answer]' in r,
+                    'wikihow':             '[WikiHow (via Google site:)]' in r,
                 }
-                self._json(
-                    {
-                        "query": query,
-                        "results": results,
-                        "engines": engines,
-                    }
-                )
-                return None
+                self._json({
+                    'query': query,
+                    'results': results,
+                    'engines': engines,
+                }); return
             except Exception as e:
-                self._json({"error": str(e)}, 500)
-                return None
+                self._json({'error': str(e)}, 500); return
 
-        if self.path == "/stt":
+        if self.path == '/stt':
             if not self._require_extension_auth():
-                return None
-            tmp = tempfile.NamedTemporaryFile(suffix=".webm", delete=False)
+                return
+            tmp = tempfile.NamedTemporaryFile(suffix='.webm', delete=False)
             tmp.write(data)
             tmp.close()
             try:
                 import warnings
-
                 with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
+                    warnings.simplefilter('ignore')
                     import whisper
-
-                    model = whisper.load_model("base")
+                    model = whisper.load_model('base')
                     result = model.transcribe(tmp.name)
-                text = result["text"].strip()
-                self._json({"text": text})
+                text = result['text'].strip()
+                self._json({'text': text})
             except Exception as e:
-                self._json({"error": str(e)}, 500)
+                self._json({'error': str(e)}, 500)
             finally:
-                try:
-                    os.unlink(tmp.name)
-                except Exception:
-                    pass
+                try: os.unlink(tmp.name)
+                except Exception: pass
 
-        elif self.path == "/sessions":
+        elif self.path == '/sessions':
             try:
                 chats = _chats_dir()
                 session = json.loads(data)
-                name = session.get("name", "chat")
-                ts = session.get("ts", int(datetime.now().timestamp() * 1000))
-                fname = f"{ts}_{safe_filename(name)}.json.gz"
-                with gzip.open(os.path.join(chats, fname), "wt", encoding="utf-8") as f:
-                    json.dump(session, f, separators=(",", ":"))
+                name    = session.get('name', 'chat')
+                ts      = session.get('ts', int(datetime.now().timestamp() * 1000))
+                fname   = f"{ts}_{safe_filename(name)}.json.gz"
+                with gzip.open(os.path.join(chats, fname), 'wt', encoding='utf-8') as f:
+                    json.dump(session, f, separators=(',', ':'))
                 # Auto-generate summary via local AI
                 try:
                     import urllib.request
-
-                    msgs = session.get("messages", [])
+                    msgs = session.get('messages', [])
                     if len(msgs) >= 4:
                         transcript = "\n".join(
-                            f"{m['role'].upper()}: {str(m.get('content', ''))[:300]}"
-                            for m in msgs[-30:]
-                            if m.get("role") in ("user", "assistant")
+                            f"{m['role'].upper()}: {str(m.get('content',''))[:300]}"
+                            for m in msgs[-30:] if m.get('role') in ('user','assistant')
                         )
-                        prompt = (
-                            "Summarize this AI session in exactly 4 bullets. "
-                            "What was worked on, decided, unfinished, next steps. "
-                            "Format: • bullet\n\n" + transcript
-                        )
-                        payload = json.dumps(
-                            {
-                                "model": "qwen2.5:7b",
-                                "messages": [{"role": "user", "content": prompt}],
-                                "stream": False,
-                            }
-                        ).encode()
-                        req = urllib.request.Request(
-                            "http://localhost:11434/api/chat",
-                            data=payload,
-                            headers={"Content-Type": "application/json"},
-                        )
+                        prompt = ("Summarize this AI session in exactly 4 bullets. "
+                                  "What was worked on, decided, unfinished, next steps. "
+                                  "Format: • bullet\n\n" + transcript)
+                        payload = json.dumps({'model':'qwen2.5:7b',
+                                              'messages':[{'role':'user','content':prompt}],
+                                              'stream':False}).encode()
+                        req = urllib.request.Request('http://localhost:11434/api/chat',
+                            data=payload, headers={'Content-Type':'application/json'})
                         with urllib.request.urlopen(req, timeout=30) as r:
-                            summary = json.loads(r.read())["message"]["content"].strip()
+                            summary = json.loads(r.read())['message']['content'].strip()
                         date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-                        summary_fname = fname.replace(".json.gz", ".summary")
+                        summary_fname = fname.replace('.json.gz', '.summary')
                         summary_path = os.path.join(chats, summary_fname)
-                        with open(summary_path, "w") as sf:
+                        with open(summary_path, 'w') as sf:
                             sf.write(f"[Session {date_str}]\n{summary}\n")
                         # Append to memory (profile-aware)
                         prof = _active_profile()
                         if prof:
-                            mem_file = os.path.expanduser(
-                                f"~/.master_ai_profiles/{prof}/memory"
-                            )
+                            mem_file = os.path.expanduser(f"~/.master_ai_profiles/{prof}/memory")
                         else:
                             mem_file = os.path.expanduser("~/.master_ai_memory")
                         try:
-                            existing = (
-                                open(mem_file).read()
-                                if os.path.exists(mem_file)
-                                else ""
-                            )
-                            lines = [
-                                l
-                                for l in existing.splitlines()
-                                if not l.startswith("[Session ")
-                            ]
-                            session_lines = [
-                                l
-                                for l in existing.splitlines()
-                                if l.startswith("[Session ")
-                            ][-4:]
-                            with open(mem_file, "w") as mf:
-                                mf.write(
-                                    "\n".join(
-                                        lines
-                                        + session_lines
-                                        + [f"[Session {date_str}]"]
-                                        + summary.splitlines()
-                                    )
-                                    + "\n"
-                                )
+                            existing = open(mem_file).read() if os.path.exists(mem_file) else ""
+                            lines = [l for l in existing.splitlines() if not l.startswith("[Session ")]
+                            session_lines = [l for l in existing.splitlines() if l.startswith("[Session ")][-4:]
+                            with open(mem_file, 'w') as mf:
+                                mf.write("\n".join(lines + session_lines +
+                                    [f"[Session {date_str}]"] + summary.splitlines()) + "\n")
                         except Exception:
                             pass
                 except Exception:
                     pass
-                self._json({"saved": fname})
+                self._json({'saved': fname})
             except Exception as e:
-                self._json({"error": str(e)}, 500)
+                self._json({'error': str(e)}, 500)
 
-        elif self.path == "/keys":
+        elif self.path == '/keys':
             # Merge incoming key(s) into ~/.master_ai_keys. Body shape:
             #   {"field": "groq", "value": "gsk_..."} — sets one
             #   OR {"merge": {"groq": "...", "openai": "..."}} — merges many
             # Duplicate protection: if a value for "field" exists and differs,
             # it becomes "{field}_2" instead of overwriting.
             try:
-                payload = json.loads(data)
-                keys_file = os.path.expanduser("~/.master_ai_keys")
+                payload   = json.loads(data)
+                keys_file = os.path.expanduser('~/.master_ai_keys')
                 try:
-                    existing = (
-                        json.load(open(keys_file)) if os.path.exists(keys_file) else {}
-                    )
+                    existing = json.load(open(keys_file)) if os.path.exists(keys_file) else {}
                 except Exception:
                     existing = {}
                 incoming = {}
-                if isinstance(payload.get("merge"), dict):
-                    incoming.update(payload["merge"])
-                if payload.get("field") and payload.get("value") is not None:
-                    incoming[payload["field"]] = payload["value"]
+                if isinstance(payload.get('merge'), dict):
+                    incoming.update(payload['merge'])
+                if payload.get('field') and payload.get('value') is not None:
+                    incoming[payload['field']] = payload['value']
                 for field, value in incoming.items():
-                    if (
-                        field in existing
-                        and existing[field]
-                        and existing[field] != value
-                    ):
-                        existing[field + "_2"] = value  # backup slot
+                    if field in existing and existing[field] and existing[field] != value:
+                        existing[field + '_2'] = value   # backup slot
                     else:
                         existing[field] = value
-                with open(keys_file, "w") as f:
+                with open(keys_file, 'w') as f:
                     json.dump(existing, f, indent=2)
                 os.chmod(keys_file, 0o600)
-                self._json({"saved": list(incoming.keys()), "count": len(existing)})
+                self._json({'saved': list(incoming.keys()), 'count': len(existing)})
             except Exception as e:
-                self._json({"error": str(e)}, 500)
+                self._json({'error': str(e)}, 500)
 
-        elif self.path == "/sessions/delete":
+        elif self.path == '/sessions/delete':
             try:
                 payload = json.loads(data)
-                fname = os.path.basename(payload.get("file", ""))
-                chats = _chats_dir()
+                fname   = os.path.basename(payload.get('file', ''))
+                chats   = _chats_dir()
                 # support both .json and .json.gz
-                path = os.path.join(chats, fname)
+                path    = os.path.join(chats, fname)
                 if not (fname and os.path.exists(path)):
-                    alt = fname + ".gz" if not fname.endswith(".gz") else fname[:-3]
+                    alt = fname + '.gz' if not fname.endswith('.gz') else fname[:-3]
                     path = os.path.join(chats, alt)
                     fname = alt
                 if fname and os.path.exists(path):
                     os.unlink(path)
-                    self._json({"deleted": fname})
+                    self._json({'deleted': fname})
                 else:
-                    self._json({"error": "not found"}, 404)
+                    self._json({'error': 'not found'}, 404)
             except Exception as e:
-                self._json({"error": str(e)}, 500)
+                self._json({'error': str(e)}, 500)
 
         else:
             self.send_response(404)
             self.end_headers()
-        return None
 
     def _json(self, obj, status=200):
         body = json.dumps(obj).encode()
         try:
             self.send_response(status)
             self._cors()
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", len(body))
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', len(body))
             self.end_headers()
             self.wfile.write(body)
         except _CLIENT_DISCONNECTS:
             return
 
     def _error(self, msg):
-        self._json({"error": msg}, 500)
+        self._json({'error': msg}, 500)
 
     def _cors(self):
         """Origin-aware CORS (M0a hardening 2026-05-12).
@@ -5963,48 +5016,35 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
         - Same-host (Pupil from LAN/Tailscale IPs matching request Host) → echo.
         - Anything else → no Allow-Origin → browser blocks.
         """
-        origin = self.headers.get("Origin", "") or ""
-        if origin.startswith("chrome-extension://"):
-            self.send_header("Access-Control-Allow-Origin", origin)
+        origin = self.headers.get('Origin', '') or ''
+        if origin.startswith('chrome-extension://'):
+            self.send_header('Access-Control-Allow-Origin', origin)
         elif origin:
-            host = self.headers.get("Host", "") or ""
+            host = self.headers.get('Host', '') or ''
             try:
                 from urllib.parse import urlsplit
-
                 o_netloc = urlsplit(origin).netloc
-                if o_netloc and (
-                    o_netloc == host or o_netloc.split(":")[0] == host.split(":")[0]
-                ):
-                    self.send_header("Access-Control-Allow-Origin", origin)
+                if o_netloc and (o_netloc == host or o_netloc.split(':')[0] == host.split(':')[0]):
+                    self.send_header('Access-Control-Allow-Origin', origin)
             except Exception:
                 pass
         # else: no Origin header (same-origin) — nothing to echo.
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header(
-            "Access-Control-Allow-Headers",
-            "Content-Type, X-Master-AI-Token, X-Mesh-Token",
-        )
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, X-Master-AI-Token, X-Mesh-Token')
 
     def _extension_token(self):
         """Read the shared token from ~/.master_ai_extension_token. Cached on the class."""
         cls = self.__class__
-        if not hasattr(cls, "_EXT_TOKEN"):
+        if not hasattr(cls, '_EXT_TOKEN'):
             try:
                 from pathlib import Path
-
-                cls._EXT_TOKEN = (
-                    Path.home()
-                    .joinpath(".master_ai_extension_token")
-                    .read_text()
-                    .strip()
-                    or None
-                )
+                cls._EXT_TOKEN = Path.home().joinpath('.master_ai_extension_token').read_text().strip() or None
             except Exception:
                 cls._EXT_TOKEN = None
         return cls._EXT_TOKEN
 
     def _origin_is_extension(self):
-        return (self.headers.get("Origin", "") or "").startswith("chrome-extension://")
+        return (self.headers.get('Origin', '') or '').startswith('chrome-extension://')
 
     def _require_extension_auth(self):
         """If request comes from a chrome-extension origin, require a valid
@@ -6012,13 +5052,13 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
         Returns True if the request should proceed; sends 401 and returns False otherwise."""
         if not self._origin_is_extension():
             return True  # Same-origin Pupil — legacy trust.
-        sent = self.headers.get("X-Master-AI-Token", "") or ""
+        sent = self.headers.get('X-Master-AI-Token', '') or ''
         expected = self._extension_token()
         if expected and sent and sent == expected:
             return True
         self.send_response(401)
         self._cors()
-        self.send_header("Content-Type", "application/json")
+        self.send_header('Content-Type', 'application/json')
         self.end_headers()
         try:
             self.wfile.write(b'{"error":"extension token required"}')
@@ -6040,11 +5080,8 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
             req_headers["Content-Type"] = ct
         try:
             req = urllib.request.Request(
-                upstream,
-                data=(body if body else None),
-                headers=req_headers,
-                method=self.command,
-            )
+                upstream, data=(body if body else None),
+                headers=req_headers, method=self.command)
             with urllib.request.urlopen(req, timeout=180) as r:
                 status = r.status
                 up_ct = r.headers.get("Content-Type", "application/octet-stream")
@@ -6069,12 +5106,9 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
     def log_message(self, fmt, *args):
         pass
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
     _prof = _active_profile()
     _prof_tag = f"  |  Profile: {_prof}" if _prof else ""
-    print(
-        f"🚀 Master AI server on :{port}  |  STT: Whisper  |  Sessions: {_chats_dir()}{_prof_tag}"
-    )
-    ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
+    print(f"🚀 Master AI server on :{port}  |  STT: Whisper  |  Sessions: {_chats_dir()}{_prof_tag}")
+    ThreadingHTTPServer(('0.0.0.0', port), Handler).serve_forever()
