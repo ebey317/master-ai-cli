@@ -39,7 +39,6 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from command_registry import COMMANDS as _REGISTRY_COMMANDS
 from prompt_toolkit import Application
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.data_structures import Point
@@ -70,6 +69,8 @@ from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Box, Dialog, Frame, RadioList, TextArea
+
+from command_registry import COMMANDS as _REGISTRY_COMMANDS
 
 HISTORY_FILE = str(Path.home() / ".master_ai_history")
 
