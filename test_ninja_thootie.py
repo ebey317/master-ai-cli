@@ -33,10 +33,12 @@ def test_set_state_fires_hooks_and_payload():
     assert m.describe() == "approval-incoming (grant)"
 
 
-def test_eight_thootie_states():
+def test_thootie_states():
+    # 9 states: "talking" was added after the original eight.
     assert [s.value for s in ThootieState] == [
         "idle",
         "working",
+        "talking",
         "sorting",
         "approval-incoming",
         "approval-presented",
@@ -48,7 +50,7 @@ def test_eight_thootie_states():
 
 def test_waypoints_exclude_notification_corner():
     assert _EXCLUDED_NOTIFICATION_CORNER not in _WAYPOINTS
-    assert _WAYPOINTS == [(0.02, 0.02), (0.02, 0.98), (0.98, 0.98)]
+    assert _WAYPOINTS == [(0.02, 0.02), (0.02, 0.92), (0.88, 0.92)]
 
 
 def test_drift_step_converges():
@@ -74,14 +76,14 @@ def test_drift_step_rejects_bad_alpha():
 
 def test_card_position_left_corners_spawn_right():
     x, y = card_position(44, 20, 220, "top-left", 340, 300, 1920, 1080)
-    assert (x, y) == (44 + 220 + 12, 20)
+    assert (x, y) == (44 + 220 + 14, 20)
     x, y = card_position(44, 700, 220, "bottom-left", 340, 300, 1920, 1080)
-    assert (x, y) == (44 + 220 + 12, 700)
+    assert (x, y) == (44 + 220 + 14, 700)
 
 
 def test_card_position_bottom_right_spawns_left():
     x, y = card_position(1656, 700, 220, "bottom-right", 340, 300, 1920, 1080)
-    assert (x, y) == (1656 - 12 - 340, 700)
+    assert (x, y) == (1656 - 14 - 340, 700)
 
 
 def test_card_position_clamps_on_screen():
