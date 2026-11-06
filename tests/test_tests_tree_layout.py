@@ -19,6 +19,7 @@ TESTS_ROOT = REPO_ROOT / "tests"
 
 # Loose test files with no matching source module yet (cleanup backlog).
 KNOWN_UNMAPPED = {
+    "test_upstream_integrator_cloud.py",  # tests scripts/upstream_integrator.py
     "test_headless.py",  # tests headless_runner.py via sys.path dance
     "test_oauth_callback_rfc9207.py",  # extends scripts/oauth_callback.py (RFC variant)
     "test_skill_blueprint.py",  # tests scripts/skill_metadata.py (multi-class)

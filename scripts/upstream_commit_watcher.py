@@ -36,7 +36,7 @@ REPOS: list[tuple[str, str]] = [
     ("anthropics", "claude-code"),
     ("NousResearch", "hermes-agent"),
     ("MoonshotAI", "kimi-code"),
-    ("opencode-ai", "opencode"),
+    ("anomalyco", "opencode"),
 ]
 
 # Topics we care about when scoring a commit's applicability to Sensei.
@@ -323,7 +323,7 @@ def _write_digest(
         f"# Upstream Commit Digest — {date_str}",
         "",
         f"Generated: {_iso(run_date)}",
-        "Watched upstreams: `anthropics/claude-code`, `NousResearch/hermes-agent`, `MoonshotAI/kimi-code`, `opencode-ai/opencode`.",
+        "Watched upstreams: `anthropics/claude-code`, `NousResearch/hermes-agent`, `MoonshotAI/kimi-code`, `anomalyco/opencode`.",
         "",
         "This digest lists commits from upstream agent frameworks that may contain ideas, fixes, or patterns applicable to Sensei / master-ai-cli. Relevant commits are automatically enqueued in `memory/upstream-integration-queue.json` for the integrator.",
         "",
