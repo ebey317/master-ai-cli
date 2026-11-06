@@ -52,6 +52,9 @@ jobs:
         pre-commit install
         pre-commit run --all-files
 
+    - name: Scan for secrets
+      run: python3 scripts/scan_secrets.py
+
     - name: Run pytest
       env:
         MCLI_SKIP_ENV_TESTS: "1"

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import sys, os, json, tempfile, re, gzip, urllib.request, urllib.error, urllib.parse, threading, time, uuid, importlib.util, subprocess
+import hmac
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from datetime import datetime
 from typing import Any
@@ -4942,6 +4943,8 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                 self._json({'error': str(e)}, 500)
 
         elif self.path == '/keys':
+            if not self._require_local_or_token():
+                return
             # Merge incoming key(s) into ~/.master_ai_keys. Body shape:
             #   {"field": "groq", "value": "gsk_..."} — sets one
             #   OR {"merge": {"groq": "...", "openai": "..."}} — merges many
@@ -4972,6 +4975,8 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
                 self._json({'error': str(e)}, 500)
 
         elif self.path == '/sessions/delete':
+            if not self._require_local_or_token():
+                return
             try:
                 payload = json.loads(data)
                 fname   = os.path.basename(payload.get('file', ''))
@@ -5064,6 +5069,17 @@ Output EXACTLY 5 short bullets, each starting with "- ". No preamble. No closing
             self.wfile.write(b'{"error":"extension token required"}')
         except Exception:
             pass
+        return False
+
+    def _require_local_or_token(self):
+        """Restrict sensitive writes to local clients or token holders."""
+        if _client_is_loopback(self):
+            return True
+        sent = self.headers.get('X-Master-AI-Token', '') or ''
+        expected = self._extension_token()
+        if sent and expected and hmac.compare_digest(sent.encode(), expected.encode()):
+            return True
+        self._json({"error": "local or token required"}, 403)
         return False
 
     def _proxy_sdcpp(self, body=b""):
