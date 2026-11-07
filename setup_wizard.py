@@ -578,3 +578,19 @@ def run_setup_explicit() -> None:
     except Exception:
         pass
     _print(f"\n{C['green']}✓ Setup finished. Run `master-ai` to start.{C['reset']}")
+
+
+def _print_usage() -> None:
+    """Usage text for direct script invocation."""
+    print("setup_wizard.py — interactive first-run setup for Master AI.")
+    print("Normally launched with:  master-ai --setup")
+    print("Collects API keys, optional Telegram bot token, and operator profile.")
+    print("Writes ~/.master_ai_keys (mode 0600) and ~/.master_ai_profile.json.")
+    print("Env override: MCLI_SKIP_SETUP=1 bypasses the wizard entirely.")
+
+
+if __name__ == "__main__":
+    if "--help" in sys.argv or "-h" in sys.argv:
+        _print_usage()
+        sys.exit(0)
+    run_setup_explicit()

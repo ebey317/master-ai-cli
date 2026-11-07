@@ -8,6 +8,31 @@
 # ============================================================
 
 set -u
+
+# ── --help (must come before any side effect) ────────────────
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+    cat <<'EOF'
+Usage: bash install.sh
+
+Cross-platform installer for Master AI (Linux / macOS / WSL).
+Copies runtime files to ~/scripts, prompts for API keys and optional Ollama
+models, installs terminal commands (master, sensei), and enables auto-start
+services.
+
+This installer has no dry-run mode. It modifies:
+  - ~/scripts/               (program files)
+  - ~/.local/bin/            (master, sensei commands)
+  - ~/.config/systemd/user/  (Linux/WSL auto-start services)
+  - ~/.master_ai_*           (profiles, skills, logs, keys if pasted)
+
+Options:
+  --help, -h     Show this message and exit.
+
+Run with no arguments to install interactively.
+EOF
+    exit 0
+fi
+
 source "$(dirname "$0")/brand.sh" 2>/dev/null || source ~/scripts/brand.sh 2>/dev/null || true
 
 # Color fallbacks
