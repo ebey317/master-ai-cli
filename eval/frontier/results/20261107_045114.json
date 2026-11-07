@@ -1,0 +1,258 @@
+{
+  "model": "google/gemma-4-26b-a4b-it:free",
+  "tasks": "all",
+  "timestamp": "20261107_045114",
+  "results": [
+    {
+      "task": "01_off_by_one",
+      "model": "google/gemma-4-26b-a4b-it:free",
+      "passed": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 1,
+          "status": "error",
+          "error": "model call failed: HTTP Error 429: Too Many Requests",
+          "seconds": 0.24
+        },
+        {
+          "attempt": 1,
+          "turns": 1,
+          "actions_executed": 0,
+          "action_errors": 0,
+          "status": "fail",
+          "verifier_exit_code": 1,
+          "verifier_tail": "F..                                                                      [100%]\n=================================== FAILURES ===================================\n_____________________________ test_page_size_exact _____________________________\n\n    def test_page_size_exact():\n        store = SliceStore(range(25))\n        rows, nxt = list_users(store, page_size=10, page=1)\n>       assert len(rows) == 10\nE       assert 11 == 10\nE        +  where 11 = len([0, 1, 2, 3, 4, 5, ...])\n\nverify/test_off_by_one.py:13: AssertionError\n=========================== short test summary info ============================\nFAILED verify/test_off_by_one.py::test_page_size_exact - assert 11 == 10\n1 failed, 2 passed in 0.05s",
+          "seconds": 0.83
+        }
+      ],
+      "total_seconds": 0.83
+    },
+    {
+      "task": "02_spec_feature",
+      "model": "google/gemma-4-26b-a4b-it:free",
+      "passed": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 1,
+          "status": "error",
+          "error": "model call failed: HTTP Error 429: Too Many Requests",
+          "seconds": 0.3
+        },
+        {
+          "attempt": 1,
+          "turns": 1,
+          "actions_executed": 0,
+          "action_errors": 0,
+          "status": "fail",
+          "verifier_exit_code": 1,
+          "verifier_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n______________________________ test_typed_values _______________________________\n\ntmp_path = PosixPath('/home/elijah/.hermes/cache/scratch/pytest-of-elijah/pytest-50/test_typed_values0')\n\n    def test_typed_values(tmp_path):\n        p = tmp_path / \"cfg.env\"\n        p.write_text(\"\"\"\n    # comment\n    name = alice\n    timeout = 30\n    ratio = 3.14\n    enabled = true\n    disabled = False\n    \"\"\")\n        cfg = Config(p).load()\n        assert cfg.data[\"name\"] == \"alice\"\n>       assert cfg.data[\"timeout\"] == 30\nE       AssertionError: assert '30' == 30\n\nverify/test_task.py:21: AssertionError\n=========================== short test summary info ============================\nFAILED verify/test_task.py::test_typed_values - AssertionError: assert '30' =...\n1 failed in 0.06s",
+          "seconds": 0.86
+        }
+      ],
+      "total_seconds": 0.86
+    },
+    {
+      "task": "03_two_bugs_one_test",
+      "model": "google/gemma-4-26b-a4b-it:free",
+      "passed": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 1,
+          "status": "error",
+          "error": "model call failed: HTTP Error 429: Too Many Requests",
+          "seconds": 0.17
+        },
+        {
+          "attempt": 1,
+          "turns": 1,
+          "actions_executed": 0,
+          "action_errors": 0,
+          "status": "fail",
+          "verifier_exit_code": 1,
+          "verifier_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n______________________________ test_user_summary _______________________________\n\n    def test_user_summary():\n        raw = {\"name\": \"van Devere\", \"age\": \" 42 \"}\n>       assert get_user_summary(raw) == \"van Devere is 42 years old\"\nE       AssertionError: assert 'Van Devere is 42 years old' == 'van Devere is 42 years old'\nE         \nE         - van Devere is 42 years old\nE         ? ^\nE         + Van Devere is 42 years old\nE         ? ^\n\nverify/test_task.py:11: AssertionError\n=========================== short test summary info ============================\nFAILED verify/test_task.py::test_user_summary - AssertionError: assert 'Van D...\n1 failed in 0.05s",
+          "seconds": 0.71
+        }
+      ],
+      "total_seconds": 0.71
+    },
+    {
+      "task": "04_refactor_dup",
+      "model": "google/gemma-4-26b-a4b-it:free",
+      "passed": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 1,
+          "status": "error",
+          "error": "model call failed: HTTP Error 429: Too Many Requests",
+          "seconds": 0.17
+        },
+        {
+          "attempt": 1,
+          "turns": 1,
+          "actions_executed": 0,
+          "action_errors": 0,
+          "status": "fail",
+          "verifier_exit_code": 1,
+          "verifier_tail": "...F                                                                     [100%]\n=================================== FAILURES ===================================\n_____________________________ test_helpers_removed _____________________________\n\n    def test_helpers_removed():\n        repo = Path(__file__).resolve().parents[1] / \"repo\"\n>       assert not (repo / \"helpers.py\").exists()\nE       AssertionError: assert not True\nE        +  where True = exists()\nE        +    where exists = (PosixPath('/tmp/frontier_04_refactor_dup_0_1794045077/repo') / 'helpers.py').exists\n\nverify/test_task.py:23: AssertionError\n=========================== short test summary info ============================\nFAILED verify/test_task.py::test_helpers_removed - AssertionError: assert not...\n1 failed, 3 passed in 0.04s",
+          "seconds": 0.7
+        }
+      ],
+      "total_seconds": 0.7
+    },
+    {
+      "task": "05_cli_flag",
+      "model": "google/gemma-4-26b-a4b-it:free",
+      "passed": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 1,
+          "status": "error",
+          "error": "model call failed: HTTP Error 429: Too Many Requests",
+          "seconds": 0.17
+        },
+        {
+          "attempt": 1,
+          "turns": 1,
+          "actions_executed": 0,
+          "action_errors": 0,
+          "status": "fail",
+          "verifier_exit_code": 1,
+          "verifier_tail": ">       assert main([\"alice\", \"--shout\"]) == \"HELLO, ALICE!\"\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nverify/test_task.py:14: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \nrepo/main.py:9: in main\n    args = parser.parse_args(argv)\n           ^^^^^^^^^^^^^^^^^^^^^^^\n/home/elijah/.pyenv/versions/3.12.8/lib/python3.12/argparse.py:1908: in parse_args\n    self.error(msg)\n/home/elijah/.pyenv/versions/3.12.8/lib/python3.12/argparse.py:2650: in error\n    self.exit(2, _('%(prog)s: error: %(message)s\\n') % args)\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nself = ArgumentParser(prog='__main__.py', usage=None, description=None, formatter_class=<class 'argparse.HelpFormatter'>, conflict_handler='error', add_help=True)\nstatus = 2, message = '__main__.py: error: unrecognized arguments: --shout\\n'\n\n    def exit(self, status=0, message=None):\n        if message:\n            self._print_message(message, _sys.stderr)\n>       _sys.exit(status)\nE       SystemExit: 2\n\n/home/elijah/.pyenv/versions/3.12.8/lib/python3.12/argparse.py:2637: SystemExit\n----------------------------- Captured stderr call -----------------------------\nusage: __main__.py [-h] name\n__main__.py: error: unrecognized arguments: --shout\n=========================== short test summary info ============================\nFAILED verify/test_task.py::test_shout_flag - SystemExit: 2\n1 failed, 1 passed in 0.14s",
+          "seconds": 0.82
+        }
+      ],
+      "total_seconds": 0.82
+    },
+    {
+      "task": "06_parse_log",
+      "model": "google/gemma-4-26b-a4b-it:free",
+      "passed": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 1,
+          "status": "error",
+          "error": "model call failed: HTTP Error 429: Too Many Requests",
+          "seconds": 0.17
+        },
+        {
+          "attempt": 1,
+          "turns": 1,
+          "actions_executed": 0,
+          "action_errors": 0,
+          "status": "fail",
+          "verifier_exit_code": 1,
+          "verifier_tail": ">       raise NotImplementedError(\"implement me\")\nE       NotImplementedError: implement me\n\nrepo/parser.py:10: NotImplementedError\n_____________________________ test_parse_no_fields _____________________________\n\n    def test_parse_no_fields():\n        line = \"[INFO] timestamp=2024-01-02T12:34:56 system boot completed\"\n>       out = parse_log_line(line)\n              ^^^^^^^^^^^^^^^^^^^^\n\nverify/test_task.py:22: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nline = '[INFO] timestamp=2024-01-02T12:34:56 system boot completed'\n\n    def parse_log_line(line):\n        \"\"\"Parse a log line.\n    \n        Format: [LEVEL] timestamp=ISO key1=value1;key2=value2 ... message\n        Example: [WARN] timestamp=2024-01-01T00:00:00 user=alice;retries=3 connection timeout\n        \"\"\"\n>       raise NotImplementedError(\"implement me\")\nE       NotImplementedError: implement me\n\nrepo/parser.py:10: NotImplementedError\n=========================== short test summary info ============================\nFAILED verify/test_task.py::test_parse_full_line - NotImplementedError: imple...\nFAILED verify/test_task.py::test_parse_no_fields - NotImplementedError: imple...\n2 failed in 0.06s",
+          "seconds": 0.71
+        }
+      ],
+      "total_seconds": 0.71
+    },
+    {
+      "task": "07_stack_trace",
+      "model": "google/gemma-4-26b-a4b-it:free",
+      "passed": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 1,
+          "status": "error",
+          "error": "model call failed: HTTP Error 429: Too Many Requests",
+          "seconds": 0.18
+        },
+        {
+          "attempt": 1,
+          "turns": 1,
+          "actions_executed": 0,
+          "action_errors": 0,
+          "status": "fail",
+          "verifier_exit_code": 1,
+          "verifier_tail": "F.                                                                       [100%]\n=================================== FAILURES ===================================\n_________________________ test_run_task_strips_prefix __________________________\n\n    def test_run_task_strips_prefix():\n>       assert run_task(\"t-42\", handle_greet) == \"done 42\"\nE       AssertionError: assert 'done -42' == 'done 42'\nE         \nE         - done 42\nE         + done -42\nE         ?      +\n\nverify/test_task.py:11: AssertionError\n=========================== short test summary info ============================\nFAILED verify/test_task.py::test_run_task_strips_prefix - AssertionError: ass...\n1 failed, 1 passed in 0.05s",
+          "seconds": 0.73
+        }
+      ],
+      "total_seconds": 0.73
+    },
+    {
+      "task": "08_expr_eval",
+      "model": "google/gemma-4-26b-a4b-it:free",
+      "passed": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 1,
+          "status": "error",
+          "error": "model call failed: HTTP Error 429: Too Many Requests",
+          "seconds": 0.18
+        },
+        {
+          "attempt": 1,
+          "turns": 1,
+          "actions_executed": 0,
+          "action_errors": 0,
+          "status": "fail",
+          "verifier_exit_code": 1,
+          "verifier_tail": "    def test_mixed():\n>       assert evaluate(\"a + b * (c - 1)\", {\"a\": 1, \"b\": 2, \"c\": 4}) == 7\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nverify/test_task.py:30: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nexpr = 'a + b * (c - 1)', env = {'a': 1, 'b': 2, 'c': 4}\n\n    def evaluate(expr: str, env: dict) -> float:\n        \"\"\"Evaluate a tiny expression language.\n    \n        Supported:\n          - integers and floats\n          - variables from env\n          - binary + - * /\n          - parentheses\n        \"\"\"\n>       raise NotImplementedError(\"implement me\")\nE       NotImplementedError: implement me\n\nrepo/expr.py:13: NotImplementedError\n=========================== short test summary info ============================\nFAILED verify/test_task.py::test_literal - NotImplementedError: implement me\nFAILED verify/test_task.py::test_variable - NotImplementedError: implement me\nFAILED verify/test_task.py::test_arithmetic - NotImplementedError: implement me\nFAILED verify/test_task.py::test_parentheses - NotImplementedError: implement me\nFAILED verify/test_task.py::test_division - NotImplementedError: implement me\nFAILED verify/test_task.py::test_mixed - NotImplementedError: implement me\n6 failed in 0.06s",
+          "seconds": 0.75
+        }
+      ],
+      "total_seconds": 0.75
+    },
+    {
+      "task": "09_time_budget",
+      "model": "google/gemma-4-26b-a4b-it:free",
+      "passed": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 1,
+          "status": "error",
+          "error": "model call failed: HTTP Error 429: Too Many Requests",
+          "seconds": 0.2
+        },
+        {
+          "attempt": 1,
+          "turns": 1,
+          "actions_executed": 0,
+          "action_errors": 0,
+          "status": "fail",
+          "verifier_exit_code": 1,
+          "verifier_tail": ".F                                                                       [100%]\n=================================== FAILURES ===================================\n_______________________________ test_performance _______________________________\n\n    def test_performance():\n        big = list(range(10000)) + list(range(5000, 15000))\n        start = time.monotonic()\n        dups = find_duplicates(big)\n        elapsed = time.monotonic() - start\n        assert len(dups) == 5000\n>       assert elapsed < 1.0\nE       assert 4.425091502955183 < 1.0\n\nverify/test_task.py:20: AssertionError\n=========================== short test summary info ============================\nFAILED verify/test_task.py::test_performance - assert 4.425091502955183 < 1.0\n1 failed, 1 passed in 4.49s",
+          "seconds": 5.2
+        }
+      ],
+      "total_seconds": 5.2
+    },
+    {
+      "task": "10_shared_state",
+      "model": "google/gemma-4-26b-a4b-it:free",
+      "passed": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 1,
+          "status": "error",
+          "error": "model call failed: HTTP Error 429: Too Many Requests",
+          "seconds": 0.17
+        },
+        {
+          "attempt": 1,
+          "turns": 1,
+          "actions_executed": 0,
+          "action_errors": 0,
+          "status": "fail",
+          "verifier_exit_code": 1,
+          "verifier_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n________________________ test_instances_are_independent ________________________\n\n    def test_instances_are_independent():\n        a = PluginRegistry()\n        b = PluginRegistry()\n        a.register(\"x\")\n        b.register(\"y\")\n>       assert a.list() == [\"x\"]\nE       AssertionError: assert ['x', 'y'] == ['x']\nE         \nE         Left contains one more item: 'y'\nE         Use -v to get more diff\n\n/home/elijah/wt/t30/eval/frontier/10_shared_state/verify/test_task.py:14: AssertionError\n=========================== short test summary info ============================\nFAILED verify/test_task.py::test_instances_are_independent - AssertionError: ...\n1 failed in 0.04s",
+          "seconds": 0.7
+        }
+      ],
+      "total_seconds": 0.7
+    }
+  ],
+  "pass_rate": 0.0
+}
