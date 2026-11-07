@@ -1,0 +1,228 @@
+{
+  "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+  "tasks": "all",
+  "timestamp": "20261107_051834",
+  "results": [
+    {
+      "task": "01_off_by_one",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "passed": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 3,
+          "actions_executed": 5,
+          "action_errors": 2,
+          "landed_edits": 1,
+          "failed_edits": 0,
+          "landed_creates": 0,
+          "failed_creates": 0,
+          "status": "pass",
+          "verifier_exit_code": 0,
+          "verifier_tail": "...                                                                      [100%]\n3 passed in 0.02s",
+          "seconds": 7.85
+        }
+      ],
+      "total_seconds": 7.85
+    },
+    {
+      "task": "02_spec_feature",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "passed": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 3,
+          "actions_executed": 5,
+          "action_errors": 2,
+          "landed_edits": 1,
+          "failed_edits": 0,
+          "landed_creates": 0,
+          "failed_creates": 0,
+          "status": "pass",
+          "verifier_exit_code": 0,
+          "verifier_tail": ".                                                                        [100%]\n1 passed in 0.05s",
+          "seconds": 8.71
+        }
+      ],
+      "total_seconds": 8.71
+    },
+    {
+      "task": "03_two_bugs_one_test",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "passed": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 3,
+          "actions_executed": 5,
+          "action_errors": 2,
+          "landed_edits": 1,
+          "failed_edits": 0,
+          "landed_creates": 0,
+          "failed_creates": 0,
+          "status": "pass",
+          "verifier_exit_code": 0,
+          "verifier_tail": ".                                                                        [100%]\n1 passed in 0.01s",
+          "seconds": 11.0
+        }
+      ],
+      "total_seconds": 11.0
+    },
+    {
+      "task": "04_refactor_dup",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "passed": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 10,
+          "actions_executed": 18,
+          "action_errors": 10,
+          "landed_edits": 2,
+          "failed_edits": 1,
+          "landed_creates": 0,
+          "failed_creates": 0,
+          "status": "fail",
+          "verifier_exit_code": 1,
+          "verifier_tail": "...F                                                                     [100%]\n=================================== FAILURES ===================================\n_____________________________ test_helpers_removed _____________________________\n\n    def test_helpers_removed():\n        repo = Path(__file__).resolve().parents[1] / \"repo\"\n>       assert not (repo / \"helpers.py\").exists()\nE       AssertionError: assert not True\nE        +  where True = exists()\nE        +    where exists = (PosixPath('/tmp/frontier_04_refactor_dup_0_1794046741/repo') / 'helpers.py').exists\n\nverify/test_task.py:23: AssertionError\n=========================== short test summary info ============================\nFAILED verify/test_task.py::test_helpers_removed - AssertionError: assert not...\n1 failed, 3 passed in 0.04s",
+          "seconds": 33.0
+        }
+      ],
+      "total_seconds": 33.0
+    },
+    {
+      "task": "05_cli_flag",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "passed": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 5,
+          "actions_executed": 9,
+          "action_errors": 3,
+          "landed_edits": 3,
+          "failed_edits": 0,
+          "landed_creates": 0,
+          "failed_creates": 0,
+          "status": "pass",
+          "verifier_exit_code": 0,
+          "verifier_tail": "..                                                                       [100%]\n2 passed in 0.01s",
+          "seconds": 42.53
+        }
+      ],
+      "total_seconds": 42.53
+    },
+    {
+      "task": "06_parse_log",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "passed": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 9,
+          "actions_executed": 9,
+          "action_errors": 5,
+          "landed_edits": 2,
+          "failed_edits": 0,
+          "landed_creates": 0,
+          "failed_creates": 0,
+          "status": "pass",
+          "verifier_exit_code": 0,
+          "verifier_tail": "..                                                                       [100%]\n2 passed in 0.01s",
+          "seconds": 46.56
+        }
+      ],
+      "total_seconds": 46.56
+    },
+    {
+      "task": "07_stack_trace",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "passed": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 4,
+          "actions_executed": 4,
+          "action_errors": 2,
+          "landed_edits": 1,
+          "failed_edits": 0,
+          "landed_creates": 0,
+          "failed_creates": 0,
+          "status": "pass",
+          "verifier_exit_code": 0,
+          "verifier_tail": "..                                                                       [100%]\n2 passed in 0.01s",
+          "seconds": 13.81
+        }
+      ],
+      "total_seconds": 13.81
+    },
+    {
+      "task": "08_expr_eval",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "passed": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 6,
+          "actions_executed": 6,
+          "action_errors": 4,
+          "landed_edits": 1,
+          "failed_edits": 0,
+          "landed_creates": 1,
+          "failed_creates": 0,
+          "status": "pass",
+          "verifier_exit_code": 0,
+          "verifier_tail": "......                                                                   [100%]\n6 passed in 0.02s",
+          "seconds": 26.02
+        }
+      ],
+      "total_seconds": 26.02
+    },
+    {
+      "task": "09_time_budget",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "passed": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 3,
+          "actions_executed": 3,
+          "action_errors": 1,
+          "landed_edits": 1,
+          "failed_edits": 0,
+          "landed_creates": 0,
+          "failed_creates": 0,
+          "status": "pass",
+          "verifier_exit_code": 0,
+          "verifier_tail": "..                                                                       [100%]\n2 passed in 0.02s",
+          "seconds": 62.19
+        }
+      ],
+      "total_seconds": 62.19
+    },
+    {
+      "task": "10_shared_state",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "passed": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 3,
+          "actions_executed": 3,
+          "action_errors": 1,
+          "landed_edits": 1,
+          "failed_edits": 0,
+          "landed_creates": 0,
+          "failed_creates": 0,
+          "status": "pass",
+          "verifier_exit_code": 0,
+          "verifier_tail": ".                                                                        [100%]\n1 passed in 0.01s",
+          "seconds": 4.57
+        }
+      ],
+      "total_seconds": 4.57
+    }
+  ],
+  "pass_rate": 0.9
+}

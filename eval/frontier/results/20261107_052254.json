@@ -1,0 +1,228 @@
+{
+  "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+  "tasks": "all",
+  "timestamp": "20261107_052254",
+  "results": [
+    {
+      "task": "01_off_by_one",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "passed": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 7,
+          "actions_executed": 8,
+          "action_errors": 2,
+          "landed_edits": 1,
+          "failed_edits": 0,
+          "landed_creates": 1,
+          "failed_creates": 0,
+          "status": "pass",
+          "verifier_exit_code": 0,
+          "verifier_tail": "...                                                                      [100%]\n3 passed in 0.02s",
+          "seconds": 48.28
+        }
+      ],
+      "total_seconds": 48.28
+    },
+    {
+      "task": "02_spec_feature",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "passed": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 10,
+          "actions_executed": 13,
+          "action_errors": 4,
+          "landed_edits": 1,
+          "failed_edits": 0,
+          "landed_creates": 2,
+          "failed_creates": 0,
+          "status": "pass",
+          "verifier_exit_code": 0,
+          "verifier_tail": ".                                                                        [100%]\n1 passed in 0.02s",
+          "seconds": 22.76
+        }
+      ],
+      "total_seconds": 22.76
+    },
+    {
+      "task": "03_two_bugs_one_test",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "passed": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 7,
+          "actions_executed": 8,
+          "action_errors": 2,
+          "landed_edits": 1,
+          "failed_edits": 0,
+          "landed_creates": 0,
+          "failed_creates": 0,
+          "status": "pass",
+          "verifier_exit_code": 0,
+          "verifier_tail": ".                                                                        [100%]\n1 passed in 0.01s",
+          "seconds": 23.07
+        }
+      ],
+      "total_seconds": 23.07
+    },
+    {
+      "task": "04_refactor_dup",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "passed": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 7,
+          "actions_executed": 10,
+          "action_errors": 3,
+          "landed_edits": 2,
+          "failed_edits": 0,
+          "landed_creates": 0,
+          "failed_creates": 0,
+          "status": "pass",
+          "verifier_exit_code": 0,
+          "verifier_tail": "....                                                                     [100%]\n4 passed in 0.02s",
+          "seconds": 16.99
+        }
+      ],
+      "total_seconds": 16.99
+    },
+    {
+      "task": "05_cli_flag",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "passed": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 7,
+          "actions_executed": 11,
+          "action_errors": 3,
+          "landed_edits": 3,
+          "failed_edits": 0,
+          "landed_creates": 0,
+          "failed_creates": 0,
+          "status": "pass",
+          "verifier_exit_code": 0,
+          "verifier_tail": "..                                                                       [100%]\n2 passed in 0.02s",
+          "seconds": 15.32
+        }
+      ],
+      "total_seconds": 15.32
+    },
+    {
+      "task": "06_parse_log",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "passed": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 10,
+          "actions_executed": 10,
+          "action_errors": 5,
+          "landed_edits": 1,
+          "failed_edits": 0,
+          "landed_creates": 0,
+          "failed_creates": 0,
+          "status": "pass",
+          "verifier_exit_code": 0,
+          "verifier_tail": "..                                                                       [100%]\n2 passed in 0.01s",
+          "seconds": 38.72
+        }
+      ],
+      "total_seconds": 38.72
+    },
+    {
+      "task": "07_stack_trace",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "passed": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 5,
+          "actions_executed": 4,
+          "action_errors": 2,
+          "landed_edits": 1,
+          "failed_edits": 0,
+          "landed_creates": 0,
+          "failed_creates": 0,
+          "status": "pass",
+          "verifier_exit_code": 0,
+          "verifier_tail": "..                                                                       [100%]\n2 passed in 0.01s",
+          "seconds": 13.95
+        }
+      ],
+      "total_seconds": 13.95
+    },
+    {
+      "task": "08_expr_eval",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "passed": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 10,
+          "actions_executed": 10,
+          "action_errors": 3,
+          "landed_edits": 1,
+          "failed_edits": 0,
+          "landed_creates": 3,
+          "failed_creates": 0,
+          "status": "fail",
+          "verifier_exit_code": 1,
+          "verifier_tail": "        parser = Parser(tokens, env)\n        result = parser.parse_expression()\n        if parser.pos < len(tokens):\n>           raise ValueError(\"Unexpected tokens after end of expression\")\nE           ValueError: Unexpected tokens after end of expression\n\nrepo/expr.py:17: ValueError\n=========================== short test summary info ============================\nFAILED verify/test_task.py::test_literal - ValueError: Unexpected tokens afte...\nFAILED verify/test_task.py::test_variable - ValueError: Unexpected tokens aft...\nFAILED verify/test_task.py::test_arithmetic - ValueError: Unexpected tokens a...\nFAILED verify/test_task.py::test_parentheses - ValueError: Unexpected tokens ...\nFAILED verify/test_task.py::test_division - ValueError: Unexpected tokens aft...\nFAILED verify/test_task.py::test_mixed - ValueError: Unexpected tokens after ...\n6 failed in 0.10s",
+          "seconds": 38.09
+        }
+      ],
+      "total_seconds": 38.09
+    },
+    {
+      "task": "09_time_budget",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "passed": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 8,
+          "actions_executed": 7,
+          "action_errors": 4,
+          "landed_edits": 0,
+          "failed_edits": 0,
+          "landed_creates": 0,
+          "failed_creates": 0,
+          "status": "fail",
+          "verifier_exit_code": 1,
+          "verifier_tail": "_______________________________ test_performance _______________________________\n\n    def test_performance():\n        big = list(range(10000)) + list(range(5000, 15000))\n        start = time.monotonic()\n        dups = find_duplicates(big)\n        elapsed = time.monotonic() - start\n        assert len(dups) == 5000\n>       assert elapsed < 1.0\nE       assert 4.509032469009981 < 1.0\n\nverify/test_task.py:20: AssertionError\n=========================== short test summary info ============================\nFAILED verify/test_task.py::test_performance - assert 4.509032469009981 < 1.0\n1 failed, 1 passed in 4.57s",
+          "seconds": 27.15
+        }
+      ],
+      "total_seconds": 27.15
+    },
+    {
+      "task": "10_shared_state",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "passed": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "turns": 4,
+          "actions_executed": 3,
+          "action_errors": 1,
+          "landed_edits": 1,
+          "failed_edits": 0,
+          "landed_creates": 0,
+          "failed_creates": 0,
+          "status": "pass",
+          "verifier_exit_code": 0,
+          "verifier_tail": ".                                                                        [100%]\n1 passed in 0.01s",
+          "seconds": 7.65
+        }
+      ],
+      "total_seconds": 7.65
+    }
+  ],
+  "pass_rate": 0.8
+}
