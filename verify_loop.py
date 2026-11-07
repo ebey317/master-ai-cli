@@ -83,10 +83,11 @@ def run_tests(cwd: str | Path | None = None) -> tuple[int, str]:
 
 def _strip_fenced_body(text: str) -> str:
     """Remove a surrounding ```lang ... ``` fence pair if present."""
-    text = text.strip()
-    m = re.match(r"```[A-Za-z0-9_-]*\s*\n(.*?)\n```\s*$", text, re.DOTALL)
+    # Only touch text that really is fenced; never alter indentation/whitespace
+    # of ordinary EDIT bodies (find text must still match the file exactly).
+    m = re.match(r"\s*```[A-Za-z0-9_-]*[ \t]*\n(.*?)\n```\s*$", text, re.DOTALL)
     if m:
-        return m.group(1).strip("\n")
+        return m.group(1)
     return text
 
 
@@ -140,7 +141,11 @@ def normalize_edit_op(
     find_text: str,
     replace_text: str,
 ) -> tuple[str, str]:
-    """Strip fences from an EDIT operation before it is applied."""
+    """Strip fences from an EDIT operation before it is applied.
+
+    Flag OFF means the product behaves exactly as before: no change."""
+    if not enabled():
+        return find_text, replace_text
     return strip_edit_fences(find_text, replace_text)
 
 

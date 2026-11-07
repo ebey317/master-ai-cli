@@ -7,6 +7,7 @@ import master_ai or dispatch (avoiding circular imports).
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -26,13 +27,13 @@ def test_detect_test_command_with_tests_dir(tmp_path: Path):
     (tmp_path / "tests").mkdir()
     (tmp_path / "foo.py").write_text("x = 1")
     cmd = vl.detect_test_command(tmp_path)
-    assert cmd == [os.sys.executable, "-m", "pytest", "-q"]
+    assert cmd == [sys.executable, "-m", "pytest", "-q"]
 
 
 def test_detect_test_command_with_test_file(tmp_path: Path):
     (tmp_path / "test_foo.py").write_text("def test_x(): pass")
     cmd = vl.detect_test_command(tmp_path)
-    assert cmd == [os.sys.executable, "-m", "pytest", "-q"]
+    assert cmd == [sys.executable, "-m", "pytest", "-q"]
 
 
 def test_detect_test_command_none(tmp_path: Path):
@@ -132,3 +133,17 @@ def test_api_summary():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_flag_off_leaves_edit_text_untouched(monkeypatch):
+    monkeypatch.delenv("MASTER_AI_VERIFY_LOOP", raising=False)
+    find, rep = "    x = 1\n", "    x = 2\n"
+    assert vl.normalize_edit_op("a.py", find, rep) == (find, rep)
+
+
+def test_flag_on_keeps_indentation_of_unfenced_text(monkeypatch):
+    monkeypatch.setenv("MASTER_AI_VERIFY_LOOP", "1")
+    find, rep = "    x = 1\n", "    x = 2\n"
+    assert vl.normalize_edit_op("a.py", find, rep) == (find, rep)
+    fenced = "```python\n    x = 1\n```"
+    assert vl.normalize_edit_op("a.py", fenced, "y")[0] == "    x = 1"
