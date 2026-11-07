@@ -374,6 +374,16 @@ def run_uninstall(use_github: bool = False) -> None:
 
 
 def main() -> None:
+    if "--help" in sys.argv or "-h" in sys.argv:
+        _print("uninstall_wizard.py — guided uninstall for Master AI.")
+        _print("Usage: python3 uninstall_wizard.py [--github]")
+        _print("       master-ai --uninstall")
+        _print("Levels:")
+        _print("  1) pip package + API keys/config (keeps Ollama/models)")
+        _print("  2) all user data + entry points (keeps Ollama/models)")
+        _print("  3) total wipe including Ollama and downloaded models")
+        _print("Use --github for a temporary GitHub Models assistant.")
+        return
     use_github = "--github" in sys.argv
     run_uninstall(use_github=use_github)
 

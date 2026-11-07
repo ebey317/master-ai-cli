@@ -388,7 +388,7 @@ def _load_handlers():
         )
 
     # Each import is optional — missing consumers don't block the CLI.
-    for mod_name in ("sensei_extractor", "master_ai"):
+    for mod_name in ("sensei_extractor", "master_ai", "suggestive_thinking_sources"):
         try:
             __import__(mod_name)
         except Exception as e:

@@ -52,3 +52,7 @@ memory/
 *~
 
 *.egg-info/
+
+# no-mistakes gate scratch output (never commit)
+findings.json
+review_findings.json

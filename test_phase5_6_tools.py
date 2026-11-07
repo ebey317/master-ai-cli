@@ -271,7 +271,19 @@ class Phase5And6AcceptanceTests(unittest.TestCase):
             cwd=str(REPO),
             timeout=10,
         )
-        return result.stdout if result.returncode == 0 else ""
+        if result.returncode != 0:
+            return ""
+        shallow = subprocess.run(
+            ["git", "rev-parse", "--is-shallow-repository"],
+            capture_output=True,
+            text=True,
+            cwd=str(REPO),
+            timeout=10,
+        ).stdout.strip()
+        if shallow == "true":
+            # CI checks out a shallow clone: old commit hashes are not present.
+            self.skipTest("shallow clone: full history unavailable")
+        return result.stdout
 
     def test_phase5_commits_in_history(self):
         log = self._git_log_oneline()

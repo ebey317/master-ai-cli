@@ -65,7 +65,9 @@ rsync -a \
 #    `fi'"). Prefix mentions in prompts/docs are not secrets; real keys
 #    have long bodies and still match. This also stops the scrubber from
 #    deleting its own pattern line out of the staged pack_for_sale.sh.
-_KEY_RE='(sk-ant-[A-Za-z0-9_-]{16,}|sk-or-v1-[A-Za-z0-9]{20,}|sk-proj-[A-Za-z0-9_-]{16,}|gsk_[A-Za-z0-9]{20,}|AIzaSy[A-Za-z0-9_-]{16,}|hf_[A-Za-z0-9]{20,}|xai-[A-Za-z0-9_-]{16,}|nvapi-[A-Za-z0-9-]{20,}|AKIA[A-Z0-9]{16})'
+#    2026-11-06: added Cerebras (csk-) and Fireworks (fw_) prefixes so the
+#    two keys install.sh now accepts are also scrubbed before shipping.
+_KEY_RE='(sk-ant-[A-Za-z0-9_-]{16,}|sk-or-v1-[A-Za-z0-9]{20,}|sk-proj-[A-Za-z0-9_-]{16,}|gsk_[A-Za-z0-9]{20,}|AIzaSy[A-Za-z0-9_-]{16,}|hf_[A-Za-z0-9]{20,}|xai-[A-Za-z0-9_-]{16,}|nvapi-[A-Za-z0-9-]{20,}|csk-[A-Za-z0-9_-]{20,}|fw_[A-Za-z0-9]{20,}|AKIA[A-Z0-9]{16})'
 find "$STAGE_DIR" -type f \( -name "*.py" -o -name "*.sh" -o -name "*.md" -o -name "*.json" -o -name "*.yaml" -o -name "*.yml" -o -name "*.txt" \) \
   -exec grep -lE "$_KEY_RE" {} \; 2>/dev/null | while read -r f; do
     echo "⚠ Removing suspected secret line from $f"
@@ -81,7 +83,35 @@ if [ -n "$leftovers" ]; then
     exit 1
 fi
 
-# 4. Clean-machine install test in a temp HOME
+# 4. Generate buyer README
+#    install.sh points new buyers to README_FOR_BUYER.md, but the repo only
+#    has README.md. Copy README.md and prepend a short "Start here" header
+#    with the exact commands the installer and wizard use.
+README_SRC="$STAGE_DIR/README.md"
+README_DST="$STAGE_DIR/README_FOR_BUYER.md"
+if [ -f "$README_SRC" ]; then
+    cat > "$README_DST" <<EOF
+# Master AI — Start Here
+
+Quick commands for a fresh install:
+
+1. Install:           bash install.sh
+2. Add / change keys: bash setup_keys.sh
+   Validate keys:     bash setup_keys.sh --check
+   Or use the wizard: master-ai --setup
+3. First run cleanup:   bash ~/scripts/first_run.sh
+4. Run Sensei:        master-ai   (or: sensei)
+5. Uninstall:          master-ai --uninstall
+6. Installer log:     ~/.master_ai_install.log
+
+---
+
+EOF
+    cat "$README_SRC" >> "$README_DST"
+    echo "✓ Generated $README_DST"
+fi
+
+# 5. Clean-machine install test in a temp HOME
 TEST_HOME="$(mktemp -d)"
 trap 'rm -rf "$TEST_HOME"' EXIT
 
@@ -112,9 +142,12 @@ for cmd in .local/bin/master .local/bin/sensei; do
     [ -x "$TEST_HOME/$cmd" ] || { echo "✗ Missing command: $cmd"; exit 1; }
 done
 
-echo "✓ Verified buyer install creates commands and runtime dirs"
+# Verify the generated buyer README is present in the installed tree
+[ -f "$TEST_HOME/buyer/README_FOR_BUYER.md" ] || { echo "✗ README_FOR_BUYER.md missing from buyer tree"; exit 1; }
 
-# 5. Tar it up
+echo "✓ Verified buyer install creates commands, runtime dirs, and buyer README"
+
+# 6. Tar it up
 tar -czf "$OUTPUT" -C "$DIST_DIR/stage" "master-ai-$VERSION"
 echo ""
 echo "✅ Packaged: $OUTPUT"

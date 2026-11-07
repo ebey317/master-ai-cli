@@ -381,6 +381,7 @@ _UNVALIDATED_KINDS = frozenset(
         "RUN_SKILL",
         "SEND_EMAIL",
         "SEND_TELEGRAM",
+        "FBPOST",
         "REMOTE_MCP",
         "SUBAGENT",
         "SEARCH",

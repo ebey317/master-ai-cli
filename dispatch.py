@@ -1323,6 +1323,42 @@ def process_reply(
         if s
     ]
 
+    # 2026-10-22: FBPOST: message="..." link=<optional> page_id=<optional>
+    # — Facebook Page feed post via Graph API. Same confirm-gate shape as
+    # SEND_EMAIL/SEND_TELEGRAM (plan refuses, review/auto always prompt —
+    # irreversible, public). page_id/link default to the keychain
+    # fb_page_id when omitted — see confirm_fb_post/post_to_facebook_page
+    # in master_ai.py.
+    def _parse_fbpost_spec(line: Any) -> Any:
+        payload = _extract_directive(line, "FBPOST")
+        if not payload:
+            return None
+        spec = {}
+        pat = re.compile(r"""(\w+)\s*=\s*(?:"([^"]*)"|'([^']*)'|(\S+))""")
+        for m in pat.finditer(payload):
+            k = m.group(1).lower()
+            v = (
+                m.group(2)
+                if m.group(2) is not None
+                else (m.group(3) if m.group(3) is not None else m.group(4))
+            )
+            spec[k] = v
+        if not spec.get("message"):
+            return None
+        spec.setdefault("link", None)
+        spec.setdefault("page_id", None)
+        return spec
+
+    fbpost_specs = [
+        s
+        for s in (
+            _parse_fbpost_spec(l)
+            for lo, l in zip(line_offsets, lines, strict=False)
+            if _real_directive(l, "FBPOST", line_start=lo)
+        )
+        if s
+    ]
+
     # 2026-08-27: BROWSER_* — see _extract_browser_actions()/confirm_browser_action()
     # above confirm_run. Long taught to the model, never executed until now.
     browser_actions = _extract_browser_actions(lines)
@@ -2812,6 +2848,31 @@ def process_reply(
                 f"[SEND_TELEGRAM RESULT]\nChat ID: {spec.get('chat_id', '')}\nMessage: {spec.get('text', '')}\nStatus: sent"
             )
 
+    # FBPOST: runs after RUN/RUNTERM/SEND_EMAIL/SEND_TELEGRAM — public Page post.
+    for spec in fbpost_specs:
+        result = _ma().confirm_fb_post(spec)
+        if not (isinstance(result, dict) and result.get("ok")):
+            err = (result or {}).get("error", "fbpost refused or failed")
+            if _append_tool_blocked_feedback(
+                "FBPOST",
+                f"page_id={spec.get('page_id') or ''} message={spec.get('message', '')[:80]}",
+            ):
+                return None
+            print(_ma()._pill("BLOCKED", f"{D}FBPOST failed or was refused — {err}{X}"))
+            _ma().log(
+                f"CHAIN_ABORT: FBPOST page_id={spec.get('page_id') or ''} err={err}"
+            )
+            _append_exec_failure_feedback(
+                "FBPOST",
+                f"page_id={spec.get('page_id') or ''}",
+                f"Page: {spec.get('page_id') or ''}\nMessage: {spec.get('message', '')}\nError: {err}",
+            )
+            return None
+        if continue_after_tools:
+            tool_result_feedback.append(
+                f"[FBPOST RESULT]\nPage: {result.get('page_id', '')}\nPost ID: {result.get('post_id', '')}\nStatus: posted"
+            )
+
     # BROWSER_* — dispatched through sensei_bridge.py's queue (same one
     # sensei_mcp_server.py's mcp__sensei__* tools use). Chain-aborts on
     # failure like RUN/RUNTERM so the model doesn't narrate a browser
@@ -3036,6 +3097,7 @@ def process_reply(
             "TASK_DONE",
             "SEND_EMAIL",
             "SEND_TELEGRAM",
+            "FBPOST",
             "REMEMBER",
         }:
             _bad_name = _fake_directive.group(1)
@@ -3054,7 +3116,7 @@ def process_reply(
                         f"'{_bad_name}:' is not a real directive here — nothing ran. "
                         "The real directives are RUN:, RUNTERM:, READ:, CREATE:, EDIT:, "
                         "SEARCH:, SUBAGENT:, TASK_ADD:, TASK_DONE:, SEND_EMAIL:, "
-                        "SEND_TELEGRAM:, REMEMBER:. For a code/file search use SEARCH: "
+                        "SEND_TELEGRAM:, FBPOST:, REMEMBER:. For a code/file search use SEARCH: "
                         "<query> or RUN: grep ... Emit the real directive now."
                     ),
                 }

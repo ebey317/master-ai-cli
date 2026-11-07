@@ -1573,3 +1573,45 @@ class TestResumeRestoresSubagentRecords(_IsolateRuntimeState, unittest.TestCase)
         for m in fresh_history[:-1]:
             self.assertFalse(m["content"].lstrip().startswith("RUN:"))
             self.assertFalse(m["content"].lstrip().startswith("BROWSER_"))
+
+
+class TestMetaCatalogReviewRound3(unittest.TestCase):
+    """Review round 3 (2026-11-04): findings 5, 6 and 10.
+
+    Finding 5  ids were sorted as strings, so muse-spark-1.9 outranked 1.10.
+    Finding 6  a substring denylist could drop a real chat model (or admit a
+               future non-chat one) and fell back to the static tuple silently.
+    Finding 10 the command registry's general section must stay A-Z.
+    """
+
+    def setUp(self):
+        self._ma = master_ai
+        self._stack = ExitStack()
+        self.addCleanup(self._stack.close)
+        self._stack.enter_context(
+            mock.patch.object(master_ai, "_meta_key", lambda: "k" * 40)
+        )
+
+    def _catalog(self, ids):
+        self._stack.enter_context(
+            mock.patch.object(
+                master_ai, "_provider_model_catalog", lambda *a, **k: list(ids)
+            )
+        )
+        return master_ai._meta_model_catalog()
+
+    def test_versions_sort_numerically_newest_first(self):
+        out = self._catalog(
+            ["muse-spark-1.9", "muse-spark-1.10", "muse-wonder-1.0", "muse-image-2.1"]
+        )
+        self.assertEqual(out, ["muse-spark-1.10", "muse-spark-1.9", "muse-wonder-1.0"])
+
+    def test_allowlist_drops_non_chat_models_and_falls_back_honestly(self):
+        out = self._catalog(["muse-image-2.1", "muse-voice-transcribe-1.0", "llama-3"])
+        self.assertEqual(out, list(master_ai._META_CHAT_MODELS))
+
+    def test_general_commands_stay_sorted(self):
+        import command_registry
+
+        general = [c[0] for c in command_registry.COMMANDS if c[3] == "general"]
+        self.assertEqual(general, sorted(general, key=str.lower))
