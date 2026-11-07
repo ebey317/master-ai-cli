@@ -65,7 +65,9 @@ rsync -a \
 #    `fi'"). Prefix mentions in prompts/docs are not secrets; real keys
 #    have long bodies and still match. This also stops the scrubber from
 #    deleting its own pattern line out of the staged pack_for_sale.sh.
-_KEY_RE='(sk-ant-[A-Za-z0-9_-]{16,}|sk-or-v1-[A-Za-z0-9]{20,}|sk-proj-[A-Za-z0-9_-]{16,}|gsk_[A-Za-z0-9]{20,}|AIzaSy[A-Za-z0-9_-]{16,}|hf_[A-Za-z0-9]{20,}|xai-[A-Za-z0-9_-]{16,}|nvapi-[A-Za-z0-9-]{20,}|AKIA[A-Z0-9]{16})'
+#    2026-11-06: added Cerebras (csk-) and Fireworks (fw_) prefixes so the
+#    two keys install.sh now accepts are also scrubbed before shipping.
+_KEY_RE='(sk-ant-[A-Za-z0-9_-]{16,}|sk-or-v1-[A-Za-z0-9]{20,}|sk-proj-[A-Za-z0-9_-]{16,}|gsk_[A-Za-z0-9]{20,}|AIzaSy[A-Za-z0-9_-]{16,}|hf_[A-Za-z0-9]{20,}|xai-[A-Za-z0-9_-]{16,}|nvapi-[A-Za-z0-9-]{20,}|csk-[A-Za-z0-9_-]{20,}|fw_[A-Za-z0-9]{20,}|AKIA[A-Z0-9]{16})'
 find "$STAGE_DIR" -type f \( -name "*.py" -o -name "*.sh" -o -name "*.md" -o -name "*.json" -o -name "*.yaml" -o -name "*.yml" -o -name "*.txt" \) \
   -exec grep -lE "$_KEY_RE" {} \; 2>/dev/null | while read -r f; do
     echo "⚠ Removing suspected secret line from $f"
