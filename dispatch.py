@@ -38,6 +38,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import verify_loop as _verify_loop
 from directive_xml_noise import strip_arg_xml_noise as _strip_arg_xml_noise
 from sensei_tables import (
     _ARG_XML_TAG_RE,
@@ -2279,6 +2280,8 @@ def process_reply(
                 tool_result_feedback.append(
                     f"[CREATE RESULT]\nPath: {filepath}\nStatus: written ({len(content)} bytes)"
                 )
+                if _verify_loop.enabled():
+                    _verify_loop.post_edit_hook(history, cwd=os.getcwd())
         else:
             action_failed = True
 
@@ -2324,6 +2327,9 @@ def process_reply(
             return None
 
     for filepath, find_text, replace_text in edit_ops:
+        find_text, replace_text = _verify_loop.normalize_edit_op(
+            filepath, find_text, replace_text
+        )
         if _ma().confirm_edit(filepath, find_text, replace_text):
             # Same CREATE-feedback gap applies to EDIT -- see the comment
             # at the CREATE success branch above.
@@ -2331,6 +2337,8 @@ def process_reply(
                 tool_result_feedback.append(
                     f"[EDIT RESULT]\nPath: {filepath}\nStatus: applied"
                 )
+                if _verify_loop.enabled():
+                    _verify_loop.post_edit_hook(history, cwd=os.getcwd())
         else:
             action_failed = True
 
