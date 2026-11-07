@@ -45,7 +45,7 @@ FRONTIER_DIR = Path(__file__).resolve().parent
 RESULTS_DIR = FRONTIER_DIR / "results"
 OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-FRONTIER_SYSTEM_PROMPT = (
+_BASE_SYSTEM_PROMPT = (
     "You are Master AI running headless in a benchmark: complete the user's coding task by emitting "
     "tool directives, one per line, and nothing else. Available directives:\n"
     "  READ: <path>                          Read a file; its content is returned to you.\n"
@@ -66,6 +66,83 @@ FRONTIER_SYSTEM_PROMPT = (
     "After each tool result, emit the next directive; when the task is complete, "
     "reply with a brief summary and no directives."
 )
+
+
+def _list_repo_files(repo: Path) -> list[str]:
+    """Return sorted repo file paths relative to repo."""
+    return sorted(
+        str(p.relative_to(repo))
+        for p in repo.rglob("*")
+        if p.is_file() and not p.name.startswith(".")
+    )
+
+
+def _task_system_prompt(repo_files: list[str]) -> str:
+    """System prompt with the file listing and read-first guard."""
+    files_text = "\n".join(f"  {f}" for f in repo_files)
+    return (
+        _BASE_SYSTEM_PROMPT
+        + "\n\nRepository files:\n"
+        + files_text
+        + "\n\nBefore editing or creating any file, you must READ it with `READ: <path>`. "
+        "Any EDIT/CREATE on a file you have not READ will be rejected."
+    )
+
+
+def _strip_fences(text: str) -> str:
+    """Strip markdown fences around the whole directive block and around
+    CREATE/EDIT bodies. Models often wrap code in ```python ... ```, which
+    otherwise breaks the body-aware parser.
+    """
+    lines = text.splitlines()
+
+    # Remove an outermost fence pair that wraps the whole reply.
+    nonblank = [i for i, ln in enumerate(lines) if ln.strip()]
+    if (
+        nonblank
+        and lines[nonblank[0]].strip().startswith("```")
+        and lines[nonblank[-1]].strip() == "```"
+    ):
+        lines.pop(nonblank[-1])
+        lines.pop(nonblank[0])
+
+    # Remove fence lines that wrap individual body blocks.
+    out: list[str] = []
+    in_body = False
+    body_start_idx: int | None = None
+    for line in lines:
+        up = line.strip().upper()
+        if up in ("<<<CONTENT", "<<<FIND", "<<<REPLACE"):
+            in_body = True
+            body_start_idx = len(out)
+            out.append(line)
+            continue
+        if up in (">>>CONTENT", ">>>FIND", ">>>REPLACE"):
+            if body_start_idx is not None and len(out) > body_start_idx + 1:
+                # Drop opening fence line right after the body marker.
+                first_idx = body_start_idx + 1
+                if out[first_idx].strip().startswith("```"):
+                    out.pop(first_idx)
+                    # closing tag indices shifted by one
+                # Drop closing fence line right before the body closing marker.
+                if out and out[-1].strip() == "```":
+                    out.pop()
+            in_body = False
+            body_start_idx = None
+            out.append(line)
+            continue
+        out.append(line)
+
+    return "\n".join(out)
+
+
+def _relative_repo_path(repo: Path, target: str) -> str:
+    """Normalize `target` to a path relative to `repo`."""
+    try:
+        p = (repo / target.lstrip("/")).resolve()
+        return str(p.relative_to(repo.resolve()))
+    except Exception:
+        return target.lstrip("/")
 
 
 def _load_keychain_openrouter_key() -> str | None:
@@ -109,38 +186,58 @@ def _openrouter_chat(
 
 
 def _execute_action_in_repo(
-    action: Any, repo: Path, allow_destructive: bool = True
+    action: Any,
+    repo: Path,
+    read_files: set[str],
+    allow_destructive: bool = True,
+    legacy: bool = False,
 ) -> str:
     """Run one parsed action against files inside `repo`."""
     d = headless_runner._normalize_action(action)
     kind = d.get("type")
+    target = d.get("target", "").lstrip("/")
+    rel = _relative_repo_path(repo, target)
+
     if kind == "read":
-        target = repo / d.get("target", "").lstrip("/")
+        p = repo / target
         try:
-            return f"Content of {target}:\n{target.read_text(encoding='utf-8')}"
+            text = p.read_text(encoding="utf-8")
+            read_files.add(rel)
+            return f"Content of {rel}:\n{text}"
         except Exception as e:
-            return f"Error reading {target}: {e}"
+            return f"Error reading {rel}: {e}"
 
     if kind == "create":
-        target = repo / d.get("target", "").lstrip("/")
+        if not legacy and rel not in read_files:
+            return (
+                f"Error: you must READ `{rel}` before creating it. "
+                f"Available files: {', '.join(sorted(read_files)) or 'none yet'}"
+            )
+        p = repo / target
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(d.get("content", ""), encoding="utf-8")
-            return f"Created {target}"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(d.get("content", ""), encoding="utf-8")
+            read_files.add(rel)
+            return f"Created {rel}"
         except Exception as e:
-            return f"Error creating {target}: {e}"
+            return f"Error creating {rel}: {e}"
 
     if kind == "edit":
-        target = repo / d.get("target", "").lstrip("/")
+        if not legacy and rel not in read_files:
+            return (
+                f"Error: you must READ `{rel}` before editing it. "
+                f"Already read: {', '.join(sorted(read_files)) or 'none yet'}"
+            )
+        p = repo / target
         try:
-            text = target.read_text(encoding="utf-8")
+            text = p.read_text(encoding="utf-8")
             old = d.get("old", "")
             if old not in text:
-                return f"Edit skipped: old text not found in {target}"
-            target.write_text(text.replace(old, d.get("new", "")), encoding="utf-8")
-            return f"Edited {target}"
+                return f"Edit failed: old text not found in {rel}"
+            p.write_text(text.replace(old, d.get("new", "")), encoding="utf-8")
+            return f"Edited {rel}"
         except Exception as e:
-            return f"Error editing {target}: {e}"
+            return f"Error editing {rel}: {e}"
 
     if kind in ("run", "runterm"):
         command = d.get("command", "")
@@ -177,7 +274,9 @@ def _execute_action_in_repo(
     return f"Unknown action type: {kind}"
 
 
-def _run_verify(repo: Path, verify: Path, timeout: float = 120.0) -> tuple[int, str]:
+def _run_verify(
+    repo: Path, verify: Path, tail_lines: int = 15, timeout: float = 120.0
+) -> tuple[int, str]:
     """Run the hidden verify tests against `repo`. Returns (exit_code, tail)."""
     # Copy verify into the same temp tree so pytest can resolve imports via
     # the sys.path insertion in the test file (parents[1]/repo).
@@ -193,7 +292,7 @@ def _run_verify(repo: Path, verify: Path, timeout: float = 120.0) -> tuple[int, 
     )
     tail = (result.stdout + result.stderr).strip()
     lines = tail.splitlines()
-    return result.returncode, "\n".join(lines[-30:])
+    return result.returncode, "\n".join(lines[-tail_lines:])
 
 
 def _discover_tasks(tasks_arg: str) -> list[str]:
@@ -214,6 +313,7 @@ def run_task(
     max_turns: int = 10,
     timeout: float = 600.0,
     k: int = 1,
+    legacy: bool = False,
 ) -> dict[str, Any]:
     """Run one task up to `k` attempts. Return result dict."""
     task_dir = FRONTIER_DIR / task_id
@@ -230,14 +330,22 @@ def run_task(
             shutil.rmtree(tmp)
         shutil.copytree(repo_src, tmp / "repo")
         repo = tmp / "repo"
+        repo_files = _list_repo_files(repo)
 
+        read_files: set[str] = set()
         history: list[dict[str, str]] = [
-            {"role": "system", "content": FRONTIER_SYSTEM_PROMPT},
+            {"role": "system", "content": _task_system_prompt(repo_files)},
             {"role": "user", "content": prompt},
         ]
         turns_used = 0
         actions_executed = 0
         action_errors = 0
+        landed_edits = 0
+        failed_edits = 0
+        landed_creates = 0
+        failed_creates = 0
+        last_verify: tuple[int | None, str] = (None, "")
+        early_pass = False
 
         turn_start = time.monotonic()
         for turn in range(max_turns):
@@ -259,25 +367,64 @@ def run_task(
                 break
 
             history.append({"role": "assistant", "content": reply})
-            actions = typed_actions.parse_reply_with_bodies(reply)
+            text = reply if legacy else _strip_fences(reply)
+            actions = typed_actions.parse_reply_with_bodies(text)
             if not actions:
                 break
+
+            changed_this_turn = False
             for action in actions:
-                result = _execute_action_in_repo(action, repo)
+                result = _execute_action_in_repo(
+                    action, repo, read_files, legacy=legacy
+                )
                 actions_executed += 1
-                if "Error" in result or "skipped" in result.lower():
+                if "Error" in result or "failed" in result.lower():
                     action_errors += 1
+                d = headless_runner._normalize_action(action)
+                kind = d.get("type")
+                if kind == "edit":
+                    if result.startswith("Edited"):
+                        landed_edits += 1
+                        changed_this_turn = True
+                    else:
+                        failed_edits += 1
+                if kind == "create":
+                    if result.startswith("Created"):
+                        landed_creates += 1
+                        changed_this_turn = True
+                    else:
+                        failed_creates += 1
                 history.append({"role": "user", "content": result})
+
+            # Auto-verify after any turn that changed a file.
+            if changed_this_turn and not legacy:
+                exit_code, tail = _run_verify(repo, verify_src, tail_lines=15)
+                last_verify = (exit_code, tail)
+                history.append(
+                    {"role": "user", "content": f"Auto-verify result:\n{tail}"}
+                )
+                if exit_code == 0:
+                    early_pass = True
+                    break
         else:
             turns_used = max_turns
 
-        exit_code, tail = _run_verify(repo, verify_src)
+        if last_verify[0] is None:
+            exit_code, tail = _run_verify(repo, verify_src, tail_lines=15)
+            last_verify = (exit_code, tail)
+        else:
+            exit_code, tail = last_verify
+
         attempts.append(
             {
                 "attempt": attempt + 1,
                 "turns": turns_used,
                 "actions_executed": actions_executed,
                 "action_errors": action_errors,
+                "landed_edits": landed_edits,
+                "failed_edits": failed_edits,
+                "landed_creates": landed_creates,
+                "failed_creates": failed_creates,
                 "status": "pass" if exit_code == 0 else "fail",
                 "verifier_exit_code": exit_code,
                 "verifier_tail": tail,
@@ -334,6 +481,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--retries", type=int, default=2, help="Model-call retries on error"
     )
+    parser.add_argument(
+        "--legacy",
+        action="store_true",
+        help="Disable harness improvements (fences, read guard, auto-verify)",
+    )
     args = parser.parse_args(argv)
 
     api_key = _load_keychain_openrouter_key()
@@ -363,6 +515,7 @@ def main(argv: list[str] | None = None) -> int:
             max_turns=args.max_turns,
             timeout=args.timeout,
             k=args.k,
+            legacy=args.legacy,
         )
         all_results.append(result)
 
