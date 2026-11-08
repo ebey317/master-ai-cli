@@ -54,6 +54,7 @@ def test_task_verify_passes_with_solution(task_dir: Path, tmp_path: Path):
 def _apply_patch(task_dir: Path) -> None:
     patch = task_dir / "solution" / "patch.py"
     spec = importlib.util.spec_from_file_location(f"patch_{task_dir.name}", patch)
+    assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     mod.apply()
