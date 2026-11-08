@@ -61,7 +61,8 @@ MYPY_ARGS = ["--ignore-missing-imports", "--follow-imports=silent"]
 # Python after generation; the pre-commit config used to exclude it via regex.
 # conftest.py is excluded because two files share that module name and the
 # collision aborts the entire run -- that bug is the reason this gate exists.
-EXCLUDED_PREFIXES = ("appforge/templates/",)
+# eval/frontier task dirs are fixture repos (broken code + solutions share module names).
+EXCLUDED_PREFIXES = ("appforge/templates/", "eval/frontier/")
 EXCLUDED_NAMES = ("conftest.py",)
 
 # "path/to/file.py:123:45: error: Some message  [error-code]"

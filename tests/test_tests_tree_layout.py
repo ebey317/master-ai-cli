@@ -34,6 +34,7 @@ KNOWN_UNMAPPED = {
     "test_no_auto_agent_loop.py",  # source guard on master_ai.py: no auto agent-loop routing
     "test_overlay_anchor.py",  # ninja/state_machine.py
     "test_pack_for_sale.py",  # tests pack_for_sale.sh (shell script, no .py module)
+    "test_frontier_bench.py",  # tests eval/frontier/run.py (multi-file benchmark harness)
 }
 
 # Subdirectories under tests/ that are allowed (not name-mapped to a module).

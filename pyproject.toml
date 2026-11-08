@@ -97,7 +97,7 @@ markers = [
 testpaths = ["."]
 
 # Ignore directories
-norecursedirs = [".git", "__pycache__", "build", "dist", "*.egg-info"]
+norecursedirs = [".git", "__pycache__", "build", "dist", "*.egg-info", "*/eval/frontier"]
 
 # Ensure the repo-local master_ai.py is imported, not ~/scripts/master_ai.py
 pythonpath = ["."]
