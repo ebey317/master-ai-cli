@@ -462,6 +462,18 @@ class _TUIStdout:
             return -1
 
 
+def _merge_fragments(frags):
+    """ANSI() yields one fragment per character; merge runs with the same style
+    so the renderer has far fewer items to split and measure."""
+    out: list = []
+    for frag in frags:
+        if out and len(frag) == 2 and len(out[-1]) == 2 and out[-1][0] == frag[0]:
+            out[-1] = (frag[0], out[-1][1] + frag[1])
+        else:
+            out.append(frag)
+    return out
+
+
 class SafeFormattedTextControl(FormattedTextControl):
     """FormattedTextControl that never throws IndexError from get_line.
 
@@ -528,6 +540,10 @@ class SenseiApp:
         self._output_render_cache = None
         self._output_render_cache_version = -1
         self._output_render_lines = 0
+        self._frags: list = []
+        self._frag_chunks_done = 0
+        self._frag_newlines = 0
+        self._frag_first = None
         self._output_bytes = 0  # running size of _output_chunks (bounded via trim)
         self._output_version = 0
         self._tip_cycle = itertools.cycle(IDLE_TIPS)
@@ -1007,12 +1023,32 @@ class SenseiApp:
                 and self._output_render_cache_version == version
             ):
                 return self._output_render_cache
-            text = "".join(self._output_chunks)
-        rendered = ANSI(text)
-        self._output_render_cache = rendered
-        self._output_render_cache_version = version
-        self._output_render_lines = max(0, text.count("\n"))
+            chunks = self._output_chunks
+            # Incremental render (T34): only chunks written since the last
+            # render are parsed. Re-parsing the whole 4 MB history on every
+            # streamed token cost ~60 ms at 2k lines and ~300 ms at 10k.
+            if self._frag_chunks_done > len(chunks) or (
+                self._frag_chunks_done and chunks[0] is not self._frag_first
+            ):
+                self._frag_reset()
+            for chunk in chunks[self._frag_chunks_done :]:
+                self._frags.extend(
+                    _merge_fragments(ANSI(chunk).__pt_formatted_text__())
+                )
+                self._frag_newlines += chunk.count("\n")
+            self._frag_chunks_done = len(chunks)
+            self._frag_first = chunks[0] if chunks else None
+            rendered = FormattedText(self._frags)
+            self._output_render_cache = rendered
+            self._output_render_cache_version = version
+            self._output_render_lines = max(0, self._frag_newlines)
         return rendered
+
+    def _frag_reset(self) -> None:
+        self._frags = []
+        self._frag_chunks_done = 0
+        self._frag_newlines = 0
+        self._frag_first = None
 
     def _get_output_cursor(self):
         """Invisible cursor that Window auto-scrolls to keep visible.
@@ -1916,11 +1952,13 @@ class SenseiApp:
                 break
         kept.reverse()
         self._output_chunks = [_OUTPUT_BUFFER_MARKER, *kept]
+        self._frag_reset()
         self._output_bytes = sum(len(c) for c in self._output_chunks)
 
     def clear_output(self) -> None:
         with self._output_lock:
             self._output_chunks.clear()
+            self._frag_reset()
             self._output_bytes = 0
             self._scroll_offset = 0
             self._output_version += 1
