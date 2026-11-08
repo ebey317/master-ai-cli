@@ -70,6 +70,8 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import Box, Dialog, Frame, RadioList, TextArea
 
+from command_registry import COMMANDS as _REGISTRY_COMMANDS
+
 HISTORY_FILE = str(Path.home() / ".master_ai_history")
 
 # ── Smooth scrolling (2026-10-21) ─────────────────────────────────────────
@@ -127,293 +129,15 @@ def _eased_scroll_step(
     return max(0.0, disp)
 
 
-COMMAND_MENU_HINTS = {
-    "hub": "open full command menu",
-    "help": "quick reference",
-    "controls": "terminal shortcuts and copy/paste rules",
-    "tips": "show practical command tips",
-    "model": "pick active model",
-    "model auto": "return model routing to automatic",
-    "model local": "select Sensei primary",
-    "model qwen": "select Master AI alias",
-    "model qwen2.5vl:3b": "select the single local VLM (language + vision)",
-    "model stats": "show individual model usage",
-    "mode plan": "draft plans only",
-    "mode review": "confirm each action",
-    "mode auto": "run non-destructive work",
-    "mode local": "force local/offline routing",
-    "mode connected": "cloud-first when keys exist",
-    "mode": "show current execution mode",
-    "memory": "show saved facts",
-    "remember:": "type your text after the colon",
-    "forget:": "type keyword after the colon",
-    "image:": "type an image prompt after the colon",
-    "image status": "fetch/show an image job result",
-    "image latest": "show latest generated image",
-    "tinyfish": "TinyFish web tools",
-    "tinyfish search": "TinyFish web search",
-    "tinyfish fetch": "TinyFish page fetch",
-    "tinyfish status": "TinyFish wallet/credits",
-    "task": "task command help",
-    "task add": "type task text after this",
-    "task done": "mark a task complete",
-    "task clear": "clear tasks",
-    "tasks": "show active tasks",
-    "save session": "save current chat",
-    "compact": "save + summarize + restart fresh",
-    "compress": "alias for compact",
-    "sessions": "browse saved sessions",
-    "sessions list": "list saved sessions by date",
-    "sessions resume": "resume a past session by number",
-    "load summary": "load compact context",
-    "load session": "load saved chat",
-    "transcript": "save transcript",
-    "log": "show log path",
-    "preview": "open latest preview",
-    "clear": "clear screen",
-    "clear history": "clear input history",
-    "clear cache": "clear answer cache",
-    "clear approved": "clear approved commands",
-    "clear chats": "clear saved chats",
-    "chats": "browse saved chats",
-    "doctor": "system health",
-    "clean": "open Sensei Clean dashboard",
-    "clean ui": "open Sensei Clean dashboard",
-    "update": "update Master AI safely",
-    "master update": "update Master AI safely",
-    "refresh": "soft reload",
-    "restart": "restart Sensei",
-    "up": "scroll chat up",
-    "down": "scroll chat down",
-    "top": "jump to oldest chat",
-    "bottom": "jump to latest chat",
-    "last": "show last reply",
-    "mouse remote": "phone scrolling mode",
-    "mouse local": "terminal copy mode",
-    "mouse status": "show mouse mode",
-    "few_shot on": "enable harvest few-shot injection",
-    "few_shot off": "disable harvest few-shot injection",
-    "few_shot status": "show few-shot toggle state",
-    "few_shot": "show few-shot toggle state",
-    "privacy status": "show privacy state for this turn",
-    "privacy approve send": "approve one cloud send when turn is private",
-    "projects": "project picker",
-    "apps": "app tools",
-    "autotips": "automatic tips",
-    "slideshow": "open slideshow",
-    "tour": "open walkthrough",
-    "keys": "API key setup",
-    "approved": "approved command list",
-    "cache": "cache status",
-    "perms": "permissions status",
-    "tutorial": "replay walkthrough",
-    "hints on": "enable contextual hints",
-    "hints off": "disable contextual hints",
-    "tts on": "enable voice replies",
-    "tts off": "disable voice replies",
-    "tts": "voice status",
-    "hints": "hint status",
-    "project": "current project",
-    "search": "web search route",
-    "max:": "max reasoning with mandatory self-critique",
-    "agent:": "plan/execute/critique task loop",
-    "telegram:": "send a Telegram message (chat_id + text, or text if default chat ID set)",
-    "dl": "download helper",
-    "gdrive": "Google Drive helper",
-    "git": "git command help",
-    "git status": "show repo status",
-    "git diff": "show repo diff",
-    "git log": "show git log",
-    "git commit": "commit workflow",
-    "go": "accept pending plan",
-    "cancel": "cancel pending plan",
-    "accessibility": "input settings",
-    "x": "exit / stop",
-    "e": "edit thread label",
-    "resize": "fit tmux pane",
-    "only": "make Sensei the only tmux pane",
-    # P1.5 + P1.7 new commands (2026-05-11)
-    "stats": "observability rollup: routes, models, blocked, harvest",
-    "agents": "show registered subagents",
-    "agents list": "show registered subagents",
-    "agents inspect": "type a subagent name after this",
-    "agents run": "type a subagent name + task after this",
-    # P1.4 hooks REPL (2026-05-11)
-    "hooks": "show registered hooks (built-in + user)",
-    "hooks list": "show registered hooks",
-    "hooks enable": "type a hook id to enable it",
-    "hooks disable": "type a hook id to disable it",
-    "hooks reload": "reload user hooks from ~/.master_ai_hooks.json",
-    # P1.3 reason depths
-    "reason:": "deep reasoning lane (DeepSeek-R1 or local loop)",
-    "reason fast:": "local fast reasoning (planner→solver→finalizer)",
-    "reason standard:": "cloud DeepSeek-R1, else local standard loop",
-    "reason deep:": "DeepSeek-R1, else local deep loop (default)",
-    "reason max:": "local max loop (mandatory second-critic pass)",
-}
+COMMAND_MENU_HINTS = {r[0]: r[1] for r in _REGISTRY_COMMANDS if r[1]}
 
 # Single slash-command namespace. Every built-in command is reachable via
 # /<name>. The slash palette opens with just "/" and filters as you type.
 # Payload commands (the ones that need an argument) keep a trailing space or
 # colon so the cursor lands ready for input.
-PAYLOAD_COMMANDS = {
-    "remember:",
-    "forget:",
-    "task add",
-    "git commit",
-    "image:",
-    "image status",
-    "image latest",
-    "max:",
-    "agent:",
-    "reason:",
-    "reason fast:",
-    "reason standard:",
-    "reason deep:",
-    "reason max:",
-    "agents run",
-    "agents inspect",
-    "hooks enable",
-    "hooks disable",
-}
+PAYLOAD_COMMANDS = {r[0] for r in _REGISTRY_COMMANDS if r[2]}
 
-COMMAND_MENU_GROUPS = {
-    "/": [
-        # general
-        "hub",
-        "help",
-        "controls",
-        "tips",
-        "commands",
-        "update",
-        "master update",
-        "refresh",
-        "restart",
-        "kick",
-        "save session",
-        "load summary",
-        "load session",
-        "transcript",
-        "log",
-        "compact",
-        "compress",
-        "preview",
-        "clear",
-        "clear history",
-        "clear cache",
-        "clear approved",
-        "clear chats",
-        "chats",
-        "doctor",
-        "clean",
-        "projects",
-        "apps",
-        "autotips",
-        "slideshow",
-        "tour",
-        "keys",
-        "approved",
-        "cache",
-        "perms",
-        "tutorial",
-        "project",
-        # settings / model
-        "mode plan",
-        "mode review",
-        "mode auto",
-        "mode local",
-        "mode connected",
-        "mode",
-        # 2026-09-14: dropped "model groq"/"model deepseek-r1"/"model
-        # qwen3-coder"/"model gemini"/"model qwen3.5:397b-cloud"/"model
-        # kimi-k2.5:cloud" — leftovers from the flat pre-2026-08-30 model
-        # menu (Elijah: "get rid of stuff that's not even available or
-        # don't use anymore"). None of those exact strings resolve: not in
-        # MODEL_MENU, not in MODEL_COMMAND_ALIASES, not catalog ids —
-        # _resolve_model_choice() returns "" (unknown model) for all six.
-        # Use the live two-step `/model` picker (or "model <provider>::"
-        # picks) instead. "model qwen2.5vl:3b" stays: it equals
-        # DEFAULT_LOCAL_MODEL and is a real locally-pulled Ollama model.
-        # 2026-09-24: was qwen3-vl:8b, deleted at 98% disk full.
-        "model",
-        "model auto",
-        "model local",
-        "model qwen2.5vl:3b",
-        "model stats",
-        "tts on",
-        "tts off",
-        "tts",
-        "hints on",
-        "hints off",
-        "hints",
-        "mouse remote",
-        "mouse local",
-        "mouse status",
-        "few_shot on",
-        "few_shot off",
-        "few_shot status",
-        "privacy status",
-        "privacy approve send",
-        "accessibility",
-        # navigation / status
-        "up",
-        "down",
-        "top",
-        "bottom",
-        "last",
-        # payload / tools
-        "remember:",
-        "forget:",
-        "task add",
-        "task done",
-        "task clear",
-        "tasks",
-        "task",
-        "git commit",
-        "git status",
-        "git diff",
-        "git log",
-        "git",
-        "image:",
-        "image status",
-        "image latest",
-        "max:",
-        "agent:",
-        "reason:",
-        "reason fast:",
-        "reason standard:",
-        "reason deep:",
-        "reason max:",
-        "search",
-        "read",
-        "dl",
-        "gdrive",
-        "mesh",
-        "tinyfish",
-        "tf search",
-        "tf fetch",
-        "tf status",
-        "agents",
-        "agents list",
-        "agents inspect",
-        "agents run",
-        "hooks",
-        "hooks list",
-        "hooks enable",
-        "hooks disable",
-        "hooks reload",
-        "stats",
-        "router",
-        "router stats",
-        # plan approval
-        "go",
-        "cancel",
-        "e",
-        "only",
-        # exit
-        "x",
-    ],
-}
+COMMAND_MENU_GROUPS = {"/": [r[0] for r in _REGISTRY_COMMANDS]}
 
 COMPLETER_WORDS: list[str] = []
 for _group in COMMAND_MENU_GROUPS.values():
@@ -626,6 +350,72 @@ def _fit_text(text: str, width: int) -> str:
     if width <= 3:
         return _clip(width)
     return _clip(width - 3).rstrip() + "..."
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
+def _ansi_word_wrap(text: str, width: int) -> str:
+    """Re-flow `text` to `width` visible columns at word boundaries.
+
+    prompt_toolkit's own `wrap_lines=True` (used on the chat Window) is a
+    dumb character-column wrap, not a word-wrap -- confirmed straight from
+    its docstring ("wrap lines" vs. scroll) and from `ANSI.__init__`'s own
+    parser, which explodes plain text into one (style, char) fragment per
+    character with no word-boundary tracking at all. Feeding it long model
+    prose produced exactly what that implies: words split mid-syllable
+    with no hyphen ("test suite" -> "test sui" / "te") the moment a
+    sentence ran past the pane width. That's a real prompt_toolkit
+    behavior, not a bug on our end, so the fix lives here instead: wrap
+    *before* the text reaches ANSI()/the Window, so its column-wrap never
+    has to fire on an unbroken run.
+
+    ANSI escape codes are zero-width and never touched or counted toward
+    the column budget -- only plain characters advance `col`. An existing
+    '\\n' in the source is a hard paragraph break and is never re-flowed
+    across. A single token longer than `width` (rare) hard-breaks like
+    prompt_toolkit's own fallback would, rather than overflowing the line.
+    """
+    if width < 10:
+        return text
+    lines: list[str] = []
+    line: list[str] = []  # tokens: either one visible char or one escape code
+    col = 0
+    last_space_tok_idx: int | None = None  # index into `line` of last plain space
+    last_space_col: int = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\x1b":
+            m = _ANSI_ESCAPE_RE.match(text, i)
+            if m:
+                line.append(m.group(0))
+                i = m.end()
+                continue
+        if ch == "\n":
+            lines.append("".join(line))
+            line, col = [], 0
+            last_space_tok_idx, last_space_col = None, 0
+            i += 1
+            continue
+        if col >= width:
+            if last_space_tok_idx is not None:
+                carry = line[last_space_tok_idx + 1 :]
+                lines.append("".join(line[:last_space_tok_idx]))
+                line = carry
+                col = col - last_space_col - 1
+            else:
+                lines.append("".join(line))
+                line, col = [], 0
+            last_space_tok_idx, last_space_col = None, 0
+        if ch == " ":
+            last_space_tok_idx, last_space_col = len(line), col
+        line.append(ch)
+        col += 1
+        i += 1
+    lines.append("".join(line))
+    return "\n".join(lines)
 
 
 class _TUIStdout:
@@ -1104,22 +894,35 @@ class SenseiApp:
                 # of picked ad hoc, so every field is genuinely tellable
                 # apart from every other, not just numerically different.
                 "status.sep": "#999999",
-                "status.mode": "#29b6f6 bold",
-                "status.tts": "#26a69a bold",
+                # 2026-10-22: filled badges, not just colored text — Elijah,
+                # after comparing this bar against Pupil/the Dashboard web
+                # UI's own badge/pill chips all day: "I think I need
+                # badges... it needs to be more polished." Same hues as
+                # before (the color-coding above was already meaningful,
+                # just never filled), extended with a background + an
+                # explicit contrasting text color per field, matching
+                # _pill()'s existing badge language in master_ai.py (colored
+                # bg + black text) instead of inventing a second system.
+                # Lighter/brighter hues get black text, darker/more
+                # saturated ones get white — the same contrast rule most
+                # badge systems (Material's own included) use for this
+                # exact color family.
+                "status.mode": "bg:#29b6f6 #000000 bold",
+                "status.tts": "bg:#26a69a #000000 bold",
                 # MODEL is label + value as two separate colors (2026-09-24,
                 # Elijah: "model can be a different color from the active
                 # model selection, pinned model") — label stays its own
                 # color; the value's color signals whether it's locked in
                 # (explicit pin, won't drift) or just auto-routed (could
                 # change next turn), so that state reads at a glance.
-                "status.model_label": "#ab47bc bold",
-                "status.model_pinned": "#66bb6a bold",
-                "status.model_auto": "#7e57c2 bold",
-                "status.ctx": "#ffa726 bold",
-                "status.mem": "#c0ca33 bold",
-                "status.tasks": "#fdd835 bold",
-                "status.proj": "#5c6bc0 bold",
-                "status.task": "#8d6e63 bold",
+                "status.model_label": "bg:#ab47bc #ffffff bold",
+                "status.model_pinned": "bg:#66bb6a #000000 bold",
+                "status.model_auto": "bg:#7e57c2 #ffffff bold",
+                "status.ctx": "bg:#ffa726 #000000 bold",
+                "status.mem": "bg:#c0ca33 #000000 bold",
+                "status.tasks": "bg:#fdd835 #000000 bold",
+                "status.proj": "bg:#5c6bc0 #ffffff bold",
+                "status.task": "bg:#8d6e63 #ffffff bold",
                 "frame": f"{accent} bold",
                 "frame.label": f"{accent} bold",
                 "legend": f"{accent}",
@@ -1248,19 +1051,39 @@ class SenseiApp:
         renders (sandbox-proven on the engine's 3.0.52), so every notch
         animates immediately: viewport rows shown =
         [total - window_height - offset, total - offset).
+
+        2026-10-22: the mutation itself now runs via call_soon_threadsafe on
+        the app's own event loop instead of directly from this method's
+        caller (_animate_scroll, a background daemon thread at ~60fps).
+        prompt_toolkit's own render pass reads AND writes this same
+        WindowRenderInfo on the main thread during its paint cycle;
+        mutating it concurrently from a second thread races that, which is
+        exactly the class of bug behind "scrolling feels broken/stuck" —
+        Application.invalidate() already solves the identical problem this
+        same way internally (loop.call_soon_threadsafe), so this mirrors
+        prompt_toolkit's own proven pattern rather than inventing a new one.
         """
-        window = getattr(self, "_output_window", None)
-        if window is None:
-            return
-        info = getattr(window, "render_info", None)
-        if info is None or info.window_height is None:
-            return
-        total = self._output_render_lines
-        if not total:
-            return
-        want = max(0, total - info.window_height - offset_int)
-        if info.vertical_scroll != want:
-            info.vertical_scroll = want
+        app = getattr(self, "_app", None)
+        loop = getattr(app, "loop", None) if app is not None else None
+
+        def _do_apply() -> None:
+            window = getattr(self, "_output_window", None)
+            if window is None:
+                return
+            info = getattr(window, "render_info", None)
+            if info is None or info.window_height is None:
+                return
+            total = self._output_render_lines
+            if not total:
+                return
+            want = max(0, total - info.window_height - offset_int)
+            if info.vertical_scroll != want:
+                info.vertical_scroll = want
+
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(_do_apply)
+        else:
+            _do_apply()
 
     def _render_status(self):
         # 2026-09-24: every field gets its OWN color instead of the whole
@@ -1283,23 +1106,60 @@ class SenseiApp:
                 field = [("model_label", "MODEL:"), ("model_auto", "AUTO")]
             clean_fields.append(field)
 
-        plain = sep_text.join(
-            "".join(text for _tag, text in field) for field in clean_fields
-        )
-        fitted = _fit_text(plain, width - 2)
-        if fitted != plain or not clean_fields:
-            # Doesn't fit at full length, or nothing to show — fall back to
-            # one plain segment rather than try to clip colors mid-field.
-            return FormattedText([("class:status", f" {fitted} ")])
+        # 2026-10-22: each field renders as a padded badge/chip (a
+        # leading/trailing space INSIDE the field's own colored span,
+        # mirroring _pill()'s own badge padding in master_ai.py) instead of
+        # colored text touching the separator directly.
+        def _field_plain(field):
+            return " " + "".join(text for _tag, text in field) + " "
+
+        if not clean_fields:
+            return FormattedText([("class:status", "  ")])
+
+        # 2026-10-22: used to be all-or-nothing — if the FULL bar didn't
+        # fit (TASKS/PROJ/TASK are the usual culprits; they're last in
+        # priority order, same order master_ai.py builds `parts` in), the
+        # whole thing fell back to one plain, uncolored string and every
+        # field's badge color vanished at once. Elijah, after seeing that
+        # exact case live: "put my color back on there and make sure it's
+        # got different colors." Fix: greedily keep fields (in their given,
+        # already-priority-ordered sequence — MODE/MODEL/CTX/MEM first,
+        # TASKS/PROJ/TASK last) for as long as they fit, and drop only the
+        # trailing ones that don't — never discard color just because one
+        # optional field made the bar too long.
+        budget = width - 2
+        kept: list = []
+        running = 1  # leading separator space
+        for i, field in enumerate(clean_fields):
+            piece = (sep_text if i > 0 else "") + _field_plain(field)
+            if running + len(piece) > budget and kept:
+                break  # keep at least the first field even if it overflows
+            running += len(piece)
+            kept.append(field)
+        truncated = len(kept) < len(clean_fields)
+
+        if not kept:
+            # Pathological: not even one field fits. Last-resort plain text,
+            # same shape as the old all-or-nothing fallback.
+            plain = sep_text.join(_field_plain(f) for f in clean_fields)
+            return FormattedText([("class:status", f" {_fit_text(plain, budget)} ")])
 
         fragments = [("class:status.sep", " ")]
-        for i, field in enumerate(clean_fields):
+        for i, field in enumerate(kept):
             if i > 0:
                 fragments.append(("class:status.sep", sep_text))
             # Sub-segments of the SAME field render back-to-back, no gap
-            # (e.g. MODEL's ["MODEL:" label, value] pair).
+            # (e.g. MODEL's ["MODEL:" label, value] pair). The padding
+            # space on each end takes that end's own color, so a two-tone
+            # field (MODEL's label+value) reads as one continuous chip
+            # rather than the badge fill stopping short of the edges.
+            first_tag, last_tag = field[0][0], field[-1][0]
+            fragments.append((f"class:status.{first_tag}", " "))
             for tag, text in field:
                 fragments.append((f"class:status.{tag}", text))
+            fragments.append((f"class:status.{last_tag}", " "))
+        if truncated:
+            fragments.append(("class:status.sep", sep_text + "…"))
         fragments.append(("class:status.sep", " "))
         return FormattedText(fragments)
 
@@ -2009,6 +1869,15 @@ class SenseiApp:
         if not text:
             return
         text = str(text)
+        # Word-wrap before it ever reaches the Window's own wrap_lines,
+        # which is a dumb character-column wrap (see _ansi_word_wrap's
+        # docstring) and will otherwise split words mid-syllable on any
+        # line that runs past the chat frame's width. -4 matches this
+        # file's existing frame-border-overhead convention (see _term_size
+        # call sites above); floor of 20 keeps a pathologically narrow
+        # terminal from wrapping every single word onto its own line.
+        chat_width = max(20, _term_size().columns - 4)
+        text = _ansi_word_wrap(text, chat_width)
         # Chat-app behavior: follow the bottom only when the user is already
         # there. If they've scrolled up to read older output, preserve that
         # viewport by moving the scroll offset forward with the new lines.

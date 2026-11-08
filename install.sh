@@ -8,6 +8,31 @@
 # ============================================================
 
 set -u
+
+# ── --help (must come before any side effect) ────────────────
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+    cat <<'EOF'
+Usage: bash install.sh
+
+Cross-platform installer for Master AI (Linux / macOS / WSL).
+Copies runtime files to ~/scripts, prompts for API keys and optional Ollama
+models, installs terminal commands (master, sensei), and enables auto-start
+services.
+
+This installer has no dry-run mode. It modifies:
+  - ~/scripts/               (program files)
+  - ~/.local/bin/            (master, sensei commands)
+  - ~/.config/systemd/user/  (Linux/WSL auto-start services)
+  - ~/.master_ai_*           (profiles, skills, logs, keys if pasted)
+
+Options:
+  --help, -h     Show this message and exit.
+
+Run with no arguments to install interactively.
+EOF
+    exit 0
+fi
+
 source "$(dirname "$0")/brand.sh" 2>/dev/null || source ~/scripts/brand.sh 2>/dev/null || true
 
 # Color fallbacks
@@ -34,6 +59,38 @@ log() { echo "[$(date '+%I:%M:%S %p')] $1" >> "$INSTALL_LOG"; }
 
 # ── 0. Early dependency checks (cheap, before prompts) ───────────
 _need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo -e "  ${BR}✗ required command not found:${X} ${BW}$1${X}"; return 1; }; }
+
+# Save a single pasted API key to ~/.master_ai_keys, auto-detecting the
+# provider from its prefix. Uses setup_wizard.py as the single source of
+# truth for prefix mapping instead of maintaining a 5th inline copy.
+_save_detected_key() {
+    local key="$1"
+    python3 - "$key" <<'PY'
+import json, os, sys
+from setup_wizard import _detect_provider
+
+key = sys.argv[1]
+field = _detect_provider(key)
+if not field:
+    print("  ? couldn't identify key prefix — skipped")
+    sys.exit(1)
+path = os.path.expanduser("~/.master_ai_keys")
+try:
+    d = json.load(open(path))
+except Exception:
+    d = {}
+if field in d and d[field] and d[field] != key:
+    d[field + "_2"] = key
+    print(f"  ✅ {field}: saved as SECONDARY")
+else:
+    d[field] = key
+    print(f"  ✅ {field}: saved as PRIMARY")
+with open(path, "w") as f:
+    json.dump(d, f, indent=2)
+os.chmod(path, 0o600)
+PY
+}
+
 _missing_basic=0
 for _cmd in bash python3 curl; do
     _need_cmd "$_cmd" || _missing_basic=1
@@ -245,62 +302,14 @@ while [ "$_openrouter_set" = "0" ] && [ "${MASTER_AI_NONINTERACTIVE:-0}" != "1" 
         _key_attempts=$((_key_attempts + 1))
         continue
     fi
-    python3 - "$key" <<'PY'
-import json, os, sys
-key = sys.argv[1]
-field = None
-if key.startswith("gsk_"):       field = "groq"
-elif key.startswith("sk-ant-"):  field = "anthropic"
-elif key.startswith("sk-or-v1-"):field = "openrouter"
-elif key.startswith("sk-proj-"): field = "openai"
-elif key.startswith("sk-"):      field = "deepseek"
-elif key.startswith("hf_"):      field = "huggingface"
-elif key.startswith("AIzaSy"):   field = "gemini"
-elif key.startswith("xai-"):     field = "xai"
-elif key.startswith("nvapi-"):   field = "nvidia"
-if not field:
-    print("  ? couldn't identify key prefix — skipped"); sys.exit(0)
-path = os.path.expanduser("~/.master_ai_keys")
-try: d = json.load(open(path))
-except Exception: d = {}
-if field in d and d[field] and d[field] != key:
-    d[field + "_2"] = key; print(f"  ✅ {field}: saved as SECONDARY")
-else:
-    d[field] = key; print(f"  ✅ {field}: saved as PRIMARY")
-with open(path, "w") as f: json.dump(d, f, indent=2)
-os.chmod(path, 0o600)
-PY
-    if [ -n "$key" ] && [[ "$key" == sk-or-v1-* ]]; then
+    _save_detected_key "$key"
+    if [[ "$key" == sk-or-v1-* ]]; then
         _openrouter_set=1
     fi
     echo ""
     read -rp "  Paste another key, or Enter to finish: " key
     if [ -n "$key" ]; then
-        python3 - "$key" <<'PY'
-import json, os, sys
-key = sys.argv[1]
-field = None
-if key.startswith("gsk_"):       field = "groq"
-elif key.startswith("sk-ant-"):  field = "anthropic"
-elif key.startswith("sk-or-v1-"):field = "openrouter"
-elif key.startswith("sk-proj-"): field = "openai"
-elif key.startswith("sk-"):      field = "deepseek"
-elif key.startswith("hf_"):      field = "huggingface"
-elif key.startswith("AIzaSy"):   field = "gemini"
-elif key.startswith("xai-"):     field = "xai"
-elif key.startswith("nvapi-"):   field = "nvidia"
-if not field:
-    print("  ? couldn't identify key prefix — skipped"); sys.exit(0)
-path = os.path.expanduser("~/.master_ai_keys")
-try: d = json.load(open(path))
-except Exception: d = {}
-if field in d and d[field] and d[field] != key:
-    d[field + "_2"] = key; print(f"  ✅ {field}: saved as SECONDARY")
-else:
-    d[field] = key; print(f"  ✅ {field}: saved as PRIMARY")
-with open(path, "w") as f: json.dump(d, f, indent=2)
-os.chmod(path, 0o600)
-PY
+        _save_detected_key "$key"
     fi
 done
 # Start the Ollama daemon if installed
@@ -473,31 +482,7 @@ echo -e "  ${BG}4)${X} ${BW}Anthropic Claude${X}  ${C}https://console.anthropic.
 echo ""
 read -rp "  Paste a fallback key now (or Enter to skip): " key
 while [ -n "$key" ] && [ "${MASTER_AI_NONINTERACTIVE:-0}" != "1" ]; do
-    python3 - "$key" <<'PY'
-import json, os, sys
-key = sys.argv[1]
-field = None
-if key.startswith("gsk_"):       field = "groq"
-elif key.startswith("sk-ant-"):  field = "anthropic"
-elif key.startswith("sk-or-v1-"):field = "openrouter"
-elif key.startswith("sk-proj-"): field = "openai"
-elif key.startswith("sk-"):      field = "deepseek"
-elif key.startswith("hf_"):      field = "huggingface"
-elif key.startswith("AIzaSy"):   field = "gemini"
-elif key.startswith("xai-"):     field = "xai"
-elif key.startswith("nvapi-"):   field = "nvidia"
-if not field:
-    print("  ? couldn't identify key prefix — skipped"); sys.exit(0)
-path = os.path.expanduser("~/.master_ai_keys")
-try: d = json.load(open(path))
-except Exception: d = {}
-if field in d and d[field] and d[field] != key:
-    d[field + "_2"] = key; print(f"  ✅ {field}: saved as SECONDARY")
-else:
-    d[field] = key; print(f"  ✅ {field}: saved as PRIMARY")
-with open(path, "w") as f: json.dump(d, f, indent=2)
-os.chmod(path, 0o600)
-PY
+    _save_detected_key "$key"
     echo ""
     read -rp "  Paste another, or Enter to finish: " key
 done

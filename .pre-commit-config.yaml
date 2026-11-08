@@ -33,6 +33,12 @@ repos:
         entry: shellcheck
   - repo: local
     hooks:
+      - id: scan-secrets
+        name: scan tracked files for secrets
+        entry: python3 scripts/scan_secrets.py
+        language: system
+        pass_filenames: false
+        always_run: true
       - id: mypy-baseline
         name: mypy (baselined -- new errors only)
         # 2026-09-29: this replaces the mirrors-mypy hook, which never

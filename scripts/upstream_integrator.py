@@ -64,10 +64,6 @@ CORE_ENGINE_FILES = {
 MSG_LIMIT = 1500
 DIFF_LINES = 200
 DIFF_CHARS = 4000
-# Must end in ":free" -- see the free-only gate in _ask_cloud().
-PLAN_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
-OPENCODEGO_URL = "http://127.0.0.1:8793/v1/chat/completions"
-OPENCODEGO_MODEL = "glm-5.3-flash"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 BATCH = 3
 
@@ -183,155 +179,80 @@ def _opencodego_key():
     return ""
 
 
+# Free OpenRouter models, best first. 2026-11-06: the old single PLAN_MODEL
+# (nemotron-3-super-120b) no longer exists (HTTP 404) and the OpenCode Go
+# lane is out of quota (429), so every night failed and 56 commits were
+# retired for NOTHING. Now: walk this list; a dead model (404/429) moves to
+# the next one. Every entry must end in ":free" (operator rule 2026-08-27).
+FREE_MODELS = [
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "nvidia/nemotron-3.5-super-vl:free",
+    "cohere/north-mini-code:free",
+    "google/gemma-4-31b-it:free",
+]
+
+
 def _ask_cloud(messages, timeout=300):
-    """Plan call via OpenCode Go (paid/cheap lane) with OpenRouter free fallback.
+    """Plan call on OpenRouter's FREE tier, walking FREE_MODELS.
 
-    Tries OpenCode Go first using the master keychain OPENCODE_API_KEY;
-    falls back to OpenRouter free tier if Go is unavailable or fails.
-    """
-    key = _opencodego_key()
-    url = OPENCODEGO_URL
-    model = OPENCODEGO_MODEL
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {key}",
-        "x-opencode-session": "master-ai-upstream-integrator",
-    }
-    if not key:
-        print(
-            "  cloud: no OPENCODE_API_KEY; falling back to OpenRouter free", flush=True
-        )
-        url = OPENROUTER_URL
-        model = PLAN_MODEL
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {_openrouter_key()}",
-            "HTTP-Referer": "http://localhost",
-            "X-Title": "master-ai-upstream-integrator",
-            "User-Agent": "master-ai-upstream-integrator/1.0",
-        }
-    max_tokens = 4096
-    last_err = "unknown"
-    for attempt in range(1, 4):
-        payload = {
-            "model": model,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "stream": False,
-        }
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode(),
-            headers=headers,
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                d = json.loads(r.read())
-            msg = (d.get("choices") or [{}])[0].get("message", {})
-            content = (msg.get("content") or "").strip()
-            if not content:
-                content = (msg.get("reasoning_content") or "").strip()
-                if content:
-                    print(
-                        f"  cloud: content empty, using reasoning_content "
-                        f"({len(content)} chars)",
-                        flush=True,
-                    )
-            if content:
-                ct = (d.get("usage") or {}).get("completion_tokens") or 0
-                if ct >= int(max_tokens * 0.98):
-                    print(
-                        f"  cloud: hit max_tokens ({ct}); widening to 16384", flush=True
-                    )
-                    max_tokens = 16384
-                    last_err = f"max_tokens cutoff at {ct}"
-                    time.sleep(10)
-                    continue
-                return content
-            last_err = "empty content and reasoning_content"
-            print(f"  cloud: empty response (attempt {attempt}/3)", flush=True)
-        except urllib.error.HTTPError as e:
-            last_err = f"HTTP {e.code}"
-            print(f"  cloud: HTTP {e.code} (attempt {attempt}/3)", flush=True)
-        except Exception as e:
-            last_err = str(e)[:120]
-            print(f"  cloud error: {last_err} (attempt {attempt}/3)", flush=True)
-        if attempt < 3:
-            time.sleep(20 * attempt)
-    # Fallback to OpenRouter free if Go failed
-    if url != OPENROUTER_URL and _openrouter_key():
-        print("  cloud: OpenCode Go failed, trying OpenRouter free", flush=True)
-        return _ask_cloud_openrouter(messages, timeout)
-    print(f"  cloud: giving up after 3 attempts ({last_err})", flush=True)
-    return None
-
-
-def _ask_cloud_openrouter(messages, timeout=300):
-    """OpenRouter free-tier fallback plan call with retry + diagnostics."""
-    if not PLAN_MODEL.endswith(":free"):
-        print(f"  cloud: refusing non-free model '{PLAN_MODEL}'", flush=True)
-        return None
+    Returns the text, or None when every model failed. A model that answers
+    404 (gone) or 429 (rate limited) is skipped at once; other errors get one
+    retry. OpenCode Go is no longer tried first (out of quota)."""
     key = _openrouter_key()
     if not key:
         print("  cloud: no OPENROUTER_API_KEY", flush=True)
         return None
-    max_tokens = 4096
     last_err = "unknown"
-    for attempt in range(1, 4):
-        payload = {
-            "model": PLAN_MODEL,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "stream": False,
-        }
-        req = urllib.request.Request(
-            OPENROUTER_URL,
-            data=json.dumps(payload).encode(),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {key}",
-                "HTTP-Referer": "http://localhost",
-                "X-Title": "master-ai-upstream-integrator",
-                "User-Agent": "master-ai-upstream-integrator/1.0",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                d = json.loads(r.read())
-            msg = (d.get("choices") or [{}])[0].get("message", {})
-            content = (msg.get("content") or "").strip()
-            if not content:
-                content = (msg.get("reasoning_content") or "").strip()
-                if content:
-                    print(
-                        f"  cloud: content empty, using reasoning_content "
-                        f"({len(content)} chars)",
-                        flush=True,
-                    )
-            if content:
+    for model in FREE_MODELS:
+        if not model.endswith(":free"):
+            print(f"  cloud: refusing non-free model '{model}'", flush=True)
+            continue
+        max_tokens = 4096
+        for attempt in (1, 2):
+            payload = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "stream": False,
+            }
+            req = urllib.request.Request(
+                OPENROUTER_URL,
+                data=json.dumps(payload).encode(),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {key}",
+                    "HTTP-Referer": "http://localhost",
+                    "X-Title": "master-ai-upstream-integrator",
+                    "User-Agent": "master-ai-upstream-integrator/1.0",
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    d = json.loads(r.read())
+                msg = (d.get("choices") or [{}])[0].get("message", {})
+                content = (msg.get("content") or "").strip()
+                if not content:
+                    content = (msg.get("reasoning_content") or "").strip()
                 ct = (d.get("usage") or {}).get("completion_tokens") or 0
-                if ct >= int(max_tokens * 0.98):
-                    print(
-                        f"  cloud: hit max_tokens ({ct}); widening to 16384", flush=True
-                    )
+                if content and ct >= int(max_tokens * 0.98) and max_tokens < 16384:
+                    print(f"  cloud: {model} hit max_tokens; widening", flush=True)
                     max_tokens = 16384
-                    last_err = f"max_tokens cutoff at {ct}"
-                    time.sleep(10)
                     continue
-                return content
-            last_err = "empty content and reasoning_content"
-            print(f"  cloud: empty response (attempt {attempt}/3)", flush=True)
-        except urllib.error.HTTPError as e:
-            last_err = f"HTTP {e.code}"
-            print(f"  cloud: HTTP {e.code} (attempt {attempt}/3)", flush=True)
-        except Exception as e:
-            last_err = str(e)[:120]
-            print(f"  cloud error: {last_err} (attempt {attempt}/3)", flush=True)
-        if attempt < 3:
-            time.sleep(20 * attempt)
-    print(f"  cloud: giving up after 3 attempts ({last_err})", flush=True)
+                if content:
+                    print(f"  cloud: answered by {model}", flush=True)
+                    return content
+                last_err = f"{model}: empty response"
+            except urllib.error.HTTPError as e:
+                last_err = f"{model}: HTTP {e.code}"
+                print(f"  cloud: {last_err}", flush=True)
+                if e.code in (404, 429, 402, 403):
+                    break  # this model is gone or limited -- next one
+            except Exception as e:
+                last_err = f"{model}: {str(e)[:100]}"
+                print(f"  cloud error: {last_err}", flush=True)
+            time.sleep(5)
+    print(f"  cloud: every free model failed ({last_err})", flush=True)
     return None
 
 
@@ -458,7 +379,20 @@ def integrate_one(item):
             {"role": "user", "content": prompt},
         ]
     )
-    if not plan or len(plan.strip()) < 40:
+    if not plan:
+        # Cloud outage (every free model failed): NOT this commit's fault, so
+        # log "deferred" -- it is retried tomorrow and never counts toward the
+        # 3-strikes retirement (56 commits were lost that way before).
+        _log_line(
+            {
+                "ts": datetime.now().isoformat(),
+                "sha": sha,
+                "status": "deferred",
+                "detail": "cloud unavailable",
+            }
+        )
+        return "", "deferred"
+    if len(plan.strip()) < 40:
         _log_line(
             {
                 "ts": datetime.now().isoformat(),

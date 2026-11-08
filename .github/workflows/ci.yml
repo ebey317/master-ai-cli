@@ -5,7 +5,7 @@ on:
   push:
     branches: [master, main]
   pull_request:
-    branches: [master, main]
+    branches: [master, main, calm-avatar-motion]
 
 jobs:
   test:
@@ -51,6 +51,9 @@ jobs:
       run: |
         pre-commit install
         pre-commit run --all-files
+
+    - name: Scan for secrets
+      run: python3 scripts/scan_secrets.py
 
     - name: Run pytest
       env:

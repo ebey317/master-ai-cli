@@ -56,6 +56,7 @@ class Kind:
     RUN_SKILL = "RUN_SKILL"
     SEND_EMAIL = "SEND_EMAIL"
     SEND_TELEGRAM = "SEND_TELEGRAM"
+    FBPOST = "FBPOST"  # 2026-10-22: Facebook Page feed post via Graph API
     # 2026-05-12: Chrome extension M1 surface. Browser-side execution only —
     # backend proposes, extension dispatches via content script, posts result
     # to /extension/action_result. Backend never reaches into the DOM directly.
@@ -122,6 +123,7 @@ DIRECTIVE_KINDS = frozenset(
         Kind.SEND_EMAIL,
         Kind.MCP_CALL,
         Kind.SEND_TELEGRAM,
+        Kind.FBPOST,
         Kind.BROWSER_CLICK,
         Kind.BROWSER_FILL,
         Kind.BROWSER_FILL_FORM,
@@ -195,7 +197,7 @@ _SAFE_RUN_PREFIXES = (
 )
 
 _DIRECTIVE_LINE_RE = re.compile(
-    r"^\s*(RUN|RUNTERM|READ|CREATE|EDIT|REMEMBER|PLAN|DONE|THINK|RUN_SKILL|SEND_EMAIL|SEND_TELEGRAM|BROWSER_CLICK|BROWSER_FILL|BROWSER_FILL_FORM|BROWSER_UPLOAD_FILE|BROWSER_SUBMIT|BROWSER_READ_PAGE_FULL|BROWSER_READ_PAGE|BROWSER_OBSERVE|BROWSER_READ|BROWSER_NAV|BROWSER_CLOSE_TAB|BROWSER_SCREENSHOT|BROWSER_WAIT|BROWSER_SCROLL|BROWSER_DOUBLE_CLICK|BROWSER_FIND|BROWSER_EXTRACT_LIST|BROWSER_DRIVE_INSPECT_FOLDER|BROWSER_CDP_MOUSE|BROWSER_CDP_KEY|BROWSER_TAB_CREATE|REMOTE_MCP|MCP_CALL):\s*(.*?)\s*$",
+    r"^\s*(RUN|RUNTERM|READ|CREATE|EDIT|REMEMBER|PLAN|DONE|THINK|RUN_SKILL|SEND_EMAIL|SEND_TELEGRAM|FBPOST|BROWSER_CLICK|BROWSER_FILL|BROWSER_FILL_FORM|BROWSER_UPLOAD_FILE|BROWSER_SUBMIT|BROWSER_READ_PAGE_FULL|BROWSER_READ_PAGE|BROWSER_OBSERVE|BROWSER_READ|BROWSER_NAV|BROWSER_CLOSE_TAB|BROWSER_SCREENSHOT|BROWSER_WAIT|BROWSER_SCROLL|BROWSER_DOUBLE_CLICK|BROWSER_FIND|BROWSER_EXTRACT_LIST|BROWSER_DRIVE_INSPECT_FOLDER|BROWSER_CDP_MOUSE|BROWSER_CDP_KEY|BROWSER_TAB_CREATE|REMOTE_MCP|MCP_CALL):\s*(.*?)\s*$",
     re.IGNORECASE,
 )
 
@@ -300,7 +302,12 @@ def classify_risk(action: TypedAction) -> str:
     if action.kind in (Kind.THINK, Kind.DONE, Kind.PLAN):
         action.risk = Risk.SAFE
         return action.risk
-    if action.kind in (Kind.RUN_SKILL, Kind.SEND_EMAIL, Kind.SEND_TELEGRAM):
+    if action.kind in (
+        Kind.RUN_SKILL,
+        Kind.SEND_EMAIL,
+        Kind.SEND_TELEGRAM,
+        Kind.FBPOST,
+    ):
         action.risk = Risk.NORMAL
         return action.risk
     if action.kind in (Kind.RUN, Kind.RUNTERM):
@@ -371,6 +378,7 @@ def parse_directive(
                 Kind.RUN_SKILL,
                 Kind.SEND_EMAIL,
                 Kind.SEND_TELEGRAM,
+                Kind.FBPOST,
                 Kind.BROWSER_CLICK,
                 Kind.BROWSER_FILL,
                 Kind.BROWSER_FILL_FORM,
@@ -457,6 +465,7 @@ _SINGLE_LINE_KINDS = (
     Kind.RUN_SKILL,
     Kind.SEND_EMAIL,
     Kind.SEND_TELEGRAM,
+    Kind.FBPOST,
     Kind.MCP_CALL,
 )
 
@@ -543,6 +552,7 @@ def parse_reply_with_bodies(
                         Kind.RUN_SKILL,
                         Kind.SEND_EMAIL,
                         Kind.SEND_TELEGRAM,
+                        Kind.FBPOST,
                     )
                 ),
             )

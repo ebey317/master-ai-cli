@@ -27,7 +27,6 @@ sys.path.insert(0, os.path.expanduser("~/scripts"))
 
 pytest.importorskip("stt_server")
 from stt_server import _api_parse_actions, _fallback_action
-
 from typed_actions import parse_directive, parse_reply
 
 

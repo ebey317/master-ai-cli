@@ -222,7 +222,11 @@ def _run_directive(spec: dict[str, Any], context: dict[str, Any]) -> dict[str, A
             "scp",
         }
         lowered = cmd.lower()
-        if any(d in lowered for d in dangerous):
+        # Plain substring check used to flag any command containing these
+        # letters anywhere -- e.g. "su" inside "subagent" blocked a bare
+        # `echo ...subagent...`. Word-boundary match only matches the
+        # actual command word, not a substring of an unrelated word.
+        if any(re.search(rf"\b{re.escape(d)}\b", lowered) for d in dangerous):
             return {"error": f"blocked dangerous command: {cmd}"}
         try:
             args = shlex.split(cmd)

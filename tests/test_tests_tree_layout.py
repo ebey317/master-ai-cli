@@ -19,6 +19,8 @@ TESTS_ROOT = REPO_ROOT / "tests"
 
 # Loose test files with no matching source module yet (cleanup backlog).
 KNOWN_UNMAPPED = {
+    "test_stt_server_write_guard.py",  # tests stt_server.py write authorization
+    "test_upstream_integrator_cloud.py",  # tests scripts/upstream_integrator.py
     "test_headless.py",  # tests headless_runner.py via sys.path dance
     "test_oauth_callback_rfc9207.py",  # extends scripts/oauth_callback.py (RFC variant)
     "test_skill_blueprint.py",  # tests scripts/skill_metadata.py (multi-class)
@@ -26,6 +28,12 @@ KNOWN_UNMAPPED = {
     "test_tests_tree_layout.py",  # this file
     "test_verifiers_extra.py",  # supplementary cases for verifiers.py
     "test_master_ai_core.py",  # smoke/e2e driver for master_ai.py
+    # ninja/ package tests: the mapper only looks at the repo root and scripts/
+    "test_avatar_approval_wait.py",  # ninja/avatar_approval.py
+    "test_avatar_lifetime.py",  # ninja/avatar_approval.py (lifetime rules, caption parsing)
+    "test_no_auto_agent_loop.py",  # source guard on master_ai.py: no auto agent-loop routing
+    "test_overlay_anchor.py",  # ninja/state_machine.py
+    "test_pack_for_sale.py",  # tests pack_for_sale.sh (shell script, no .py module)
 }
 
 # Subdirectories under tests/ that are allowed (not name-mapped to a module).

@@ -42,7 +42,7 @@ assumed; each item is a real counterexample to "delete the legacy branch":
    real extractor before any selector swap.
 3. The legacy extractor selects kinds the typed parser has no envelope for
    (RUN_SKILL, SUBAGENT, MCP_CALL, REMEMBER, TASK_ADD/DONE, SEND_EMAIL/
-   SEND_TELEGRAM, BROWSER_*, malformed-EDIT repair round-trips). The gate
+   SEND_TELEGRAM/FBPOST, BROWSER_*, malformed-EDIT repair round-trips). The gate
    deliberately passes unmodelled payloads through untouched (load-bearing:
    test_unmodelled_list_passes_untouched) — a typed-selector swap today
    would silently drop directives the legacy path handles.
