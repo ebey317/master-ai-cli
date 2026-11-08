@@ -18380,8 +18380,18 @@ def main() -> None:
             "Type 'tutorial' to learn all features step-by-step.\nOr just start typing — I'll respond to plain English.",
         )
 
+    import idle_compact
+
     history = []
     globals()["GLOBAL_HISTORY"] = history
+    # Existing restored sessions have no per-message privacy provenance.
+    _idle_trusted = not RESUME_FLAG.exists()
+    _idle_ready = False
+    _idle_compactor = idle_compact.IdleCompactor(
+        lambda messages, cancel: idle_compact.local_summarizer(
+            MODELS.get("master", ""), messages, cancel
+        )
+    )
 
     # A brand-new chat with no prior content has no label. If a stale label is
     # left over, clear it so the bottom rule only shows the chat ID.
@@ -18580,6 +18590,7 @@ def main() -> None:
         )
     _carried = _restore_reload_carry()
     if _carried:
+        _idle_trusted = False
         globals()["PENDING_USER_NOTE"] = _carried
 
     # Save on any exit — force-close, terminal close, SIGTERM. Also summarize
@@ -18623,10 +18634,27 @@ def main() -> None:
         # If a RUN: confirm was redirected to the AI (option 5 or smart-edit
         # catching natural language), replay that as the next user message.
         if PENDING_USER_NOTE:
+            _idle_compactor.cancel()
+            _idle_ready = False
             cmd = PENDING_USER_NOTE
             globals()["PENDING_USER_NOTE"] = ""
             print(f"{C}  ▶ Redirecting to AI:{X} {cmd}")
         else:
+            if _idle_ready:
+                try:
+                    _idle_delay = float(
+                        _settings_get("idle_compact_after_seconds", "300")
+                    )
+                except (TypeError, ValueError):
+                    _idle_delay = 0
+                _idle_compactor.arm(
+                    history,
+                    str(SESSION_TS),
+                    _idle_delay,
+                    trusted=_idle_trusted,
+                    busy=_AWAITING_CONFIRM.is_set() or _AWAITING_CHOICE.is_set(),
+                )
+                _idle_ready = False
             draw_status_bar(history)
             maybe_auto_label(history)
             if _SENSEI_APP is None:
@@ -18645,12 +18673,14 @@ def main() -> None:
                 else:
                     cmd = sanitize(input(""))
             except KeyboardInterrupt:
+                _idle_compactor.cancel()
                 if _SENSEI_APP is None:
                     stop_idle_tips()
                     print_thread_box_bottom()
                 _bounded_save_session(history)
                 break
             except EOFError:
+                _idle_compactor.cancel()
                 if _SENSEI_APP is None:
                     stop_idle_tips()
                     print_thread_box_bottom()
@@ -18659,6 +18689,10 @@ def main() -> None:
             finally:
                 if _SENSEI_APP is None:
                     stop_idle_tips()
+            if cmd:
+                _idle_compactor.consume(history, str(SESSION_TS))
+            else:
+                _idle_compactor.cancel()
             if _SENSEI_APP is None:
                 print_thread_box_bottom()
 
@@ -19381,10 +19415,12 @@ def main() -> None:
             continue
 
         if lo == "load summary":
+            _idle_trusted = False
             _handle_load_summary(history)
             continue
 
         if lo == "load session":
+            _idle_trusted = False
             try:
                 chats = sorted(CHATS_DIR.glob("*.chat"), reverse=True)
                 if not chats:
@@ -19442,6 +19478,7 @@ def main() -> None:
             continue
 
         if lo.startswith("sessions resume"):
+            _idle_trusted = False
             _handle_sessions_resume(cmd, history)
             continue
 
@@ -20578,6 +20615,7 @@ def main() -> None:
             )
             _request_auto_save(history)
             _watchdog_maybe_auto_continue(reply)
+            _idle_ready = True
             # ── Drift reminder: keyword-based. After ~3000 chars of activity,
             #    only fire if the recent user messages DO NOT touch the
             #    project keywords (thread label tokens + active task words).
